@@ -1,0 +1,37 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
+#include "BaseEnvironment.h"
+#include "VectorEnvironment.generated.h"
+
+UCLASS()
+class MECANUM_ROBOT_RL_API AVectorEnvironment : public AActor
+{
+    GENERATED_BODY()
+
+public:
+    // Sets default values for this actor's properties
+    AVectorEnvironment();
+
+    // Initialize the environment with 'n' number of BaseEnvironments
+    void InitEnv(TSubclassOf<ABaseEnvironment> EnvironmentClass, TArray<FBaseInitParams*> ParamsArray);
+
+    // Reset the environment and return the initial state
+    TArray<TArray<float>> ResetEnv();
+
+    // Perform a step in the environment using the given action
+    TTuple<TArray<bool>, TArray<float>, TArray<TArray<float>>> Step(TArray<TArray<float>> Actions);
+
+    // Randomly sample actions with shape (num envs, num actions)
+    TArray<TArray<float>> SampleActions();
+protected:
+    // Called when the game starts or when spawned
+    virtual void BeginPlay() override;
+
+private:
+    // This will need to be updated to handle the dynamic nature of ABaseEnvironment
+    // Using a base class pointer for polymorphism
+    TArray<ABaseEnvironment*> Environments;
+    TArray<bool> ResetFlags;
+};
