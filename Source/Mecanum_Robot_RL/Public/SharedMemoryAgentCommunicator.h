@@ -46,26 +46,39 @@ class MECANUM_ROBOT_RL_API USharedMemoryAgentCommunicator : public UObject
     GENERATED_BODY()
 
 private:
+    void* StatesSharedMemoryHandle; 
     void* ActionsSharedMemoryHandle;
     void* UpdateSharedMemoryHandle;
+
+    float* MappedStatesSharedData;
+    float* MappedActionsSharedData;
+    float* MappedUpdateSharedData;
+
     void* ActionsMutexHandle;
     void* UpdateMutexHandle;
+    void* StatesMutexHandle;
+
     void* ActionReadyEventHandle;
     void* ActionReceivedEventHandle;
     void* UpdateReadyEventHandle;
     void* UpdateReceivedEventHandle;
 
+    FSharedMemoryAgentCommunicatorConfig config;
+
 public:
     USharedMemoryAgentCommunicator();
 
     UFUNCTION(BlueprintCallable, Category = "SharedMemory")
-    void Init(FSharedMemoryAgentCommunicatorConfig config);
+    void Init(FSharedMemoryAgentCommunicatorConfig Config);
 
     UFUNCTION(BlueprintCallable, Category = "SharedMemory")
     TArray<FAction> GetActions(TArray<FState> States);
 
     UFUNCTION(BlueprintCallable, Category = "SharedMemory")
     void Update(const TArray<FExperienceBatch>& experiences);
+
+    UFUNCTION(BlueprintCallable, Category = "SharedMemory")
+    void PrintActionsAsMatrix(const TArray<FAction>& Actions);
 
     virtual ~USharedMemoryAgentCommunicator();
 };

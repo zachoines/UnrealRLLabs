@@ -55,13 +55,13 @@ void AMecanum_Robot_RLGameModeBase::BeginPlay()
     // torchPlugin.Init();
     // torchPlugin.RunAgentTest();
 
+    FSharedMemoryAgentCommunicatorConfig Config;
     if (!AgentComm)
     {
         AgentComm = NewObject<USharedMemoryAgentCommunicator>(this);
-        FSharedMemoryAgentCommunicatorConfig Config;
-        Config.NumEnvironments = 5;
+        Config.NumEnvironments = 512;
         Config.NumActions = 2;
-        Config.StateSize = 4;
+        Config.StateSize = 6;
         Config.TrainingBatchSize = 10;
 
         AgentComm->Init(Config);
@@ -78,7 +78,7 @@ void AMecanum_Robot_RLGameModeBase::BeginPlay()
     Runner = GetWorld()->SpawnActor<ARLRunner>(ARLRunner::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
 
     // Create an array of initialization parameters for the environments
-    TArray<FVector> Locations = CreateGridLocations(8, Offset);
+    TArray<FVector> Locations = CreateGridLocations(Config.NumEnvironments, Offset);
 
     for (int32 i = 0; i < Locations.Num(); i++)
     {
@@ -105,7 +105,7 @@ void AMecanum_Robot_RLGameModeBase::Tick(float DeltaTime)
         FState SingleState;
         for (int32 j = 0; j < 4; ++j) // Assuming state size is 4.
         {
-            SingleState.Values.Add(FMath::RandRange(0.f, 1.f)); // Random values between 0 and 1 for demonstration.
+            SingleState.Values.Add(j); // Random values between 0 and 1 for demonstration.
         }
         TestStates.Add(SingleState);
     }
@@ -116,7 +116,7 @@ void AMecanum_Robot_RLGameModeBase::Tick(float DeltaTime)
     // For now, just print the first action of the first environment to see if it works.
     if (Actions.Num() > 0 && Actions[0].Values.Num() > 0)
     {
-        UE_LOG(LogTemp, Warning, TEXT("First action of the first environment: %f"), Actions[0].Values[0]);
+        AgentComm->PrintActionsAsMatrix(Actions);
     }
 }
 
