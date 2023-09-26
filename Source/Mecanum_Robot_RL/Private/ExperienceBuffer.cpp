@@ -4,9 +4,6 @@ UExperienceBuffer::UExperienceBuffer() : BufferCapacity(0) {}
 
 void UExperienceBuffer::AddExperiences(const TArray<FExperienceBatch>& EnvironmentTrajectories)
 {
-    std::lock_guard<std::mutex> lock(BufferMutex);
-
-
     if (ExperienceDeques.Num() == 0)
     {
         for (int32 i = 0; i < EnvironmentTrajectories[0].Experiences.Num(); ++i)
@@ -28,8 +25,6 @@ void UExperienceBuffer::AddExperiences(const TArray<FExperienceBatch>& Environme
 
 TArray<FExperienceBatch> UExperienceBuffer::SampleExperiences(int32 BatchSize)
 {
-    std::lock_guard<std::mutex> lock(BufferMutex);
-
     TArray<FExperienceBatch> SampledExperiences;
 
     for (std::deque<FExperience>& Deque : ExperienceDeques)
@@ -55,8 +50,6 @@ TArray<FExperienceBatch> UExperienceBuffer::SampleExperiences(int32 BatchSize)
 
 void UExperienceBuffer::SetBufferCapacity(int32 NewCapacity)
 {
-    std::lock_guard<std::mutex> lock(BufferMutex);
-
     BufferCapacity = NewCapacity;
     EnsureBufferLimit();
 }

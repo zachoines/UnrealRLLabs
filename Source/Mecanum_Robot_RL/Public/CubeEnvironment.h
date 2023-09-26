@@ -4,6 +4,8 @@
 #include "BaseEnvironment.h"
 #include "Engine/StaticMeshActor.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "MaterialShared.h"
+#include "RLTypes.h"
 #include "CubeEnvironment.generated.h"
 
 // Derived struct for initialization parameters specific to CubeEnvironment
@@ -16,7 +18,7 @@ struct MECANUM_ROBOT_RL_API FCubeEnvironmentInitParams : public FBaseInitParams
     FVector GroundPlaneSize;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-        FVector ControlledCubeSize;
+    FVector ControlledCubeSize;
 };
 
 UCLASS()
@@ -32,24 +34,24 @@ public:
 
     // The cube that this agent controls
     UPROPERTY(EditAnywhere)
-        AStaticMeshActor* ControlledCube;
+    AStaticMeshActor* ControlledCube;
 
     // The plane that this agent operates on
     UPROPERTY(EditAnywhere)
-        AStaticMeshActor* GroundPlane;
+    AStaticMeshActor* GroundPlane;
     
     // The goal the agent move towards
     UPROPERTY(EditAnywhere)
-        AStaticMeshActor* GoalObject;
+    AStaticMeshActor* GoalObject;
 
     // Override the InitEnv function to accept the derived struct
     virtual void InitEnv(FBaseInitParams *Params) override;
 
     // Reset the environment and return the initial state
-    virtual TArray<float> ResetEnv() override;
+    virtual FState ResetEnv() override;
 
     // Perform a step in the environment using the given action
-    virtual TTuple<bool, float, TArray<float>> Step(TArray<float> Action) override;
+    virtual TTuple<bool, float, FState> Step(FAction Action) override;
 
 private:
     FCubeEnvironmentInitParams* CubeParams = nullptr;

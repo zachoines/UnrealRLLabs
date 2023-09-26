@@ -2,37 +2,38 @@
 
 #include "CoreMinimal.h"
 #include <deque>
-#include <mutex>  // Include for std::mutex
+#include "BaseEnvironment.h"
+#include "ActionSpace.h"
 #include "ExperienceBuffer.generated.h"
 
 USTRUCT(BlueprintType)
-struct FExperience
+struct MECANUM_ROBOT_RL_API FExperience
 {
     GENERATED_BODY()
 
     UPROPERTY(BlueprintReadWrite, Category = "Experience")
-        TArray<float> State;
+    FState State;
 
     UPROPERTY(BlueprintReadWrite, Category = "Experience")
-        TArray<float> Action;
+    FAction Action;
 
     UPROPERTY(BlueprintReadWrite, Category = "Experience")
-        float Reward;
+    float Reward;
 
     UPROPERTY(BlueprintReadWrite, Category = "Experience")
-        TArray<float> NextState;
+    FState NextState;
 
     UPROPERTY(BlueprintReadWrite, Category = "Experience")
-        bool Done;
+    bool Done;
 };
 
 USTRUCT(BlueprintType)
-struct FExperienceBatch
+struct MECANUM_ROBOT_RL_API FExperienceBatch
 {
     GENERATED_USTRUCT_BODY()
 
-        UPROPERTY(BlueprintReadWrite, Category = "Experience")
-        TArray<FExperience> Experiences;
+    UPROPERTY(BlueprintReadWrite, Category = "Experience")
+    TArray<FExperience> Experiences;
 };
 
 UCLASS(Blueprintable, BlueprintType)
@@ -49,10 +50,9 @@ public:
 
 private:
     UPROPERTY()
-        int32 BufferCapacity;
+    int32 BufferCapacity;
 
     TArray<std::deque<FExperience>> ExperienceDeques;
-    std::mutex BufferMutex;
 
     void EnsureBufferLimit();
 };

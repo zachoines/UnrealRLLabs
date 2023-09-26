@@ -25,9 +25,9 @@ void AVectorEnvironment::InitEnv(TSubclassOf<ABaseEnvironment> EnvironmentClass,
 }
 
 
-TArray<TArray<float>> AVectorEnvironment::ResetEnv()
+TArray<FState> AVectorEnvironment::ResetEnv()
 {
-    TArray<TArray<float>> States;
+    TArray<FState> States;
     for (auto* Env : Environments)
     {
         States.Add(Env->ResetEnv());
@@ -35,15 +35,15 @@ TArray<TArray<float>> AVectorEnvironment::ResetEnv()
     return States;
 }
 
-TTuple<TArray<bool>, TArray<float>, TArray<TArray<float>>> AVectorEnvironment::Step(TArray<TArray<float>> Actions)
+TTuple<TArray<bool>, TArray<float>, TArray<FState>> AVectorEnvironment::Step(TArray<FAction> Actions)
 {
     TArray<bool> Dones;
     TArray<float> Rewards;
-    TArray<TArray<float>> States;
+    TArray<FState> States;
 
     for (int32 i = 0; i < Environments.Num(); i++)
     {
-        TArray<float> State;
+        FState State;
         bool Done;
         float Reward;
 
@@ -57,7 +57,7 @@ TTuple<TArray<bool>, TArray<float>, TArray<TArray<float>>> AVectorEnvironment::S
         }
         else
         {
-            TTuple<bool, float, TArray<float>> Result = Environments[i]->Step(Actions[i]);
+            TTuple<bool, float, FState> Result = Environments[i]->Step(Actions[i]);
             Done = Result.Get<0>();
             Reward = Result.Get<1>();
             State = Result.Get<2>();
@@ -74,12 +74,12 @@ TTuple<TArray<bool>, TArray<float>, TArray<TArray<float>>> AVectorEnvironment::S
         States.Add(State);
     }
 
-    return TTuple<TArray<bool>, TArray<float>, TArray<TArray<float>>>(Dones, Rewards, States);
+    return TTuple<TArray<bool>, TArray<float>, TArray<FState>>(Dones, Rewards, States);
 }
 
-TArray<TArray<float>> AVectorEnvironment::SampleActions()
+TArray<FAction> AVectorEnvironment::SampleActions()
 {
-    TArray<TArray<float>> Actions;
+    TArray<FAction> Actions;
     for (auto* Env : Environments)
     {
         Actions.Add(Env->ActionSpace->Sample());

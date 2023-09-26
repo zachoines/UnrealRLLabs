@@ -22,23 +22,23 @@ void UActionSpace::InitContinuous(const TArray<FActionRange>& Ranges)
     NumDiscreteActions = 0;
 }
 
-TArray<float> UActionSpace::Sample() const
+FAction UActionSpace::Sample() const
 {
-    TArray<float> SampledActions;
+    FAction SampledActions;
 
     if (ActionType == EActionType::Discrete)
     {
         int32 RandomIndex = FMath::RandRange(0, NumDiscreteActions - 1);
         for (int32 i = 0; i < NumDiscreteActions; i++)
         {
-            SampledActions.Add(i == RandomIndex ? 1.0f : 0.0f);
+            SampledActions.Values.Add(i == RandomIndex ? 1.0f : 0.0f);
         }
     }
     else if (ActionType == EActionType::Continuous)
     {
         for (const FActionRange& Range : ContinuousActionRanges)
         {
-            SampledActions.Add(FMath::RandRange(Range.Min, Range.Max));
+            SampledActions.Values.Add(FMath::RandRange(Range.Min, Range.Max));
         }
     }
 

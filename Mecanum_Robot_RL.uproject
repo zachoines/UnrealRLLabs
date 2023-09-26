@@ -27,7 +27,7 @@
 		},
 		{
 			"Name": "MLAdapter",
-			"Enabled": true
+			"Enabled": false
 		},
 		{
 			"Name": "TorchPlugin",

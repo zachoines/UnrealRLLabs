@@ -18,20 +18,17 @@ public:
     void InitEnv(TSubclassOf<ABaseEnvironment> EnvironmentClass, TArray<FBaseInitParams*> ParamsArray);
 
     // Reset the environment and return the initial state
-    TArray<TArray<float>> ResetEnv();
+    TArray<FState> ResetEnv();
 
     // Perform a step in the environment using the given action
-    TTuple<TArray<bool>, TArray<float>, TArray<TArray<float>>> Step(TArray<TArray<float>> Actions);
+    TTuple<TArray<bool>, TArray<float>, TArray<FState>> Step(TArray<FAction> Actions);
 
     // Randomly sample actions with shape (num envs, num actions)
-    TArray<TArray<float>> SampleActions();
+    TArray<FAction> SampleActions();
 protected:
-    // Called when the game starts or when spawned
     virtual void BeginPlay() override;
 
 private:
-    // This will need to be updated to handle the dynamic nature of ABaseEnvironment
-    // Using a base class pointer for polymorphism
     TArray<ABaseEnvironment*> Environments;
     TArray<bool> ResetFlags;
 };

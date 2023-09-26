@@ -1,5 +1,4 @@
 #include "RLRunner.h"
-#include "BaseEnvironment.h"
 
 
 ARLRunner::ARLRunner()
@@ -9,38 +8,64 @@ ARLRunner::ARLRunner()
     ExperienceBufferInstance = NewObject<UExperienceBuffer>();
 }
 
-void ARLRunner::InitRunner(TSubclassOf<ABaseEnvironment> EnvironmentClass, TArray<FBaseInitParams*> ParamsArray, int32 BufferSize, int32 BatchSize)
+void ARLRunner::InitRunner(
+    TSubclassOf<ABaseEnvironment> EnvironmentClass, 
+    TArray<FBaseInitParams*> ParamsArray, 
+    int BufferSize,
+    int BatchSize,
+    int NumEnvironments,
+    int StateSize,
+    int NumActions
+)
 {
-    this->buffSize = BufferSize;
-    this->batchSize = BatchSize;
 
     VectorEnvironment = GetWorld()->SpawnActor<AVectorEnvironment>(AVectorEnvironment::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
     VectorEnvironment->InitEnv(EnvironmentClass, ParamsArray);
 
-    States = VectorEnvironment->ResetEnv();
-    ExperienceBufferInstance->SetBufferCapacity(buffSize);
+    AgentComm = NewObject<USharedMemoryAgentCommunicator>(this);
+    Config.NumEnvironments = NumEnvironments;
+    Config.NumActions = NumActions;
+    Config.StateSize = StateSize;
+    Config.BatchSize = BatchSize;
+    AgentComm->Init(Config);
+
+    CurrentStates = VectorEnvironment->ResetEnv();
+    ExperienceBufferInstance->SetBufferCapacity(BufferSize);
+  
 }
 
-TArray<TArray<float>> ARLRunner::GetActions(TArray<TArray<float>> State)
+TArray<FAction> ARLRunner::GetActions(TArray<FState> States)
 {
-    // Placeholder implementation
-    return VectorEnvironment->SampleActions();
+    // Get actions for the dummy states.
+    if (AgentComm) {
+        TArray<FAction> Actions = AgentComm->GetActions(States);
+
+        // For now, just print the first action of the first environment to see if it works.
+        if (Actions.Num() > 0 && Actions[0].Values.Num() > 0)
+        {
+            AgentComm->PrintActionsAsMatrix(Actions);
+        }
+        return Actions;
+    }
+    else {
+        return VectorEnvironment->SampleActions();
+    }
 }
 
 void ARLRunner::Tick(float DeltaTime)
 {
 
-    TArray<TArray<float>> Actions = GetActions(States);
-    TTuple<TArray<bool>, TArray<float>, TArray<TArray<float>>> Result = VectorEnvironment->Step(Actions);
+    TArray<FAction> Actions = GetActions(CurrentStates);
+    TTuple<TArray<bool>, TArray<float>, TArray<FState>> Result = VectorEnvironment->Step(Actions);
 
     TArray<FExperienceBatch> EnvironmentTrajectories; 
     
     // TODO: Right now we take only a single step at a time in each environment
     FExperienceBatch Batch;
-    for (int32 i = 0; i < States.Num(); i++)
+    for (int32 i = 0; i < CurrentStates.Num(); i++)
     {
         FExperience Experience;
-        Experience.State = States[i];
+        Experience.State = CurrentStates[i];
         Experience.Action = Actions[i];
         Experience.Reward = Result.Get<1>()[i];
         Experience.NextState = Result.Get<2>()[i];
@@ -49,6 +74,7 @@ void ARLRunner::Tick(float DeltaTime)
     }
 
     EnvironmentTrajectories.Add(Batch);
+    CurrentStates = Result.Get<2>();
 
     AddExperiences(EnvironmentTrajectories);
 }

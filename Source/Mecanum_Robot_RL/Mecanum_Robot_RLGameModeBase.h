@@ -22,7 +22,7 @@ public:
 
     virtual void BeginDestroy() override;
     virtual void BeginPlay() override;
-    virtual void Tick(float DeltaTime) override;
+    // virtual void Tick(float DeltaTime) override;
     virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
 
     TArray<FVector> CreateGridLocations(int32 NumEnvironments, FVector Offset);
@@ -31,5 +31,4 @@ private:
 
     ARLRunner* Runner;
     TArray<FBaseInitParams*> InitParamsArray;
-    USharedMemoryAgentCommunicator* AgentComm;
 };

@@ -1,8 +1,14 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include "Windows.h"
+#include "Windows/HideWindowsPlatformTypes.h"
+#include "ActionSpace.h"
+#include "BaseEnvironment.h"
 #include "ExperienceBuffer.h"
 #include "SharedMemoryAgentCommunicator.generated.h"
+
 
 USTRUCT(BlueprintType)
 struct FSharedMemoryAgentCommunicatorConfig
@@ -10,34 +16,16 @@ struct FSharedMemoryAgentCommunicatorConfig
     GENERATED_BODY()
 
     UPROPERTY(BlueprintReadWrite, Category = "Config")
-    int32 NumEnvironments;
+    int NumEnvironments;
 
     UPROPERTY(BlueprintReadWrite, Category = "Config")
-    int32 NumActions;
+    int NumActions;
 
     UPROPERTY(BlueprintReadWrite, Category = "Config")
-    int32 StateSize;
+    int StateSize;
 
     UPROPERTY(BlueprintReadWrite, Category = "Config")
-    int32 TrainingBatchSize;
-};
-
-USTRUCT(BlueprintType)
-struct FAction
-{
-    GENERATED_BODY()
-
-    UPROPERTY(BlueprintReadWrite, Category = "Action")
-    TArray<float> Values;
-};
-
-USTRUCT(BlueprintType)
-struct FState
-{
-    GENERATED_BODY()
-
-    UPROPERTY(BlueprintReadWrite, Category = "State")
-    TArray<float> Values;
+    int BatchSize;
 };
 
 UCLASS(BlueprintType)

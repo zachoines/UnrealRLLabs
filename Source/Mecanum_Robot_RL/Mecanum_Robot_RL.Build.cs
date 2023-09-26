@@ -8,7 +8,7 @@ public class Mecanum_Robot_RL : ModuleRules
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
-        PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "TorchPlugin" });
+        PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore" }); //, "TorchPlugin" });
 
         PrivateDependencyModuleNames.AddRange(new string[] { });
 

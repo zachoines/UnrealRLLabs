@@ -1,7 +1,4 @@
 #include "SharedMemoryAgentCommunicator.h"
-#include "Windows/AllowWindowsPlatformTypes.h"
-#include <Windows.h>
-#include "Windows/HideWindowsPlatformTypes.h"
 
 USharedMemoryAgentCommunicator::USharedMemoryAgentCommunicator()
     : ActionsSharedMemoryHandle(NULL), UpdateSharedMemoryHandle(NULL),
@@ -18,7 +15,7 @@ void USharedMemoryAgentCommunicator::Init(FSharedMemoryAgentCommunicatorConfig C
 
     int32 ActionTotalSize = config.NumEnvironments * config.NumActions * sizeof(float);
     int32 StatesTotalSize = config.NumEnvironments * config.StateSize * sizeof(float);
-    int32 UpdateTotalSize = config.NumEnvironments * config.TrainingBatchSize * (config.StateSize + config.NumActions + 2) * sizeof(float);
+    int32 UpdateTotalSize = config.NumEnvironments * config.BatchSize * (config.StateSize + config.NumActions + 2) * sizeof(float);
 
     // Creating shared memory for actions
     ActionsSharedMemoryHandle = CreateFileMapping(

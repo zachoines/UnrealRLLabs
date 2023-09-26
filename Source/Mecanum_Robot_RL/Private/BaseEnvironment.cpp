@@ -17,16 +17,16 @@ void ABaseEnvironment::InitEnv(FBaseInitParams* Params)
     // Default implementation does nothing. Derived classes should provide specific behavior.
 }
 
-TArray<float> ABaseEnvironment::ResetEnv()
+FState ABaseEnvironment::ResetEnv()
 {
     // Default implementation returns an empty array. Derived classes should provide specific behavior.
-    return TArray<float>();
+    return FState();
 }
 
-TTuple<bool, float, TArray<float>> ABaseEnvironment::Step(TArray<float> Action)
+TTuple<bool, float, FState> ABaseEnvironment::Step(FAction Action)
 {
     // Default implementation returns a tuple with default values. Derived classes should provide specific behavior.
-    return TTuple<bool, float, TArray<float>>(false, 0.0f, TArray<float>());
+    return TTuple<bool, float, FState>(false, 0.0f, FState());
 }
 
 float ABaseEnvironment::Reward()

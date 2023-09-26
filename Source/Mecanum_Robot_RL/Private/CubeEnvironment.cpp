@@ -1,5 +1,5 @@
 #include "CubeEnvironment.h"
-#include "MaterialShared.h"
+
 
 // Sets default values
 ACubeEnvironment::ACubeEnvironment()
@@ -88,7 +88,7 @@ void ACubeEnvironment::InitEnv(FBaseInitParams* BaseParams)
     }
 }
 
-TArray<float> ACubeEnvironment::ResetEnv()
+FState ACubeEnvironment::ResetEnv()
 {
     // Generate a random location for the cube and the goal in world space
     FVector CubeWorldLocation = GenerateRandomLocationCube();
@@ -106,17 +106,17 @@ TArray<float> ACubeEnvironment::ResetEnv()
     FVector GoalLocationRelativeToGround = InverseGroundPlaneTransform.TransformPosition(GoalLocation);
 
     // Return the initial state (location of the robot and goal relative to the GroundPlane)
-    TArray<float> State;
-    State.Add(CubeLocationRelativeToGround.X);
-    State.Add(CubeLocationRelativeToGround.Y);
-    State.Add(CubeLocationRelativeToGround.Z);
-    State.Add(GoalLocationRelativeToGround.X);
-    State.Add(GoalLocationRelativeToGround.Y);
-    State.Add(GoalLocationRelativeToGround.Z);
+    FState State;
+    State.Values.Add(CubeLocationRelativeToGround.X);
+    State.Values.Add(CubeLocationRelativeToGround.Y);
+    State.Values.Add(CubeLocationRelativeToGround.Z);
+    State.Values.Add(GoalLocationRelativeToGround.X);
+    State.Values.Add(GoalLocationRelativeToGround.Y);
+    State.Values.Add(GoalLocationRelativeToGround.Z);
     return State;
 }
 
-TTuple<bool, float, TArray<float>> ACubeEnvironment::Step(TArray<float> Action)
+TTuple<bool, float, FState> ACubeEnvironment::Step(FAction Action)
 {
     // Get the transformation matrix of the GroundPlane
     FTransform GroundPlaneTransform = GroundPlane->GetActorTransform();
@@ -130,13 +130,13 @@ TTuple<bool, float, TArray<float>> ACubeEnvironment::Step(TArray<float> Action)
 
     // Move the cube based on the action
     FVector ForwardVector = ControlledCube->GetActorForwardVector();
-    FVector NewLocationRelativeToGround = CubeLocationRelativeToGround + ForwardVector * Action[0] * DeltaTime; // Linear velocity
+    FVector NewLocationRelativeToGround = CubeLocationRelativeToGround + ForwardVector * Action.Values[0] * DeltaTime; // Linear velocity
 
     // Apply angular velocity
-    if (Action.Num() > 1)
+    if (Action.Values.Num() > 1)
     {
         FRotator NewRotation = ControlledCube->GetActorRotation();
-        NewRotation.Yaw += Action[1] * DeltaTime; // Angular velocity
+        NewRotation.Yaw += Action.Values[1] * DeltaTime; // Angular velocity
         // ControlledCube->SetActorRotation(NewRotation);
     }
 
@@ -152,14 +152,15 @@ TTuple<bool, float, TArray<float>> ACubeEnvironment::Step(TArray<float> Action)
     bool Done = (NewLocationRelativeToGround - GoalLocationRelativeToGround).IsNearlyZero();
 
     // Return the done flag, the reward, and the new state (location of the robot and goal relative to the GroundPlane)
-    TArray<float> State;
-    State.Add(NewLocationRelativeToGround.X);
-    State.Add(NewLocationRelativeToGround.Y);
-    State.Add(NewLocationRelativeToGround.Z);
-    State.Add(GoalLocationRelativeToGround.X);
-    State.Add(GoalLocationRelativeToGround.Y);
-    State.Add(GoalLocationRelativeToGround.Z);
-    return TTuple<bool, float, TArray<float>>(Done, reward, State);
+    FState State;
+    State.Values.Add(NewLocationRelativeToGround.X);
+    State.Values.Add(NewLocationRelativeToGround.Y);
+    State.Values.Add(NewLocationRelativeToGround.Z);
+    State.Values.Add(GoalLocationRelativeToGround.X);
+    State.Values.Add(GoalLocationRelativeToGround.Y);
+    State.Values.Add(GoalLocationRelativeToGround.Z);
+    
+    return TTuple<bool, float, FState>(Done, reward, State);
 }
 
 FVector ACubeEnvironment::GenerateRandomLocationOnPlane()

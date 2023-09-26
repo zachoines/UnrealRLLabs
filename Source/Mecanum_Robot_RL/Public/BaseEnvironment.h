@@ -2,16 +2,26 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
-#include "ActionSpace.h"  // Include the ActionSpace header
+#include "ActionSpace.h"
+#include "RLTypes.h"
 #include "BaseEnvironment.generated.h"
+
+USTRUCT(BlueprintType)
+struct MECANUM_ROBOT_RL_API FState
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadWrite, Category = "State")
+    TArray<float> Values;
+};
 
 USTRUCT(BlueprintType)
 struct MECANUM_ROBOT_RL_API FBaseInitParams
 {
     GENERATED_USTRUCT_BODY()
 
-        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-        FVector Location;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
+    FVector Location;
 };
 
 UCLASS()
@@ -28,10 +38,10 @@ public:
     virtual void InitEnv(FBaseInitParams* Params);
 
     // Reset the environment and return the initial state
-    virtual TArray<float> ResetEnv();
+    virtual FState ResetEnv();
 
     // Perform a step in the environment using the given action
-    virtual TTuple<bool, float, TArray<float>> Step(TArray<float> Action);
+    virtual TTuple<bool, float, FState> Step(FAction Action);
 
     virtual void PostInitializeComponents() override;
 
@@ -41,5 +51,5 @@ protected:
 
 public:
     UPROPERTY(BlueprintReadOnly, Category = "Action")
-        UActionSpace* ActionSpace;  // Public member variable for the ActionSpace
+    UActionSpace* ActionSpace;  // Public member variable for the ActionSpace
 };

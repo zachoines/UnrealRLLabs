@@ -108,7 +108,7 @@ class SharedMemoryAgentProcessor:
 
 if __name__ == "__main__":
     agent_processor = SharedMemoryAgentProcessor(
-        SharedMemoryAgentProcessorConfig(num_environments=512, num_actions=2, state_size=6, training_batch_size=10)
+        SharedMemoryAgentProcessorConfig(num_environments=128, num_actions=2, state_size=6, training_batch_size=32)
     )
     try:
         agent_processor.process()

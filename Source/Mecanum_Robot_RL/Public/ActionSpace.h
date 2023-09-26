@@ -1,5 +1,3 @@
-// ActionSpace.h
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -13,15 +11,24 @@ enum class EActionType : uint8
 };
 
 USTRUCT(BlueprintType)
-struct FActionRange
+struct MECANUM_ROBOT_RL_API FActionRange
 {
     GENERATED_USTRUCT_BODY()
 
-        UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Action")
-        float Min;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Action")
+    float Min;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Action")
-        float Max;
+    float Max;
+};
+
+USTRUCT(BlueprintType)
+struct MECANUM_ROBOT_RL_API FAction
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadWrite, Category = "Action")
+    TArray<float> Values;
 };
 
 UCLASS()
@@ -39,7 +46,7 @@ public:
     void InitContinuous(const TArray<FActionRange>& Ranges);
 
     // Sample a random action
-    TArray<float> Sample() const;
+    FAction Sample() const;
 
     // Get the number of actions
     int32 GetNumActions() const;

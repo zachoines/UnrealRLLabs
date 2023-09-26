@@ -3,7 +3,7 @@
 AMecanum_Robot_RLGameModeBase::AMecanum_Robot_RLGameModeBase()
 {
     // Enable ticking
-    PrimaryActorTick.bCanEverTick = true;
+    PrimaryActorTick.bCanEverTick = false;
 }
 
 TArray<FVector> AMecanum_Robot_RLGameModeBase::CreateGridLocations(int32 NumEnvironments, FVector Offset)
@@ -54,22 +54,12 @@ void AMecanum_Robot_RLGameModeBase::BeginPlay()
     // FTorchPlugin& torchPlugin = FModuleManager::Get().LoadModuleChecked<FTorchPlugin>("TorchPlugin");
     // torchPlugin.Init();
     // torchPlugin.RunAgentTest();
-
-    FSharedMemoryAgentCommunicatorConfig Config;
-    if (!AgentComm)
-    {
-        AgentComm = NewObject<USharedMemoryAgentCommunicator>(this);
-        Config.NumEnvironments = 512;
-        Config.NumActions = 2;
-        Config.StateSize = 6;
-        Config.TrainingBatchSize = 10;
-
-        AgentComm->Init(Config);
-    }
-
-    UE_LOG(LOG_MECANUM_ROBOT_RL, Warning, TEXT("Running microenvironments"));
     
-
+    int BufferSize = 1024;
+    int BatchSize = 32;
+    int NumEnvironments = 128;
+    int StateSize = 6;
+    int NumActions = 2;
     FVector GroundPlaneSize = FVector::One() * 5.0;
     FVector ControlledCubeSize = FVector::One() * 0.25;
     FVector Offset(800.0f, 800.0f, 100.0f);
@@ -78,7 +68,7 @@ void AMecanum_Robot_RLGameModeBase::BeginPlay()
     Runner = GetWorld()->SpawnActor<ARLRunner>(ARLRunner::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
 
     // Create an array of initialization parameters for the environments
-    TArray<FVector> Locations = CreateGridLocations(Config.NumEnvironments, Offset);
+    TArray<FVector> Locations = CreateGridLocations(NumEnvironments, Offset);
 
     for (int32 i = 0; i < Locations.Num(); i++)
     {
@@ -90,35 +80,22 @@ void AMecanum_Robot_RLGameModeBase::BeginPlay()
         InitParamsArray.Add(StaticCast<FBaseInitParams*>(CubeParams));
     }
 
-    Runner->InitRunner(ACubeEnvironment::StaticClass(), InitParamsArray, 1000, 256);
+    Runner->InitRunner(
+        ACubeEnvironment::StaticClass(), 
+        InitParamsArray, 
+        BufferSize, 
+        BatchSize,
+        Locations.Num(),
+        StateSize,
+        NumActions
+    );
 }
 
-void AMecanum_Robot_RLGameModeBase::Tick(float DeltaTime)
-{
-    Super::Tick(DeltaTime);
-
-    // Dummy state data for testing.
-    TArray<FState> TestStates;
-
-    for (int32 i = 0; i < 5; ++i) // Let's assume 5 environments.
-    {
-        FState SingleState;
-        for (int32 j = 0; j < 4; ++j) // Assuming state size is 4.
-        {
-            SingleState.Values.Add(j); // Random values between 0 and 1 for demonstration.
-        }
-        TestStates.Add(SingleState);
-    }
-
-    // Get actions for the dummy states.
-    TArray<FAction> Actions = AgentComm->GetActions(TestStates);
-
-    // For now, just print the first action of the first environment to see if it works.
-    if (Actions.Num() > 0 && Actions[0].Values.Num() > 0)
-    {
-        AgentComm->PrintActionsAsMatrix(Actions);
-    }
-}
+//void AMecanum_Robot_RLGameModeBase::Tick(float DeltaTime)
+//{
+//    Super::Tick(DeltaTime);
+//
+//}
 
 void AMecanum_Robot_RLGameModeBase::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
 {
