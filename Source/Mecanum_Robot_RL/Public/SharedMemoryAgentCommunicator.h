@@ -9,7 +9,6 @@
 #include "ExperienceBuffer.h"
 #include "SharedMemoryAgentCommunicator.generated.h"
 
-
 USTRUCT(BlueprintType)
 struct FSharedMemoryAgentCommunicatorConfig
 {
@@ -34,24 +33,30 @@ class MECANUM_ROBOT_RL_API USharedMemoryAgentCommunicator : public UObject
     GENERATED_BODY()
 
 private:
-    void* StatesSharedMemoryHandle; 
+    void* StatesSharedMemoryHandle;
     void* ActionsSharedMemoryHandle;
     void* UpdateSharedMemoryHandle;
+    void* ConfigSharedMemoryHandle;
 
     float* MappedStatesSharedData;
     float* MappedActionsSharedData;
     float* MappedUpdateSharedData;
+    int32* MappedConfigSharedData;
 
     void* ActionsMutexHandle;
     void* UpdateMutexHandle;
     void* StatesMutexHandle;
+    void* ConfigMutexHandle; 
 
     void* ActionReadyEventHandle;
     void* ActionReceivedEventHandle;
     void* UpdateReadyEventHandle;
     void* UpdateReceivedEventHandle;
+    void* ConfigReadyEventHandle;
 
     FSharedMemoryAgentCommunicatorConfig config;
+
+    void WriteConfigToSharedMemory();
 
 public:
     USharedMemoryAgentCommunicator();

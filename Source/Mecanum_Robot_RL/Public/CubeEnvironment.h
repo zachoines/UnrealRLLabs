@@ -66,4 +66,7 @@ private:
 
     // Creates random spawn location for the cube
     FVector GenerateRandomLocationCube();
+
+    float MaxAngularSpeed = 90.0f;
+    float MaxLinearSpeed = 1.0f;
 };

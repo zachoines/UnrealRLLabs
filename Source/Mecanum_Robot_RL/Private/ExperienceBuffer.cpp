@@ -12,11 +12,14 @@ void UExperienceBuffer::AddExperiences(const TArray<FExperienceBatch>& Environme
         }
     }
 
+    // For each step in tragectory
     for (int32 i = 0; i < EnvironmentTrajectories.Num(); ++i)
     {
-        for (const FExperience& Exp : EnvironmentTrajectories[i].Experiences)
+        // For each environment 
+        for (int32 j = 0; j < EnvironmentTrajectories[i].Experiences.Num(); ++j) 
         {
-            ExperienceDeques[i].push_back(Exp);
+            // Append step in tragectory
+            ExperienceDeques[j].push_back(EnvironmentTrajectories[i].Experiences[j]);
         }
     }
 
@@ -52,6 +55,11 @@ void UExperienceBuffer::SetBufferCapacity(int32 NewCapacity)
 {
     BufferCapacity = NewCapacity;
     EnsureBufferLimit();
+}
+
+int32 UExperienceBuffer::Size()
+{
+    return ExperienceDeques[0].size();
 }
 
 void UExperienceBuffer::EnsureBufferLimit()

@@ -34,9 +34,6 @@ public:
     // Get actions from the Python model
     TArray<FAction> GetActions(TArray<FState> States);
 
-    // Train the model
-    void Train();
-
     // Add an experience to the buffer
     void AddExperiences(const TArray<FExperienceBatch>& EnvironmentTrajectories);
 

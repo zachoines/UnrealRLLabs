@@ -18,7 +18,6 @@ void ARLRunner::InitRunner(
     int NumActions
 )
 {
-
     VectorEnvironment = GetWorld()->SpawnActor<AVectorEnvironment>(AVectorEnvironment::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
     VectorEnvironment->InitEnv(EnvironmentClass, ParamsArray);
 
@@ -31,7 +30,6 @@ void ARLRunner::InitRunner(
 
     CurrentStates = VectorEnvironment->ResetEnv();
     ExperienceBufferInstance->SetBufferCapacity(BufferSize);
-  
 }
 
 TArray<FAction> ARLRunner::GetActions(TArray<FState> States)
@@ -54,7 +52,6 @@ TArray<FAction> ARLRunner::GetActions(TArray<FState> States)
 
 void ARLRunner::Tick(float DeltaTime)
 {
-
     TArray<FAction> Actions = GetActions(CurrentStates);
     TTuple<TArray<bool>, TArray<float>, TArray<FState>> Result = VectorEnvironment->Step(Actions);
 
@@ -77,6 +74,12 @@ void ARLRunner::Tick(float DeltaTime)
     CurrentStates = Result.Get<2>();
 
     AddExperiences(EnvironmentTrajectories);
+
+    int32 CurrentSize = Config.BatchSize;
+    if (ExperienceBufferInstance->Size() > CurrentSize) {
+        TArray<FExperienceBatch> Transitions = ARLRunner::SampleExperiences(CurrentSize);
+        AgentComm->Update(Transitions);
+    }
 }
 
 void ARLRunner::AddExperiences(const TArray<FExperienceBatch>& AllExperiences)

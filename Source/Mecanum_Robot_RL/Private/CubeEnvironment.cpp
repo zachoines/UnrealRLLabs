@@ -130,13 +130,13 @@ TTuple<bool, float, FState> ACubeEnvironment::Step(FAction Action)
 
     // Move the cube based on the action
     FVector ForwardVector = ControlledCube->GetActorForwardVector();
-    FVector NewLocationRelativeToGround = CubeLocationRelativeToGround + ForwardVector * Action.Values[0] * DeltaTime; // Linear velocity
+    FVector NewLocationRelativeToGround = CubeLocationRelativeToGround + (ForwardVector * Action.Values[0] * DeltaTime); // Linear velocity
 
     // Apply angular velocity
     if (Action.Values.Num() > 1)
     {
         FRotator NewRotation = ControlledCube->GetActorRotation();
-        NewRotation.Yaw += Action.Values[1] * DeltaTime; // Angular velocity
+        NewRotation.Yaw += Action.Values[1] * MaxAngularSpeed * DeltaTime; // Angular velocity
         // ControlledCube->SetActorRotation(NewRotation);
     }
 

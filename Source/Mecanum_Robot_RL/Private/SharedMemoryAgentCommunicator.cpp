@@ -5,7 +5,9 @@ USharedMemoryAgentCommunicator::USharedMemoryAgentCommunicator()
     ActionsMutexHandle(NULL), UpdateMutexHandle(NULL),
     ActionReadyEventHandle(NULL), ActionReceivedEventHandle(NULL),
     UpdateReadyEventHandle(NULL), UpdateReceivedEventHandle(NULL),
-    MappedActionsSharedData(NULL), MappedStatesSharedData(NULL), MappedUpdateSharedData(NULL)
+    MappedActionsSharedData(NULL), MappedStatesSharedData(NULL), MappedUpdateSharedData(NULL),
+    ConfigSharedMemoryHandle(NULL), MappedConfigSharedData(NULL),
+    ConfigMutexHandle(NULL), ConfigReadyEventHandle(NULL)
 {
 }
 
@@ -15,7 +17,8 @@ void USharedMemoryAgentCommunicator::Init(FSharedMemoryAgentCommunicatorConfig C
 
     int32 ActionTotalSize = config.NumEnvironments * config.NumActions * sizeof(float);
     int32 StatesTotalSize = config.NumEnvironments * config.StateSize * sizeof(float);
-    int32 UpdateTotalSize = config.NumEnvironments * config.BatchSize * (config.StateSize + config.NumActions + 2) * sizeof(float);
+    int32 UpdateTotalSize = config.NumEnvironments * config.BatchSize * ((config.StateSize * 2) + config.NumActions + 2) * sizeof(float);
+    int32 ConfigTotalSize = 4 * sizeof(int32);
 
     // Creating shared memory for actions
     ActionsSharedMemoryHandle = CreateFileMapping(
@@ -59,7 +62,21 @@ void USharedMemoryAgentCommunicator::Init(FSharedMemoryAgentCommunicatorConfig C
         UE_LOG(LogTemp, Error, TEXT("Failed to create update shared memory."));
     }
 
-    // Initializing synchronization objects
+    // Creating shared memory for configuration
+    ConfigSharedMemoryHandle = CreateFileMapping(
+        INVALID_HANDLE_VALUE,
+        NULL,
+        PAGE_READWRITE,
+        0,
+        ConfigTotalSize,
+        TEXT("ConfigSharedMemory")
+    );
+    if (!ConfigSharedMemoryHandle)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to create configuration shared memory."));
+    }
+
+    // Initializing mutuex objects
     ActionsMutexHandle = CreateMutex(NULL, false, TEXT("ActionsDataMutex"));
     if (!ActionsMutexHandle)
     {
@@ -78,11 +95,18 @@ void USharedMemoryAgentCommunicator::Init(FSharedMemoryAgentCommunicatorConfig C
         UE_LOG(LogTemp, Error, TEXT("Failed to create update mutex."));
     }
 
+    ConfigMutexHandle = CreateMutex(NULL, false, TEXT("ConfigDataMutex"));
+    if (!ConfigMutexHandle)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to create config mutex."));
+    }
+
     // Creating event objects
     ActionReadyEventHandle = CreateEvent(NULL, false, false, TEXT("ActionReadyEvent"));
     ActionReceivedEventHandle = CreateEvent(NULL, false, false, TEXT("ActionReceivedEvent"));
     UpdateReadyEventHandle = CreateEvent(NULL, false, false, TEXT("UpdateReadyEvent"));
     UpdateReceivedEventHandle = CreateEvent(NULL, false, false, TEXT("UpdateReceivedEvent"));
+    ConfigReadyEventHandle = CreateEvent(NULL, false, false, TEXT("ConfigReadyEvent"));
 
     // Mapping memory regions
     MappedActionsSharedData = (float*)MapViewOfFile(ActionsSharedMemoryHandle, FILE_MAP_ALL_ACCESS, 0, 0, 0);
@@ -102,6 +126,43 @@ void USharedMemoryAgentCommunicator::Init(FSharedMemoryAgentCommunicatorConfig C
     {
         UE_LOG(LogTemp, Error, TEXT("Failed to map view of shared memory for update."));
     }
+
+    MappedConfigSharedData = (int32*)MapViewOfFile(ConfigSharedMemoryHandle, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+    if (!MappedConfigSharedData)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to map view of shared memory for config."));
+    }
+
+    WriteConfigToSharedMemory();
+}
+
+void USharedMemoryAgentCommunicator::WriteConfigToSharedMemory()
+{
+    if (WaitForSingleObject(ConfigMutexHandle, INFINITE) != WAIT_OBJECT_0)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to lock the configuration mutex."));
+        return;
+    }
+
+    if (MappedConfigSharedData)
+    {
+        MappedConfigSharedData[0] = config.NumEnvironments;
+        MappedConfigSharedData[1] = config.NumActions;
+        MappedConfigSharedData[2] = config.StateSize;
+        MappedConfigSharedData[3] = config.BatchSize;
+
+        // Signal that the configuration is ready.
+        if (!SetEvent(ConfigReadyEventHandle))
+        {
+            UE_LOG(LogTemp, Error, TEXT("Failed to set the configuration ready event."));
+        }
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("Mapped memory for configuration is not available."));
+    }
+
+    ReleaseMutex(ConfigMutexHandle);
 }
 
 TArray<FAction> USharedMemoryAgentCommunicator::GetActions(TArray<FState> States)
@@ -157,16 +218,48 @@ void USharedMemoryAgentCommunicator::Update(const TArray<FExperienceBatch>& expe
     }
 
     float* SharedData = MappedUpdateSharedData;
-    for (const FExperienceBatch& batch : experiences)
+    int index = 0;
+
+    // For each enironment's trajectory
+    for (const FExperienceBatch& trajectory : experiences)
     {
-        FMemory::Memcpy(SharedData, batch.Experiences.GetData(), batch.Experiences.Num() * sizeof(float));
-        SharedData += batch.Experiences.Num();
+        // For each transition in that trajectory
+        for (const FExperience& Transition : trajectory.Experiences)
+        {
+            // Write each state
+            for (const float& elem : Transition.State.Values) 
+            {
+                SharedData[index] = elem;
+                index++;
+            }
+
+            // Write each next state
+            for (const float& elem : Transition.NextState.Values)
+            {
+                SharedData[index] = elem;
+                index++;
+            }
+
+            // Write each Action
+            for (const float& elem : Transition.Action.Values)
+            {
+                SharedData[index] = elem;
+                index++;
+            }
+
+            // Write Reward
+            SharedData[index] = (float)Transition.Reward;
+            index++;
+
+            // Write Done
+            SharedData[index] = (float) Transition.Done;
+            index++;
+        }
     }
 
-    SetEvent(UpdateReadyEventHandle);
-    WaitForSingleObject(UpdateReceivedEventHandle, INFINITE);
-
     ReleaseMutex(UpdateMutexHandle);
+    SetEvent(UpdateReadyEventHandle);  
+    WaitForSingleObject(UpdateReceivedEventHandle, INFINITE);
 }
 
 USharedMemoryAgentCommunicator::~USharedMemoryAgentCommunicator()
@@ -177,6 +270,8 @@ USharedMemoryAgentCommunicator::~USharedMemoryAgentCommunicator()
         UnmapViewOfFile(MappedStatesSharedData);
     if (MappedUpdateSharedData)
         UnmapViewOfFile(MappedUpdateSharedData);
+    if (MappedConfigSharedData)
+        UnmapViewOfFile(MappedConfigSharedData);
 
     if (ActionsSharedMemoryHandle)
         CloseHandle(ActionsSharedMemoryHandle);
@@ -184,6 +279,8 @@ USharedMemoryAgentCommunicator::~USharedMemoryAgentCommunicator()
         CloseHandle(StatesSharedMemoryHandle);
     if (UpdateSharedMemoryHandle)
         CloseHandle(UpdateSharedMemoryHandle);
+    if (ConfigSharedMemoryHandle)
+        CloseHandle(ConfigSharedMemoryHandle);
 
     if (ActionsMutexHandle)
         CloseHandle(ActionsMutexHandle);
@@ -191,6 +288,8 @@ USharedMemoryAgentCommunicator::~USharedMemoryAgentCommunicator()
         CloseHandle(StatesMutexHandle);
     if (UpdateMutexHandle)
         CloseHandle(UpdateMutexHandle);
+    if (ConfigMutexHandle)
+        CloseHandle(ConfigMutexHandle);
 
     if (ActionReadyEventHandle)
         CloseHandle(ActionReadyEventHandle);
@@ -200,8 +299,9 @@ USharedMemoryAgentCommunicator::~USharedMemoryAgentCommunicator()
         CloseHandle(UpdateReadyEventHandle);
     if (UpdateReceivedEventHandle)
         CloseHandle(UpdateReceivedEventHandle);
+    if (ConfigReadyEventHandle)
+        CloseHandle(ConfigReadyEventHandle);
 }
-
 
 void USharedMemoryAgentCommunicator::PrintActionsAsMatrix(const TArray<FAction>& Actions)
 {

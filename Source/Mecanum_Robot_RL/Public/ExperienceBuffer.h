@@ -47,6 +47,7 @@ public:
     void AddExperiences(const TArray<FExperienceBatch>& EnvironmentTrajectories);
     TArray<FExperienceBatch> SampleExperiences(int32 BatchSize);
     void SetBufferCapacity(int32 NewCapacity);
+    int32 Size();
 
 private:
     UPROPERTY()
