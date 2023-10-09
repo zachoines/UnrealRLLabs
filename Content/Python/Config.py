@@ -29,12 +29,7 @@ class EnvParams:
 class TrainParams:
     def __init__(self, training_batch_size: int, device: torch.device):
         self.training_batch_size = training_batch_size
-        self.device = torch.device(
-            "mps" if torch.has_mps else (
-                "cuda" if torch.has_cuda else 
-                "cpu"
-            )
-        )
+        self.device = device
 
 class NetworkParams:
     """

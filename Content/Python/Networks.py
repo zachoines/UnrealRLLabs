@@ -1,10 +1,6 @@
 import torch
 import torch.nn as nn
-
-import torch
-from torch import nn
 from torch.nn import functional as F
-from typing import Tuple
 
 
 class DiscretePolicyNetwork(nn.Module):
@@ -79,7 +75,6 @@ class ContinousPolicyNetwork(nn.Module):
         means = self.mean(shared_features)
         log_stds = self.log_std(shared_features)
         stds = F.softplus(log_stds)
-        # stds = torch.exp(log_stds) + self.eps
         return means, stds
   
 class ValueNetwork(nn.Module):

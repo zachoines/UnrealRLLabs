@@ -3,7 +3,7 @@ from torch.optim import Optimizer, AdamW
 from torch.distributions import Normal
 from torch.nn.utils.clip_grad import clip_grad_norm_
 from torch import Tensor
-from typing import Dict, List
+from typing import Dict
 from Networks import *
 from Config import *
 
@@ -111,7 +111,7 @@ class A2C(Agent):
             config: Config,
             tau: float = 0.01
         ):
-        super.__init__(self, config)
+        super().__init__(config)
         
         """
         A class that represents an advantage actor critic agent
@@ -168,7 +168,10 @@ class A2C(Agent):
             else:
                 action = normal.sample()
             
-            return action, normal.log_prob(action).sum(dim=-1)
+            return action.clip(
+                self.config.envParams.action_space.low, 
+                self.config.envParams.action_space.high
+            ), normal.log_prob(action).sum(dim=-1)
         else:
             probs = self.actor(states)
             if eval:
@@ -177,10 +180,13 @@ class A2C(Agent):
                 log_prob = action_probs.log_prob(action)
                 return action, log_prob
             else:
-               action_probs = torch.distributions.Categorical(probs)
-               action = action_probs.sample()
-               log_prob = action_probs.log_prob(action)
-               return action, log_prob
+                action_probs = torch.distributions.Categorical(probs)
+                action = action_probs.sample()
+                log_prob = action_probs.log_prob(action)
+                return action.clip(
+                    self.config.envParams.action_space.low, 
+                    self.config.envParams.action_space.high
+                ), log_prob
           
     def update(self, 
             states: torch.Tensor, 
@@ -204,7 +210,7 @@ class A2C(Agent):
                 values.clone(), 
                 next_values.clone(), 
             )
-            advantages = (advantages - advantages.mean()) / (advantages.std() + self.eps)
+            # advantages = (advantages - advantages.mean()) / (advantages.std() + self.eps)
             
         if self.config.envParams.action_space.is_continuous():
             
