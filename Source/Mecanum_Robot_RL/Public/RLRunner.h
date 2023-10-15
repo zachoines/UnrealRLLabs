@@ -51,6 +51,6 @@ private:
 
     UPROPERTY()
     FSharedMemoryAgentCommunicatorConfig Config;
-    
-    TArray<FState> CurrentStates;
+
+    unsigned long int CurrentStep;
 };

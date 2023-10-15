@@ -15,7 +15,7 @@ class Agent:
             value_learning_rate: float = 1e-3,
             gamma: float = 0.99, 
             entropy_coefficient: float = 1e-2,
-            max_grad_norm: float = 0.5
+            max_grad_norm: float = 1.0
         ):
 
         self.config: Config = config

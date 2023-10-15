@@ -39,7 +39,7 @@ class NetworkParams:
         hidden_size (int): The size of the hidden layers in the agent's networks.
     """
     def __init__(self,
-            hidden_size: int = 64,
+            hidden_size: int = 256,
         ):
         self.hidden_size = hidden_size
         

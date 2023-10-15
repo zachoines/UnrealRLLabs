@@ -15,7 +15,7 @@ public class Mecanum_Robot_RL : ModuleRules
         // Ensure the DLL is staged along with the executable
         // RuntimeDependencies.Add("TorchWrapper.dll");
 
-        // Add the .lib file for linking
+
         // PublicAdditionalLibraries.Add("TorchWrapper.dll");
 
 

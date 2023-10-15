@@ -28,7 +28,6 @@ class MECANUM_ROBOT_RL_API ACubeEnvironment : public ABaseEnvironment
 
 public:
     
-
     // Sets default values for this actor's properties
     ACubeEnvironment();
 
@@ -50,23 +49,55 @@ public:
     // Reset the environment and return the initial state
     virtual FState ResetEnv() override;
 
-    // Perform a step in the environment using the given action
-    virtual TTuple<bool, float, FState> Step(FAction Action) override;
+    // Update actors in environment with provided actions
+    virtual void Act(FAction Action) override;
+
+    // Updates the internally held state of the environment.
+    virtual void Update() override;
+
+    // Returns the public view of the state. Called after Update 
+    virtual FState State() override;
+
+    // Returns done conditon
+    virtual bool Done() override;
+
+    // Returns truncation conditon
+    virtual bool Trunc() override;
+
+    // Calculate the reward for the current state
+    virtual float Reward() override;
 
 private:
     FCubeEnvironmentInitParams* CubeParams = nullptr;
 
-    FVector GoalLocation;
+    // Movement Speed
+    float MaxAngularSpeed = 180.0f;
+    float MaxLinearSpeed = 100.0f;
+    int maxStepsPerEpisode = 256;
 
-    // Calculates the reward for the current state
-    virtual float Reward() override;
+    // Internally held state
+    int currentUpdate;
+    bool CubeNearGoal;
+    bool CubeOffGroundPlane;
+    float CubeDistToGoal;
+    float GoalRadius;
+    FVector GroundPlaneSize;
+    FVector CubeSize;
+    FVector GroundPlaneCenter;
+    FTransform GroundPlaneTransform;
+    FTransform InverseGroundPlaneTransform;
+    FVector CubeLocationRelativeToGround;
+    FVector GoalLocationRelativeToGround;
+    FVector CubeWorldLocation;
+    FVector GoalWorldLocation;
+    FRotator CubeWorldRotation;
+
+    // Determines if the Cube goes beyoud bounds of environment
+    bool IsCubeOffGroundPlane();
 
     // Creates random location on environments ground plane
     FVector GenerateRandomLocationOnPlane();
 
     // Creates random spawn location for the cube
     FVector GenerateRandomLocationCube();
-
-    float MaxAngularSpeed = 90.0f;
-    float MaxLinearSpeed = 1.0f;
 };

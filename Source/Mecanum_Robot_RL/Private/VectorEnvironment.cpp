@@ -18,12 +18,9 @@ void AVectorEnvironment::InitEnv(TSubclassOf<ABaseEnvironment> EnvironmentClass,
     {
         ABaseEnvironment* Env = GetWorld()->SpawnActor<ABaseEnvironment>(EnvironmentClass, Param->Location, FRotator::ZeroRotator);
         Env->InitEnv(Param);
-
         Environments.Add(Env);
-        ResetFlags.Add(false);
     }
 }
-
 
 TArray<FState> AVectorEnvironment::ResetEnv()
 {
@@ -32,49 +29,46 @@ TArray<FState> AVectorEnvironment::ResetEnv()
     {
         States.Add(Env->ResetEnv());
     }
-    return States;
+    CurrentStates = States;
+    return CurrentStates;
 }
 
-TTuple<TArray<bool>, TArray<float>, TArray<FState>> AVectorEnvironment::Step(TArray<FAction> Actions)
+TTuple<TArray<bool>, TArray<bool>, TArray<float>, TArray<FAction>, TArray<FState>, TArray<FState>> AVectorEnvironment::Transition()
 {
     TArray<bool> Dones;
+    TArray<bool> Truncs;
     TArray<float> Rewards;
-    TArray<FState> States;
+    TArray<FState> TmpStates;
+    LastStates = CurrentStates;
 
     for (int32 i = 0; i < Environments.Num(); i++)
     {
-        FState State;
-        bool Done;
-        float Reward;
-
-        // If the environment needs to be reset, reset it
-        if (ResetFlags[i])
-        {
-            State = Environments[i]->ResetEnv();
-            Done = false;
-            Reward = 0.0f; // or whatever default reward you want to give on reset
-            ResetFlags[i] = false;
-        }
-        else
-        {
-            TTuple<bool, float, FState> Result = Environments[i]->Step(Actions[i]);
-            Done = Result.Get<0>();
-            Reward = Result.Get<1>();
-            State = Result.Get<2>();
-
-            // If the environment has reached a terminal state, mark it for reset
-            if (Done)
-            {
-                ResetFlags[i] = true;
-            }
-        }
+        Environments[i]->Update();
+        bool Done = Environments[i]->Done();
+        bool Trunc = Environments[i]->Trunc();
+        float Reward = Environments[i]->Reward();
+        FState State = Done || Trunc ? Environments[i]->ResetEnv() : Environments[i]->State();
 
         Dones.Add(Done);
+        Truncs.Add(Trunc);
         Rewards.Add(Reward);
-        States.Add(State);
+        TmpStates.Add(State);
     }
 
-    return TTuple<TArray<bool>, TArray<float>, TArray<FState>>(Dones, Rewards, States);
+    CurrentStates = TmpStates;
+
+    return TTuple<TArray<bool>, TArray<bool>, TArray<float>, TArray<FAction>, TArray<FState>, TArray<FState>>(
+        Dones, Truncs, Rewards, LastActions, LastStates, CurrentStates
+    );
+}
+
+void AVectorEnvironment::Step(TArray<FAction> Actions) 
+{
+    for (int32 i = 0; i < Environments.Num(); i++)
+    {
+        Environments[i]->Act(Actions[i]);
+    }
+    LastActions = Actions;
 }
 
 TArray<FAction> AVectorEnvironment::SampleActions()

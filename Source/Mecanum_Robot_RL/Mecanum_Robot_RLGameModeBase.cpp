@@ -55,9 +55,9 @@ void AMecanum_Robot_RLGameModeBase::BeginPlay()
     // torchPlugin.Init();
     // torchPlugin.RunAgentTest();
     
-    int BufferSize = 1024;
-    int BatchSize = 32;
-    int NumEnvironments = 128;
+    int BufferSize = 16;
+    int BatchSize = 16;
+    int NumEnvironments = 4096 * 2;
     int StateSize = 6;
     int NumActions = 2;
     FVector GroundPlaneSize = FVector::One() * 5.0;
@@ -90,12 +90,6 @@ void AMecanum_Robot_RLGameModeBase::BeginPlay()
         NumActions
     );
 }
-
-//void AMecanum_Robot_RLGameModeBase::Tick(float DeltaTime)
-//{
-//    Super::Tick(DeltaTime);
-//
-//}
 
 void AMecanum_Robot_RLGameModeBase::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
 {

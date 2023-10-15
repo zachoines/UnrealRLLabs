@@ -108,7 +108,7 @@ class SharedMemoryInterface(EnvCommunicationInterface):
                 device=self.device
             ),
             NetworkParams(
-                hidden_size=128
+                hidden_size=32
             )
         )
 
@@ -124,7 +124,7 @@ class SharedMemoryInterface(EnvCommunicationInterface):
         win32event.WaitForSingleObject(self.states_mutex, win32event.INFINITE)
         state_array = np.ndarray(shape=(self.config.envParams.num_environments, self.config.envParams.state_size), dtype=np.float32, buffer=self.states_shared_memory.buf)
         win32event.ReleaseMutex(self.states_mutex)
-        return torch.tensor(state_array)
+        return torch.tensor(state_array, device=self.config.trainParams.device)
 
     def send_actions(self, actions: torch.Tensor) -> None:
         win32event.WaitForSingleObject(self.actions_mutex, win32event.INFINITE)
@@ -141,30 +141,31 @@ class SharedMemoryInterface(EnvCommunicationInterface):
         update_array = np.frombuffer(self.update_shared_memory.buf, dtype=np.float32)
         
         # Calculate the total length of a single transition
-        transition_length = (2 * self.config.envParams.state_size) + self.config.envParams.num_actions + 2  # +2 for reward and done
-        
-        # Reshape the array to shape (num_steps, num_envs, transition_length)
-        update_array = update_array.reshape(self.config.trainParams.training_batch_size, self.config.envParams.num_environments, transition_length)
+        transition_length = (2 * self.config.envParams.state_size) + self.config.envParams.num_actions + 3  # +3 for reward, trunc, and done
+        update_array = update_array.reshape(self.config.envParams.num_environments, self.config.trainParams.training_batch_size, transition_length)
         
         # Split the array into states, next_states, actions, rewards, and dones
         states = update_array[:, :, :self.config.envParams.state_size]
         next_states = update_array[:, :, self.config.envParams.state_size:2 * self.config.envParams.state_size]
         actions = update_array[:, :, 2 * self.config.envParams.state_size:2 * self.config.envParams.state_size + self.config.envParams.num_actions]
-        rewards = update_array[:, :, -2]
+        rewards = update_array[:, :, -3]
+        truncs = update_array[:, :, -2]
         dones = update_array[:, :, -1]
-        
-        # Convert numpy arrays to PyTorch tensors
-        states = torch.tensor(states, dtype=torch.float32, device=self.device)
-        next_states = torch.tensor(next_states, dtype=torch.float32, device=self.device)
-        actions = torch.tensor(actions, dtype=torch.float32, device=self.device)
-        rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
-        dones = torch.tensor(dones, dtype=torch.float32, device=self.device)
-        truncs = torch.zeros_like(dones, dtype=torch.float32, device=self.device) # TODO: Read signal from Unreal Engine
-        
+
         win32event.ReleaseMutex(self.update_mutex)
         win32event.SetEvent(self.update_received_event)
         
-        return states, next_states, actions, rewards, dones, truncs
+        
+        # Convert numpy arrays to PyTorch tensors with shape (num_steps, num_envs, transition_length)
+        return (
+            torch.tensor(states, dtype=torch.float32, device=self.device).permute((1, 0, 2)),
+            torch.tensor(next_states, dtype=torch.float32, device=self.device).permute((1, 0, 2)),
+            torch.tensor(actions, dtype=torch.float32, device=self.device).permute((1, 0, 2)),
+            torch.tensor(rewards, dtype=torch.float32, device=self.device).permute((1, 0)),
+            torch.tensor(dones, dtype=torch.float32, device=self.device).permute((1, 0)),
+            torch.tensor(truncs, dtype=torch.float32, device=self.device).permute((1, 0))
+        )
+
 
     def cleanup(self):
         # Clean up shared memories

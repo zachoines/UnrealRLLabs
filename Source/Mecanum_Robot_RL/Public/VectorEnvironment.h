@@ -20,8 +20,13 @@ public:
     // Reset the environment and return the initial state
     TArray<FState> ResetEnv();
 
-    // Perform a step in the environment using the given action
-    TTuple<TArray<bool>, TArray<float>, TArray<FState>> Step(TArray<FAction> Actions);
+    /* 
+        Perform a step in the environment using the given action :
+        Returns transition Tuple for LAST tick: { Done, Trunc, Reward, Action, State, NextState } 
+    */
+    TTuple<TArray<bool>, TArray<bool>, TArray<float>, TArray<FAction>, TArray<FState>, TArray<FState>> Transition();
+
+    void Step(TArray<FAction> Actions);
 
     // Randomly sample actions with shape (num envs, num actions)
     TArray<FAction> SampleActions();
@@ -30,5 +35,7 @@ protected:
 
 private:
     TArray<ABaseEnvironment*> Environments;
-    TArray<bool> ResetFlags;
+    TArray<FAction> LastActions;
+    TArray<FState> LastStates;
+    TArray<FState> CurrentStates;
 };

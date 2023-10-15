@@ -11,3 +11,6 @@ if __name__ == "__main__":
         runner.start()
     except KeyboardInterrupt:
         runner.end()
+
+
+# tensorboard --logdir runs --host localhost --port 8888

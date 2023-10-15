@@ -2,7 +2,6 @@
 
 ABaseEnvironment::ABaseEnvironment()
 {
-    // Set default values for this actor's properties
     PrimaryActorTick.bCanEverTick = false;
 }
 
@@ -14,23 +13,41 @@ void ABaseEnvironment::PostInitializeComponents()
 
 void ABaseEnvironment::InitEnv(FBaseInitParams* Params)
 {
-    // Default implementation does nothing. Derived classes should provide specific behavior.
+    // Setup actors...
 }
 
 FState ABaseEnvironment::ResetEnv()
 {
-    // Default implementation returns an empty array. Derived classes should provide specific behavior.
-    return FState();
+    Update();
+    return State();
 }
 
-TTuple<bool, float, FState> ABaseEnvironment::Step(FAction Action)
+void ABaseEnvironment::Act(FAction Action)
 {
-    // Default implementation returns a tuple with default values. Derived classes should provide specific behavior.
-    return TTuple<bool, float, FState>(false, 0.0f, FState());
+    // Move actors...
+}
+
+void ABaseEnvironment::Update()
+{
+    // Update internal state...
+}
+
+FState ABaseEnvironment::State()
+{
+    return FState();
 }
 
 float ABaseEnvironment::Reward()
 {
-    // Default implementation returns 0. Derived classes should provide specific behavior.
     return 0.0f;
+}
+
+bool ABaseEnvironment::Done()
+{
+    return false;
+}
+
+bool ABaseEnvironment::Trunc()
+{
+    return false;
 }

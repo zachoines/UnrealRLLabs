@@ -17,7 +17,7 @@ void USharedMemoryAgentCommunicator::Init(FSharedMemoryAgentCommunicatorConfig C
 
     int32 ActionTotalSize = config.NumEnvironments * config.NumActions * sizeof(float);
     int32 StatesTotalSize = config.NumEnvironments * config.StateSize * sizeof(float);
-    int32 UpdateTotalSize = config.NumEnvironments * config.BatchSize * ((config.StateSize * 2) + config.NumActions + 2) * sizeof(float);
+    int32 UpdateTotalSize = config.NumEnvironments * config.BatchSize * ((config.StateSize * 2) + config.NumActions + 3) * sizeof(float);
     int32 ConfigTotalSize = 4 * sizeof(int32);
 
     // Creating shared memory for actions
@@ -251,12 +251,16 @@ void USharedMemoryAgentCommunicator::Update(const TArray<FExperienceBatch>& expe
             SharedData[index] = (float)Transition.Reward;
             index++;
 
+            // Write Trunc
+            SharedData[index] = (float)Transition.Trunc;
+            index++;
+
             // Write Done
             SharedData[index] = (float) Transition.Done;
             index++;
         }
     }
-
+    
     ReleaseMutex(UpdateMutexHandle);
     SetEvent(UpdateReadyEventHandle);  
     WaitForSingleObject(UpdateReceivedEventHandle, INFINITE);

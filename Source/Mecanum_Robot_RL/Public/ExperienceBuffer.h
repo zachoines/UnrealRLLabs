@@ -24,6 +24,9 @@ struct MECANUM_ROBOT_RL_API FExperience
     FState NextState;
 
     UPROPERTY(BlueprintReadWrite, Category = "Experience")
+    bool Trunc;
+
+    UPROPERTY(BlueprintReadWrite, Category = "Experience")
     bool Done;
 };
 
@@ -53,7 +56,7 @@ private:
     UPROPERTY()
     int32 BufferCapacity;
 
-    TArray<std::deque<FExperience>> ExperienceDeques;
+    TArray<TArray<FExperience>> ExperienceDeques;
 
     void EnsureBufferLimit();
 };
