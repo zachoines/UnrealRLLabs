@@ -138,9 +138,9 @@ void ACubeEnvironment::Update()
 
 FState ACubeEnvironment::State()
 {
-    // Update the cube and goal locations relative to the ground plane
-    CubeLocationRelativeToGround = InverseGroundPlaneTransform.TransformPosition(ControlledCube->GetActorLocation());
-    GoalLocationRelativeToGround = InverseGroundPlaneTransform.TransformPosition(GoalObject->GetActorLocation());
+    //// Update the cube and goal locations relative to the ground plane
+    //CubeLocationRelativeToGround = InverseGroundPlaneTransform.TransformPosition(ControlledCube->GetActorLocation());
+    //GoalLocationRelativeToGround = InverseGroundPlaneTransform.TransformPosition(GoalObject->GetActorLocation());
 
     FState CurrentState;
 
@@ -193,13 +193,13 @@ float ACubeEnvironment::Reward()
     reward += -.01;
 
     // Add distance penalty
-    // reward += -(CubeDistToGoal / FVector::Dist(FVector(-GroundPlaneSize.X, -GroundPlaneSize.Y, 0), FVector(GroundPlaneSize.X, GroundPlaneSize.Y, 0)));;
+    reward += -(CubeDistToGoal / FVector::Dist(FVector(-GroundPlaneSize.X, -GroundPlaneSize.Y, 0), FVector(GroundPlaneSize.X, GroundPlaneSize.Y, 0)));;
     
     // Add reaching goal bonus
     reward += CubeDistToGoal <= GoalRadius ? 1.0 : 0.0;
 
     // Add out of bounds penalty
-    reward += CubeOffGroundPlane ? -10.0f : 0.0;
+    reward += CubeOffGroundPlane ? -1.0f : 0.0;
     
     return reward;
 }

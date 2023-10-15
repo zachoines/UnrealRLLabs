@@ -71,9 +71,9 @@ private:
     FCubeEnvironmentInitParams* CubeParams = nullptr;
 
     // Movement Speed
-    float MaxAngularSpeed = 180.0f;
-    float MaxLinearSpeed = 100.0f;
-    int maxStepsPerEpisode = 256;
+    float MaxAngularSpeed = 360.0f;
+    float MaxLinearSpeed = 400.0f;
+    int maxStepsPerEpisode = 128;
 
     // Internally held state
     int currentUpdate;

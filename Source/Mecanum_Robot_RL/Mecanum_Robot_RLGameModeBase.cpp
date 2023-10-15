@@ -57,7 +57,7 @@ void AMecanum_Robot_RLGameModeBase::BeginPlay()
     
     int BufferSize = 16;
     int BatchSize = 16;
-    int NumEnvironments = 4096 * 2;
+    int NumEnvironments = 4096;
     int StateSize = 6;
     int NumActions = 2;
     FVector GroundPlaneSize = FVector::One() * 5.0;

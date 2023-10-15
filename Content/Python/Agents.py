@@ -201,7 +201,7 @@ class A2C(Agent):
         with torch.no_grad():
             batch_rewards = rewards.clone()
             values: torch.Tensor = self.critic(states)
-            next_values: torch.Tensor = self.target_critic(next_states)
+            next_values: torch.Tensor = self.critic(next_states) # self.target_critic(next_states)
 
             target, advantages = self.compute_gae_and_targets(
                 rewards.unsqueeze(-1).clone(), 
@@ -219,7 +219,7 @@ class A2C(Agent):
             log_probs = dist.log_prob(actions).sum(dim=-1, keepdim=True)
             entropy = dist.entropy().sum(dim=-1, keepdim=True)
             pg_loss = -log_probs * advantages
-            critic_loss = F.smooth_l1_loss(self.critic(states.detach()), target)
+            critic_loss = F.mse_loss(self.critic(states.detach()), target)
 
             # Update the policy network
             self.optimizers['actor'].zero_grad()
@@ -234,8 +234,8 @@ class A2C(Agent):
             self.optimizers['critic'].step()
 
             # Update target network
-            for param, target_param in zip(self.critic.parameters(), self.target_critic.parameters()):
-                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+            # for param, target_param in zip(self.critic.parameters(), self.target_critic.parameters()):
+            #     target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
             return {
                 "Actor loss": pg_loss.mean(),
