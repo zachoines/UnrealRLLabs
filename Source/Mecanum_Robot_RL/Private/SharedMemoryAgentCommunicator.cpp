@@ -11,14 +11,29 @@ USharedMemoryAgentCommunicator::USharedMemoryAgentCommunicator()
 {
 }
 
-void USharedMemoryAgentCommunicator::Init(FSharedMemoryAgentCommunicatorConfig Config)
+void USharedMemoryAgentCommunicator::Init(FEnvInfo EnvInfo, FTrainParams TrainParams)
 {
-    config = Config;
+    params = TrainParams;
+    info = EnvInfo;
 
-    int32 ActionTotalSize = config.NumEnvironments * config.NumActions * sizeof(float);
-    int32 StatesTotalSize = config.NumEnvironments * config.StateSize * sizeof(float);
-    int32 UpdateTotalSize = config.NumEnvironments * config.BatchSize * ((config.StateSize * 2) + config.NumActions + 3) * sizeof(float);
-    int32 ConfigTotalSize = 4 * sizeof(int32);
+    ConfigJSON = WriteConfigInfoToJson(EnvInfo, TrainParams);
+
+    int NumActions;
+    int StateSize;
+    if (EnvInfo.IsMultiAgent) {
+        NumActions = EnvInfo.MaxAgents * EnvInfo.ActionSpace->TotalActions();
+        StateSize = EnvInfo.MaxAgents * EnvInfo.SingleAgentObsSize;   
+    }
+    else {
+        NumActions = EnvInfo.ActionSpace->TotalActions();
+        StateSize = EnvInfo.StateSize;
+    }
+
+    int32 ConfigSize = ConfigJSON.Num() * sizeof(char);
+    int32 InfoSize = 6 * sizeof(float);
+    int32 ActionMAXSize = params.NumEnvironments * NumActions * sizeof(float);
+    int32 StatesMAXSize = params.NumEnvironments * StateSize * sizeof(float);
+    int32 UpdateMAXSize = params.NumEnvironments * params.BatchSize * ((StateSize * 2) + NumActions + 3) * sizeof(float); // +3 for reward, trunc, and done
 
     // Creating shared memory for actions
     ActionsSharedMemoryHandle = CreateFileMapping(
@@ -26,7 +41,7 @@ void USharedMemoryAgentCommunicator::Init(FSharedMemoryAgentCommunicatorConfig C
         NULL,
         PAGE_READWRITE,
         0,
-        ActionTotalSize,
+        ActionMAXSize,
         TEXT("ActionsSharedMemory")
     );
     if (!ActionsSharedMemoryHandle)
@@ -40,7 +55,7 @@ void USharedMemoryAgentCommunicator::Init(FSharedMemoryAgentCommunicatorConfig C
         NULL,
         PAGE_READWRITE,
         0,
-        StatesTotalSize,
+        StatesMAXSize + InfoSize,
         TEXT("StatesSharedMemory")
     );
     if (!StatesSharedMemoryHandle)
@@ -54,7 +69,7 @@ void USharedMemoryAgentCommunicator::Init(FSharedMemoryAgentCommunicatorConfig C
         NULL,
         PAGE_READWRITE,
         0,
-        UpdateTotalSize,
+        UpdateMAXSize,
         TEXT("UpdateSharedMemory")
     );
     if (!UpdateSharedMemoryHandle)
@@ -68,7 +83,7 @@ void USharedMemoryAgentCommunicator::Init(FSharedMemoryAgentCommunicatorConfig C
         NULL,
         PAGE_READWRITE,
         0,
-        ConfigTotalSize,
+        ConfigSize,
         TEXT("ConfigSharedMemory")
     );
     if (!ConfigSharedMemoryHandle)
@@ -146,10 +161,7 @@ void USharedMemoryAgentCommunicator::WriteConfigToSharedMemory()
 
     if (MappedConfigSharedData)
     {
-        MappedConfigSharedData[0] = config.NumEnvironments;
-        MappedConfigSharedData[1] = config.NumActions;
-        MappedConfigSharedData[2] = config.StateSize;
-        MappedConfigSharedData[3] = config.BatchSize;
+        FMemory::Memcpy(MappedConfigSharedData, ConfigJSON.GetData(), ConfigJSON.Num() * sizeof(char));
 
         // Signal that the configuration is ready.
         if (!SetEvent(ConfigReadyEventHandle))
@@ -165,7 +177,7 @@ void USharedMemoryAgentCommunicator::WriteConfigToSharedMemory()
     ReleaseMutex(ConfigMutexHandle);
 }
 
-TArray<FAction> USharedMemoryAgentCommunicator::GetActions(TArray<FState> States)
+TArray<FAction> USharedMemoryAgentCommunicator::GetActions(TArray<FState> States, int NumAgents)
 {
     TArray<FAction> Actions;
 
@@ -175,6 +187,15 @@ TArray<FAction> USharedMemoryAgentCommunicator::GetActions(TArray<FState> States
         UE_LOG(LogTemp, Error, TEXT("Mapped memory for states is not available."));
         return Actions;
     }
+
+    // Write Info
+    StateSharedData[0] = params.BufferSize;
+    StateSharedData[1] = params.BatchSize;
+    StateSharedData[2] = params.NumEnvironments;
+    StateSharedData[3] = info.IsMultiAgent ? NumAgents : -1;
+    StateSharedData[4] = info.IsMultiAgent ? info.SingleAgentObsSize * NumAgents : info.StateSize;
+    StateSharedData[5] = info.IsMultiAgent ? info.ActionSpace->TotalActions() * NumAgents : info.ActionSpace->TotalActions();
+    StateSharedData += 6;
 
     for (const FState& state : States)
     {
@@ -195,7 +216,7 @@ TArray<FAction> USharedMemoryAgentCommunicator::GetActions(TArray<FState> States
     for (int32 i = 0; i < States.Num(); ++i)
     {
         FAction action;
-        action.Values.SetNumZeroed(this->config.NumActions);
+        action.Values.SetNumZeroed(NumAgents * info.ActionSpace->TotalActions());
         FMemory::Memcpy(action.Values.GetData(), ActionSharedData, action.Values.Num() * sizeof(float));
         Actions.Add(action);
         ActionSharedData += action.Values.Num();
@@ -206,7 +227,7 @@ TArray<FAction> USharedMemoryAgentCommunicator::GetActions(TArray<FState> States
     return Actions;
 }
 
-void USharedMemoryAgentCommunicator::Update(const TArray<FExperienceBatch>& experiences)
+void USharedMemoryAgentCommunicator::Update(const TArray<FExperienceBatch>& experiences, int NumAgents)
 {
     WaitForSingleObject(UpdateMutexHandle, INFINITE);
 
@@ -247,16 +268,11 @@ void USharedMemoryAgentCommunicator::Update(const TArray<FExperienceBatch>& expe
                 index++;
             }
 
-            // Write Reward
             SharedData[index] = (float)Transition.Reward;
             index++;
-
-            // Write Trunc
             SharedData[index] = (float)Transition.Trunc;
             index++;
-
-            // Write Done
-            SharedData[index] = (float) Transition.Done;
+            SharedData[index] = (float)Transition.Done;
             index++;
         }
     }
@@ -341,4 +357,76 @@ void USharedMemoryAgentCommunicator::PrintActionsAsMatrix(const TArray<FAction>&
 
         UE_LOG(LogTemp, Warning, TEXT("%s"), *matrixStr);
     }
+}
+
+TArray<char> USharedMemoryAgentCommunicator::WriteConfigInfoToJson(const FEnvInfo& EnvInfo, const FTrainParams& TrainParams)
+{
+    // Create the root JSON object
+    TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject);
+
+    // Set the EnvId
+    JsonObject->SetNumberField(TEXT("EnvId"), EnvInfo.EnvID);
+
+    // EnvironmentInfo object
+    TSharedPtr<FJsonObject> EnvironmentInfoObject = MakeShareable(new FJsonObject);
+
+    // MultiAgent object
+    TSharedPtr<FJsonObject> MultiAgentObject = MakeShareable(new FJsonObject);
+    MultiAgentObject->SetBoolField(TEXT("IsMultiAgent"), EnvInfo.IsMultiAgent);
+    MultiAgentObject->SetNumberField(TEXT("SingleAgentObsSize"), EnvInfo.SingleAgentObsSize);
+    MultiAgentObject->SetNumberField(TEXT("NumAgents"), EnvInfo.MaxAgents);
+    EnvironmentInfoObject->SetObjectField(TEXT("MultiAgent"), MultiAgentObject);
+
+    EnvironmentInfoObject->SetNumberField(TEXT("StateSize"), EnvInfo.StateSize);
+
+    // ActionSpace object
+    TSharedPtr<FJsonObject> ActionSpaceObject = MakeShareable(new FJsonObject);
+
+    // ContinuousActions array
+    TArray<TSharedPtr<FJsonValue>> ContinuousActionsArray;
+    for (const FContinuousActionSpec& ContinuousAction : EnvInfo.ActionSpace->ContinuousActions)
+    {
+        TSharedPtr<FJsonObject> ActionObject = MakeShareable(new FJsonObject);
+        ActionObject->SetNumberField(TEXT("Low"), ContinuousAction.Low);
+        ActionObject->SetNumberField(TEXT("High"), ContinuousAction.High);
+        ContinuousActionsArray.Add(MakeShareable(new FJsonValueObject(ActionObject)));
+    }
+    ActionSpaceObject->SetArrayField(TEXT("ContinuousActions"), ContinuousActionsArray);
+
+    // DiscreteActions array
+    TArray<TSharedPtr<FJsonValue>> DiscreteActionsArray;
+    for (const FDiscreteActionSpec& DiscreteAction : EnvInfo.ActionSpace->DiscreteActions)
+    {
+        DiscreteActionsArray.Add(MakeShareable(new FJsonValueNumber(DiscreteAction.NumChoices)));
+    }
+    ActionSpaceObject->SetArrayField(TEXT("DiscreteActions"), DiscreteActionsArray);
+
+    EnvironmentInfoObject->SetObjectField(TEXT("ActionSpace"), ActionSpaceObject);
+
+    // Add EnvironmentInfo to the root object
+    JsonObject->SetObjectField(TEXT("EnvironmentInfo"), EnvironmentInfoObject);
+
+    // TrainInfo object
+    TSharedPtr<FJsonObject> TrainInfoObject = MakeShareable(new FJsonObject);
+    TrainInfoObject->SetNumberField(TEXT("BufferSize"), TrainParams.BufferSize);
+    TrainInfoObject->SetNumberField(TEXT("BatchSize"), TrainParams.BatchSize);
+    TrainInfoObject->SetNumberField(TEXT("NumEnvironments"), TrainParams.NumEnvironments);
+    TrainInfoObject->SetNumberField(TEXT("MaxAgents"), TrainParams.MaxAgents);
+
+    // Add TrainInfo to the root object
+    JsonObject->SetObjectField(TEXT("TrainInfo"), TrainInfoObject);
+
+    // Serialize the JSON object to string
+    FString OutputString;
+    TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);
+    if (FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer))
+    {
+        // Convert FString to TArray<char>
+        TArray<char> CharArray;
+        CharArray.Append(reinterpret_cast<const char*>(TCHAR_TO_UTF8(*OutputString)), OutputString.Len());
+        return CharArray;
+    }
+
+    // Return an empty array if serialization fails
+    return TArray<char>();
 }

@@ -8,7 +8,6 @@ ABaseEnvironment::ABaseEnvironment()
 void ABaseEnvironment::PostInitializeComponents()
 {
     Super::PostInitializeComponents();
-    ActionSpace = NewObject<UActionSpace>(this);
 }
 
 void ABaseEnvironment::InitEnv(FBaseInitParams* Params)
@@ -16,7 +15,7 @@ void ABaseEnvironment::InitEnv(FBaseInitParams* Params)
     // Setup actors...
 }
 
-FState ABaseEnvironment::ResetEnv()
+FState ABaseEnvironment::ResetEnv(int NumAgents)
 {
     Update();
     return State();

@@ -1,4 +1,4 @@
-from Agents import Agent
+from Agents.Agent import Agent
 from Utility import RunningMeanStd
 from Environment import EnvCommunicationInterface, EventType
 import torch
@@ -10,10 +10,10 @@ class RLRunner:
         self.writer = SummaryWriter()
         self.agent = agent
         self.agentComm = agentComm
-        self.stateNormalizer = RunningMeanStd(
-            shape = (agent.config.envParams.num_environments, agent.config.envParams.state_size),
-            device=agent.config.trainParams.device
-        )
+        # self.stateNormalizer = RunningMeanStd(
+        #     shape = (agentComm.config[ConfigData.num_environments.value], self.agent.config.state_size),
+        #     device=agentComm.device
+        # )
 
     def start(self):
         while True:
@@ -21,7 +21,7 @@ class RLRunner:
             if event == EventType.GET_ACTIONS:
                 states = self.agentComm.get_states()
                 # states = self.stateNormalizer.update(states)
-                actions, _ = self.agent.get_actions(states)
+                actions, *other = self.agent.get_actions(states)
                 self.agentComm.send_actions(actions)
             elif event == EventType.UPDATE:
                 self.currentUpdate += 1

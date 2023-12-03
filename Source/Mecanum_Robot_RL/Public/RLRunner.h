@@ -1,10 +1,12 @@
 #pragma once
 
+#include "Math/UnrealMathUtility.h"
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "ExperienceBuffer.h"
 #include "VectorEnvironment.h"
 #include "SharedMemoryAgentCommunicator.h"
+#include "RLTypes.h"
 #include "RLRunner.generated.h"
 
 
@@ -24,11 +26,7 @@ public:
     void InitRunner(
         TSubclassOf<ABaseEnvironment> EnvironmentClass,
         TArray<FBaseInitParams*> ParamsArray,
-        int BufferSize,
-        int BatchSize,
-        int NumEnvironments,
-        int StateSize,
-        int NumActions
+        FTrainParams TrainParams
     );
 
     // Get actions from the Python model
@@ -38,6 +36,10 @@ public:
     void AddExperiences(const TArray<FExperienceBatch>& EnvironmentTrajectories);
 
     TArray<FExperienceBatch> SampleExperiences(int bSize);
+
+    // For multi-agent
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Train Params")
+    int CurrentAgents;
 
 private:
     UPROPERTY()
@@ -49,8 +51,9 @@ private:
     UPROPERTY()
     USharedMemoryAgentCommunicator* AgentComm;
 
-    UPROPERTY()
-    FSharedMemoryAgentCommunicatorConfig Config;
-
     unsigned long int CurrentStep;
+
+    FTrainParams TrainerParams;
+
+    int GetRandomNumber(int n);
 };

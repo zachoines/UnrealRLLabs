@@ -4,6 +4,7 @@
 #include <deque>
 #include "BaseEnvironment.h"
 #include "ActionSpace.h"
+#include "RLTypes.h"
 #include "ExperienceBuffer.generated.h"
 
 USTRUCT(BlueprintType)

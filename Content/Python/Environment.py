@@ -1,18 +1,18 @@
 import win32event
+from ctypes import sizeof, c_float
 import win32api
 import numpy as np
 import time
 from tqdm import tqdm
 from multiprocessing import shared_memory
 from enum import Enum
-from typing import Tuple
+from typing import Tuple, Dict
 import torch
-from Config import Config, EnvParams, TrainParams, NetworkParams
-from Config import ActionSpace, ActionType
+import json
 
 MUTEX_ALL_ACCESS = 0x1F0001
 SLEEP_INTERVAL = 1.0  # seconds
-
+    
 class EventType(Enum):
     UPDATE = 0
     GET_ACTIONS = 1
@@ -59,7 +59,7 @@ class SharedMemoryInterface(EnvCommunicationInterface):
         self.states_mutex = self._wait_for_resource(win32event.OpenMutex, MUTEX_ALL_ACCESS, False, "StatesDataMutex")
         self.update_mutex = self._wait_for_resource(win32event.OpenMutex, MUTEX_ALL_ACCESS, False, "UpdateDataMutex")
         
-        self.device = torch.device(
+        self.device: torch.device = torch.device(
             "mps" if torch.has_mps else (
                 "cuda" if torch.has_cuda else 
                 "cpu"
@@ -84,33 +84,21 @@ class SharedMemoryInterface(EnvCommunicationInterface):
                 pbar.update(dot_count - pbar.n)
                 time.sleep(SLEEP_INTERVAL)
 
-    def _fetch_config_from_shared_memory(self) -> Config:
+    def _fetch_config_from_shared_memory(self) -> np.ndarray:
         win32event.WaitForSingleObject(self.config_event, win32event.INFINITE)
         win32event.WaitForSingleObject(self.config_mutex, win32event.INFINITE)
 
         # Extract the configuration from the shared memory
-        config_array = np.frombuffer(self.config_shared_memory.buf, dtype=np.int32)  # Assuming int32 for all config values
-        num_environments = config_array[0]
-        num_actions = config_array[1]
-        state_size = config_array[2]
-        training_batch_size = config_array[3]
+        byte_array = np.frombuffer(self.config_shared_memory.buf, dtype=np.uint8) 
+        
+        # Convert the byte array to a string
+        json_str = byte_array.tobytes().split(b'\x00', 1)[0].decode('utf-8')
+        
+        # Parse the string as JSON
+        json_data = json.loads(json_str)
+        
         win32event.ReleaseMutex(self.config_mutex)
-
-        return Config(
-            EnvParams(
-                num_environments=num_environments, 
-                num_actions=num_actions, 
-                state_size=state_size,
-                action_space=ActionSpace(ActionType.CONTINUOUS, -1.0, 1.0)
-            ),
-            TrainParams(
-                training_batch_size=training_batch_size,
-                device=self.device
-            ),
-            NetworkParams(
-                hidden_size=32
-            )
-        )
+        return json_data
 
     def wait_for_event(self):
         result = win32event.WaitForMultipleObjects([self.action_ready_event, self.update_ready_event], False, win32event.INFINITE)
@@ -120,16 +108,29 @@ class SharedMemoryInterface(EnvCommunicationInterface):
         elif result == win32event.WAIT_OBJECT_0 + 1:
             return EventType.UPDATE
 
-    def get_states(self) -> torch.Tensor:
+    def get_states(self) -> Tuple[torch.Tensor]:
         win32event.WaitForSingleObject(self.states_mutex, win32event.INFINITE)
-        state_array = np.ndarray(shape=(self.config.envParams.num_environments, self.config.envParams.state_size), dtype=np.float32, buffer=self.states_shared_memory.buf)
+
+        # Extract the first six floats
+        byte_array = np.frombuffer(self.states_shared_memory.buf, dtype=np.float32)
+        _, _, NumEnvironments, CurrentAgents, StateSize, _ = self.info = np.frombuffer(byte_array[:6], dtype=np.float32).astype(int)
+
+        # Use the rest of the buffer to create a numpy array for the state
+        state_data = byte_array[6:(NumEnvironments * StateSize) + 6]
+        if CurrentAgents > 0: # Multi-agent Environments
+            state_array = np.ndarray(shape=(1, NumEnvironments, CurrentAgents, int(StateSize / CurrentAgents)), dtype=np.float32, buffer=state_data)
+        else:
+            state_array = np.ndarray(shape=(NumEnvironments, StateSize), dtype=np.float32, buffer=state_data)
+
         win32event.ReleaseMutex(self.states_mutex)
-        return torch.tensor(state_array, device=self.config.trainParams.device)
+        return torch.tensor(state_array, device=self.device)
 
     def send_actions(self, actions: torch.Tensor) -> None:
         win32event.WaitForSingleObject(self.actions_mutex, win32event.INFINITE)
-        action_array = np.ndarray(shape=(self.config.envParams.num_environments, self.config.envParams.num_actions), dtype=np.float32, buffer=self.action_shared_memory.buf)
-        np.copyto(action_array, actions.cpu().numpy())
+        _, _, NumEnvironments, _, _, ActionSize = self.info.astype(int)
+        action_array = np.ndarray(shape=(NumEnvironments, ActionSize), dtype=np.float32, buffer=self.action_shared_memory.buf)
+        actions = actions.view(NumEnvironments, ActionSize).cpu().numpy()
+        np.copyto(action_array, actions)
         win32event.ReleaseMutex(self.actions_mutex)
         win32event.SetEvent(self.action_received_event)
 
@@ -138,34 +139,43 @@ class SharedMemoryInterface(EnvCommunicationInterface):
         win32event.WaitForSingleObject(self.update_mutex, win32event.INFINITE)
         
         # Assuming the shared memory is flattened
-        update_array = np.frombuffer(self.update_shared_memory.buf, dtype=np.float32)
+        _, BatchSize, NumEnvironments, CurrentAgents, StateSize, ActionSize = self.info.astype(int)
+        raw_update_array = np.frombuffer(self.update_shared_memory.buf, dtype=np.float32)
         
         # Calculate the total length of a single transition
-        transition_length = (2 * self.config.envParams.state_size) + self.config.envParams.num_actions + 3  # +3 for reward, trunc, and done
-        update_array = update_array.reshape(self.config.envParams.num_environments, self.config.trainParams.training_batch_size, transition_length)
+        transition_length = (2 * StateSize) + ActionSize + 3  # +3 for reward, trunc, and done
+        update_array_trunc = raw_update_array[:(transition_length * NumEnvironments * BatchSize)]
+        update_array = update_array_trunc.reshape(NumEnvironments, BatchSize, transition_length)
         
         # Split the array into states, next_states, actions, rewards, and dones
-        states = update_array[:, :, :self.config.envParams.state_size]
-        next_states = update_array[:, :, self.config.envParams.state_size:2 * self.config.envParams.state_size]
-        actions = update_array[:, :, 2 * self.config.envParams.state_size:2 * self.config.envParams.state_size + self.config.envParams.num_actions]
+        states = update_array[:, :, :StateSize]
+        next_states = update_array[:, :, StateSize:2 * StateSize]
+        actions = update_array[:, :, 2 * StateSize:2 * StateSize + ActionSize]
         rewards = update_array[:, :, -3]
         truncs = update_array[:, :, -2]
         dones = update_array[:, :, -1]
 
         win32event.ReleaseMutex(self.update_mutex)
         win32event.SetEvent(self.update_received_event)
-        
-        
-        # Convert numpy arrays to PyTorch tensors with shape (num_steps, num_envs, transition_length)
-        return (
-            torch.tensor(states, dtype=torch.float32, device=self.device).permute((1, 0, 2)),
-            torch.tensor(next_states, dtype=torch.float32, device=self.device).permute((1, 0, 2)),
-            torch.tensor(actions, dtype=torch.float32, device=self.device).permute((1, 0, 2)),
-            torch.tensor(rewards, dtype=torch.float32, device=self.device).permute((1, 0)),
-            torch.tensor(dones, dtype=torch.float32, device=self.device).permute((1, 0)),
-            torch.tensor(truncs, dtype=torch.float32, device=self.device).permute((1, 0))
-        )
 
+        if CurrentAgents > 0: # Multi-agent Environments
+            return (
+                torch.tensor(states, dtype=torch.float32, device=self.device).permute((1, 0, 2)).view(BatchSize, NumEnvironments, CurrentAgents, int(StateSize / CurrentAgents)).contiguous(),
+                torch.tensor(next_states, dtype=torch.float32, device=self.device).permute((1, 0, 2)).view(BatchSize, NumEnvironments, CurrentAgents, int(StateSize / CurrentAgents)).contiguous(),
+                torch.tensor(actions, dtype=torch.float32, device=self.device).permute((1, 0, 2)).view(BatchSize, NumEnvironments, CurrentAgents, int(ActionSize / CurrentAgents)).contiguous(),
+                torch.tensor(rewards, dtype=torch.float32, device=self.device).permute((1, 0)).view(BatchSize, NumEnvironments, 1).contiguous(),
+                torch.tensor(dones, dtype=torch.float32, device=self.device).permute((1, 0)).view(BatchSize, NumEnvironments, 1).contiguous(),
+                torch.tensor(truncs, dtype=torch.float32, device=self.device).permute((1, 0)).view(BatchSize, NumEnvironments, 1).contiguous()
+            )
+        else:
+            return (
+                torch.tensor(states, dtype=torch.float32, device=self.device).permute((1, 0, 2)),
+                torch.tensor(next_states, dtype=torch.float32, device=self.device).permute((1, 0, 2)),
+                torch.tensor(actions, dtype=torch.float32, device=self.device).permute((1, 0, 2)),
+                torch.tensor(rewards, dtype=torch.float32, device=self.device).permute((1, 0)),
+                torch.tensor(dones, dtype=torch.float32, device=self.device).permute((1, 0)),
+                torch.tensor(truncs, dtype=torch.float32, device=self.device).permute((1, 0))
+            )
 
     def cleanup(self):
         # Clean up shared memories

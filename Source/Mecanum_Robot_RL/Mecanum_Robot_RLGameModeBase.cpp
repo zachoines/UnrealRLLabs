@@ -49,52 +49,62 @@ TArray<FVector> AMecanum_Robot_RLGameModeBase::CreateGridLocations(int32 NumEnvi
 }
 
 void AMecanum_Robot_RLGameModeBase::BeginPlay()
-{
-    // UE_LOG(LOG_MECANUM_ROBOT_RL, Warning, TEXT("Running the Torch Agent Test"));
-    // FTorchPlugin& torchPlugin = FModuleManager::Get().LoadModuleChecked<FTorchPlugin>("TorchPlugin");
-    // torchPlugin.Init();
-    // torchPlugin.RunAgentTest();
-    
-    int BufferSize = 16;
-    int BatchSize = 16;
-    int NumEnvironments = 4096;
-    int StateSize = 6;
-    int NumActions = 2;
-    FVector GroundPlaneSize = FVector::One() * 5.0;
-    FVector ControlledCubeSize = FVector::One() * 0.25;
-    FVector Offset(800.0f, 800.0f, 100.0f);
-
-    // Spawn the ARLRunner
-    Runner = GetWorld()->SpawnActor<ARLRunner>(ARLRunner::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
-
-    // Create an array of initialization parameters for the environments
-    TArray<FVector> Locations = CreateGridLocations(NumEnvironments, Offset);
-
-    for (int32 i = 0; i < Locations.Num(); i++)
-    {
-        FCubeEnvironmentInitParams* CubeParams = new FCubeEnvironmentInitParams();
-        CubeParams->GroundPlaneSize = GroundPlaneSize;
-        CubeParams->ControlledCubeSize = ControlledCubeSize;
-        CubeParams->Location = Locations[i];
-
-        InitParamsArray.Add(StaticCast<FBaseInitParams*>(CubeParams));
-    }
-
-    Runner->InitRunner(
-        ACubeEnvironment::StaticClass(), 
-        InitParamsArray, 
-        BufferSize, 
-        BatchSize,
-        Locations.Num(),
-        StateSize,
-        NumActions
+{   
+    bool loaded = ReadJsonConfig(
+        FPaths::ProjectContentDir() + TEXT("EnvConfigs/MultiAgentCube.json"),
+        TrainParams
     );
+
+    if (loaded) {
+        Runner = GetWorld()->SpawnActor<ARLRunner>(ARLRunner::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
+        TArray<FVector> Locations = CreateGridLocations(TrainParams.NumEnvironments, FVector(800.0f, 800.0f, 100.0f));
+    
+        if (TrainParams.NumEnvironments != Locations.Num()) {
+            // TODO:: Throw error
+        }
+
+        for (int32 i = 0; i < TrainParams.NumEnvironments; i++)
+        {
+            FMultiAgentCubeEnvironmentInitParams* MultiCubeParams = new FMultiAgentCubeEnvironmentInitParams();
+            MultiCubeParams->Location = Locations[i];
+            InitParamsArray.Add(StaticCast<FBaseInitParams*>(MultiCubeParams));
+        }
+
+        Runner->InitRunner(
+            AMultiAgentCubeEnvironment::StaticClass(),
+            InitParamsArray,
+            TrainParams
+        );
+    }
+    else {
+        // TODO:: Throw error
+    }
 }
 
-void AMecanum_Robot_RLGameModeBase::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
+bool AMecanum_Robot_RLGameModeBase::ReadJsonConfig(const FString& FilePath, FTrainParams& OutTrainParams)
 {
-    Super::InitGame(MapName, Options, ErrorMessage);
-    UE_LOG(LOG_MECANUM_ROBOT_RL, Log, TEXT("RL session has started: % %"), *MapName, *Options);
+    FString JsonString;
+    if (!FFileHelper::LoadFileToString(JsonString, *FilePath))
+    {
+       return false;
+    }
+
+    TSharedPtr<FJsonObject> JsonObject;
+    TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
+
+    if (!FJsonSerializer::Deserialize(Reader, JsonObject) || !JsonObject.IsValid())
+    {
+        return false;
+    }
+
+    // Parse TrainParams
+    TSharedPtr<FJsonObject> TrainParamsJson = JsonObject->GetObjectField(TEXT("TrainInfo"));
+    OutTrainParams.BufferSize = TrainParamsJson->GetIntegerField(TEXT("BufferSize"));
+    OutTrainParams.BatchSize = TrainParamsJson->GetIntegerField(TEXT("BatchSize"));
+    OutTrainParams.NumEnvironments = TrainParamsJson->GetIntegerField(TEXT("NumEnvironments"));
+    OutTrainParams.MaxAgents = TrainParamsJson->GetIntegerField(TEXT("MaxAgents"));
+
+    return true;
 }
 
 void AMecanum_Robot_RLGameModeBase::BeginDestroy()
@@ -108,3 +118,8 @@ void AMecanum_Robot_RLGameModeBase::BeginDestroy()
     }
 }
 
+void AMecanum_Robot_RLGameModeBase::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
+{
+    Super::InitGame(MapName, Options, ErrorMessage);
+    UE_LOG(LOG_MECANUM_ROBOT_RL, Log, TEXT("RL session has started: % %"), *MapName, *Options);
+}

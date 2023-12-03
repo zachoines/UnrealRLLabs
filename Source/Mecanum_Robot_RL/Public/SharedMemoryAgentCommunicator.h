@@ -7,31 +7,19 @@
 #include "ActionSpace.h"
 #include "BaseEnvironment.h"
 #include "ExperienceBuffer.h"
+#include "RLTypes.h"
 #include "SharedMemoryAgentCommunicator.generated.h"
-
-USTRUCT(BlueprintType)
-struct FSharedMemoryAgentCommunicatorConfig
-{
-    GENERATED_BODY()
-
-    UPROPERTY(BlueprintReadWrite, Category = "Config")
-    int NumEnvironments;
-
-    UPROPERTY(BlueprintReadWrite, Category = "Config")
-    int NumActions;
-
-    UPROPERTY(BlueprintReadWrite, Category = "Config")
-    int StateSize;
-
-    UPROPERTY(BlueprintReadWrite, Category = "Config")
-    int BatchSize;
-};
 
 UCLASS(BlueprintType)
 class MECANUM_ROBOT_RL_API USharedMemoryAgentCommunicator : public UObject
 {
     GENERATED_BODY()
 
+public:
+    FTrainParams params;
+    FEnvInfo info;
+    TArray<char> ConfigJSON;
+ 
 private:
     void* StatesSharedMemoryHandle;
     void* ActionsSharedMemoryHandle;
@@ -54,21 +42,21 @@ private:
     void* UpdateReceivedEventHandle;
     void* ConfigReadyEventHandle;
 
-    FSharedMemoryAgentCommunicatorConfig config;
-
     void WriteConfigToSharedMemory();
+
+    TArray<char> WriteConfigInfoToJson(const FEnvInfo& EnvInfo, const FTrainParams& TrainParams);
 
 public:
     USharedMemoryAgentCommunicator();
 
     UFUNCTION(BlueprintCallable, Category = "SharedMemory")
-    void Init(FSharedMemoryAgentCommunicatorConfig Config);
+    void Init(FEnvInfo EnvInfo, FTrainParams TrainParams);
 
     UFUNCTION(BlueprintCallable, Category = "SharedMemory")
-    TArray<FAction> GetActions(TArray<FState> States);
+    TArray<FAction> GetActions(TArray<FState> States, int NumAgents);
 
     UFUNCTION(BlueprintCallable, Category = "SharedMemory")
-    void Update(const TArray<FExperienceBatch>& experiences);
+    void Update(const TArray<FExperienceBatch>& experiences, int NumAgents);
 
     UFUNCTION(BlueprintCallable, Category = "SharedMemory")
     void PrintActionsAsMatrix(const TArray<FAction>& Actions);

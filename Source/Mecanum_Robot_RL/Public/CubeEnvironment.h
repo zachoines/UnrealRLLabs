@@ -8,7 +8,7 @@
 #include "RLTypes.h"
 #include "CubeEnvironment.generated.h"
 
-// Derived struct for initialization parameters specific to CubeEnvironment
+
 USTRUCT(BlueprintType)
 struct MECANUM_ROBOT_RL_API FCubeEnvironmentInitParams : public FBaseInitParams
 {
@@ -47,7 +47,7 @@ public:
     virtual void InitEnv(FBaseInitParams *Params) override;
 
     // Reset the environment and return the initial state
-    virtual FState ResetEnv() override;
+    virtual FState ResetEnv(int NumAgents) override;
 
     // Update actors in environment with provided actions
     virtual void Act(FAction Action) override;
@@ -71,7 +71,7 @@ private:
     FCubeEnvironmentInitParams* CubeParams = nullptr;
 
     // Movement Speed
-    float MaxAngularSpeed = 360.0f;
+    float MaxAngularSpeed = 720.0f;
     float MaxLinearSpeed = 400.0f;
     int maxStepsPerEpisode = 128;
 

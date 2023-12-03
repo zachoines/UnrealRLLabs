@@ -3,32 +3,25 @@
 #include "CoreMinimal.h"
 #include "ActionSpace.generated.h"
 
-UENUM(BlueprintType)
-enum class EActionType : uint8
-{
-    Discrete,
-    Continuous
-};
-
 USTRUCT(BlueprintType)
-struct MECANUM_ROBOT_RL_API FActionRange
-{
-    GENERATED_USTRUCT_BODY()
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Action")
-    float Min;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Action")
-    float Max;
-};
-
-USTRUCT(BlueprintType)
-struct MECANUM_ROBOT_RL_API FAction
+struct FContinuousActionSpec
 {
     GENERATED_BODY()
 
-    UPROPERTY(BlueprintReadWrite, Category = "Action")
-    TArray<float> Values;
+    UPROPERTY(BlueprintReadWrite, Category = "Continuous Action")
+    float Low;
+
+    UPROPERTY(BlueprintReadWrite, Category = "Continuous Action")
+    float High;
+};
+
+USTRUCT(BlueprintType)
+struct FDiscreteActionSpec
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadWrite, Category = "Discrete Action")
+    int32 NumChoices;
 };
 
 UCLASS()
@@ -39,23 +32,17 @@ class MECANUM_ROBOT_RL_API UActionSpace : public UObject
 public:
     UActionSpace();
 
-    // Initialize the action space with discrete actions
-    void InitDiscrete(int32 NumActions);
+    UPROPERTY(BlueprintReadWrite, Category = "Continuous Action")
+    TArray<FContinuousActionSpec> ContinuousActions;
 
-    // Initialize the action space with continuous actions
-    void InitContinuous(const TArray<FActionRange>& Ranges);
+    UPROPERTY(BlueprintReadWrite, Category = "Discrete Action")
+    TArray<FDiscreteActionSpec> DiscreteActions;
 
-    // Sample a random action
-    FAction Sample() const;
+    // Initialize the action space with arrays of continuous and discrete actions
+    void Init(
+        const TArray<FContinuousActionSpec>& InContinuousActions,
+        const TArray<FDiscreteActionSpec>& InDiscreteActions
+    );
 
-    // Get the number of actions
-    int32 GetNumActions() const;
-
-    // Get the type of actions (Discrete or Continuous)
-    EActionType GetActionType() const;
-
-private:
-    EActionType ActionType;
-    int32 NumDiscreteActions;
-    TArray<FActionRange> ContinuousActionRanges;
+    int TotalActions();
 };

@@ -4,33 +4,41 @@
 // Sets default values
 ACubeEnvironment::ACubeEnvironment()
 {
+    // Setup Env Info
+    currentUpdate = 0;
+    EnvInfo.StateSize = 6;
+    EnvInfo.IsMultiAgent = false;
+
+    const TArray<FContinuousActionSpec>& ContinuousActions = {
+        {-1.0, 1.0},
+        {-1.0, 1.0}
+    };
+    const TArray<FDiscreteActionSpec>& DiscreteActions = {
+        // Your discrete actions initialization
+    };
+
+    // Create a default sub-object for ActionSpace
+    EnvInfo.ActionSpace = CreateDefaultSubobject<UActionSpace>(TEXT("ActionSpace"));
+    if (EnvInfo.ActionSpace)
+    {
+        EnvInfo.ActionSpace->Init(ContinuousActions, DiscreteActions);
+    }
+    EnvInfo.EnvID = 1;
 }
 
 void ACubeEnvironment::InitEnv(FBaseInitParams* BaseParams)
 {
-    // Initialize the ActionSpace
-    TArray<FActionRange> Ranges = { FActionRange{-1.0f, 1.0f}, FActionRange{-1.0f, 1.0f} };
-    ActionSpace->InitContinuous(Ranges);
-
-    FCubeEnvironmentInitParams* Params = static_cast<FCubeEnvironmentInitParams*>(BaseParams);
-    if (!Params)
-    {
-        // Handle the error, perhaps by logging or returning early
-        UE_LOG(LogTemp, Warning, TEXT("Failed to cast to FCubeEnvironmentInitParams"));
-        return;
-    }
-
-    // Use the parameters from the struct
-    this->CubeParams = Params;
-
+    this->CubeParams = static_cast<FCubeEnvironmentInitParams*>(BaseParams);;
+    
+   
     // Initialize Ground Plane
-    FVector GroundPlaneSpawnLocation = Params->Location;
+    FVector GroundPlaneSpawnLocation = CubeParams->Location;
     GroundPlane = GetWorld()->SpawnActor<AStaticMeshActor>(GroundPlaneSpawnLocation, FRotator::ZeroRotator);
     UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("StaticMesh'/Engine/BasicShapes/Plane.Plane'"));
     if (GroundPlane)
     {
         GroundPlane->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
-        GroundPlane->GetStaticMeshComponent()->SetWorldScale3D(Params->GroundPlaneSize);
+        GroundPlane->GetStaticMeshComponent()->SetWorldScale3D(CubeParams->GroundPlaneSize);
         GroundPlane->SetMobility(EComponentMobility::Movable);
 
         UMaterial* WoodMaterial = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/StarterContent/Materials/M_Wood_Oak.M_Wood_Oak'"));
@@ -51,7 +59,7 @@ void ACubeEnvironment::InitEnv(FBaseInitParams* BaseParams)
     if (ControlledCube)
     {
         ControlledCube->GetStaticMeshComponent()->SetStaticMesh(CubeMesh);
-        ControlledCube->GetStaticMeshComponent()->SetWorldScale3D(Params->ControlledCubeSize);
+        ControlledCube->GetStaticMeshComponent()->SetWorldScale3D(CubeParams->ControlledCubeSize);
         ControlledCube->SetMobility(EComponentMobility::Movable);
         ControlledCube->SetActorLocation(GenerateRandomLocationCube());
 
@@ -75,7 +83,7 @@ void ACubeEnvironment::InitEnv(FBaseInitParams* BaseParams)
     if (GoalObject)
     {
         GoalObject->GetStaticMeshComponent()->SetStaticMesh(SphereMesh);
-        GoalObject->GetStaticMeshComponent()->SetWorldScale3D(Params->ControlledCubeSize);
+        GoalObject->GetStaticMeshComponent()->SetWorldScale3D(CubeParams->ControlledCubeSize);
         GoalObject->SetMobility(EComponentMobility::Movable);
 
         UMaterial* GoldMaterial = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/StarterContent/Materials/M_Metal_Gold.M_Metal_Gold'"));
@@ -85,7 +93,7 @@ void ACubeEnvironment::InitEnv(FBaseInitParams* BaseParams)
     }
 }
 
-FState ACubeEnvironment::ResetEnv()
+FState ACubeEnvironment::ResetEnv(int NumAgents)
 {
     currentUpdate = 0;
 
@@ -138,10 +146,6 @@ void ACubeEnvironment::Update()
 
 FState ACubeEnvironment::State()
 {
-    //// Update the cube and goal locations relative to the ground plane
-    //CubeLocationRelativeToGround = InverseGroundPlaneTransform.TransformPosition(ControlledCube->GetActorLocation());
-    //GoalLocationRelativeToGround = InverseGroundPlaneTransform.TransformPosition(GoalObject->GetActorLocation());
-
     FState CurrentState;
 
     // 1. Distance from Cube to Goal (normalized between -1.0 and 1.0)

@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "BaseEnvironment.h"
+#include "RLTypes.h"
 #include "VectorEnvironment.generated.h"
 
 UCLASS()
@@ -18,7 +19,7 @@ public:
     void InitEnv(TSubclassOf<ABaseEnvironment> EnvironmentClass, TArray<FBaseInitParams*> ParamsArray);
 
     // Reset the environment and return the initial state
-    TArray<FState> ResetEnv();
+    TArray<FState> ResetEnv(int NumAgents);
 
     /* 
         Perform a step in the environment using the given action :
@@ -30,6 +31,10 @@ public:
 
     // Randomly sample actions with shape (num envs, num actions)
     TArray<FAction> SampleActions();
+
+    FEnvInfo SingleEnvInfo;
+    int CurrentAgents;
+
 protected:
     virtual void BeginPlay() override;
 
@@ -38,4 +43,6 @@ private:
     TArray<FAction> LastActions;
     TArray<FState> LastStates;
     TArray<FState> CurrentStates;
+
+    FAction EnvSample(UActionSpace* ActionSpace);
 };

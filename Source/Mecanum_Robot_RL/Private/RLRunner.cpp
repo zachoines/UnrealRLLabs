@@ -1,42 +1,43 @@
 #include "RLRunner.h"
 
-
 ARLRunner::ARLRunner()
 {
     // Enable ticking
+    CurrentAgents = -1;
     PrimaryActorTick.bCanEverTick = true;
     ExperienceBufferInstance = NewObject<UExperienceBuffer>();
 }
 
 void ARLRunner::InitRunner(
-    TSubclassOf<ABaseEnvironment> EnvironmentClass, 
-    TArray<FBaseInitParams*> ParamsArray, 
-    int BufferSize,
-    int BatchSize,
-    int NumEnvironments,
-    int StateSize,
-    int NumActions
+    TSubclassOf<ABaseEnvironment> EnvironmentClass,
+    TArray<FBaseInitParams*> ParamsArray,
+    FTrainParams TrainParams
 )
 {
-    CurrentStep = 0;
+    TrainerParams = TrainParams;
     VectorEnvironment = GetWorld()->SpawnActor<AVectorEnvironment>(AVectorEnvironment::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
     VectorEnvironment->InitEnv(EnvironmentClass, ParamsArray);
 
-    AgentComm = NewObject<USharedMemoryAgentCommunicator>(this);
-    Config.NumEnvironments = NumEnvironments;
-    Config.NumActions = NumActions;
-    Config.StateSize = StateSize;
-    Config.BatchSize = BatchSize;
-    AgentComm->Init(Config);
+    CurrentStep = 0;
+    TrainerParams.NumEnvironments = ParamsArray.Num();
 
-    VectorEnvironment->ResetEnv();
-    ExperienceBufferInstance->SetBufferCapacity(BufferSize);
+    AgentComm = NewObject<USharedMemoryAgentCommunicator>(this);
+    AgentComm->Init(VectorEnvironment->SingleEnvInfo, TrainParams);
+
+    CurrentAgents = VectorEnvironment->SingleEnvInfo.IsMultiAgent ? GetRandomNumber(VectorEnvironment->SingleEnvInfo.MaxAgents) : -1;
+    VectorEnvironment->ResetEnv(CurrentAgents);
+    ExperienceBufferInstance->SetBufferCapacity(TrainParams.BufferSize);
+}
+
+int ARLRunner::GetRandomNumber(int n) {
+    // return FMath::RandRange(1, n);
+    return 3;
 }
 
 TArray<FAction> ARLRunner::GetActions(TArray<FState> States)
 {
     if (AgentComm) {
-        return AgentComm->GetActions(States);
+        return AgentComm->GetActions(States, CurrentAgents);
     }
     else {
         return VectorEnvironment->SampleActions();
@@ -67,9 +68,9 @@ void ARLRunner::Tick(float DeltaTime)
         EnvironmentTrajectories.Add(Batch);
         AddExperiences(EnvironmentTrajectories);
 
-        if ((CurrentStep % Config.BatchSize) == 0) {
-            TArray<FExperienceBatch> Transitions = ARLRunner::SampleExperiences(Config.BatchSize);
-            AgentComm->Update(Transitions);
+        if ((CurrentStep % TrainerParams.BatchSize) == 0) {
+            TArray<FExperienceBatch> Transitions = ARLRunner::SampleExperiences(TrainerParams.BatchSize);
+            AgentComm->Update(Transitions, CurrentAgents);
         }
     }
 

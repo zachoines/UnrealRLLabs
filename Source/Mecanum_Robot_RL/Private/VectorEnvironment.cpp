@@ -20,14 +20,17 @@ void AVectorEnvironment::InitEnv(TSubclassOf<ABaseEnvironment> EnvironmentClass,
         Env->InitEnv(Param);
         Environments.Add(Env);
     }
+
+    SingleEnvInfo = Environments[0]->EnvInfo;
 }
 
-TArray<FState> AVectorEnvironment::ResetEnv()
+TArray<FState> AVectorEnvironment::ResetEnv(int NumAgents)
 {
     TArray<FState> States;
+    CurrentAgents = NumAgents;
     for (auto* Env : Environments)
     {
-        States.Add(Env->ResetEnv());
+        States.Add(Env->ResetEnv(CurrentAgents));
     }
     CurrentStates = States;
     return CurrentStates;
@@ -47,11 +50,12 @@ TTuple<TArray<bool>, TArray<bool>, TArray<float>, TArray<FAction>, TArray<FState
         bool Done = Environments[i]->Done();
         bool Trunc = Environments[i]->Trunc();
         float Reward = Environments[i]->Reward();
-        FState State = Done || Trunc ? Environments[i]->ResetEnv() : Environments[i]->State();
 
         Dones.Add(Done);
         Truncs.Add(Trunc);
         Rewards.Add(Reward);
+
+        FState State = Done || Trunc ? Environments[i]->ResetEnv(CurrentAgents) : Environments[i]->State();
         TmpStates.Add(State);
     }
 
@@ -76,7 +80,28 @@ TArray<FAction> AVectorEnvironment::SampleActions()
     TArray<FAction> Actions;
     for (auto* Env : Environments)
     {
-        Actions.Add(Env->ActionSpace->Sample());
+        Actions.Add(EnvSample(Env->EnvInfo.ActionSpace));
     }
     return Actions;
+}
+
+FAction AVectorEnvironment::EnvSample(UActionSpace* ActionSpace)
+{
+    FAction SampledAction;
+
+    // Sample discrete actions
+    for (const FDiscreteActionSpec& DiscreteAction : ActionSpace->DiscreteActions)
+    {
+        int32 RandomChoice = FMath::RandRange(0, DiscreteAction.NumChoices - 1);
+        SampledAction.Values.Add(static_cast<float>(RandomChoice));
+    }
+
+    // Sample continuous actions
+    for (const FContinuousActionSpec& ContinuousAction : ActionSpace->ContinuousActions)
+    {
+        float RandomValue = FMath::RandRange(ContinuousAction.Low, ContinuousAction.High);
+        SampledAction.Values.Add(RandomValue);
+    }
+
+    return SampledAction;
 }
