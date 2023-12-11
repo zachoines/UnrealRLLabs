@@ -85,12 +85,15 @@ private:
     FVector GroundPlaneSize;
     FVector CubeSize;
     FVector GroundPlaneCenter;
+    int GridSize;
 
     // Constants
-    const int VisibilityRange = 10;
-    const int maxStepsPerEpisode = 256;
+    const int MaxSteps = 64;
+    const float AgentVisability = 3;
+    const float MaxAgents = 7;
 
     // State Variables
+    float step_rewards = 0.0;
     int CurrentStep;
     int CurrentAgents;
     FTransform GroundPlaneTransform;
@@ -99,21 +102,40 @@ private:
 
     AStaticMeshActor* InitializeCube();
     AStaticMeshActor* InitializeGoalObject();
+    AStaticMeshActor* InitializeCube(const FLinearColor& Color);
+    AStaticMeshActor* InitializeGoalObject(const FLinearColor& Color);
+    const TArray<FLinearColor> Colors = {
+        FLinearColor(1.0f, 0.0f, 0.0f),
+        FLinearColor(0.0f, 1.0f, 0.0f),
+        FLinearColor(0.0f, 0.0f, 1.0f),
+        FLinearColor(1.0f, 1.0f, 0.0f),
+        FLinearColor(1.0f, 0.0f, 1.0f),
+        FLinearColor(0.0f, 1.0f, 1.0f),
+        FLinearColor(1.0f, 0.5f, 0.0f),
+        FLinearColor(0.5f, 0.0f, 1.0f),
+        FLinearColor(1.0f, 0.0f, 0.5f),
+        FLinearColor(0.5f, 1.0f, 0.0f) 
+    };
     
     TMap<FIntPoint, TArray<AStaticMeshActor*>> UsedLocations;
     TMap<AStaticMeshActor*, FIntPoint> ActorToLocationMap;
     TMap<int, TPair<FIntPoint, FIntPoint>> AgentGoalPositions;
+    TArray<int> AgentGoalAge;
 
     void AssignRandomGridLocations();
     FIntPoint GenerateRandomLocation();
     FVector GetWorldLocationFromGridIndex(FIntPoint GridIndex);
 
-    FIntPoint GetAgentGridLocation(int AgentIndex);
     void MoveAgent(int AgentIndex, FIntPoint Location);
+    void MoveGoal(int AgentIndex, FIntPoint Location);
     void AgentGoalReset(int AgentIndex);
+    void GoalReset(int AgentIndex);
+    void AgentReset(int AgentIndex);
     bool AgentGoalReached(int AgentIndex);
     bool AgentHasCollided(int AgentIndex);
     bool AgentOutOfBounds(int AgentIndex);
-    TArray<float> AgentGetState(int AgentIndex, bool UseVisibilityRange = false);
+    TArray<float> AgentGetState(int AgentIndex);
+    int Get1DIndexFromPoint(const FIntPoint& point, int gridSize);
+    float GridDistance(const FIntPoint& Point1, const FIntPoint& Point2);
 };
 

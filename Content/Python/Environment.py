@@ -160,21 +160,21 @@ class SharedMemoryInterface(EnvCommunicationInterface):
 
         if CurrentAgents > 0: # Multi-agent Environments
             return (
-                torch.tensor(states, dtype=torch.float32, device=self.device).permute((1, 0, 2)).view(BatchSize, NumEnvironments, CurrentAgents, int(StateSize / CurrentAgents)).contiguous(),
-                torch.tensor(next_states, dtype=torch.float32, device=self.device).permute((1, 0, 2)).view(BatchSize, NumEnvironments, CurrentAgents, int(StateSize / CurrentAgents)).contiguous(),
-                torch.tensor(actions, dtype=torch.float32, device=self.device).permute((1, 0, 2)).view(BatchSize, NumEnvironments, CurrentAgents, int(ActionSize / CurrentAgents)).contiguous(),
-                torch.tensor(rewards, dtype=torch.float32, device=self.device).permute((1, 0)).view(BatchSize, NumEnvironments, 1).contiguous(),
-                torch.tensor(dones, dtype=torch.float32, device=self.device).permute((1, 0)).view(BatchSize, NumEnvironments, 1).contiguous(),
-                torch.tensor(truncs, dtype=torch.float32, device=self.device).permute((1, 0)).view(BatchSize, NumEnvironments, 1).contiguous()
+                torch.tensor(states, dtype=torch.float32, device=self.device).contiguous().permute((1, 0, 2)).view(BatchSize, NumEnvironments, CurrentAgents, int(StateSize / CurrentAgents)).contiguous(),
+                torch.tensor(next_states, dtype=torch.float32, device=self.device).contiguous().permute((1, 0, 2)).view(BatchSize, NumEnvironments, CurrentAgents, int(StateSize / CurrentAgents)).contiguous(),
+                torch.tensor(actions, dtype=torch.float32, device=self.device).contiguous().permute((1, 0, 2)).view(BatchSize, NumEnvironments, CurrentAgents, int(ActionSize / CurrentAgents)).contiguous(),
+                torch.tensor(rewards, dtype=torch.float32, device=self.device).contiguous().permute((1, 0)).view(BatchSize, NumEnvironments, 1).contiguous(),
+                torch.tensor(dones, dtype=torch.float32, device=self.device).contiguous().permute((1, 0)).view(BatchSize, NumEnvironments, 1).contiguous(),
+                torch.tensor(truncs, dtype=torch.float32, device=self.device).contiguous().permute((1, 0)).view(BatchSize, NumEnvironments, 1).contiguous()
             )
         else:
             return (
-                torch.tensor(states, dtype=torch.float32, device=self.device).permute((1, 0, 2)),
-                torch.tensor(next_states, dtype=torch.float32, device=self.device).permute((1, 0, 2)),
-                torch.tensor(actions, dtype=torch.float32, device=self.device).permute((1, 0, 2)),
-                torch.tensor(rewards, dtype=torch.float32, device=self.device).permute((1, 0)),
-                torch.tensor(dones, dtype=torch.float32, device=self.device).permute((1, 0)),
-                torch.tensor(truncs, dtype=torch.float32, device=self.device).permute((1, 0))
+                torch.tensor(states, dtype=torch.float32, device=self.device).contiguous().permute((1, 0, 2)),
+                torch.tensor(next_states, dtype=torch.float32, device=self.device).contiguous().permute((1, 0, 2)),
+                torch.tensor(actions, dtype=torch.float32, device=self.device).contiguous().permute((1, 0, 2)),
+                torch.tensor(rewards, dtype=torch.float32, device=self.device).contiguous().permute((1, 0)),
+                torch.tensor(dones, dtype=torch.float32, device=self.device).contiguous().permute((1, 0)),
+                torch.tensor(truncs, dtype=torch.float32, device=self.device).contiguous().permute((1, 0))
             )
 
     def cleanup(self):

@@ -47,9 +47,9 @@ TTuple<TArray<bool>, TArray<bool>, TArray<float>, TArray<FAction>, TArray<FState
     for (int32 i = 0; i < Environments.Num(); i++)
     {
         Environments[i]->Update();
+        float Reward = Environments[i]->Reward();
         bool Done = Environments[i]->Done();
         bool Trunc = Environments[i]->Trunc();
-        float Reward = Environments[i]->Reward();
 
         Dones.Add(Done);
         Truncs.Add(Trunc);

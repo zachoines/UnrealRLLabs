@@ -52,7 +52,7 @@ class BaseConfig:
             value_learning_rate: float = 1e-3, 
             gamma: float = 0.99, 
             entropy_coefficient: float = 1e-2, 
-            max_grad_norm: float = 1.0, 
+            max_grad_norm: float = 2.0, 
             num_environments: int = 1000, 
             eps: float = 1e-8,
             networks: Dict[str, Dict] = {},
@@ -91,7 +91,7 @@ class A2CConfig(BaseConfig):
                     {
                         "in_features": obs_space.state_size,
                         "out_features": obs_space.action_space.discrete_actions,
-                        "hidden_size": 128,
+                        "hidden_size": 256,
                     },
                 "value" : {
                     "in_features": obs_space.state_size,
@@ -107,14 +107,16 @@ class MAPOCAConfig(BaseConfig):
             self, 
             obs_space: ObservationSpace,
             action_space: ActionSpace,
-            embed_size: int = 64, 
+            embed_size: int = 256,
             heads: int = 4, 
-            max_agents: int = 10, 
+            max_agents: int = 10,
             lambda_: float = 0.95, 
-            clip_epsilon: float = 0.2,
-            hidden_size = 128,
-            entropy_coefficient: float = 0.005,
-            policy_learning_rate: float = 0.0001,  
+            clip_epsilon: float = 0.1,
+            hidden_size = 512,
+            entropy_coefficient: float = 0.01,
+            policy_learning_rate: float = 6e-4,
+            value_learning_rate: float = 3e-4,
+            max_grad_norm: float = 1.0, 
             **kwargs
         ):
         super().__init__(
@@ -122,6 +124,8 @@ class MAPOCAConfig(BaseConfig):
             action_space,
             entropy_coefficient = entropy_coefficient,
             policy_learning_rate = policy_learning_rate,
+            value_learning_rate = value_learning_rate,
+            max_grad_norm = max_grad_norm,
             networks={
                 "RSA": {
                     "embed_size": embed_size, 
@@ -153,14 +157,14 @@ class MAPOCAConfig(BaseConfig):
                 },
                 "value_network": {
                     "in_features": embed_size,
-                    "hidden_size" : embed_size
+                    "hidden_size" : hidden_size
                 },
                 "policy" : {
-                    "in_features": embed_size,
+                    "in_features": embed_size, # obs_space.single_agent_obs_size, 
                     "out_features": 
                         len(action_space.continuous_actions) 
                         if action_space.has_continuous() 
-                        else action_space.discrete_actions,
+                        else action_space.discrete_actions[0],
                     "hidden_size": hidden_size
                 }
             },

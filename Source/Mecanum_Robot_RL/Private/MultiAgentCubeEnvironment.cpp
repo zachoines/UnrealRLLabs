@@ -7,22 +7,22 @@ AMultiAgentCubeEnvironment::AMultiAgentCubeEnvironment()
 {
     // Setup Env Info
     EnvInfo.EnvID = 2;
-    EnvInfo.MaxAgents = 5;
+    EnvInfo.MaxAgents = MaxAgents;
     EnvInfo.SingleAgentObsSize = (EnvInfo.MaxAgents) * (EnvInfo.MaxAgents);
     EnvInfo.StateSize = EnvInfo.MaxAgents * EnvInfo.SingleAgentObsSize;
     EnvInfo.IsMultiAgent = true;
+    AgentGoalAge.Init(0, EnvInfo.MaxAgents);
 
     const TArray<FContinuousActionSpec>& ContinuousActions = {
         // Your continuous actions initialization
     };
     const TArray<FDiscreteActionSpec>& DiscreteActions = {
-        { 5 }
+        { 4 }
         /*
             up,
             down,
             left,
-            right,
-            no-op
+            right
         */
     };
 
@@ -40,7 +40,7 @@ void AMultiAgentCubeEnvironment::InitEnv(FBaseInitParams* BaseParams)
     MultiAgentCubeParams = static_cast<FMultiAgentCubeEnvironmentInitParams*>(BaseParams);
 
     // Initialize Ground Plane
-    int GridSize = EnvInfo.MaxAgents;
+    GridSize = EnvInfo.MaxAgents;
     CurrentAgents = EnvInfo.MaxAgents;
     CubeSize = MultiAgentCubeParams->ControlledCubeSize;
     FVector PlaneSize = CubeSize * GridSize;
@@ -51,7 +51,7 @@ void AMultiAgentCubeEnvironment::InitEnv(FBaseInitParams* BaseParams)
     UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("StaticMesh'/Engine/BasicShapes/Plane.Plane'"));
     if (GroundPlane)
     {
-          GroundPlane->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
+        GroundPlane->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
         GroundPlane->GetStaticMeshComponent()->SetWorldScale3D(MultiAgentCubeParams->GroundPlaneSize);
         GroundPlane->SetMobility(EComponentMobility::Movable);
 
@@ -83,42 +83,6 @@ void AMultiAgentCubeEnvironment::InitEnv(FBaseInitParams* BaseParams)
     }
 }
 
-AStaticMeshActor* AMultiAgentCubeEnvironment::InitializeCube()
-{
-    UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("StaticMesh'/Engine/BasicShapes/Cube.Cube'"));
-    AStaticMeshActor* NewCube = GetWorld()->SpawnActor<AStaticMeshActor>(FVector::ZeroVector, FRotator::ZeroRotator);
-
-    if (NewCube)
-    {
-        NewCube->SetMobility(EComponentMobility::Movable);
-        NewCube->GetStaticMeshComponent()->SetStaticMesh(CubeMesh);
-        NewCube->GetStaticMeshComponent()->SetWorldScale3D(MultiAgentCubeParams->ControlledCubeSize);
-
-        UMaterial* MetalMaterial = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/StarterContent/Materials/M_Metal_Steel.M_Metal_Steel'"));
-        NewCube->GetStaticMeshComponent()->SetMaterial(0, MetalMaterial);
-    }
-
-    return NewCube;
-}
-
-AStaticMeshActor* AMultiAgentCubeEnvironment::InitializeGoalObject()
-{
-    UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("StaticMesh'/Engine/BasicShapes/Sphere.Sphere'"));
-    AStaticMeshActor* NewGoalObject = GetWorld()->SpawnActor<AStaticMeshActor>(FVector::ZeroVector, FRotator::ZeroRotator);
-
-    if (NewGoalObject)
-    {
-        NewGoalObject->SetMobility(EComponentMobility::Movable);
-        NewGoalObject->GetStaticMeshComponent()->SetStaticMesh(SphereMesh);
-        NewGoalObject->GetStaticMeshComponent()->SetWorldScale3D(MultiAgentCubeParams->ControlledCubeSize);
-
-        UMaterial* GoldMaterial = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/StarterContent/Materials/M_Metal_Gold.M_Metal_Gold'"));
-        NewGoalObject->GetStaticMeshComponent()->SetMaterial(0, GoldMaterial);
-    }
-
-    return NewGoalObject;
-}
-
 void AMultiAgentCubeEnvironment::AssignRandomGridLocations()
 {
     UsedLocations.Empty();
@@ -132,29 +96,17 @@ void AMultiAgentCubeEnvironment::AssignRandomGridLocations()
         FVector CubeWorldLocation = GetWorldLocationFromGridIndex(CubeLocationIndex);
         ControlledCubes[i]->SetActorLocation(CubeWorldLocation);
         ActorToLocationMap.Add(ControlledCubes[i], CubeLocationIndex);
+        UsedLocations.FindOrAdd(CubeLocationIndex).Add(ControlledCubes[i]);
 
         // Initialize goals
         FIntPoint GoalLocationIndex = GenerateRandomLocation();
         FVector GoalWorldLocation = GetWorldLocationFromGridIndex(GoalLocationIndex);
         GoalObjects[i]->SetActorLocation(GoalWorldLocation);
         ActorToLocationMap.Add(GoalObjects[i], GoalLocationIndex);
-
-        // Store in other maps
-        UsedLocations.FindOrAdd(CubeLocationIndex).Add(ControlledCubes[i]);
         UsedLocations.FindOrAdd(GoalLocationIndex).Add(GoalObjects[i]);
+
         AgentGoalPositions.Add(i, TPair<FIntPoint, FIntPoint>(CubeLocationIndex, GoalLocationIndex));
     }
-}
-
-FIntPoint AMultiAgentCubeEnvironment::GenerateRandomLocation()
-{
-    FIntPoint RandomPoint;
-    do
-    {
-        RandomPoint.X = FMath::RandRange(0, GridCenterPoints.Num() - 1);
-        RandomPoint.Y = FMath::RandRange(0, GridCenterPoints[0].Num() - 1);
-    } while (UsedLocations.Contains(RandomPoint));
-    return RandomPoint;
 }
 
 void AMultiAgentCubeEnvironment::MoveAgent(int AgentIndex, FIntPoint Location)
@@ -187,7 +139,38 @@ void AMultiAgentCubeEnvironment::MoveAgent(int AgentIndex, FIntPoint Location)
         // Update ActorToLocationMap
         ActorToLocationMap[ControlledCubes[AgentIndex]] = Location;
     }
+}
 
+void AMultiAgentCubeEnvironment::MoveGoal(int AgentIndex, FIntPoint Location)
+{
+    if (!AgentGoalPositions.Contains(AgentIndex)) {
+        UE_LOG(LogTemp, Log, TEXT("Undefined Agent Index: %"), AgentIndex);
+    }
+    else
+    {
+        FVector NewWorldLocation = GetWorldLocationFromGridIndex(Location);
+        if (NewWorldLocation != FVector::ZeroVector) {  // out of bounds movement
+            GoalObjects[AgentIndex]->SetActorLocation(NewWorldLocation);
+        }
+
+        // Update AgentGoalPositions
+        FIntPoint OldLocation = AgentGoalPositions[AgentIndex].Value;
+        AgentGoalPositions[AgentIndex].Value = Location;
+
+        // Update UsedLocations: remove the goal from its old location and add to the new one
+        if (UsedLocations.Contains(OldLocation))
+        {
+            UsedLocations[OldLocation].Remove(GoalObjects[AgentIndex]);
+            if (UsedLocations[OldLocation].Num() == 0)
+            {
+                UsedLocations.Remove(OldLocation);
+            }
+        }
+        UsedLocations.FindOrAdd(Location).Add(GoalObjects[AgentIndex]);
+
+        // Update ActorToLocationMap
+        ActorToLocationMap[GoalObjects[AgentIndex]] = Location;
+    }
 }
 
 bool AMultiAgentCubeEnvironment::AgentHasCollided(int AgentIndex)
@@ -202,27 +185,21 @@ bool AMultiAgentCubeEnvironment::AgentHasCollided(int AgentIndex)
 
     if (!ActorsAtLocation || ActorsAtLocation->Num() <= 1)
     {
-        return false; // No collision if no or only one actor is at this location
+        return false; // No collision if only one actor is at this location
     }
 
     for (AStaticMeshActor* Actor : *ActorsAtLocation)
     {
-        if (Actor != ControlledCubes[AgentIndex]) // Exclude the agent itself
+        if (Actor != ControlledCubes[AgentIndex] && Actor != GoalObjects[AgentIndex]) // Exclude the agent and its gaol
         {
-            FIntPoint ActorLocation = ActorToLocationMap.Contains(Actor) ? ActorToLocationMap[Actor] : FIntPoint(-1, -1);
-
-            // Check if the Actor is another agent or another agent's goal
-            if (ActorLocation != FIntPoint(-1, -1) && ActorLocation != AgentGoalPositions[AgentIndex].Value)
-            {
-                return true; // Collision detected with another agent or another agent's goal
-            }
+            return true;
         }
     }
 
     return false; // No collision found
 }
 
-TArray<float> AMultiAgentCubeEnvironment::AgentGetState(int AgentIndex, bool UseVisibilityRange)
+TArray<float> AMultiAgentCubeEnvironment::AgentGetState(int AgentIndex)
 {
     TArray<float> State;
     if (!AgentGoalPositions.Contains(AgentIndex)) {
@@ -230,67 +207,56 @@ TArray<float> AMultiAgentCubeEnvironment::AgentGetState(int AgentIndex, bool Use
         return State;
     }
 
-    FIntPoint AgentLocation = AgentGoalPositions[AgentIndex].Key;
-    FIntPoint GoalLocation = AgentGoalPositions[AgentIndex].Value;
+    // Initialize state array with -2's
+    State.Init(-2, GridSize * GridSize);
 
-    int GridSize = GridCenterPoints.Num();
-    for (int i = 0; i < GridSize; ++i)
-    {
-        for (int j = 0; j < GridSize; ++j)
-        {
-            if (!UseVisibilityRange || (FMath::Abs(i - AgentLocation.X) <= VisibilityRange && FMath::Abs(j - AgentLocation.Y) <= VisibilityRange))
-            {
-                FIntPoint CurrentLocation(i, j);
-                if (CurrentLocation == AgentLocation)
-                {
-                    State.Add(0.0f); // Itself
-                }
-                else if (CurrentLocation == GoalLocation)
-                {
-                    State.Add(1.0f / 6.0f); // Its goal
-                }
-                else if (UsedLocations.Contains(CurrentLocation))
-                {
-                    // Check if it's another agent or goal
-                    bool isOtherAgent = false;
-                    bool isOtherGoal = false;
-                    for (const auto& Actor : UsedLocations[CurrentLocation])
-                    {
-                        if (Actor != ControlledCubes[AgentIndex] && Actor != GoalObjects[AgentIndex])
-                        {
-                            isOtherAgent = isOtherAgent || ControlledCubes.Contains(Actor);
-                            isOtherGoal = isOtherGoal || GoalObjects.Contains(Actor);
-                        }
-                    }
+    TPair<FIntPoint, FIntPoint> AgentGoal = AgentGoalPositions[AgentIndex];
+   
 
-                    if (isOtherAgent)
-                    {
-                        State.Add(2.0f / 6.0f);
-                    }
-                    else if (isOtherGoal)
-                    {
-                        State.Add(3.0f / 6.0f);
-                    }
-                    else
-                    {
-                        State.Add(4.0f / 6.0f); // Generic obstacle
-                    }
-                }
-                else
-                {
-                    State.Add(5.0f / 6.0f); // Free space
-                }
-            }
-            else
-            {
-                State.Add(1.0f); // Beyond visibility range
+    // Calculate the bounding square of the visibility circle
+    int MinX = FMath::Max<int>(AgentGoal.Key.X - AgentVisability, 0);
+    int MaxX = FMath::Min<int>(AgentGoal.Key.X + AgentVisability, GridSize - 1);
+    int MinY = FMath::Max<int>(AgentGoal.Key.Y - AgentVisability, 0);
+    int MaxY = FMath::Min<int>(AgentGoal.Key.Y + AgentVisability, GridSize - 1);
+
+    // Set points within visibility range to 0 if they are open
+    for (int x = MinX; x <= MaxX; ++x) {
+        for (int y = MinY; y <= MaxY; ++y) {
+            // Check if the point is within the circular visibility range
+            if (GridDistance(FIntPoint(x, y), AgentGoal.Key) <= AgentVisability) {
+                State[Get1DIndexFromPoint(FIntPoint(x, y), GridSize)] = 0;
             }
         }
     }
 
+    for (int i = 0; i < CurrentAgents; ++i) {
+        if (i != AgentIndex) {
+            TPair<FIntPoint, FIntPoint> OtherAgentGoal = AgentGoalPositions[i];
+            if (GridDistance(AgentGoal.Key, OtherAgentGoal.Key) <= AgentVisability) {
+                State[Get1DIndexFromPoint(OtherAgentGoal.Key, GridSize)] = static_cast<float>(i + 1) / static_cast<float>(CurrentAgents + 1);
+            }
+
+            if (GridDistance(AgentGoal.Key, OtherAgentGoal.Value) <= AgentVisability) {
+                State[Get1DIndexFromPoint(OtherAgentGoal.Value, GridSize)] = static_cast<float>(-i - 1) / static_cast<float>(CurrentAgents + 1);
+            }
+        }
+    }
+
+    State[Get1DIndexFromPoint(AgentGoal.Key, GridSize)] = 1.0;
+    State[Get1DIndexFromPoint(AgentGoal.Value, GridSize)] = -1.0;
+
     return State;
 }
 
+int AMultiAgentCubeEnvironment::Get1DIndexFromPoint(const FIntPoint& point, int gridSize) 
+{
+    return point.X * gridSize + point.Y;
+}
+
+float AMultiAgentCubeEnvironment::GridDistance(const FIntPoint& Point1, const FIntPoint& Point2)
+{
+    return FMath::Sqrt(FMath::Square(static_cast<float>(Point2.X) - static_cast<float>(Point1.X)) + FMath::Square(static_cast<float>(Point2.Y) - static_cast<float>(Point1.Y)));
+}
 
 bool AMultiAgentCubeEnvironment::AgentGoalReached(int AgentIndex)
 {
@@ -313,10 +279,8 @@ bool AMultiAgentCubeEnvironment::AgentOutOfBounds(int AgentIndex)
     {
         return false;
     }
-    else 
-    {
-        return true;
-    }
+    
+    return true;
 }
 
 FVector AMultiAgentCubeEnvironment::GetWorldLocationFromGridIndex(FIntPoint GridIndex)
@@ -325,6 +289,9 @@ FVector AMultiAgentCubeEnvironment::GetWorldLocationFromGridIndex(FIntPoint Grid
     {
         FVector WorldLocation = GridCenterPoints[GridIndex.X][GridIndex.Y];
         WorldLocation.Z += CubeSize.Z; // Adjust to be flush on ground plane
+        if (WorldLocation == FVector::ZeroVector) {
+            WorldLocation += FVector(1.0e-6, 1.0e-6, 1.0e-6); // Prevent overlap with zero-vector sentinal value
+        }
         return WorldLocation;
     }
 
@@ -334,6 +301,8 @@ FVector AMultiAgentCubeEnvironment::GetWorldLocationFromGridIndex(FIntPoint Grid
 FState AMultiAgentCubeEnvironment::ResetEnv(int NumAgents)
 {
     CurrentStep = 0;
+    AgentGoalAge.Empty();
+    AgentGoalAge.Init(0, EnvInfo.MaxAgents);
 
     // Handle reduction of agents
     while (ControlledCubes.Num() > NumAgents)
@@ -352,12 +321,12 @@ FState AMultiAgentCubeEnvironment::ResetEnv(int NumAgents)
     }
 
     // Handle increase of agents
-    while (ControlledCubes.Num() < NumAgents)
+    for (int Count = ControlledCubes.Num(); Count < NumAgents; Count++)
     {
-        AStaticMeshActor* NewCube = InitializeCube();
+        AStaticMeshActor* NewCube = InitializeCube(Colors[Count]);
         ControlledCubes.Add(NewCube);
 
-        AStaticMeshActor* NewGoal = InitializeGoalObject();
+        AStaticMeshActor* NewGoal = InitializeGoalObject(Colors[Count]);
         GoalObjects.Add(NewGoal);
     }
 
@@ -372,16 +341,17 @@ FState AMultiAgentCubeEnvironment::ResetEnv(int NumAgents)
     return State();
 }
 
-
 void AMultiAgentCubeEnvironment::Act(FAction Action)
 {
     if (Action.Values.Num() != ControlledCubes.Num())
     {
+        UE_LOG(LogTemp, Log, TEXT("Incorrect Actions Shape: %"), Action.Values.Num());
         return;
     }
 
     for (int i = 0; i < Action.Values.Num(); ++i)
     {
+        AgentGoalAge[i] += 1;
         FIntPoint CurrentLocation = AgentGoalPositions[i].Key;
         FIntPoint NewLocation = CurrentLocation;
 
@@ -399,13 +369,13 @@ void AMultiAgentCubeEnvironment::Act(FAction Action)
         case 3: // Right
             NewLocation.X += 1;
             break;
-        case 4: // no-op
-            continue;
-            break;
+        //case 4: // no-op
+        //    continue;
+        //    break;
         default:
             // No operation
             UE_LOG(LogTemp, Log, TEXT("Undefined Action Index: %"), Action.Values[i]);
-            continue;
+            break;
         }
 
         MoveAgent(i, NewLocation);
@@ -414,41 +384,35 @@ void AMultiAgentCubeEnvironment::Act(FAction Action)
 
 void AMultiAgentCubeEnvironment::AgentGoalReset(int AgentIndex)
 {
-    if (AgentIndex < 0 || AgentIndex >= ControlledCubes.Num())
-    {
-        return; // Check for valid AgentIndex
+    if (!AgentGoalPositions.Contains(AgentIndex)) {
+        UE_LOG(LogTemp, Log, TEXT("Undefined Agent Index: %"), AgentIndex);
     }
-
-    // Remove the current agent and goal from UsedLocations and ActorToLocationMap
-    FIntPoint CurrentAgentLocation = AgentGoalPositions[AgentIndex].Key;
-    FIntPoint CurrentGoalLocation = AgentGoalPositions[AgentIndex].Value;
-    UsedLocations[CurrentAgentLocation].Remove(ControlledCubes[AgentIndex]);
-    UsedLocations[CurrentGoalLocation].Remove(GoalObjects[AgentIndex]);
-    ActorToLocationMap.Remove(ControlledCubes[AgentIndex]);
-    ActorToLocationMap.Remove(GoalObjects[AgentIndex]);
-
-    // Reset Agent Location
-    FIntPoint NewAgentLocation = GenerateRandomLocation();
-    FVector NewAgentWorldLocation = GetWorldLocationFromGridIndex(NewAgentLocation);
-    ControlledCubes[AgentIndex]->SetActorLocation(NewAgentWorldLocation);
-    UsedLocations.FindOrAdd(NewAgentLocation).Add(ControlledCubes[AgentIndex]);
-    ActorToLocationMap.Add(ControlledCubes[AgentIndex], NewAgentLocation);
-
-    // Reset Goal Location
-    FIntPoint NewGoalLocation;
-    do {
-        NewGoalLocation = GenerateRandomLocation();
-    } while (NewGoalLocation == NewAgentLocation); // Ensure goal is not placed at the agent's location
-
-    FVector NewGoalWorldLocation = GetWorldLocationFromGridIndex(NewGoalLocation);
-    GoalObjects[AgentIndex]->SetActorLocation(NewGoalWorldLocation);
-    UsedLocations.FindOrAdd(NewGoalLocation).Add(GoalObjects[AgentIndex]);
-    ActorToLocationMap.Add(GoalObjects[AgentIndex], NewGoalLocation);
-
-    // Update AgentGoalPositions
-    AgentGoalPositions[AgentIndex] = TPair<FIntPoint, FIntPoint>(NewAgentLocation, NewGoalLocation);
+    GoalReset(AgentIndex);
+    AgentReset(AgentIndex);
 }
 
+void AMultiAgentCubeEnvironment::GoalReset(int AgentIndex)
+{
+    FIntPoint NewGoalLocation = GenerateRandomLocation();
+    MoveGoal(AgentIndex, NewGoalLocation);
+}
+
+void AMultiAgentCubeEnvironment::AgentReset(int AgentIndex)
+{
+    FIntPoint NewAgentLocation = GenerateRandomLocation();
+    MoveAgent(AgentIndex, NewAgentLocation);
+}
+
+FIntPoint AMultiAgentCubeEnvironment::GenerateRandomLocation()
+{
+    FIntPoint RandomPoint;
+    do
+    {
+        RandomPoint.X = FMath::RandRange(0, GridCenterPoints.Num() - 1);
+        RandomPoint.Y = FMath::RandRange(0, GridCenterPoints[0].Num() - 1);
+    } while (UsedLocations.Contains(RandomPoint));
+    return RandomPoint;
+}
 
 void AMultiAgentCubeEnvironment::Update()
 {
@@ -458,9 +422,17 @@ void AMultiAgentCubeEnvironment::Update()
 FState AMultiAgentCubeEnvironment::State()
 {
     FState CurrentState;
-    int index = 0;
-    for (int i = 0; i < CurrentAgents; ++i)
-    {
+    for (int i = 0; i < CurrentAgents; ++i) {
+        if (AgentGoalReached(i)) {
+            GoalReset(i);
+        }
+        if (AgentOutOfBounds(i) || AgentHasCollided(i)) {
+            AgentReset(i);
+        }
+    }
+
+    for (int i = 0; i < CurrentAgents; ++i) {
+        
         CurrentState.Values += AgentGetState(i);
     }
 
@@ -469,13 +441,8 @@ FState AMultiAgentCubeEnvironment::State()
 
 bool AMultiAgentCubeEnvironment::Done()
 {
-    for (int i = 0; i < CurrentAgents; ++i)
-    {
-        if (AgentOutOfBounds(i)) {
-            return true;
-        }
-
-        if (AgentHasCollided(i)) {
+    for (int i = 0; i < CurrentAgents; ++i) {
+        if (AgentOutOfBounds(i) || AgentHasCollided(i)) {
             return true;
         }
     }
@@ -485,34 +452,119 @@ bool AMultiAgentCubeEnvironment::Done()
 
 bool AMultiAgentCubeEnvironment::Trunc()
 {
-    if (CurrentStep >= maxStepsPerEpisode) {
+    if (CurrentStep > MaxSteps) {
+        CurrentStep = 0;
         return true;
-    }
+    } 
 
     return false;
 }
 
 float AMultiAgentCubeEnvironment::Reward()
 {
-    int rewards = 0;
+    float rewards = 0.0;
     for (int i = 0; i < CurrentAgents; ++i)
     {
-        // rewards += -.1;
-
-        if (AgentOutOfBounds(i)) {
-            rewards += -1.0;
-        } else if (AgentHasCollided(i)) {
-            rewards += -1.0;
-        } else if (AgentGoalReached(i)) {
-            rewards += 2.0;
-            AgentGoalReset(i);
+        // Distance to goal reward
+        if (AgentGoalReached(i)) {
+            rewards += 1.0;
         }
+        else {
+            rewards -= 0.1;
+        }
+            
+        if (AgentOutOfBounds(i) || AgentHasCollided(i)) {
+            rewards -= 1.0;
+        }
+
+        // rewards += AgentGoalReached(i) ? 0.1 : -0.1; // Step penatly
+        // rewards -= GridDistance(AgentGoalPositions[i].Key, AgentGoalPositions[i].Value) / static_cast<float>(GridSize); // Distance penalty
+        // rewards -= (AgentOutOfBounds(i) || AgentHasCollided(i)) ? 1.0 : 0.0; // Collision penalty
     }
 
     return rewards;
 }
 
-void AMultiAgentCubeEnvironment::setCurrentAgents(int NumAgents)
-{
+void AMultiAgentCubeEnvironment::setCurrentAgents(int NumAgents) {
     CurrentAgents = NumAgents;
+}
+
+AStaticMeshActor* AMultiAgentCubeEnvironment::InitializeCube()
+{
+    UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("StaticMesh'/Engine/BasicShapes/Cube.Cube'"));
+    AStaticMeshActor* NewCube = GetWorld()->SpawnActor<AStaticMeshActor>(FVector::ZeroVector, FRotator::ZeroRotator);
+
+    if (NewCube)
+    {
+        NewCube->SetMobility(EComponentMobility::Movable);
+        NewCube->GetStaticMeshComponent()->SetStaticMesh(CubeMesh);
+        NewCube->GetStaticMeshComponent()->SetWorldScale3D(MultiAgentCubeParams->ControlledCubeSize);
+
+        UMaterial* MetalMaterial = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/StarterContent/Materials/M_Metal_Steel.M_Metal_Steel'"));
+        NewCube->GetStaticMeshComponent()->SetMaterial(0, MetalMaterial);
+    }
+
+    return NewCube;
+}
+
+AStaticMeshActor* AMultiAgentCubeEnvironment::InitializeGoalObject()
+{
+    UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("StaticMesh'/Engine/BasicShapes/Sphere.Sphere'"));
+    AStaticMeshActor* NewGoalObject = GetWorld()->SpawnActor<AStaticMeshActor>(FVector::ZeroVector, FRotator::ZeroRotator);
+
+    if (NewGoalObject)
+    {
+        NewGoalObject->SetMobility(EComponentMobility::Movable);
+        NewGoalObject->GetStaticMeshComponent()->SetStaticMesh(SphereMesh);
+        NewGoalObject->GetStaticMeshComponent()->SetWorldScale3D(MultiAgentCubeParams->ControlledCubeSize);
+
+        UMaterial* GoldMaterial = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/StarterContent/Materials/M_Metal_Gold.M_Metal_Gold'"));
+        NewGoalObject->GetStaticMeshComponent()->SetMaterial(0, GoldMaterial); // M_Basic_Floor
+    }
+
+    return NewGoalObject;
+}
+
+AStaticMeshActor* AMultiAgentCubeEnvironment::InitializeCube(const FLinearColor& Color)
+{
+    UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("StaticMesh'/Engine/BasicShapes/Cube.Cube'"));
+    AStaticMeshActor* NewCube = GetWorld()->SpawnActor<AStaticMeshActor>(FVector::ZeroVector, FRotator::ZeroRotator);
+
+    if (NewCube)
+    {
+        NewCube->SetMobility(EComponentMobility::Movable);
+        NewCube->GetStaticMeshComponent()->SetStaticMesh(CubeMesh);
+        NewCube->GetStaticMeshComponent()->SetWorldScale3D(MultiAgentCubeParams->ControlledCubeSize);
+        UMaterial* ColoredMaterial = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/StarterContent/Materials/M_Basic_Floor.M_Basic_Floor'"));
+        NewCube->GetStaticMeshComponent()->SetMaterial(0, ColoredMaterial);
+
+        // Create a dynamic material instance to set the color
+        UMaterialInstanceDynamic* DynMaterial = UMaterialInstanceDynamic::Create(NewCube->GetStaticMeshComponent()->GetMaterial(0), NewCube);
+        DynMaterial->SetVectorParameterValue("Color", Color);
+        NewCube->GetStaticMeshComponent()->SetMaterial(0, DynMaterial);
+    }
+
+    return NewCube;
+}
+
+AStaticMeshActor* AMultiAgentCubeEnvironment::InitializeGoalObject(const FLinearColor& Color)
+{
+    UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("StaticMesh'/Engine/BasicShapes/Sphere.Sphere'"));
+    AStaticMeshActor* NewGoalObject = GetWorld()->SpawnActor<AStaticMeshActor>(FVector::ZeroVector, FRotator::ZeroRotator);
+
+    if (NewGoalObject)
+    {
+        NewGoalObject->SetMobility(EComponentMobility::Movable);
+        NewGoalObject->GetStaticMeshComponent()->SetStaticMesh(SphereMesh);
+        NewGoalObject->GetStaticMeshComponent()->SetWorldScale3D(MultiAgentCubeParams->ControlledCubeSize);
+        UMaterial* ColoredMaterial = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/StarterContent/Materials/M_Basic_Floor.M_Basic_Floor'"));
+        NewGoalObject->GetStaticMeshComponent()->SetMaterial(0, ColoredMaterial);
+
+        // Create a dynamic material instance to set the color
+        UMaterialInstanceDynamic* DynMaterial = UMaterialInstanceDynamic::Create(NewGoalObject->GetStaticMeshComponent()->GetMaterial(0), NewGoalObject);
+        DynMaterial->SetVectorParameterValue("Color", Color);
+        NewGoalObject->GetStaticMeshComponent()->SetMaterial(0, DynMaterial);
+    }
+
+    return NewGoalObject;
 }

@@ -31,7 +31,7 @@ void ARLRunner::InitRunner(
 
 int ARLRunner::GetRandomNumber(int n) {
     // return FMath::RandRange(1, n);
-    return 3;
+    return 4;
 }
 
 TArray<FAction> ARLRunner::GetActions(TArray<FState> States)

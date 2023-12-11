@@ -1,8 +1,4 @@
 import torch
-from torch.optim import Optimizer, AdamW
-from torch.distributions import Normal
-from torch.nn.utils.clip_grad import clip_grad_norm_
-from torch import Tensor
 from typing import Dict
 from Config import BaseConfig
 
@@ -10,7 +6,7 @@ import torch
 import torch.nn as nn
 from typing import Dict, Tuple
 
-class Agent():
+class Agent(nn.Module):
     def __init__(self, config: BaseConfig):
         super(Agent, self).__init__()
         self.config: BaseConfig
@@ -50,7 +46,7 @@ class Agent():
 
         return returns
     
-    def compute_gae_and_targets(self, rewards: torch.Tensor, dones: torch.Tensor, truncs: torch.Tensor, values: torch.Tensor, next_values: torch.Tensor, gamma: float=0.99, lambda_: float=0.95):
+    def compute_gae_and_targets(self, rewards: torch.Tensor, dones: torch.Tensor, truncs: torch.Tensor, values: torch.Tensor, next_values: torch.Tensor):
         """
         Compute GAE and bootstrapped targets for PPO.
 
@@ -72,7 +68,7 @@ class Agent():
         last_gae_lam = 0
 
         for t in reversed(range(batch_size)):
-            non_terminal = 1.0 - torch.clamp(dones[t, :] - truncs[t, :], 0.0, 1.0)
+            non_terminal = 1.0 - torch.clamp(dones[t, :] + truncs[t, :], 0.0, 1.0)
             delta = (rewards[t, :] + (self.config.gamma * next_values[t, :] * non_terminal)) - values[t, :]
             last_gae_lam = delta + (self.config.gamma * self.config.lambda_ * non_terminal * last_gae_lam)
             advantages[t, :] = last_gae_lam * non_terminal
@@ -91,3 +87,6 @@ class Agent():
 
     def update(self, states: torch.Tensor, next_states: torch.Tensor, actions: torch.Tensor, rewards: torch.Tensor, dones: torch.Tensor, truncs: torch.Tensor) -> Dict[str, torch.Tensor]:
         raise NotImplementedError
+    
+    def forward(self):
+        pass

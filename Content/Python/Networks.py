@@ -2,21 +2,22 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from typing import List
-
-
 import torch
 import torch.nn as nn
 from typing import List
 
 class DiscretePolicyNetwork(nn.Module):
-    def __init__(self, in_features: int, out_features: List[int], hidden_size: int):
+    def __init__(self, in_features: int, out_features: int, hidden_size: int):
         super(DiscretePolicyNetwork, self).__init__()
-        self.linear = nn.Linear(in_features, out_features[0])
-        self.softmax = nn.Softmax(dim=-1)
+        self.network = nn.Sequential(
+            nn.Linear(in_features, hidden_size),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_size, out_features),
+            nn.Softmax(dim=-1)
+        )
 
     def forward(self, x):
-        x = self.linear(x)
-        return self.softmax(x)
+        return self.network(x)
     
 class MultiDiscretePolicyNetwork(nn.Module):
     def __init__(self, in_features: int, out_features: List[int], hidden_size: int):
@@ -104,14 +105,14 @@ class RSA(nn.Module):
         self.value_embed = self.linear_layer(embed_size, embed_size)
         
         # Layer normalization
-        self.norm1 = nn.LayerNorm(embed_size)
-        self.norm2 = nn.LayerNorm(embed_size)
+        self.input_norm = nn.LayerNorm(embed_size)
+        self.output_norm = nn.LayerNorm(embed_size)
         
         # Multi-head attention mechanism
         self.multihead_attn = nn.MultiheadAttention(embed_size, heads, batch_first=True)
         
     def forward(self, x):
-        x = self.norm1(x)
+        x = self.input_norm(x)
 
         # Further embedding into Q, K, V
         Q = self.query_embed(x)
@@ -125,7 +126,7 @@ class RSA(nn.Module):
         x = x + attn_output
         
         # Layer normalization after residual addition
-        x = self.norm2(x)
+        x = self.output_norm(x)
         
         return x
     
@@ -141,6 +142,12 @@ class RSA(nn.Module):
         torch.nn.init.zeros_(layer.bias.data)
 
         return layer
+    
+class LayerNorm(torch.nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        mean = torch.mean(x, dim=-1, keepdim=True)
+        var = torch.mean((x - mean) ** 2, dim=-1, keepdim=True)
+        return (x - mean) / (torch.sqrt(var + 1e-5))
     
 class StatesEncoder2d(nn.Module):
     def __init__(self, grid_size, embed_size):
@@ -160,8 +167,8 @@ class StatesEncoder2d(nn.Module):
         x = x.view(original_shape[0] * original_shape[1], 1, self.sqrt_grid, self.sqrt_grid)  # Reshape to [combined_batch_size, channels, height, width]
 
         # Apply convolutional layers
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
+        x = F.leaky_relu(self.conv1(x))
+        x = F.leaky_relu(self.conv2(x))
 
         # Reshape and apply fully connected layer
         x = x.view(original_shape[0], original_shape[1], -1)
@@ -189,8 +196,8 @@ class StatesActionsEncoder2d(nn.Module):
         observation = observation.view(original_shape[0] * original_shape[1], 1, self.sqrt_grid, self.sqrt_grid)  # Reshape to [combined_batch_size, channels, height, width]
         
         # Apply convolutional layers to observation
-        x = F.relu(self.conv1(observation))
-        x = F.relu(self.conv2(x))
+        x = F.leaky_relu(self.conv1(observation))
+        x = F.leaky_relu(self.conv2(x))
 
         # Flatten conv output
         x = x.view(original_shape[0], original_shape[1], -1)
@@ -199,7 +206,7 @@ class StatesActionsEncoder2d(nn.Module):
         x = torch.cat([x, action], dim=-1)
 
         # Apply fully connected layers
-        x = F.relu(self.linear(x))
+        x = F.leaky_relu(self.linear(x))
         
         return x
 
@@ -209,7 +216,6 @@ class StatesEncoder(nn.Module):
         self.fc = nn.Linear(state_dim, embed_size)
         
     def forward(self, x):
-        # return F.relu(self.fc(x))
         return self.fc(x)
 
 class StatesActionsEncoder(nn.Module):
@@ -219,7 +225,6 @@ class StatesActionsEncoder(nn.Module):
         
     def forward(self, observation, action):
         x = torch.cat([observation, action], dim=-1)
-        # return F.relu(self.fc(x))
         return self.fc(x)
 
    
