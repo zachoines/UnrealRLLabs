@@ -21,6 +21,12 @@ struct MECANUM_ROBOT_RL_API FTrainParams
     // For multi-agent environments
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Train Params")
     int MaxAgents;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Train Params")
+    int MinAgents;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Train Params")
+    int AgentsResetFrequency;
 };
 
 USTRUCT(BlueprintType)

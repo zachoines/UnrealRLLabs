@@ -52,8 +52,7 @@ private:
     USharedMemoryAgentCommunicator* AgentComm;
 
     unsigned long int CurrentStep;
+    unsigned long int CurrentUpdate;
 
     FTrainParams TrainerParams;
-
-    int GetRandomNumber(int n);
 };

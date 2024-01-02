@@ -5,8 +5,9 @@ import torch
 from torch.utils.tensorboard.writer import SummaryWriter
 
 class RLRunner:
-    def __init__(self, agent: Agent, agentComm: EnvCommunicationInterface, normalizeStates: bool = False) -> None:
+    def __init__(self, agent: Agent, agentComm: EnvCommunicationInterface, normalizeStates: bool = False, saveFrequency: int = 10) -> None:
         self.currentUpdate = 0
+        self.saveFrequency = saveFrequency
         self.writer = SummaryWriter()
         self.agent = agent
         self.agentComm = agentComm
@@ -43,6 +44,8 @@ class RLRunner:
                     truncs
                 )
                 self.log_step(logs)
+                if self.currentUpdate % self.saveFrequency == 0:
+                    torch.save(self.agent.state_dict(), 'model_state.pth')
 
     def log_step(self, train_results: dict[str, torch.Tensor])->None:
         for metric, value in train_results.items():

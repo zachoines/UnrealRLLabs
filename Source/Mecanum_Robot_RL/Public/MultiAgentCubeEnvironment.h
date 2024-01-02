@@ -85,15 +85,14 @@ private:
     FVector GroundPlaneSize;
     FVector CubeSize;
     FVector GroundPlaneCenter;
-    int GridSize;
-
+    
     // Constants
-    const int MaxSteps = 64;
-    const float AgentVisability = 3;
-    const float MaxAgents = 7;
+    const int GridSize = 6;
+    const int MaxSteps = 32;
+    const float AgentVisability = 2;
+    const float MaxAgents = 10;
 
     // State Variables
-    float step_rewards = 0.0;
     int CurrentStep;
     int CurrentAgents;
     FTransform GroundPlaneTransform;
@@ -120,7 +119,6 @@ private:
     TMap<FIntPoint, TArray<AStaticMeshActor*>> UsedLocations;
     TMap<AStaticMeshActor*, FIntPoint> ActorToLocationMap;
     TMap<int, TPair<FIntPoint, FIntPoint>> AgentGoalPositions;
-    TArray<int> AgentGoalAge;
 
     void AssignRandomGridLocations();
     FIntPoint GenerateRandomLocation();

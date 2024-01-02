@@ -97,12 +97,16 @@ bool AMecanum_Robot_RLGameModeBase::ReadJsonConfig(const FString& FilePath, FTra
         return false;
     }
 
-    // Parse TrainParams
+    // General Train Params
     TSharedPtr<FJsonObject> TrainParamsJson = JsonObject->GetObjectField(TEXT("TrainInfo"));
     OutTrainParams.BufferSize = TrainParamsJson->GetIntegerField(TEXT("BufferSize"));
     OutTrainParams.BatchSize = TrainParamsJson->GetIntegerField(TEXT("BatchSize"));
     OutTrainParams.NumEnvironments = TrainParamsJson->GetIntegerField(TEXT("NumEnvironments"));
+
+    // Multi-Agent Params
     OutTrainParams.MaxAgents = TrainParamsJson->GetIntegerField(TEXT("MaxAgents"));
+    OutTrainParams.MinAgents = TrainParamsJson->GetIntegerField(TEXT("MinAgents"));
+    OutTrainParams.AgentsResetFrequency = TrainParamsJson->GetIntegerField(TEXT("AgentsResetFrequency"));
 
     return true;
 }

@@ -1,4 +1,24 @@
 import torch
+import numpy as np
+
+class CosineAnnealingScheduler:
+    def __init__(self, T, H, L):
+        self.T = T
+        self.H = H
+        self.L = L
+        self.t = 0
+
+    def step(self):
+        self.t = min(self.t + 1, self.T)
+
+    def value(self):
+        """Calculate the current value based on the cosine annealing schedule.
+        """
+        return self.L + 0.5 * (self.H - self.L) * (1 + np.cos(np.pi * self.t / self.T))
+
+    def reset(self):
+        self.t = 0
+
 class RunningMeanStdNormalizer:
     def __init__(self, epsilon: float = 1e-4, device: torch.device = torch.device("cpu")):
         self.mean = None

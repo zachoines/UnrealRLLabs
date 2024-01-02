@@ -8,21 +8,19 @@ AMultiAgentCubeEnvironment::AMultiAgentCubeEnvironment()
     // Setup Env Info
     EnvInfo.EnvID = 2;
     EnvInfo.MaxAgents = MaxAgents;
-    EnvInfo.SingleAgentObsSize = (EnvInfo.MaxAgents) * (EnvInfo.MaxAgents);
+    EnvInfo.SingleAgentObsSize = GridSize * GridSize;
     EnvInfo.StateSize = EnvInfo.MaxAgents * EnvInfo.SingleAgentObsSize;
     EnvInfo.IsMultiAgent = true;
-    AgentGoalAge.Init(0, EnvInfo.MaxAgents);
 
-    const TArray<FContinuousActionSpec>& ContinuousActions = {
-        // Your continuous actions initialization
-    };
+    const TArray<FContinuousActionSpec>& ContinuousActions = {};
     const TArray<FDiscreteActionSpec>& DiscreteActions = {
-        { 4 }
+        { 5 }
         /*
             up,
             down,
             left,
-            right
+            right,
+            no-op
         */
     };
 
@@ -40,7 +38,6 @@ void AMultiAgentCubeEnvironment::InitEnv(FBaseInitParams* BaseParams)
     MultiAgentCubeParams = static_cast<FMultiAgentCubeEnvironmentInitParams*>(BaseParams);
 
     // Initialize Ground Plane
-    GridSize = EnvInfo.MaxAgents;
     CurrentAgents = EnvInfo.MaxAgents;
     CubeSize = MultiAgentCubeParams->ControlledCubeSize;
     FVector PlaneSize = CubeSize * GridSize;
@@ -207,43 +204,52 @@ TArray<float> AMultiAgentCubeEnvironment::AgentGetState(int AgentIndex)
         return State;
     }
 
-    // Initialize state array with -2's
-    State.Init(-2, GridSize * GridSize);
-
+    // Initialize state
+    float ScalingFactor = CurrentAgents;
+    State.Init(0, GridSize * GridSize);
+    
     TPair<FIntPoint, FIntPoint> AgentGoal = AgentGoalPositions[AgentIndex];
-   
 
     // Calculate the bounding square of the visibility circle
-    int MinX = FMath::Max<int>(AgentGoal.Key.X - AgentVisability, 0);
+    /*int MinX = FMath::Max<int>(AgentGoal.Key.X - AgentVisability, 0);
     int MaxX = FMath::Min<int>(AgentGoal.Key.X + AgentVisability, GridSize - 1);
     int MinY = FMath::Max<int>(AgentGoal.Key.Y - AgentVisability, 0);
-    int MaxY = FMath::Min<int>(AgentGoal.Key.Y + AgentVisability, GridSize - 1);
+    int MaxY = FMath::Min<int>(AgentGoal.Key.Y + AgentVisability, GridSize - 1);*/
 
-    // Set points within visibility range to 0 if they are open
-    for (int x = MinX; x <= MaxX; ++x) {
-        for (int y = MinY; y <= MaxY; ++y) {
-            // Check if the point is within the circular visibility range
-            if (GridDistance(FIntPoint(x, y), AgentGoal.Key) <= AgentVisability) {
-                State[Get1DIndexFromPoint(FIntPoint(x, y), GridSize)] = 0;
-            }
-        }
-    }
+    // Set current agent and its goal
+    // State[Get1DIndexFromPoint(AgentGoal.Key, GridSize)] = 1.0 + static_cast<float>(AgentIndex + 1) / static_cast<float>(MaxAgents);
+    // State[Get1DIndexFromPoint(AgentGoal.Value, GridSize)] = -1.0 + -static_cast<float>(AgentIndex + 1) / static_cast<float>(MaxAgents);
 
+    // Set points within visibility
+    //for (int x = MinX; x <= MaxX; ++x) {
+    //    for (int y = MinY; y <= MaxY; ++y) {
+    //        // Check if the point is within the circular visibility range
+    //        if (GridDistance(FIntPoint(x, y), AgentGoal.Key) <= AgentVisability) {
+    //            State[Get1DIndexFromPoint(FIntPoint(x, y), GridSize)] = 1;
+    //        }
+    //    }
+    //}
+
+    // All other agents and their goals
     for (int i = 0; i < CurrentAgents; ++i) {
-        if (i != AgentIndex) {
-            TPair<FIntPoint, FIntPoint> OtherAgentGoal = AgentGoalPositions[i];
-            if (GridDistance(AgentGoal.Key, OtherAgentGoal.Key) <= AgentVisability) {
-                State[Get1DIndexFromPoint(OtherAgentGoal.Key, GridSize)] = static_cast<float>(i + 1) / static_cast<float>(CurrentAgents + 1);
+        TPair<FIntPoint, FIntPoint> OtherAgentGoal = AgentGoalPositions[i];
+        if (AgentIndex != i) {
+            /*if (GridDistance(AgentGoal.Key, OtherAgentGoal.Key) <= AgentVisability) {
+                State[Get1DIndexFromPoint(OtherAgentGoal.Key, GridSize)] = static_cast<float>(i + 1) / static_cast<float>(MaxAgents);
             }
 
             if (GridDistance(AgentGoal.Key, OtherAgentGoal.Value) <= AgentVisability) {
-                State[Get1DIndexFromPoint(OtherAgentGoal.Value, GridSize)] = static_cast<float>(-i - 1) / static_cast<float>(CurrentAgents + 1);
-            }
+                State[Get1DIndexFromPoint(OtherAgentGoal.Value, GridSize)] = -static_cast<float>(i + 1) / static_cast<float>(MaxAgents);
+            }*/
+            // State[Get1DIndexFromPoint(OtherAgentGoal.Key, GridSize)] = static_cast<float>(i + 1) / static_cast<float>(MaxAgents);
+            // State[Get1DIndexFromPoint(OtherAgentGoal.Value, GridSize)] = -static_cast<float>(i + 1) / static_cast<float>(MaxAgents);
+            State[Get1DIndexFromPoint(OtherAgentGoal.Key, GridSize)] = static_cast<float>(i + 1) / static_cast<float>(MaxAgents);
+            State[Get1DIndexFromPoint(OtherAgentGoal.Value, GridSize)] = -static_cast<float>(i + 1) / static_cast<float>(MaxAgents);
+        }
+        else {
+            State[Get1DIndexFromPoint(OtherAgentGoal.Key, GridSize)] = static_cast<float>(i + 1) / static_cast<float>(MaxAgents);
         }
     }
-
-    State[Get1DIndexFromPoint(AgentGoal.Key, GridSize)] = 1.0;
-    State[Get1DIndexFromPoint(AgentGoal.Value, GridSize)] = -1.0;
 
     return State;
 }
@@ -301,8 +307,6 @@ FVector AMultiAgentCubeEnvironment::GetWorldLocationFromGridIndex(FIntPoint Grid
 FState AMultiAgentCubeEnvironment::ResetEnv(int NumAgents)
 {
     CurrentStep = 0;
-    AgentGoalAge.Empty();
-    AgentGoalAge.Init(0, EnvInfo.MaxAgents);
 
     // Handle reduction of agents
     while (ControlledCubes.Num() > NumAgents)
@@ -351,7 +355,6 @@ void AMultiAgentCubeEnvironment::Act(FAction Action)
 
     for (int i = 0; i < Action.Values.Num(); ++i)
     {
-        AgentGoalAge[i] += 1;
         FIntPoint CurrentLocation = AgentGoalPositions[i].Key;
         FIntPoint NewLocation = CurrentLocation;
 
@@ -369,9 +372,9 @@ void AMultiAgentCubeEnvironment::Act(FAction Action)
         case 3: // Right
             NewLocation.X += 1;
             break;
-        //case 4: // no-op
-        //    continue;
-        //    break;
+        case 4: // no-op
+            continue;
+            break;
         default:
             // No operation
             UE_LOG(LogTemp, Log, TEXT("Undefined Action Index: %"), Action.Values[i]);
@@ -432,7 +435,6 @@ FState AMultiAgentCubeEnvironment::State()
     }
 
     for (int i = 0; i < CurrentAgents; ++i) {
-        
         CurrentState.Values += AgentGetState(i);
     }
 
@@ -441,12 +443,11 @@ FState AMultiAgentCubeEnvironment::State()
 
 bool AMultiAgentCubeEnvironment::Done()
 {
-    for (int i = 0; i < CurrentAgents; ++i) {
+    /*for (int i = 0; i < CurrentAgents; ++i) {
         if (AgentOutOfBounds(i) || AgentHasCollided(i)) {
             return true;
         }
-    }
-
+    }*/
     return false;
 }
 
@@ -463,23 +464,11 @@ bool AMultiAgentCubeEnvironment::Trunc()
 float AMultiAgentCubeEnvironment::Reward()
 {
     float rewards = 0.0;
-    for (int i = 0; i < CurrentAgents; ++i)
-    {
-        // Distance to goal reward
-        if (AgentGoalReached(i)) {
-            rewards += 1.0;
-        }
-        else {
-            rewards -= 0.1;
-        }
-            
-        if (AgentOutOfBounds(i) || AgentHasCollided(i)) {
-            rewards -= 1.0;
-        }
-
-        // rewards += AgentGoalReached(i) ? 0.1 : -0.1; // Step penatly
-        // rewards -= GridDistance(AgentGoalPositions[i].Key, AgentGoalPositions[i].Value) / static_cast<float>(GridSize); // Distance penalty
-        // rewards -= (AgentOutOfBounds(i) || AgentHasCollided(i)) ? 1.0 : 0.0; // Collision penalty
+    for (int i = 0; i < CurrentAgents; ++i){
+        rewards += -(GridDistance(AgentGoalPositions[i].Key, AgentGoalPositions[i].Value) / (sqrtf(2.0) * static_cast<float>(GridSize)));
+        rewards += AgentOutOfBounds(i) ? -1.0 : 0.0;
+        rewards += AgentHasCollided(i) ? -1.0 : 0.0;
+        rewards += AgentGoalReached(i) ? 10.0 : 0.0;
     }
 
     return rewards;

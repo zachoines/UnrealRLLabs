@@ -20,20 +20,29 @@ void USharedMemoryAgentCommunicator::Init(FEnvInfo EnvInfo, FTrainParams TrainPa
 
     int NumActions;
     int StateSize;
+    int DoneSize;
+    int TruncSize;
+    int RewardSize;
     if (EnvInfo.IsMultiAgent) {
         NumActions = EnvInfo.MaxAgents * EnvInfo.ActionSpace->TotalActions();
-        StateSize = EnvInfo.MaxAgents * EnvInfo.SingleAgentObsSize;   
+        StateSize = EnvInfo.MaxAgents * EnvInfo.SingleAgentObsSize; 
+        DoneSize = EnvInfo.MaxAgents;
+        TruncSize = EnvInfo.MaxAgents;
+        RewardSize = EnvInfo.MaxAgents;
     }
     else {
         NumActions = EnvInfo.ActionSpace->TotalActions();
         StateSize = EnvInfo.StateSize;
+        DoneSize = 1;
+        TruncSize = 1;
+        RewardSize = 1;
     }
 
     int32 ConfigSize = ConfigJSON.Num() * sizeof(char);
     int32 InfoSize = 6 * sizeof(float);
     int32 ActionMAXSize = params.NumEnvironments * NumActions * sizeof(float);
     int32 StatesMAXSize = params.NumEnvironments * StateSize * sizeof(float);
-    int32 UpdateMAXSize = params.NumEnvironments * params.BatchSize * ((StateSize * 2) + NumActions + 3) * sizeof(float); // +3 for reward, trunc, and done
+    int32 UpdateMAXSize = params.NumEnvironments * params.BatchSize * ((StateSize * 2) + NumActions + (DoneSize + TruncSize + RewardSize)) * sizeof(float);
 
     // Creating shared memory for actions
     ActionsSharedMemoryHandle = CreateFileMapping(

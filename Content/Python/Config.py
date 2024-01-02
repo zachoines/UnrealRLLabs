@@ -107,16 +107,17 @@ class MAPOCAConfig(BaseConfig):
             self, 
             obs_space: ObservationSpace,
             action_space: ActionSpace,
-            embed_size: int = 256,
-            heads: int = 4, 
+            embed_size: int = 128,
+            heads: int = 4,
             max_agents: int = 10,
             lambda_: float = 0.95, 
             clip_epsilon: float = 0.1,
-            hidden_size = 512,
-            entropy_coefficient: float = 0.01,
-            policy_learning_rate: float = 6e-4,
-            value_learning_rate: float = 3e-4,
-            max_grad_norm: float = 1.0, 
+            hidden_size = 256,
+            entropy_coefficient: float = 0.1,
+            policy_learning_rate: float = 5e-4,
+            value_learning_rate: float = 5e-4,
+            max_grad_norm: float = 1.0,
+            dropout_rate = 0.3,
             **kwargs
         ):
         super().__init__(
@@ -129,7 +130,8 @@ class MAPOCAConfig(BaseConfig):
             networks={
                 "RSA": {
                     "embed_size": embed_size, 
-                    "heads": heads
+                    "heads": heads,
+                    "dropout_rate": dropout_rate
                 },
                 "state_encoder": {
                     "state_dim": obs_space.single_agent_obs_size, 
@@ -144,28 +146,32 @@ class MAPOCAConfig(BaseConfig):
                     "embed_size": embed_size
                 },
                 "state_action_encoder2d": {
-                    "grid_size": obs_space.single_agent_obs_size, 
+                    "state_size": obs_space.single_agent_obs_size, 
                     "action_dim": 
                         len(action_space.continuous_actions) 
                         if action_space.has_continuous() 
                         else len(action_space.discrete_actions), 
-                    "embed_size": embed_size
+                    "embed_size": embed_size,
+                    "dropout_rate": dropout_rate
                 },
                 "state_encoder2d": {
-                    "grid_size": obs_space.single_agent_obs_size, 
-                    "embed_size": embed_size
+                    "state_size": obs_space.single_agent_obs_size, 
+                    "embed_size": embed_size,
+                    "dropout_rate": dropout_rate
                 },
                 "value_network": {
                     "in_features": embed_size,
-                    "hidden_size" : hidden_size
+                    "hidden_size" : hidden_size,
+                    "dropout_rate": dropout_rate
                 },
                 "policy" : {
-                    "in_features": embed_size, # obs_space.single_agent_obs_size, 
+                    "in_features": embed_size,
                     "out_features": 
                         len(action_space.continuous_actions) 
                         if action_space.has_continuous() 
                         else action_space.discrete_actions[0],
-                    "hidden_size": hidden_size
+                    "hidden_size": hidden_size,
+                    "dropout_rate": dropout_rate
                 }
             },
             **kwargs

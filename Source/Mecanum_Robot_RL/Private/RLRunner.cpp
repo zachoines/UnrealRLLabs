@@ -19,19 +19,15 @@ void ARLRunner::InitRunner(
     VectorEnvironment->InitEnv(EnvironmentClass, ParamsArray);
 
     CurrentStep = 0;
+    CurrentUpdate = 0;
     TrainerParams.NumEnvironments = ParamsArray.Num();
 
     AgentComm = NewObject<USharedMemoryAgentCommunicator>(this);
     AgentComm->Init(VectorEnvironment->SingleEnvInfo, TrainParams);
 
-    CurrentAgents = VectorEnvironment->SingleEnvInfo.IsMultiAgent ? GetRandomNumber(VectorEnvironment->SingleEnvInfo.MaxAgents) : -1;
+    CurrentAgents = VectorEnvironment->SingleEnvInfo.IsMultiAgent ? FMath::RandRange(TrainParams.MinAgents, TrainParams.MaxAgents) : -1;
     VectorEnvironment->ResetEnv(CurrentAgents);
     ExperienceBufferInstance->SetBufferCapacity(TrainParams.BufferSize);
-}
-
-int ARLRunner::GetRandomNumber(int n) {
-    // return FMath::RandRange(1, n);
-    return 4;
 }
 
 TArray<FAction> ARLRunner::GetActions(TArray<FState> States)
@@ -50,7 +46,7 @@ void ARLRunner::Tick(float DeltaTime)
     TArray<FAction> Actions = GetActions(CurrentStates);
     VectorEnvironment->Step(Actions);
 
-    if (CurrentStep > 0) {
+    if (CurrentStep > 1) {
         TArray<FExperienceBatch> EnvironmentTrajectories;
         FExperienceBatch Batch;
         for (int32 i = 0; i < CurrentStates.Num(); i++)
@@ -68,9 +64,16 @@ void ARLRunner::Tick(float DeltaTime)
         EnvironmentTrajectories.Add(Batch);
         AddExperiences(EnvironmentTrajectories);
 
-        if ((CurrentStep % TrainerParams.BatchSize) == 0) {
+        if (ExperienceBufferInstance->Size() == TrainerParams.BatchSize) {
+            CurrentUpdate += 1;
             TArray<FExperienceBatch> Transitions = ARLRunner::SampleExperiences(TrainerParams.BatchSize);
             AgentComm->Update(Transitions, CurrentAgents);
+
+            if (VectorEnvironment->SingleEnvInfo.IsMultiAgent && (CurrentUpdate % TrainerParams.AgentsResetFrequency == 0)) {
+                CurrentAgents = FMath::RandRange(TrainerParams.MinAgents, TrainerParams.MaxAgents);
+                VectorEnvironment->ResetEnv(CurrentAgents);
+                CurrentStep = 0;
+            }
         }
     }
 
