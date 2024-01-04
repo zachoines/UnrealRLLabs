@@ -9,7 +9,7 @@ from typing import Dict, Tuple
 from Agents.Agent import Agent
 from Config import MAPOCAConfig
 from Networks import *
-from Utility import RunningMeanStdNormalizer, CosineAnnealingScheduler
+from Utility import RunningMeanStdNormalizer, CosineAnnealingScheduler, ModifiedOneCycleLR
 from torch.optim.lr_scheduler import _LRScheduler
 import math
 
@@ -32,19 +32,6 @@ class PositionalEncoding(torch.nn.Module):
     def to(self, device=None):
         self.encoding.to(device=device)
 
-class ModifiedOneCycleLR(torch.optim.lr_scheduler.OneCycleLR):
-    def __init__(self, optimizer, max_lr, total_steps=None, anneal_strategy='cos', pct_start=0.3, div_factor=25., final_div_factor=1e4, **kwargs):
-        super().__init__(optimizer, max_lr=max_lr, total_steps=total_steps, anneal_strategy=anneal_strategy, pct_start=pct_start,div_factor=div_factor, final_div_factor=final_div_factor, **kwargs)
-        self.min_lr = max_lr / final_div_factor
-
-    def step(self, epoch=None):
-        if self._step_count >= self.total_steps:
-            # Set all param groups to the minimum lr
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = self.min_lr
-        else:
-            super().step(epoch)
-
 class SharedCritic(nn.Module):
     def __init__(self, config):
         super(SharedCritic, self).__init__()
@@ -54,6 +41,7 @@ class SharedCritic(nn.Module):
         self.baseline = ValueNetwork(**self.config.networks["value_network"])
         self.state_encoder = StatesEncoder(**self.config.networks["state_encoder"])
         self.state_action_encoder = StatesActionsEncoder(**self.config.networks["state_action_encoder"])
+        self.positional_encodings = PositionalEncoding(state_embedding_size=self.config.embed_size, max_seq_length=self.config.max_agents)
 
     def baselines(self, batched_agent_states: torch.Tensor, batched_groupmates_states: torch.Tensor, batched_groupmates_actions: torch.Tensor, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         # Reshape to combine steps and envs to simple batched dim
@@ -73,15 +61,13 @@ class SharedCritic(nn.Module):
         combined_states_actions = torch.cat([agent_state_encoded, groupmates_states_actions_encoded], dim=1).contiguous()
 
         # Pass the combined tensor through RSA
-        rsa_out = self.RSA(
-            combined_states_actions
-        )
+        rsa_out = self.RSA(self.positional_encodings(combined_states_actions))
         
         # Mean pool over the second dimension (num_agents)
         rsa_output_mean = rsa_out.mean(dim=1)
     
         # Get the baselines for all agents from the value network
-        baselines = self.baseline(F.leaky_relu(rsa_output_mean))
+        baselines = self.baseline(rsa_output_mean)
         return baselines.contiguous().view(num_steps, num_envs, num_agents, 1)
     
     def values(self, x: torch.Tensor) -> torch.Tensor:
@@ -89,11 +75,11 @@ class SharedCritic(nn.Module):
         x = x.contiguous().view(num_steps * num_envs * num_agents, state_size)
         x = self.state_encoder(x)
         x = x.view(num_steps * num_envs, num_agents, self.config.embed_size)
+        x = self.positional_encodings(x)
         x = self.RSA(
             x
         )
         x = torch.mean(x, dim=1).squeeze()
-        x = F.leaky_relu(x)
         values = self.value(x)
         return values.contiguous().view(num_steps, num_envs, 1)
     
@@ -133,6 +119,62 @@ class PolicyNetwork(nn.Module):
 
     def forward(self, x):
         return self.probabilities(x)
+    
+class MultiAgentICM(nn.Module):
+    def __init__(self, config):
+        super(MultiAgentICM, self).__init__()
+        self.config = config
+        
+        # RSA for extracting inter-agent feature representations for both forward and inverse models
+        self.rsa = RSA(**self.config.networks["ICM"]["forward_rsa"])
+        
+        self.state_encoder = StatesEncoder(**self.config.networks["ICM"]["state_encoder"])
+        self.state_action_encoder = StatesActionsEncoder(**self.config.networks["ICM"]["state_action_encoder"])
+        self.positional_encodings = PositionalEncoding(state_embedding_size=self.config.embed_size, max_seq_length=self.config.max_agents)
+        self.inverse_head = LinearNetwork(**self.config.networks["ICM"]["inverse_head"])
+        self.inverse_body = LinearNetwork(**self.config.networks["ICM"]["inverse_body"])
+
+    def forward_rsa_network(self, states: torch.Tensor, actions: torch.Tensor):
+        x = self.state_action_encoder(states, actions)
+        num_steps, num_envs, num_agents, embed_size = x.shape
+        x = self.positional_encodings(x)
+        x = x.contiguous().view(num_steps * num_envs, num_agents, embed_size)
+        x = self.rsa(x)
+        return x
+
+    def inverse_rsa_network(self, state_features: torch.Tensor, next_state_features: torch.Tensor):
+        num_steps, num_envs, num_agents, embed_size = state_features.shape
+        x = torch.cat([
+            self.positional_encodings(state_features.contiguous().view(num_steps * num_envs, num_agents, embed_size)),
+            self.positional_encodings(next_state_features.contiguous().view(num_steps * num_envs, num_agents, embed_size)),
+        ], dim=1)
+        x = self.inverse_body(x)
+        x = self.rsa(x)
+        action_logits = self.inverse_head(x)
+        return action_logits
+
+    def forward(self, states: torch.Tensor, next_states: torch.Tensor, actions: torch.LongTensor, n: float = 0.5, beta: float = 0.2) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        num_steps, num_envs, num_agents, action_dim = actions.shape
+
+        # Feature Network
+        state_features = self.state_encoder(states)
+        next_state_features = self.state_encoder(next_states)
+
+        # Forward Model
+        predicted_next_state_features = self.forward_rsa_network(state_features, actions)
+
+        # Inverse Model
+        predicted_action_logits = self.inverse_rsa_network(state_features, next_state_features)
+
+        # Calculate losses
+        forward_loss_per_state = F.mse_loss(predicted_next_state_features, next_state_features.detach(), reduction='none')
+        forward_loss = beta * forward_loss_per_state.mean()
+        inverse_loss = (1 - beta) * F.cross_entropy(predicted_action_logits.view(num_steps * num_envs * num_agents, action_dim), actions.view(-1))  # Using cross-entropy for discrete actions
+
+        # Intrinsic reward
+        intrinsic_reward = n * forward_loss_per_state.mean(-1).squeeze(-1).detach()
+
+        return forward_loss, inverse_loss, intrinsic_reward
 
 class MAPocaAgent(Agent):
     def __init__(self, config: MAPOCAConfig):
@@ -150,7 +192,7 @@ class MAPocaAgent(Agent):
         self.policy_scheduler = ModifiedOneCycleLR(
             self.policy_optimizer, 
             max_lr=self.config.policy_learning_rate,
-            total_steps=25000,
+            total_steps=10000,
             anneal_strategy='cos',
             pct_start=0.3
         ) 
@@ -159,11 +201,15 @@ class MAPocaAgent(Agent):
         self.shared_critic_scheduler = ModifiedOneCycleLR(
             self.shared_critic_optimizer, 
             max_lr=self.config.value_learning_rate,
-            total_steps=25000,
+            total_steps=10000,
             anneal_strategy='cos',
             pct_start=0.3
         )
-        self.entropy_scheduler = CosineAnnealingScheduler(T=25000, H=self.config.entropy_coefficient, L=self.config.entropy_coefficient/100)
+        self.entropy_scheduler = CosineAnnealingScheduler(
+            T=10000, 
+            H=self.config.entropy_coefficient, 
+            L=self.config.entropy_coefficient/100
+        )
 
     def get_actions(self, states: torch.Tensor, eval: bool=False):
         if self.config.action_space.has_discrete():
@@ -185,45 +231,12 @@ class MAPocaAgent(Agent):
         returns[-1] = rewards[-1] + self.config.gamma * values_next[-1] * (1 - dones[-1]) * (1 - truncs[-1])
         
         for t in reversed(range(num_steps - 1)):
-            non_terminal = (1 - dones[t]) * (1 - truncs[t])
+            non_terminal = 1.0 - torch.clamp(dones[t] + truncs[t], 0.0, 1.0)
             bootstrapped_value = self.config.gamma * (self.config.lambda_ * returns[t + 1] + (1 - self.config.lambda_) * values_next[t])
             returns[t] = rewards[t] + non_terminal * bootstrapped_value
         
         return returns
     
-    def eligibility_trace_td_lambda_returns(self, rewards, values, next_values, dones, truncs):
-        num_steps, _, _ = rewards.shape
-        td_lambda_returns = torch.zeros_like(rewards)
-        
-        # Initialize eligibility traces
-        eligibility_traces = torch.zeros_like(rewards)
-
-        # Initialize the next_value for the calculation of returns at T + 1
-        next_value = next_values[-1]
-        
-        for t in reversed(range(num_steps - 1)):
-            # Clamp the sum of dones and truncs to ensure it doesn't exceed 1
-            masks = 1.0 - torch.clamp(dones[t] + truncs[t], 0, 1)
-            rewards_t = rewards[t]
-            values_t = values[t]
-            
-            # Update the eligibility traces
-            eligibility_traces[t] = self.config.gamma * self.config.lambda_ * eligibility_traces[t + 1] * masks + 1.0
-            
-            # Calculate TD Error
-            td_error = rewards_t + self.config.gamma * next_value * masks - values_t
-            
-            # Calculate TD(λ) return for time t
-            td_lambda_returns[t] = td_lambda_returns[t] + eligibility_traces[t] * td_error
-            
-            # Update the next_value for the next iteration of the loop
-            next_value = values_t
-
-        # Handle the last step separately as it does not have a next step
-        td_lambda_returns[-1] = rewards[-1] + self.config.gamma * next_value * (1.0 - torch.clamp(dones[-1] + truncs[-1], 0, 1)) - values[-1]
-
-        return td_lambda_returns
-
     def AgentGroupMatesStatesActions(self, states: torch.Tensor, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         _, _, num_agents, _ = states.shape
         
@@ -245,22 +258,23 @@ class MAPocaAgent(Agent):
     
     def trust_region_value_loss(self, values: torch.Tensor, old_values: torch.Tensor, returns: torch.Tensor, epsilon=0.1) -> torch.Tensor:
         value_pred_clipped = old_values + (values - old_values).clamp(-epsilon, epsilon)
-        loss_clipped = (returns - value_pred_clipped).pow(2)
-        loss_unclipped = (returns - values).pow(2)
-        value_loss = torch.max(loss_unclipped, loss_clipped).mean()
+        loss_clipped = (returns - value_pred_clipped)**2
+        loss_unclipped = (returns - values)**2
+        value_loss = torch.mean(torch.max(loss_clipped, loss_unclipped))
         return value_loss
 
     def value_loss(self, old_values, states, next_states, rewards, dones, truncs):
         values = self.shared_critic.values(states)
         with torch.no_grad():
             targets = self.lambda_returns(rewards, self.shared_critic.values(next_states), dones, truncs)
+            # targets, advantages = self.compute_gae_and_targets(rewards, dones, truncs, values, self.shared_critic.values(next_states))
         loss = self.trust_region_value_loss(
             values,
             old_values,
             targets.detach(),
-            self.config.clip_epsilon
+            self.config.value_clip
         )
-        return loss, targets
+        return loss, targets, None
     
     def baseline_loss(self, states: torch.Tensor, actions: torch.Tensor, old_baselines: torch.Tensor, agent_states: torch.Tensor, groupmates_states: torch.Tensor, groupmates_actions: torch.Tensor, targets: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         _, _, num_agents, _ = states.shape
@@ -275,8 +289,8 @@ class MAPocaAgent(Agent):
             loss = self.trust_region_value_loss(
                 agent_baselines,
                 old_agent_baselines,
-                targets,
-                self.config.clip_epsilon
+                targets.detach(),
+                self.config.value_clip
             )
             total_loss += loss
             advantages[:, :, agent_idx, :] = targets - agent_baselines
@@ -294,7 +308,7 @@ class MAPocaAgent(Agent):
         )
         return loss_policy, entropy
 
-    def update(self, states: torch.Tensor, next_states: torch.Tensor, actions: torch.Tensor, rewards: torch.Tensor, dones: torch.Tensor, truncs: torch.Tensor, normalize_rewards: bool = True):
+    def update(self, states: torch.Tensor, next_states: torch.Tensor, actions: torch.Tensor, rewards: torch.Tensor, dones: torch.Tensor, truncs: torch.Tensor, normalize_rewards: bool = True, normalize_advantages: bool = True):
         with torch.no_grad():
             batch_rewards = rewards
             if normalize_rewards:
@@ -346,7 +360,7 @@ class MAPocaAgent(Agent):
                 self.shared_critic_optimizer.zero_grad()
 
                 # Calculate losses
-                loss_value, mb_targets = self.value_loss(mb_old_values, mb_states, mb_next_states, mb_rewards, mb_dones, mb_truncs)
+                loss_value, mb_targets, _ = self.value_loss(mb_old_values, mb_states, mb_next_states, mb_rewards, mb_dones, mb_truncs)
                 loss_baseline, mb_advantages = self.baseline_loss(
                     mb_states,
                     mb_actions,
@@ -357,8 +371,9 @@ class MAPocaAgent(Agent):
                     mb_targets
                 )
                 
-                self.advantage_normalizer.update(mb_advantages)
-                mb_advantages = self.advantage_normalizer.normalize(mb_advantages)
+                if normalize_advantages:
+                    self.advantage_normalizer.update(mb_advantages)
+                    mb_advantages = self.advantage_normalizer.normalize(mb_advantages)
                 loss_policy, entropy = self.policy_loss(mb_old_log_probs, mb_advantages, mb_states, mb_actions)
 
                 # Perform backpropagations
@@ -402,5 +417,4 @@ class MAPocaAgent(Agent):
             "Shared Critic Learning Rate": self.shared_critic_scheduler.get_last_lr()[0],
             "Policy Learning Rate": self.policy_scheduler.get_last_lr()[0],
             "Entropy Coeff": torch.tensor(self.entropy_scheduler.value()),
-
         }

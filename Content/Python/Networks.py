@@ -97,7 +97,6 @@ class ValueNetwork(nn.Module):
             nn.Dropout(p=dropout_rate),
             nn.LeakyReLU(),
             nn.Linear(hidden_size, 1)
-
         )
 
         for layer in self.value_net:
@@ -231,47 +230,22 @@ class StatesActionsEncoder(nn.Module):
     def forward(self, observation, action):
         x = torch.cat([observation, action], dim=-1)
         return self.fc(x)
+    
+class LinearNetwork(nn.Module):
+    def __init__(self, in_features: int, hidden_size: int, out_features: int, dropout_rate=0.0):
+        super(LinearNetwork, self).__init__()
+
+        self.model = nn.Sequential(
+            nn.Linear(in_features, hidden_size),
+            nn.Dropout(p=dropout_rate),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_size, out_features)
+        )
+
+        for layer in self.model:
+            if isinstance(layer, nn.Linear):
+                init.xavier_normal_(layer.weight)
+
+    def forward(self, x):
+        return self.model(x)
    
-class ICM(nn.Module):
-    def __init__(self, state_dim: int, action_dim: int, embed_size: int, dropout_rate: float):
-        super(ICM, self).__init__()
-        
-        self.feature_network = nn.Sequential(
-            StatesEncoder(state_dim, embed_size),
-            nn.Dropout(dropout_rate)
-        )
-
-        self.forward_model = nn.Sequential(
-            StatesActionsEncoder(embed_size, action_dim, embed_size),
-            nn.Dropout(dropout_rate)
-        )
-
-        self.inverse_model = nn.Sequential(
-            nn.Linear(embed_size * 2, embed_size),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(embed_size, action_dim)
-        )
-
-    def forward(self, states: torch.Tensor, next_states: torch.Tensor, actions: torch.Tensor, n: float = 0.5, beta: float = 0.2) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        
-        # Feature Network
-        state_features = self.feature_network(states)
-        next_state_features = self.feature_network(next_states)
-
-        # Forward Model
-        predicted_next_state_feature = self.forward_model(state_features, actions)
-
-        # Inverse Model
-        combined_features = torch.cat([state_features, next_state_features], dim=1)
-        predicted_action = self.inverse_model(combined_features)
-
-        forward_loss_per_state = F.mse_loss(predicted_next_state_feature, next_state_features.detach(), reduction='none')
-        forward_loss = beta * forward_loss_per_state.mean()
-        inverse_loss = (1 - beta) * F.mse_loss(predicted_action, actions.detach())  # Directly comparing to actions
-
-        # Intrinsic reward is the forward loss for each state
-        intrinsic_reward = n * forward_loss_per_state.mean(-1).squeeze(-1).detach()
-
-        return forward_loss, inverse_loss, intrinsic_reward
-

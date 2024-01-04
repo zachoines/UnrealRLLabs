@@ -46,6 +46,40 @@ class Agent(nn.Module):
 
         return returns
     
+    def eligibility_trace_td_lambda_returns(self, rewards, values, next_values, dones, truncs):
+        num_steps, _, _ = rewards.shape
+        td_lambda_returns = torch.zeros_like(rewards)
+        
+        # Initialize eligibility traces
+        eligibility_traces = torch.zeros_like(rewards)
+
+        # Initialize the next_value for the calculation of returns at T + 1
+        next_value = next_values[-1]
+        
+        for t in reversed(range(num_steps - 1)):
+            # Clamp the sum of dones and truncs to ensure it doesn't exceed 1
+            masks = 1.0 - torch.clamp(dones[t] + truncs[t], 0, 1)
+            rewards_t = rewards[t]
+            values_t = values[t]
+            
+            # Update the eligibility traces
+            eligibility_traces[t] = self.config.gamma * self.config.lambda_ * eligibility_traces[t + 1] * masks + 1.0
+            
+            # Calculate TD Error
+            td_error = rewards_t + self.config.gamma * next_value * masks - values_t
+            
+            # Calculate TD(λ) return for time t
+            td_lambda_returns[t] = td_lambda_returns[t] + eligibility_traces[t] * td_error
+            
+            # Update the next_value for the next iteration of the loop
+            next_value = values_t
+
+        # Handle the last step separately as it does not have a next step
+        td_lambda_returns[-1] = rewards[-1] + self.config.gamma * next_value * (1.0 - torch.clamp(dones[-1] + truncs[-1], 0, 1)) - values[-1]
+
+        return td_lambda_returns
+
+    
     def compute_gae_and_targets(self, rewards: torch.Tensor, dones: torch.Tensor, truncs: torch.Tensor, values: torch.Tensor, next_values: torch.Tensor):
         """
         Compute GAE and bootstrapped targets for PPO.

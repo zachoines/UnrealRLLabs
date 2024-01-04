@@ -107,17 +107,18 @@ class MAPOCAConfig(BaseConfig):
             self, 
             obs_space: ObservationSpace,
             action_space: ActionSpace,
-            embed_size: int = 128,
+            embed_size: int = 256,
             heads: int = 4,
             max_agents: int = 10,
-            lambda_: float = 0.95, 
-            clip_epsilon: float = 0.1,
-            hidden_size = 256,
-            entropy_coefficient: float = 0.1,
-            policy_learning_rate: float = 5e-4,
-            value_learning_rate: float = 5e-4,
+            lambda_: float = 0.85, 
+            clip_epsilon: float = 0.2,
+            value_clip: float = 0.2,
+            hidden_size = 512,
+            entropy_coefficient: float = 0.05,
+            policy_learning_rate: float = 6e-4,
+            value_learning_rate: float = 6e-4,
             max_grad_norm: float = 1.0,
-            dropout_rate = 0.3,
+            dropout_rate = 0.0,
             **kwargs
         ):
         super().__init__(
@@ -172,7 +173,45 @@ class MAPOCAConfig(BaseConfig):
                         else action_space.discrete_actions[0],
                     "hidden_size": hidden_size,
                     "dropout_rate": dropout_rate
-                }
+                },
+                "ICM": {
+                    "rsa" : {
+                        "embed_size": embed_size, 
+                        "heads": heads,
+                        "dropout_rate": dropout_rate
+                    },
+                    "inverse_rsa": {
+                        "embed_size": 2 * embed_size, 
+                        "heads": heads,
+                        "dropout_rate": dropout_rate
+                    },
+                    "inverse_body": {
+                        "embed_size": 2 * embed_size, 
+                        "hidden_size": hidden_size,
+                        "out_features": embed_size,
+                        "dropout_rate": dropout_rate
+                    },
+                    "inverse_head": {
+                        "embed_size": 2 * embed_size, 
+                        "hidden_size": hidden_size,
+                        "out_features": len(action_space.continuous_actions) 
+                            if action_space.has_continuous() 
+                            else len(action_space.discrete_actions), 
+                        "dropout_rate": dropout_rate
+                    },
+                    "state_encoder": {
+                        "state_dim": obs_space.single_agent_obs_size, 
+                        "embed_size": embed_size
+                    },
+                    "state_action_encoder": {
+                        "state_dim": obs_space.single_agent_obs_size, 
+                        "action_dim": 
+                            len(action_space.continuous_actions) 
+                            if action_space.has_continuous() 
+                            else len(action_space.discrete_actions), 
+                        "embed_size": embed_size
+                    },
+                },
             },
             **kwargs
         )
@@ -180,4 +219,5 @@ class MAPOCAConfig(BaseConfig):
         self.heads = heads
         self.lambda_ = lambda_
         self.clip_epsilon = clip_epsilon
+        self.value_clip = value_clip
         self.max_agents = max_agents
