@@ -2,19 +2,23 @@ import torch
 import numpy as np
 
 class CosineAnnealingScheduler:
-    def __init__(self, T, H, L):
+    def __init__(self, T, H, L, hold_steps):
         self.T = T
         self.H = H
         self.L = L
+        self.hold_steps = hold_steps
         self.t = 0
 
     def step(self):
-        self.t = min(self.t + 1, self.T)
+        self.t = min(self.t + 1, self.T + self.hold_steps)
 
     def value(self):
-        """Calculate the current value based on the cosine annealing schedule.
-        """
-        return self.L + 0.5 * (self.H - self.L) * (1 + np.cos(np.pi * self.t / self.T))
+        if self.t <= self.hold_steps:
+            return self.H
+        else:
+            adjusted_t = self.t - self.hold_steps
+            adjusted_T = self.T - self.hold_steps
+            return self.L + 0.5 * (self.H - self.L) * (1 + np.cos(np.pi * adjusted_t / adjusted_T))
 
     def reset(self):
         self.t = 0

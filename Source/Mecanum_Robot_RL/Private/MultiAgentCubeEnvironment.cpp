@@ -232,7 +232,7 @@ TArray<float> AMultiAgentCubeEnvironment::AgentGetState(int AgentIndex)
 
     // All other agents and their goals
     for (int i = 0; i < CurrentAgents; ++i) {
-        TPair<FIntPoint, FIntPoint> OtherAgentGoal = AgentGoalPositions[i];
+        TPair<FIntPoint, FIntPoint> OtherAgentGoal   = AgentGoalPositions[i];
         if (AgentIndex != i) {
             /*if (GridDistance(AgentGoal.Key, OtherAgentGoal.Key) <= AgentVisability) {
                 State[Get1DIndexFromPoint(OtherAgentGoal.Key, GridSize)] = static_cast<float>(i + 1) / static_cast<float>(MaxAgents);
@@ -241,8 +241,7 @@ TArray<float> AMultiAgentCubeEnvironment::AgentGetState(int AgentIndex)
             if (GridDistance(AgentGoal.Key, OtherAgentGoal.Value) <= AgentVisability) {
                 State[Get1DIndexFromPoint(OtherAgentGoal.Value, GridSize)] = -static_cast<float>(i + 1) / static_cast<float>(MaxAgents);
             }*/
-            // State[Get1DIndexFromPoint(OtherAgentGoal.Key, GridSize)] = static_cast<float>(i + 1) / static_cast<float>(MaxAgents);
-            // State[Get1DIndexFromPoint(OtherAgentGoal.Value, GridSize)] = -static_cast<float>(i + 1) / static_cast<float>(MaxAgents);
+
             State[Get1DIndexFromPoint(OtherAgentGoal.Key, GridSize)] = static_cast<float>(i + 1) / static_cast<float>(MaxAgents);
             State[Get1DIndexFromPoint(OtherAgentGoal.Value, GridSize)] = -static_cast<float>(i + 1) / static_cast<float>(MaxAgents);
         }
@@ -443,11 +442,6 @@ FState AMultiAgentCubeEnvironment::State()
 
 bool AMultiAgentCubeEnvironment::Done()
 {
-    /*for (int i = 0; i < CurrentAgents; ++i) {
-        if (AgentOutOfBounds(i) || AgentHasCollided(i)) {
-            return true;
-        }
-    }*/
     return false;
 }
 
@@ -465,10 +459,10 @@ float AMultiAgentCubeEnvironment::Reward()
 {
     float rewards = 0.0;
     for (int i = 0; i < CurrentAgents; ++i){
-        rewards += -(GridDistance(AgentGoalPositions[i].Key, AgentGoalPositions[i].Value) / (sqrtf(2.0) * static_cast<float>(GridSize)));
+        rewards += -(GridDistance(AgentGoalPositions[i].Key, AgentGoalPositions[i].Value) / (sqrtf(2.0) * static_cast<float>(GridSize))) / 10.0;
         rewards += AgentOutOfBounds(i) ? -1.0 : 0.0;
         rewards += AgentHasCollided(i) ? -1.0 : 0.0;
-        rewards += AgentGoalReached(i) ? 10.0 : 0.0;
+        rewards += AgentGoalReached(i) ? 3.0 : 0.0;
     }
 
     return rewards;

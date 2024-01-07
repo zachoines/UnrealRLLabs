@@ -39,8 +39,8 @@ class SharedCritic(nn.Module):
         self.RSA = RSA(**self.config.networks["RSA"])
         self.value = ValueNetwork(**self.config.networks["value_network"])
         self.baseline = ValueNetwork(**self.config.networks["value_network"])
-        self.state_encoder = StatesEncoder(**self.config.networks["state_encoder"])
-        self.state_action_encoder = StatesActionsEncoder(**self.config.networks["state_action_encoder"])
+        self.state_encoder = StatesEncoder2d(**self.config.networks["state_encoder2d"])
+        self.state_action_encoder = StatesActionsEncoder2d(**self.config.networks["state_action_encoder2d"])
         self.positional_encodings = PositionalEncoding(state_embedding_size=self.config.embed_size, max_seq_length=self.config.max_agents)
 
     def baselines(self, batched_agent_states: torch.Tensor, batched_groupmates_states: torch.Tensor, batched_groupmates_actions: torch.Tensor, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
@@ -76,9 +76,7 @@ class SharedCritic(nn.Module):
         x = self.state_encoder(x)
         x = x.view(num_steps * num_envs, num_agents, self.config.embed_size)
         x = self.positional_encodings(x)
-        x = self.RSA(
-            x
-        )
+        x = self.RSA(x)
         x = torch.mean(x, dim=1).squeeze()
         values = self.value(x)
         return values.contiguous().view(num_steps, num_envs, 1)
@@ -99,7 +97,7 @@ class PolicyNetwork(nn.Module):
             )
         else:
             raise NotImplementedError("No support for continuous actions yet!")
-        self.state_encoder = StatesEncoder(**self.config.networks["state_encoder"])
+        self.state_encoder = StatesEncoder2d(**self.config.networks["state_encoder2d"])
         self.RSA = RSA(**self.config.networks["RSA"])
         self.positional_encodings = PositionalEncoding(state_embedding_size=self.config.embed_size, max_seq_length=self.config.max_agents)
 
@@ -192,23 +190,37 @@ class MAPocaAgent(Agent):
         self.policy_scheduler = ModifiedOneCycleLR(
             self.policy_optimizer, 
             max_lr=self.config.policy_learning_rate,
-            total_steps=10000,
+            total_steps=self.config.anneal_steps,
             anneal_strategy='cos',
-            pct_start=0.3
+            pct_start=0.3   
         ) 
 
         self.shared_critic_optimizer = optim.AdamW(self.shared_critic.parameters(), lr=self.config.policy_learning_rate)
         self.shared_critic_scheduler = ModifiedOneCycleLR(
             self.shared_critic_optimizer, 
             max_lr=self.config.value_learning_rate,
-            total_steps=10000,
+            total_steps=self.config.anneal_steps,
             anneal_strategy='cos',
             pct_start=0.3
         )
+        hold_steps = int(self.config.anneal_steps * 0.3)
         self.entropy_scheduler = CosineAnnealingScheduler(
-            T=10000, 
+            hold_steps=hold_steps,
+            T=self.config.anneal_steps-hold_steps, 
             H=self.config.entropy_coefficient, 
             L=self.config.entropy_coefficient/100
+        )
+        self.policy_clip_scheduler = CosineAnnealingScheduler(
+            hold_steps=hold_steps,
+            T=self.config.anneal_steps-hold_steps, 
+            H=self.config.policy_clip, 
+            L=self.config.policy_clip/4
+        )
+        self.value_clip_scheduler = CosineAnnealingScheduler(
+            hold_steps=hold_steps,
+            T=self.config.anneal_steps-hold_steps, 
+            H=self.config.value_clip, 
+            L=self.config.value_clip/4
         )
 
     def get_actions(self, states: torch.Tensor, eval: bool=False):
@@ -267,14 +279,13 @@ class MAPocaAgent(Agent):
         values = self.shared_critic.values(states)
         with torch.no_grad():
             targets = self.lambda_returns(rewards, self.shared_critic.values(next_states), dones, truncs)
-            # targets, advantages = self.compute_gae_and_targets(rewards, dones, truncs, values, self.shared_critic.values(next_states))
         loss = self.trust_region_value_loss(
             values,
             old_values,
             targets.detach(),
-            self.config.value_clip
+            self.value_clip_scheduler.value()
         )
-        return loss, targets, None
+        return loss, targets
     
     def baseline_loss(self, states: torch.Tensor, actions: torch.Tensor, old_baselines: torch.Tensor, agent_states: torch.Tensor, groupmates_states: torch.Tensor, groupmates_actions: torch.Tensor, targets: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         _, _, num_agents, _ = states.shape
@@ -290,7 +301,7 @@ class MAPocaAgent(Agent):
                 agent_baselines,
                 old_agent_baselines,
                 targets.detach(),
-                self.config.value_clip
+                self.value_clip_scheduler.value()
             )
             total_loss += loss
             advantages[:, :, agent_idx, :] = targets - agent_baselines
@@ -303,15 +314,15 @@ class MAPocaAgent(Agent):
         loss_policy = -torch.mean(
             torch.min(
                 ratio * advantages.squeeze().detach(),
-                ratio.clip(1.0 - self.config.clip_epsilon, 1.0 + self.config.clip_epsilon) * advantages.squeeze().detach(),
+                ratio.clip(1.0 - self.policy_clip_scheduler.value(), 1.0 + self.policy_clip_scheduler.value()) * advantages.squeeze().detach(),
             )
         )
         return loss_policy, entropy
 
-    def update(self, states: torch.Tensor, next_states: torch.Tensor, actions: torch.Tensor, rewards: torch.Tensor, dones: torch.Tensor, truncs: torch.Tensor, normalize_rewards: bool = True, normalize_advantages: bool = True):
+    def update(self, states: torch.Tensor, next_states: torch.Tensor, actions: torch.Tensor, rewards: torch.Tensor, dones: torch.Tensor, truncs: torch.Tensor):
         with torch.no_grad():
             batch_rewards = rewards
-            if normalize_rewards:
+            if self.config.normalize_rewards:
                 self.reward_normalizer.update(rewards)
                 rewards = self.reward_normalizer.normalize(rewards)
 
@@ -323,11 +334,10 @@ class MAPocaAgent(Agent):
 
         _, _, num_agents, _ = states.shape
         num_steps, _, _ = rewards.shape 
-        num_rounds = 4
-        mini_batch_size = num_steps // 8
+        mini_batch_size = num_steps // self.config.num_mini_batches
 
         total_loss_combined, total_loss_policy, total_loss_value, total_loss_baseline, total_entropy, = [], [], [], [], []
-        for _ in range(num_rounds):
+        for _ in range(self.config.num_epocs):
 
             # Generate a random order of mini-batches
             mini_batch_start_indices = list(range(0, states.size(0), mini_batch_size))
@@ -360,7 +370,7 @@ class MAPocaAgent(Agent):
                 self.shared_critic_optimizer.zero_grad()
 
                 # Calculate losses
-                loss_value, mb_targets, _ = self.value_loss(mb_old_values, mb_states, mb_next_states, mb_rewards, mb_dones, mb_truncs)
+                loss_value, mb_targets = self.value_loss(mb_old_values, mb_states, mb_next_states, mb_rewards, mb_dones, mb_truncs)
                 loss_baseline, mb_advantages = self.baseline_loss(
                     mb_states,
                     mb_actions,
@@ -371,7 +381,7 @@ class MAPocaAgent(Agent):
                     mb_targets
                 )
                 
-                if normalize_advantages:
+                if self.config.normalize_advantages:
                     self.advantage_normalizer.update(mb_advantages)
                     mb_advantages = self.advantage_normalizer.normalize(mb_advantages)
                 loss_policy, entropy = self.policy_loss(mb_old_log_probs, mb_advantages, mb_states, mb_actions)
@@ -392,6 +402,8 @@ class MAPocaAgent(Agent):
                 self.policy_scheduler.step() 
                 self.shared_critic_scheduler.step()
                 self.entropy_scheduler.step()
+                self.value_clip_scheduler.step()
+                self.policy_clip_scheduler.step()
 
                 # Accumulate Metrics
                 total_loss_combined += [total_loss]
@@ -417,4 +429,6 @@ class MAPocaAgent(Agent):
             "Shared Critic Learning Rate": self.shared_critic_scheduler.get_last_lr()[0],
             "Policy Learning Rate": self.policy_scheduler.get_last_lr()[0],
             "Entropy Coeff": torch.tensor(self.entropy_scheduler.value()),
+            "Policy Clip": torch.tensor(self.policy_clip_scheduler.value()),
+            "Value Clip": torch.tensor(self.value_clip_scheduler.value())
         }

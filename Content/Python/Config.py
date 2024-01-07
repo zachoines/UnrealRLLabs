@@ -110,15 +110,20 @@ class MAPOCAConfig(BaseConfig):
             embed_size: int = 256,
             heads: int = 4,
             max_agents: int = 10,
-            lambda_: float = 0.85, 
-            clip_epsilon: float = 0.2,
-            value_clip: float = 0.2,
+            lambda_: float = 0.95, 
+            policy_clip: float = 0.2, # Anneals to 0.02
+            value_clip: float = 0.2, # Anneals to 0.02
             hidden_size = 512,
-            entropy_coefficient: float = 0.05,
-            policy_learning_rate: float = 6e-4,
-            value_learning_rate: float = 6e-4,
+            entropy_coefficient: float = 0.1, # Anneals to 0.001
+            policy_learning_rate: float = 5e-4,
+            value_learning_rate: float = 5e-4,
             max_grad_norm: float = 1.0,
-            dropout_rate = 0.0,
+            dropout_rate: float = 0.0,
+            num_epocs: int = 4,
+            num_mini_batches: int = 8,
+            normalize_rewards: bool = True,
+            normalize_advantages: bool = True,
+            anneal_steps: int = 20000,
             **kwargs
         ):
         super().__init__(
@@ -215,9 +220,15 @@ class MAPOCAConfig(BaseConfig):
             },
             **kwargs
         )
+
         self.embed_size = embed_size
         self.heads = heads
         self.lambda_ = lambda_
-        self.clip_epsilon = clip_epsilon
+        self.policy_clip = policy_clip
         self.value_clip = value_clip
         self.max_agents = max_agents
+        self.num_epocs = num_epocs
+        self.num_mini_batches = num_mini_batches
+        self.normalize_rewards = normalize_rewards
+        self.normalize_advantages = normalize_advantages
+        self.anneal_steps = anneal_steps
