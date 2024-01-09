@@ -1,24 +1,32 @@
 import torch
 import numpy as np
 
-class CosineAnnealingScheduler:
-    def __init__(self, T, H, L, hold_steps):
-        self.T = T
-        self.H = H
-        self.L = L
-        self.hold_steps = hold_steps
+class OneCycleCosineScheduler:
+    def __init__(self, max_value, total_steps, pct_start=0.3, div_factor=25., final_div_factor=1e4):
+        self.max_value = max_value
+        self.min_value = max_value / div_factor
+        self.final_value = max_value / final_div_factor
+        self.total_steps = total_steps
+        self.pct_start = pct_start
         self.t = 0
+        self.current_value = self.min_value
+        self.increase_steps = int(self.pct_start * self.total_steps)
+        self.decrease_steps = self.total_steps - self.increase_steps
 
     def step(self):
-        self.t = min(self.t + 1, self.T + self.hold_steps)
+        if self.t < self.increase_steps:  # Cosine increase
+            self.current_value = self.min_value + (self.max_value - self.min_value) * \
+                                 (1 - np.cos(np.pi * self.t / self.increase_steps)) / 2
+        elif self.t < self.total_steps:  # Cosine decrease
+            adjusted_t = self.t - self.increase_steps
+            self.current_value = self.max_value - (self.max_value - self.final_value) * \
+                                 (1 - np.cos(np.pi * adjusted_t / self.decrease_steps)) / 2
+        else:  # Final value phase
+            self.current_value = self.final_value
+        self.t += 1
 
     def value(self):
-        if self.t <= self.hold_steps:
-            return self.H
-        else:
-            adjusted_t = self.t - self.hold_steps
-            adjusted_T = self.T - self.hold_steps
-            return self.L + 0.5 * (self.H - self.L) * (1 + np.cos(np.pi * adjusted_t / adjusted_T))
+        return self.current_value
 
     def reset(self):
         self.t = 0

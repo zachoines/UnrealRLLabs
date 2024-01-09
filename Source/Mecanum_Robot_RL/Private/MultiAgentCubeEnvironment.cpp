@@ -459,10 +459,9 @@ float AMultiAgentCubeEnvironment::Reward()
 {
     float rewards = 0.0;
     for (int i = 0; i < CurrentAgents; ++i){
-        rewards += -(GridDistance(AgentGoalPositions[i].Key, AgentGoalPositions[i].Value) / (sqrtf(2.0) * static_cast<float>(GridSize))) / 10.0;
         rewards += AgentOutOfBounds(i) ? -1.0 : 0.0;
         rewards += AgentHasCollided(i) ? -1.0 : 0.0;
-        rewards += AgentGoalReached(i) ? 3.0 : 0.0;
+        rewards += AgentGoalReached(i) ? 2.0 : -(GridDistance(AgentGoalPositions[i].Key, AgentGoalPositions[i].Value) / (sqrtf(2.0) * static_cast<float>(GridSize))) / static_cast<float>(GridSize);
     }
 
     return rewards;
