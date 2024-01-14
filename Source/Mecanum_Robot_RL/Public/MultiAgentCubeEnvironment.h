@@ -68,7 +68,7 @@ public:
     // Returns the public view of the state. Called after Update 
     virtual FState State() override;
 
-    // Returns done conditon
+    // Returns done conditonz
     virtual bool Done() override;
 
     // Returns truncation conditon
@@ -87,8 +87,8 @@ private:
     FVector GroundPlaneCenter;
     
     // Constants
-    const int GridSize = 10;
-    const int MaxSteps = 64;
+    const int GridSize = 20;
+    const int MaxSteps = 128;
     const float AgentVisability = 2;
     const float MaxAgents = 10;
 

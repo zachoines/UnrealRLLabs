@@ -145,72 +145,108 @@ class RSA(nn.Module):
 
         return layer
 
+
 class StatesEncoder2d(nn.Module):
-    def __init__(self, state_size, embed_size, dropout_rate=0.0):
+    def __init__(self, state_size, embed_size, conv_sizes=[8, 16, 32], 
+                 kernel_sizes=[3, 3, 3], strides=[1, 1, 1], dilations=[1, 2, 3], 
+                 pooling_kernel_size=2, pooling_stride=2, dropout_rate=0.0):  # Updated pooling parameters
         super(StatesEncoder2d, self).__init__()
-        self.conv1_size = 16
-        self.conv2_size = 32
+
         self.n = int(state_size**0.5)
+        
+        # Validate lengths
+        if not (len(conv_sizes) == len(kernel_sizes) == len(strides) == len(dilations)):
+            raise ValueError("conv_sizes, kernel_sizes, strides, and dilations must be of the same length")
 
-        conv1_output_size = self.n // 2  # Due to max pooling with kernel_size=2 and stride=2 twice
-        conv2_output_size = conv1_output_size // 2
-        self.output_size = self.conv2_size * conv2_output_size * conv2_output_size
+        self.paddings = [(kernel_sizes[i] + (kernel_sizes[i] - 1) * (dilations[i] - 1)) // 2 for i in range(len(conv_sizes))]
 
-        # Define the convolutional layers
-        self.conv_layers = nn.Sequential(
-            nn.Conv2d(1, self.conv1_size, kernel_size=3, stride=1, padding=1),
-            nn.Dropout(p=dropout_rate),
-            nn.LeakyReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(self.conv1_size, self.conv2_size, kernel_size=3, stride=1, padding=1),
-            nn.Dropout(p=dropout_rate),
-            nn.LeakyReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-        )
+        # Define convolutional layers dynamically
+        layers = []
+        in_channels = 1
+        for i, out_channels in enumerate(conv_sizes):
+            layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=kernel_sizes[i], 
+                                    stride=strides[i], padding=self.paddings[i], dilation=dilations[i]))
+            layers.append(nn.LeakyReLU())
+            layers.append(nn.Dropout(p=dropout_rate))
+            in_channels = out_channels
 
+        # Add a single pooling layer at the end
+        layers.append(nn.MaxPool2d(kernel_size=pooling_kernel_size, stride=pooling_stride))
+
+        self.conv_layers = nn.Sequential(*layers)
+
+        # Dynamically calculate the output size
+        self.output_size = self.calculate_output_size(self.n, conv_sizes, kernel_sizes, strides, dilations, pooling_kernel_size, pooling_stride)
+
+        # Define the fully connected layer
         self.fc = nn.Linear(self.output_size, embed_size)
+
+    def calculate_output_size(self, n, conv_sizes, kernel_sizes, strides, dilations, pooling_kernel_size, pooling_stride):
+        size = n
+        for i in range(len(conv_sizes)):
+            size = (size + 2 * self.paddings[i] - dilations[i] * (kernel_sizes[i] - 1) - 1) // strides[i] + 1
+        # Pooling layer applied once at the end
+        size = (size - pooling_kernel_size) // pooling_stride + 1
+        return conv_sizes[-1] * size * size
 
     def forward(self, x):
         x = x.view(-1, 1, self.n, self.n)  # Reshape to [combined_batch_size, channels, height, width]
         x = self.conv_layers(x)
-        x = x.view(-1, self.output_size)
+        x = x.view(-1, self.output_size)  # Flatten the output for the fully connected layer
         x = F.relu(self.fc(x))
         return x
 
 class StatesActionsEncoder2d(nn.Module):
-    def __init__(self, state_size, action_dim, embed_size, dropout_rate=0.0):
+    def __init__(self, state_size, action_dim, embed_size, conv_sizes=[8, 16, 32], 
+                 kernel_sizes=[3, 3, 3], strides=[1, 1, 1], dilations=[1, 2, 3], 
+                 pooling_kernel_size=2, pooling_stride=2, dropout_rate=0.0):  # Updated pooling parameters
         super(StatesActionsEncoder2d, self).__init__()
-        self.conv1_size = 16
-        self.conv2_size = 32
+
         self.n = int(state_size**0.5)
-
-        conv1_output_size = self.n // 2  # Due to max pooling with kernel_size=2 and stride=2 twice
-        conv2_output_size = conv1_output_size // 2
-        self.output_size = self.conv2_size * conv2_output_size * conv2_output_size
-
-        # Define the convolutional layers
-        self.conv_layers = nn.Sequential(
-            nn.Conv2d(1, self.conv1_size, kernel_size=3, stride=1, padding=1),
-            nn.Dropout(p=dropout_rate),
-            nn.LeakyReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(self.conv1_size, self.conv2_size, kernel_size=3, stride=1, padding=1),
-            nn.Dropout(p=dropout_rate),
-            nn.LeakyReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-        )
-
-        self.linear = nn.Linear(self.output_size + action_dim, embed_size)
         self.action_dim = action_dim
+
+        # Validate lengths
+        if not (len(conv_sizes) == len(kernel_sizes) == len(strides) == len(dilations)):
+            raise ValueError("conv_sizes, kernel_sizes, strides, and dilations must be of the same length")
+
+        self.paddings = [(kernel_sizes[i] + (kernel_sizes[i] - 1) * (dilations[i] - 1)) // 2 for i in range(len(conv_sizes))]
+
+        # Define convolutional layers dynamically
+        layers = []
+        in_channels = 1
+        for i, out_channels in enumerate(conv_sizes):
+            layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=kernel_sizes[i], 
+                                    stride=strides[i], padding=self.paddings[i], dilation=dilations[i]))
+            layers.append(nn.LeakyReLU())
+            layers.append(nn.Dropout(p=dropout_rate))
+            in_channels = out_channels
+
+        # Add a single pooling layer at the end
+        layers.append(nn.MaxPool2d(kernel_size=pooling_kernel_size, stride=pooling_stride))
+
+        self.conv_layers = nn.Sequential(*layers)
+
+        # Dynamically calculate the output size
+        self.output_size = self.calculate_output_size(self.n, conv_sizes, kernel_sizes, strides, dilations, pooling_kernel_size, pooling_stride)
+
+        # Define the linear layer that combines conv output and actions
+        self.linear = nn.Linear(self.output_size + action_dim, embed_size)
+
+    def calculate_output_size(self, n, conv_sizes, kernel_sizes, strides, dilations, pooling_kernel_size, pooling_stride):
+        size = n
+        for i in range(len(conv_sizes)):
+            size = (size + 2 * self.paddings[i] - dilations[i] * (kernel_sizes[i] - 1) - 1) // strides[i] + 1
+        # Pooling layer applied once at the end
+        size = (size - pooling_kernel_size) // pooling_stride + 1
+        return conv_sizes[-1] * size * size
 
     def forward(self, observation, action):
         original_shape = observation.shape
         observation = observation.view(-1, 1, self.n, self.n)  # Reshape to [combined_batch_size, channels, height, width]
 
-        x = observation
-        x = self.conv_layers(x)
-        x = x.view(original_shape[0], original_shape[1], -1)
-        x = torch.cat([x, action], dim=-1)
+        x = self.conv_layers(observation)
+        x = x.view(original_shape[0], original_shape[1], self.output_size)
+        x = torch.cat([x, action], dim=-1)  # Concatenate action to the flattened conv output
         x = F.leaky_relu(self.linear(x))
         return x
 

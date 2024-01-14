@@ -39,8 +39,8 @@ class SharedCritic(nn.Module):
         self.RSA = RSA(**self.config.networks["RSA"])
         self.value = ValueNetwork(**self.config.networks["value_network"])
         self.baseline = ValueNetwork(**self.config.networks["value_network"])
-        self.state_encoder = StatesEncoder(**self.config.networks["state_encoder"])
-        self.state_action_encoder = StatesActionsEncoder(**self.config.networks["state_action_encoder"])
+        self.state_encoder = StatesEncoder2d(**self.config.networks["state_encoder2d"])
+        self.state_action_encoder = StatesActionsEncoder2d(**self.config.networks["state_action_encoder2d"])
         self.positional_encodings = PositionalEncoding(state_embedding_size=self.config.embed_size, max_seq_length=self.config.max_agents)
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -99,7 +99,7 @@ class PolicyNetwork(nn.Module):
             )
         else:
             raise NotImplementedError("No support for continuous actions yet!")
-        self.state_encoder = StatesEncoder(**self.config.networks["state_encoder"])
+        self.state_encoder = StatesEncoder2d(**self.config.networks["state_encoder2d"])
         self.RSA = RSA(**self.config.networks["RSA"])
         self.positional_encodings = PositionalEncoding(state_embedding_size=self.config.embed_size, max_seq_length=self.config.max_agents)
 
@@ -125,15 +125,19 @@ class DiscreteMultiAgentICM(nn.Module):
         super(DiscreteMultiAgentICM, self).__init__()
         self.config = config
         
-        # RSA for extracting inter-agent feature representations for both forward and inverse models
+        # RSA for extracting inter-agent feature representations for both forward and inverse models,
+        self.icm_gain = self.config.networks["ICM"]["icm_gain"]
+        self.icm_beta = self.config.networks["ICM"]["icm_beta"]
+        self.embed_size = self.config.networks["ICM"]["embed_size"] 
         self.rsa = RSA(**self.config.networks["ICM"]["rsa"])
-        self.state_encoder = StatesEncoder(**self.config.networks["ICM"]["state_encoder"])
-        self.forward_head = StatesActionsEncoder(**self.config.networks["ICM"]["forward_head"])
-        self.positional_encodings = PositionalEncoding(state_embedding_size=self.config.embed_size, max_seq_length=self.config.max_agents)
+        self.state_encoder = StatesEncoder2d(**self.config.networks["ICM"]["state_encoder2d"])
+        self.forward_head = LinearNetwork(**self.config.networks["ICM"]["forward_head"])
+        self.positional_encodings = PositionalEncoding(state_embedding_size=self.embed_size, max_seq_length=self.config.max_agents)
         self.inverse_head = LinearNetwork(**self.config.networks["ICM"]["inverse_head"])
 
     def forward_rsa_network(self, state_features: torch.Tensor, actions: torch.Tensor):
-        x = self.forward_head(state_features, actions)
+        x = torch.cat([state_features, actions], dim=-1)
+        x = self.forward_head(x)
         return x
 
     def inverse_rsa_network(self, state_features: torch.Tensor, next_state_features: torch.Tensor):
@@ -144,7 +148,7 @@ class DiscreteMultiAgentICM(nn.Module):
         action_logits = self.inverse_head(x)
         return action_logits
 
-    def forward(self, states: torch.Tensor, next_states: torch.Tensor, actions: torch.LongTensor, n: float = 0.5, beta: float = 0.2) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, states: torch.Tensor, next_states: torch.Tensor, actions: torch.LongTensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         num_steps, num_envs, num_agents, action_dim = actions.shape
 
         # Feature Network
@@ -153,31 +157,27 @@ class DiscreteMultiAgentICM(nn.Module):
         actions = actions.contiguous().view(num_steps * num_envs, num_agents, num_actions)
         state_features = self.rsa(
             self.positional_encodings(
-                self.state_encoder(states).contiguous().view(num_steps * num_envs, num_agents, self.config.embed_size)
+                self.state_encoder(states).contiguous().view(num_steps * num_envs, num_agents, self.embed_size)
             )
         )
         next_state_features = self.rsa(
             self.positional_encodings(
-                self.state_encoder(next_states).contiguous().view(num_steps * num_envs, num_agents, self.config.embed_size)
+                self.state_encoder(next_states).contiguous().view(num_steps * num_envs, num_agents, self.embed_size)
             )
         )
 
-        # Forward Model
+        # Calculate forward loss
         predicted_next_state_features = self.forward_rsa_network(state_features, actions)
-
-        # Inverse Model
-        predicted_action_logits = self.inverse_rsa_network(state_features, next_state_features)
-
-        # Calculate losses
         forward_loss_per_state = F.mse_loss(predicted_next_state_features, next_state_features.detach(), reduction='none')
-        forward_loss = beta * forward_loss_per_state.mean()
+        forward_loss = self.icm_beta * forward_loss_per_state.mean()
 
-        # Calculate Inverse Loss using Cross-Entropy
+        # Calculate inverse loss
+        predicted_action_logits = self.inverse_rsa_network(state_features, next_state_features)
         *_, num_logits = predicted_action_logits.shape
-        inverse_loss = (1 - beta) * F.cross_entropy(predicted_action_logits.view(num_steps * num_envs * num_agents, num_logits), actions.view(-1).to(torch.long))
+        inverse_loss = (1 - self.icm_beta) * F.cross_entropy(predicted_action_logits.view(num_steps * num_envs * num_agents, num_logits), actions.view(-1).to(torch.long))
                 
         # Intrinsic reward
-        intrinsic_reward = n * forward_loss_per_state.view(num_steps, num_envs, num_agents, self.config.embed_size).mean(dim=2).mean(-1) # Average rewards along agent dimention
+        intrinsic_reward = self.icm_gain * forward_loss_per_state.view(num_steps, num_envs, num_agents, self.embed_size).mean(dim=2).mean(-1) # Average rewards along agent dimention
 
         return forward_loss, inverse_loss, intrinsic_reward.unsqueeze(-1)
 
@@ -186,6 +186,7 @@ class MAPocaAgent(Agent):
         super(MAPocaAgent, self).__init__(config)
         self.config = config
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.cpu_device = torch.device("cpu")
     
         self.policy = PolicyNetwork(self.config).to(self.device)
         self.shared_critic = SharedCritic(self.config).to(self.device)
@@ -199,7 +200,8 @@ class MAPocaAgent(Agent):
             max_lr=self.config.policy_learning_rate,
             total_steps=self.config.anneal_steps,
             anneal_strategy='cos',
-            pct_start=0.3   
+            pct_start=.2,
+            final_div_factor= 1000,
         ) 
 
         self.shared_critic_optimizer = optim.AdamW(self.shared_critic.parameters(), lr=self.config.policy_learning_rate)
@@ -208,16 +210,17 @@ class MAPocaAgent(Agent):
             max_lr=self.config.value_learning_rate,
             total_steps=self.config.anneal_steps,
             anneal_strategy='cos',
-            pct_start=0.3
+            pct_start=.2,
+            final_div_factor= 1000,
         )
         self.entropy_scheduler = OneCycleCosineScheduler(
-            self.config.entropy_coefficient, self.config.anneal_steps, pct_start=0.3, div_factor=10, final_div_factor=100
+            self.config.entropy_coefficient, self.config.anneal_steps, pct_start=.2, div_factor=2, final_div_factor=100
         )
         self.policy_clip_scheduler = OneCycleCosineScheduler(
-            self.config.policy_clip, self.config.anneal_steps, pct_start=0.3, div_factor=2.0, final_div_factor=4.0
+            self.config.policy_clip, self.config.anneal_steps, pct_start=.2, div_factor=2.0, final_div_factor=4.0
         )
         self.value_clip_scheduler = OneCycleCosineScheduler(
-            self.config.value_clip, self.config.anneal_steps, pct_start=0.3, div_factor=2.0, final_div_factor=4.0
+            self.config.value_clip, self.config.anneal_steps, pct_start=.2, div_factor=2.0, final_div_factor=4.0
         )
 
         # TODO: Add toggle for continous ICM rewards.
@@ -226,11 +229,22 @@ class MAPocaAgent(Agent):
             self.icm_optimizer = optim.AdamW(self.icm.parameters(), lr=self.config.policy_learning_rate)
             self.icm_scheduler = ModifiedOneCycleLR(
                 self.icm_optimizer  , 
-                max_lr=self.config.value_learning_rate,
+                max_lr=self.config.policy_learning_rate,
                 total_steps=self.config.anneal_steps,
                 anneal_strategy='cos',
-                pct_start=0.3
+                pct_start=.2,
+                final_div_factor= 1000,
             )
+
+    def to_gpu(self, x):
+        if isinstance(x, tuple):
+            return tuple(item.to(device=self.gpu_device) for item in x)
+        return x.to(device=self.device)
+
+    def to_cpu(self, x):
+        if isinstance(x, tuple):
+            return tuple(item.to(device=self.cpu_device) for item in x)
+        return x.to(device=self.cpu_device)
 
     def get_actions(self, states: torch.Tensor, eval: bool=False):
         if self.config.action_space.has_discrete():
@@ -330,11 +344,8 @@ class MAPocaAgent(Agent):
 
     def update(self, states: torch.Tensor, next_states: torch.Tensor, actions: torch.Tensor, rewards: torch.Tensor, dones: torch.Tensor, truncs: torch.Tensor):
         with torch.no_grad():
-            batch_rewards = rewards
-            if self.config.normalize_rewards:
-                self.reward_normalizer.update(rewards)
-                rewards = self.reward_normalizer.normalize(rewards)
-
+            batch_rewards = rewards.mean()
+            
             # For trust region loss
             old_log_probs, _ = self.policy.log_probs(states, actions)
             batched_agent_states, batched_groupmates_states, batched_groupmates_actions = self.AgentGroupMatesStatesActions(states, actions)
@@ -344,7 +355,28 @@ class MAPocaAgent(Agent):
                 _, _, icm_rewards = self.icm(states, next_states, actions)
                 rewards += icm_rewards
 
-        _, _, num_agents, _ = states.shape
+            if self.config.normalize_rewards:
+                self.reward_normalizer.update(rewards)
+                rewards = self.reward_normalizer.normalize(rewards)
+
+            # Put on RAM. Multi-agent computations are GPU memory taxing, and should be moved over when needed.
+            states = self.to_cpu(states)
+            next_states = self.to_cpu(next_states)
+            actions = self.to_cpu(actions)
+            rewards = self.to_cpu(rewards)
+            dones = self.to_cpu(dones)
+            truncs = self.to_cpu(truncs)
+            batched_agent_states = self.to_cpu(batched_agent_states)
+            batched_groupmates_states = self.to_cpu(batched_groupmates_states)
+            batched_groupmates_actions = self.to_cpu(batched_groupmates_actions)
+
+            old_log_probs = self.to_cpu(old_log_probs)
+            old_baselines = self.to_cpu(old_baselines)
+            old_values = self.to_cpu(old_values)
+
+            if self.config.icm_enabled:
+                icm_rewards = self.to_cpu(icm_rewards)
+
         num_steps, _, _ = rewards.shape 
         mini_batch_size = num_steps // self.config.num_mini_batches
 
@@ -354,19 +386,23 @@ class MAPocaAgent(Agent):
 
         for _ in range(self.config.num_epocs):
 
-            if self.config.icm_enabled:
-                forward_loss, inverse_loss, _ = self.icm(states, next_states, actions)
-                total_icm_loss = forward_loss + inverse_loss
-                total_icm_loss.backward()
-                clip_grad_norm_(self.icm.parameters(), self.config.max_grad_norm)
-                self.icm_optimizer.step()
-                self.icm_scheduler.step()
-                total_icm_forward_loss.append(forward_loss.cpu())
-                total_icm_inverse_loss.append(inverse_loss.cpu())
-
             # Generate a random order of mini-batches
             mini_batch_start_indices = list(range(0, states.size(0), mini_batch_size))
             np.random.shuffle(mini_batch_start_indices)
+
+            # if self.config.icm_enabled:
+            #     forward_loss, inverse_loss, _ = self.icm(
+            #         self.to_gpu(states), 
+            #         self.to_gpu(next_states), 
+            #         self.to_gpu(actions)
+            #     )
+            #     total_icm_loss = forward_loss + inverse_loss
+            #     total_icm_loss.backward()
+            #     clip_grad_norm_(self.icm.parameters(), self.config.max_grad_norm)
+            #     self.icm_optimizer.step()
+            #     # self.icm_scheduler.step()
+            #     total_icm_forward_loss.append(forward_loss.cpu())
+            #     total_icm_inverse_loss.append(inverse_loss.cpu())
 
             # Process each mini-batch
             for start_idx in mini_batch_start_indices:
@@ -377,26 +413,49 @@ class MAPocaAgent(Agent):
 
                 # Extract mini-batch data
                 with torch.no_grad():
-                    mb_batched_agent_states = batched_agent_states[ids]
-                    mb_batched_groupmates_states = batched_groupmates_states[ids]
-                    mb_batched_groupmates_actions = batched_groupmates_actions[ids]
-                    mb_states = states[ids]
-                    mb_actions = actions[ids]
-                    mb_dones = dones[ids]
-                    mb_truncs = truncs[ids]
-                    mb_next_states = next_states[ids]
-                    mb_rewards = rewards[ids]
-                    mb_old_log_probs = old_log_probs[ids]
-                    mb_old_values = old_values[ids]
-                    mb_old_baselines = old_baselines[ids]
+                    # mb_batched_agent_states = batched_agent_states[ids]
+                    # mb_batched_groupmates_states = batched_groupmates_states[ids]
+                    # mb_batched_groupmates_actions = batched_groupmates_actions[ids]
+                    # mb_states = states[ids]
+                    # mb_next_states = next_states[ids]
+                    # mb_actions = actions[ids]
+                    # mb_dones = dones[ids]
+                    # mb_truncs = truncs[ids]
+                    # mb_next_states = next_states[ids]
+                    # mb_rewards = rewards[ids]
+                    # mb_old_log_probs = old_log_probs[ids]
+                    # mb_old_values = old_values[ids]
+                    # mb_old_baselines = old_baselines[ids]
+
+                    mb_batched_agent_states = self.to_gpu(batched_agent_states[ids])
+                    mb_batched_groupmates_states = self.to_gpu(batched_groupmates_states[ids])
+                    mb_batched_groupmates_actions = self.to_gpu(batched_groupmates_actions[ids])
+                    mb_states = self.to_gpu(states[ids])
+                    mb_next_states = self.to_gpu(next_states[ids])
+                    mb_actions = self.to_gpu(actions[ids])
+                    mb_dones = self.to_gpu(dones[ids])
+                    mb_truncs = self.to_gpu(truncs[ids])
+                    mb_next_states = self.to_gpu(next_states[ids])
+                    mb_rewards = self.to_gpu(rewards[ids])
+                    mb_old_log_probs = self.to_gpu(old_log_probs[ids])
+                    mb_old_values = self.to_gpu(old_values[ids])
+                    mb_old_baselines = self.to_gpu(old_baselines[ids])
 
                 # Clear gradiants for the next batch
                 self.policy_optimizer.zero_grad()
                 self.shared_critic_optimizer.zero_grad()
 
                 # Calculate losses
-                loss_value, mb_targets = self.value_loss(mb_old_values, mb_states, mb_next_states, mb_rewards, mb_dones, mb_truncs)
-                loss_baseline, mb_advantages = self.baseline_loss(
+                loss_value, mb_targets = self.value_loss(
+                    mb_old_values, 
+                    mb_states, 
+                    mb_next_states, 
+                    mb_rewards, 
+                    mb_dones, 
+                    mb_truncs
+                )
+                
+                loss_baseline, mb_advantages = self.baseline_loss( # Long comp time
                     mb_states,
                     mb_actions,
                     mb_old_baselines,
@@ -409,11 +468,31 @@ class MAPocaAgent(Agent):
                 if self.config.normalize_advantages:
                     self.advantage_normalizer.update(mb_advantages)
                     mb_advantages = self.advantage_normalizer.normalize(mb_advantages)
-                loss_policy, entropy = self.policy_loss(mb_old_log_probs, mb_advantages, mb_states, mb_actions)
+                
+                loss_policy, entropy = self.policy_loss(
+                    mb_old_log_probs, 
+                    mb_advantages, 
+                    mb_states, 
+                    mb_actions
+                )
+
+                if self.config.icm_enabled:
+                    forward_loss, inverse_loss, _ = self.icm(
+                        mb_states, 
+                        mb_next_states, 
+                        mb_actions
+                    )
+                    total_icm_loss = forward_loss + inverse_loss
+                    total_icm_loss.backward()
+                    clip_grad_norm_(self.icm.parameters(), self.config.max_grad_norm)
+                    self.icm_optimizer.step()
+                    self.icm_scheduler.step()
+                    total_icm_forward_loss.append(forward_loss.cpu())
+                    total_icm_inverse_loss.append(inverse_loss.cpu())
 
                 # Perform backpropagations
                 policy_loss = (loss_policy - self.entropy_scheduler.value() * entropy.mean())
-                shared_critic_loss = loss_value + (1 / num_agents * loss_baseline)
+                shared_critic_loss = loss_value + (0.5 * loss_baseline)
                 total_loss = policy_loss + shared_critic_loss 
                 policy_loss.backward()
                 shared_critic_loss.backward()
@@ -452,7 +531,7 @@ class MAPocaAgent(Agent):
             "Value Loss": total_loss_value,
             "Baseline Loss": total_loss_baseline,
             "Entropy": total_entropy,
-            "Average Rewards": batch_rewards.mean(),
+            "Average Rewards": batch_rewards,
             "Normalized Rewards": rewards.mean(),
             "Shared Critic Learning Rate": self.shared_critic_scheduler.get_last_lr()[0],
             "Policy Learning Rate": self.policy_scheduler.get_last_lr()[0],

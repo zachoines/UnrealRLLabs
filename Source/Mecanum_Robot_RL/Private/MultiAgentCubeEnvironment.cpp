@@ -428,9 +428,11 @@ FState AMultiAgentCubeEnvironment::State()
         if (AgentGoalReached(i)) {
             GoalReset(i);
         }
+        /*
         if (AgentOutOfBounds(i) || AgentHasCollided(i)) {
             AgentReset(i);
         }
+        */
     }
 
     for (int i = 0; i < CurrentAgents; ++i) {
@@ -442,6 +444,11 @@ FState AMultiAgentCubeEnvironment::State()
 
 bool AMultiAgentCubeEnvironment::Done()
 {
+    for (int i = 0; i < CurrentAgents; ++i) {
+        if (AgentOutOfBounds(i) || AgentHasCollided(i)) {
+            return true;
+        }
+    }
     return false;
 }
 
@@ -458,12 +465,16 @@ bool AMultiAgentCubeEnvironment::Trunc()
 float AMultiAgentCubeEnvironment::Reward()
 {
     float rewards = 0.0;
-    for (int i = 0; i < CurrentAgents; ++i){
+    /*for (int i = 0; i < CurrentAgents; ++i){
         rewards += AgentOutOfBounds(i) ? -1.0 : 0.0;
         rewards += AgentHasCollided(i) ? -1.0 : 0.0;
         rewards += AgentGoalReached(i) ? 2.0 : -(GridDistance(AgentGoalPositions[i].Key, AgentGoalPositions[i].Value) / (sqrtf(2.0) * static_cast<float>(GridSize))) / static_cast<float>(GridSize);
+    }*/
+    for (int i = 0; i < CurrentAgents; ++i) {
+        rewards += AgentOutOfBounds(i) ? -1.0 : 0.0;
+        rewards += AgentHasCollided(i) ? -1.0 : 0.0;
+        rewards += AgentGoalReached(i) ? 1.0 : 0.0;
     }
-
     return rewards;
 }
 

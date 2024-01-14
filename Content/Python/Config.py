@@ -107,23 +107,23 @@ class MAPOCAConfig(BaseConfig):
             self, 
             obs_space: ObservationSpace,
             action_space: ActionSpace,
-            embed_size: int = 128,
-            heads: int = 4,
+            embed_size: int = 256,
+            heads: int = 8,
             max_agents: int = 10,
             lambda_: float = 0.95, 
-            policy_clip: float = 0.2, # Anneals to 0.02
-            value_clip: float = 0.2, # Anneals to 0.02
+            policy_clip: float = 0.2,
+            value_clip: float = 0.2,
             hidden_size = 256,
-            entropy_coefficient: float = 0.1, # Anneals to 0.001
+            entropy_coefficient: float = 0.1,
             policy_learning_rate: float = 6e-4,
             value_learning_rate: float = 6e-4,
             max_grad_norm: float = 1.0,
             dropout_rate: float = 0.0,
-            num_epocs: int = 4,
-            num_mini_batches: int = 8,
-            normalize_rewards: bool = True,
+            num_epocs: int = 3,
+            num_mini_batches: int = 4,
+            normalize_rewards: bool = False,
             normalize_advantages: bool = False,
-            anneal_steps: int = 10000,
+            anneal_steps: int = 30000,
             icm_enabled: bool = True,
             **kwargs
         ):
@@ -181,31 +181,36 @@ class MAPOCAConfig(BaseConfig):
                     "dropout_rate": dropout_rate
                 },
                 "ICM": {
-                    "rsa" : {
-                        "embed_size": embed_size, 
-                        "heads": heads,
+                    "icm_gain": .25,
+                    "icm_beta": 0.8,
+                    "embed_size": embed_size // 1,
+                    "state_encoder": {
+                        "state_dim": obs_space.single_agent_obs_size, 
+                        "embed_size": embed_size // 1,
+                    },
+                    "state_encoder2d": {
+                        "state_size": obs_space.single_agent_obs_size, 
+                        "embed_size": embed_size // 1,
                         "dropout_rate": dropout_rate
                     },
-                
+                    "rsa" : {
+                        "embed_size": embed_size // 1, 
+                        "heads": heads // 1,
+                        "dropout_rate": dropout_rate
+                    },
                     "inverse_head": {
-                        "in_features": 2 * embed_size, 
+                        "in_features": 2 * (embed_size // 1), 
                         "hidden_size": hidden_size,
                         "out_features": len(action_space.continuous_actions) 
                             if action_space.has_continuous() 
                             else action_space.discrete_actions[0],
                         "dropout_rate": dropout_rate
                     },
-                    "state_encoder": {
-                        "state_dim": obs_space.single_agent_obs_size, 
-                        "embed_size": embed_size
-                    },
                     "forward_head": {
-                        "state_dim": embed_size, 
-                        "action_dim": 
-                            len(action_space.continuous_actions) 
-                            if action_space.has_continuous() 
-                            else len(action_space.discrete_actions), 
-                        "embed_size": embed_size
+                        "in_features": (embed_size // 1) + len(action_space.discrete_actions), 
+                        "hidden_size": hidden_size,
+                        "out_features": embed_size // 1,
+                        "dropout_rate": dropout_rate
                     },
                 },
             },
