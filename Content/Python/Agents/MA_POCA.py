@@ -10,7 +10,7 @@ from Agents.Agent import Agent
 from Config import MAPOCAConfig
 from Networks import *
 from Utility import RunningMeanStdNormalizer, OneCycleCosineScheduler, ModifiedOneCycleLR
-from torch.optim.lr_scheduler import _LRScheduler
+from torch.optim.lr_scheduler import _LRScheduler, CosineAnnealingWarmRestarts
 import math
 
 class PositionalEncoding(torch.nn.Module):
@@ -195,24 +195,36 @@ class MAPocaAgent(Agent):
         self.advantage_normalizer = RunningMeanStdNormalizer(device=self.device)
         
         self.policy_optimizer = optim.AdamW(self.policy.parameters(), lr=self.config.policy_learning_rate)
-        self.policy_scheduler = ModifiedOneCycleLR(
+        self.policy_scheduler = CosineAnnealingWarmRestarts(
             self.policy_optimizer, 
-            max_lr=self.config.policy_learning_rate,
-            total_steps=self.config.anneal_steps,
-            anneal_strategy='cos',
-            pct_start=.2,
-            final_div_factor= 1000,
-        ) 
+            T_0=100, 
+            T_mult=2, 
+            eta_min=self.config.policy_learning_rate/1000
+        )
+        # ModifiedOneCycleLR(
+        #     self.policy_optimizer, 
+        #     max_lr=self.config.policy_learning_rate,
+        #     total_steps=self.config.anneal_steps,
+        #     anneal_strategy='cos',
+        #     pct_start=.2,
+        #     final_div_factor= 1000,
+        # ) 
 
         self.shared_critic_optimizer = optim.AdamW(self.shared_critic.parameters(), lr=self.config.policy_learning_rate)
-        self.shared_critic_scheduler = ModifiedOneCycleLR(
-            self.shared_critic_optimizer, 
-            max_lr=self.config.value_learning_rate,
-            total_steps=self.config.anneal_steps,
-            anneal_strategy='cos',
-            pct_start=.2,
-            final_div_factor= 1000,
+        self.shared_critic_scheduler = CosineAnnealingWarmRestarts(
+            self.policy_optimizer, 
+            T_0=100, 
+            T_mult=2, 
+            eta_min=self.config.value_learning_rate/1000
         )
+        # ModifiedOneCycleLR(
+        #     self.shared_critic_optimizer, 
+        #     max_lr=self.config.value_learning_rate,
+        #     total_steps=self.config.anneal_steps,
+        #     anneal_strategy='cos',
+        #     pct_start=.2,
+        #     final_div_factor= 1000,
+        # )
         self.entropy_scheduler = OneCycleCosineScheduler(
             self.config.entropy_coefficient, self.config.anneal_steps, pct_start=.2, div_factor=2, final_div_factor=100
         )
@@ -389,20 +401,6 @@ class MAPocaAgent(Agent):
             # Generate a random order of mini-batches
             mini_batch_start_indices = list(range(0, states.size(0), mini_batch_size))
             np.random.shuffle(mini_batch_start_indices)
-
-            # if self.config.icm_enabled:
-            #     forward_loss, inverse_loss, _ = self.icm(
-            #         self.to_gpu(states), 
-            #         self.to_gpu(next_states), 
-            #         self.to_gpu(actions)
-            #     )
-            #     total_icm_loss = forward_loss + inverse_loss
-            #     total_icm_loss.backward()
-            #     clip_grad_norm_(self.icm.parameters(), self.config.max_grad_norm)
-            #     self.icm_optimizer.step()
-            #     # self.icm_scheduler.step()
-            #     total_icm_forward_loss.append(forward_loss.cpu())
-            #     total_icm_inverse_loss.append(inverse_loss.cpu())
 
             # Process each mini-batch
             for start_idx in mini_batch_start_indices:

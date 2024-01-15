@@ -114,17 +114,17 @@ class MAPOCAConfig(BaseConfig):
             policy_clip: float = 0.2,
             value_clip: float = 0.2,
             hidden_size = 256,
-            entropy_coefficient: float = 0.1,
-            policy_learning_rate: float = 6e-4,
-            value_learning_rate: float = 6e-4,
+            entropy_coefficient: float = 0.04,
+            policy_learning_rate: float = 1e-3,
+            value_learning_rate: float = 1e-3,
             max_grad_norm: float = 1.0,
             dropout_rate: float = 0.0,
             num_epocs: int = 3,
-            num_mini_batches: int = 4,
+            num_mini_batches: int = 8,
             normalize_rewards: bool = False,
             normalize_advantages: bool = False,
-            anneal_steps: int = 30000,
-            icm_enabled: bool = True,
+            anneal_steps: int = 60000,
+            icm_enabled: bool = False,
             **kwargs
         ):
         super().__init__(

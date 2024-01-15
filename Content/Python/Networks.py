@@ -147,8 +147,8 @@ class RSA(nn.Module):
 
 
 class StatesEncoder2d(nn.Module):
-    def __init__(self, state_size, embed_size, conv_sizes=[8, 16, 32], 
-                 kernel_sizes=[3, 3, 3], strides=[1, 1, 1], dilations=[1, 2, 3], 
+    def __init__(self, state_size, embed_size, conv_sizes=[16, 32], 
+                 kernel_sizes=[3, 3], strides=[1, 1], dilations=[1, 2], 
                  pooling_kernel_size=2, pooling_stride=2, dropout_rate=0.0):  # Updated pooling parameters
         super(StatesEncoder2d, self).__init__()
 
@@ -197,8 +197,8 @@ class StatesEncoder2d(nn.Module):
         return x
 
 class StatesActionsEncoder2d(nn.Module):
-    def __init__(self, state_size, action_dim, embed_size, conv_sizes=[8, 16, 32], 
-                 kernel_sizes=[3, 3, 3], strides=[1, 1, 1], dilations=[1, 2, 3], 
+    def __init__(self, state_size, action_dim, embed_size, conv_sizes=[16, 32], 
+                 kernel_sizes=[3, 3], strides=[1, 1], dilations=[1, 2], 
                  pooling_kernel_size=2, pooling_stride=2, dropout_rate=0.0):  # Updated pooling parameters
         super(StatesActionsEncoder2d, self).__init__()
 
