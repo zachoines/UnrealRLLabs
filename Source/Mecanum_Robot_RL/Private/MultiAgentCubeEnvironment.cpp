@@ -473,8 +473,8 @@ float AMultiAgentCubeEnvironment::Reward()
     for (int i = 0; i < CurrentAgents; ++i) {
         rewards += AgentOutOfBounds(i) ? -1.0 : 0.0;
         rewards += AgentHasCollided(i) ? -1.0 : 0.0;
-        rewards += AgentGoalReached(i) ? 1.0 : 0.0;
-    }
+        rewards += AgentGoalReached(i) ? 1.0 : -0.001;
+    } 
     return rewards;
 }
 
