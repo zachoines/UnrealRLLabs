@@ -542,11 +542,11 @@ class MAPocaAgent(Agent):
                 self.policy_optimizer.step() 
                 self.shared_critic_optimizer.step()
 
-                # self.policy_scheduler.step() 
-                # self.shared_critic_scheduler.step()
-                # self.entropy_scheduler.step()
-                # self.value_clip_scheduler.step()
-                # self.policy_clip_scheduler.step()
+                self.policy_scheduler.step() 
+                self.shared_critic_scheduler.step()
+                self.entropy_scheduler.step()
+                self.value_clip_scheduler.step()
+                self.policy_clip_scheduler.step()
 
                 # Accumulate Metrics
                 total_loss_combined += [total_loss]
