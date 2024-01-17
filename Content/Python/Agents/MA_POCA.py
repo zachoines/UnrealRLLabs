@@ -323,33 +323,33 @@ class MAPocaAgent(Agent):
         batched_groupmates_actions = torch.cat(groupmates_actions_list, dim=2).contiguous()
         return batched_agent_states, batched_groupmates_states, batched_groupmates_actions
     
-    def trust_region_value_loss(self, values: torch.Tensor, old_values: torch.Tensor, returns: torch.Tensor, epsilon=0.1) -> torch.Tensor:
-        value_pred_clipped = old_values + (values - old_values).clamp(-epsilon, epsilon)
-        loss_clipped = (returns - value_pred_clipped)**2
-        loss_unclipped = (returns - values)**2
-        value_loss = torch.mean(torch.max(loss_clipped, loss_unclipped))
-        return value_loss
- 
     # def trust_region_value_loss(self, values: torch.Tensor, old_values: torch.Tensor, returns: torch.Tensor, epsilon=0.1) -> torch.Tensor:
-    #     # Calculate mean and standard deviation of the differences
-    #     differences = values - old_values
-    #     mean_diff = torch.mean(differences)
-    #     std_dev_diff = torch.std(differences)
-
-    #     # Dynamic epsilon based on mean and standard deviation, but capped by a fixed epsilon
-    #     dynamic_epsilon = min(mean_diff + std_dev_diff, epsilon)
-
-    #     # Clipping the value predictions
-    #     value_pred_clipped = old_values + differences.clamp(-dynamic_epsilon, dynamic_epsilon)
-        
-    #     # Calculating the clipped and unclipped losses
-    #     loss_clipped = (returns - value_pred_clipped) ** 2
-    #     loss_unclipped = (returns - values) ** 2
-
-    #     # Combining the losses
+    #     value_pred_clipped = old_values + (values - old_values).clamp(-epsilon, epsilon)
+    #     loss_clipped = (returns - value_pred_clipped)**2
+    #     loss_unclipped = (returns - values)**2
     #     value_loss = torch.mean(torch.max(loss_clipped, loss_unclipped))
-
     #     return value_loss
+ 
+    def trust_region_value_loss(self, values: torch.Tensor, old_values: torch.Tensor, returns: torch.Tensor, epsilon=0.1) -> torch.Tensor:
+        # Calculate mean and standard deviation of the differences
+        differences = values - old_values
+        mean_diff = torch.mean(differences)
+        std_dev_diff = torch.std(differences)
+
+        # Dynamic epsilon based on mean and standard deviation, but capped by a fixed epsilon
+        dynamic_epsilon = min(mean_diff + std_dev_diff, epsilon)
+
+        # Clipping the value predictions
+        value_pred_clipped = old_values + differences.clamp(-dynamic_epsilon, dynamic_epsilon)
+        
+        # Calculating the clipped and unclipped losses
+        loss_clipped = (returns - value_pred_clipped) ** 2
+        loss_unclipped = (returns - values) ** 2
+
+        # Combining the losses
+        value_loss = torch.mean(torch.max(loss_clipped, loss_unclipped))
+
+        return value_loss
 
     def value_loss(self, old_values, states, next_states, rewards, dones, truncs):
         values = self.shared_critic.values(states)
