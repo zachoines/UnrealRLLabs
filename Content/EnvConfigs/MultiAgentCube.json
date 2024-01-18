@@ -5,9 +5,9 @@
   "TrainInfo": {
     "BufferSize": 256,
     "BatchSize": 256,
-    "NumEnvironments": 64,
-    "MaxAgents" : 8,
-    "MinAgents" : 6,
+    "NumEnvironments": 32,
+    "MaxAgents" : 10,
+    "MinAgents" : 10,
     "AgentsResetFrequency": 1
   }
 }

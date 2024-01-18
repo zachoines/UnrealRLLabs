@@ -87,8 +87,8 @@ private:
     FVector GroundPlaneCenter;
     
     // Constant
-    const int GridSize = 20;
-    const int MaxSteps = 64;
+    const int GridSize = 15;
+    const int MaxSteps = 32;
     const float AgentVisibility = 3;
     const float MaxAgents = 10;
 
