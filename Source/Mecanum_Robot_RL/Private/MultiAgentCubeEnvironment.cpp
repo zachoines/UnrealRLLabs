@@ -227,7 +227,7 @@ TArray<float> AMultiAgentCubeEnvironment::AgentGetState(int AgentIndex)
     int VisibilityGridSize = (2 * AgentVisibility + 1) * (2 * AgentVisibility + 1);
 
     // Initialize the state array for the visibility grid plus agent position
-    State.Init(-1, VisibilityGridSize + 2); // Initialize unknown spaces as -1
+    State.Init(0, VisibilityGridSize + 2); // Initialize unknown spaces as -1
 
     FIntPoint AgentPosition = AgentGoalPositions[AgentIndex].Key;
 
@@ -424,15 +424,15 @@ void AMultiAgentCubeEnvironment::Update()
 FState AMultiAgentCubeEnvironment::State()
 {
     FState CurrentState;
-    /*for (int i = 0; i < CurrentAgents; ++i) {
-        if (AgentGoalReached(i)) {
+    for (int i = 0; i < CurrentAgents; ++i) {
+        /*if (AgentGoalReached(i)) {
             GoalReset(i);
-        }
+        }*/
         
         if (AgentOutOfBounds(i) || AgentHasCollided(i)) {
             AgentReset(i);
         }
-    }*/
+    }
 
     for (int i = 0; i < CurrentAgents; ++i) {
         CurrentState.Values += AgentGetState(i);
@@ -445,9 +445,9 @@ bool AMultiAgentCubeEnvironment::Done()
 {
     bool allGoals = true;
     for (int i = 0; i < CurrentAgents; ++i) {
-        if (AgentOutOfBounds(i) || AgentHasCollided(i)) {
+        /*if (AgentOutOfBounds(i) || AgentHasCollided(i)) {
             return true;
-        }
+        }*/
         allGoals = allGoals && AgentGoalReached(i);
     }
 
@@ -472,8 +472,8 @@ float AMultiAgentCubeEnvironment::Reward()
 {
     float rewards = 0.0;
     for (int i = 0; i < CurrentAgents; ++i){
-        rewards += AgentOutOfBounds(i) ? -1.0 : 0.0;
-        rewards += AgentHasCollided(i) ? -1.0 : 0.0;
+        rewards += AgentOutOfBounds(i) ? -.1 : 0.0;
+        rewards += AgentHasCollided(i) ? -.1 : 0.0;
         rewards += AgentGoalReached(i) ? 0.0 : -1.0 * (GridDistance(AgentGoalPositions[i].Key, AgentGoalPositions[i].Value) / (sqrtf(2.0) * static_cast<float>(GridSize))) / static_cast<float>(GridSize);
     }
  

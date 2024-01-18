@@ -107,8 +107,8 @@ class MAPOCAConfig(BaseConfig):
             self, 
             obs_space: ObservationSpace,
             action_space: ActionSpace,
-            embed_size: int = 128,
-            heads: int = 4,
+            embed_size: int = 256,
+            heads: int = 8,
             max_agents: int = 10,
             lambda_: float = 0.95, 
             policy_clip: float = 0.2,
@@ -123,7 +123,7 @@ class MAPOCAConfig(BaseConfig):
             num_mini_batches: int = 8,
             normalize_rewards: bool = False,
             normalize_advantages: bool = False,
-            anneal_steps: int = 30000,
+            anneal_steps: int = 100000,
             icm_enabled: bool = False,
             **kwargs
         ):
