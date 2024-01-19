@@ -204,30 +204,41 @@ TArray<float> AMultiAgentCubeEnvironment::AgentGetState(int AgentIndex)
         return State;
     }
 
-    // Initialize the whole grid as 0 (empty spaces)
+    const float AgentBase = 4.0f;
+    const float GoalBase = 5.0f;
+    const int MaxAgentID = MaxAgents - 1;
+    const int MaxGoalID = MaxAgents - 1;
+
+    // Normalization factor
+    float MaxValue = pow(AgentBase, MaxAgentID + 1) + pow(GoalBase, MaxGoalID + 1);
+
+    // Initialize the grid
     TArray<float> Grid;
     Grid.Init(0, GridSize * GridSize);
 
-    // Loop through each agent and goal, setting their locations on the grid
+    // Encode each agent and goal
     for (auto& Elem : AgentGoalPositions) {
         int AgentID = Elem.Key;
+        int GoalID = AgentID;
         FIntPoint AgentLocation = Elem.Value.Key;
         FIntPoint GoalLocation = Elem.Value.Value;
 
-        // Calculate values for agent and goal
-        // Ensuring the agent value is between 0 and 1 (exclusive) and goal value between -1 and 0 (exclusive)
-        float AgentValue = (static_cast<float>(AgentID) + 0.5f) / static_cast<float>(MaxAgents);
-        float GoalValue = -AgentValue;
+        // Adjust the encoding to start at 1
+        float AgentValue = pow(AgentBase, AgentID + 1);
+        float GoalValue = pow(GoalBase, GoalID + 1);
 
-        Grid[Get1DIndexFromPoint(AgentLocation, GridSize)] = AgentValue;
-        Grid[Get1DIndexFromPoint(GoalLocation, GridSize)] = GoalValue;
+        // Adding normalized agent value
+        Grid[Get1DIndexFromPoint(AgentLocation, GridSize)] += AgentValue / MaxValue;
+
+        // Adding normalized goal value
+        Grid[Get1DIndexFromPoint(GoalLocation, GridSize)] += GoalValue / MaxValue;
     }
 
     // Calculate the total size of the visibility grid
     int VisibilityGridSize = (2 * AgentVisibility + 1) * (2 * AgentVisibility + 1);
 
-    // Initialize the state array for the visibility grid plus agent position
-    State.Init(0, VisibilityGridSize + 2); // Initialize unknown spaces as -1
+    // Initialize unknown spaces as -1 (outside gride bounds)
+    State.Init(-1, VisibilityGridSize + 2);
 
     FIntPoint AgentPosition = AgentGoalPositions[AgentIndex].Key;
 
@@ -251,7 +262,6 @@ TArray<float> AMultiAgentCubeEnvironment::AgentGetState(int AgentIndex)
 
     return State;
 }
-
 
 int AMultiAgentCubeEnvironment::Get1DIndexFromPoint(const FIntPoint& point, int gridSize) 
 {
