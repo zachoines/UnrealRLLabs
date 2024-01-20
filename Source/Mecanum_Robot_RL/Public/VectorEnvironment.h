@@ -32,6 +32,8 @@ public:
     // Randomly sample actions with shape (num envs, num actions)
     TArray<FAction> SampleActions();
 
+    TArray<FState> GetStates();
+
     FEnvInfo SingleEnvInfo;
     int CurrentAgents;
 

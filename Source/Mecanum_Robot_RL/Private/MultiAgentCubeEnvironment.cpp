@@ -170,7 +170,7 @@ void AMultiAgentCubeEnvironment::MoveGoal(int AgentIndex, FIntPoint Location)
     }
 }
 
-bool AMultiAgentCubeEnvironment::AgentHasCollided(int AgentIndex)
+bool AMultiAgentCubeEnvironment::AgentCollidedWithAgent(int AgentIndex)
 {
     if (!AgentGoalPositions.Contains(AgentIndex)) {
         UE_LOG(LogTemp, Log, TEXT("Undefined Agent Index: %"), AgentIndex);
@@ -189,7 +189,37 @@ bool AMultiAgentCubeEnvironment::AgentHasCollided(int AgentIndex)
     {
         if (Actor != ControlledCubes[AgentIndex] && Actor != GoalObjects[AgentIndex]) // Exclude the agent and its gaol
         {
-            return true;
+            if (this->ControlledCubes.Contains(Actor)) {
+                return true;
+            }
+        }
+    }
+
+    return false; // No collision found
+}
+
+bool AMultiAgentCubeEnvironment::AgentWrongGoal(int AgentIndex)
+{
+    if (!AgentGoalPositions.Contains(AgentIndex)) {
+        UE_LOG(LogTemp, Log, TEXT("Undefined Agent Index: %"), AgentIndex);
+        return false;
+    }
+
+    FIntPoint AgentLocation = AgentGoalPositions[AgentIndex].Key;
+    TArray<AStaticMeshActor*>* ActorsAtLocation = UsedLocations.Find(AgentLocation);
+
+    if (!ActorsAtLocation || ActorsAtLocation->Num() <= 1)
+    {
+        return false; // No collision if only one actor is at this location
+    }
+
+    for (AStaticMeshActor* Actor : *ActorsAtLocation)
+    {
+        if (Actor != ControlledCubes[AgentIndex] && Actor != GoalObjects[AgentIndex]) // Exclude the agent and its gaol
+        {
+            if (GoalObjects.Contains(Actor)) {
+                return true;
+            }
         }
     }
 
@@ -204,13 +234,14 @@ TArray<float> AMultiAgentCubeEnvironment::AgentGetState(int AgentIndex)
         return State;
     }
 
-    const float AgentBase = 4.0f;
-    const float GoalBase = 5.0f;
-    const int MaxAgentID = MaxAgents - 1;
-    const int MaxGoalID = MaxAgents - 1;
+    const float AgentBase = 2.0;
+    const float GoalBase = 3.0;
+    const int MaxAgentID = MaxAgents;
+    const int MaxGoalID = MaxAgents;
+    const float ScaleFactor = pow(MaxAgentID, 2);
 
-    // Normalization factor
-    float MaxValue = pow(AgentBase, MaxAgentID + 1) + pow(GoalBase, MaxGoalID + 1);
+    // Normalization factor (If want to uniquely encode up to n agents and goals as a float value).
+    float MaxValue = (pow(AgentBase, MaxAgentID) + pow(GoalBase, MaxGoalID)); //  / ScaleFactor;
 
     // Initialize the grid
     TArray<float> Grid;
@@ -228,10 +259,14 @@ TArray<float> AMultiAgentCubeEnvironment::AgentGetState(int AgentIndex)
         float GoalValue = pow(GoalBase, GoalID + 1);
 
         // Adding normalized agent value
-        Grid[Get1DIndexFromPoint(AgentLocation, GridSize)] += AgentValue / MaxValue;
-
-        // Adding normalized goal value
-        Grid[Get1DIndexFromPoint(GoalLocation, GridSize)] += GoalValue / MaxValue;
+        if (!AgentOutOfBounds(AgentID)) {
+            Grid[Get1DIndexFromPoint(AgentLocation, GridSize)] += AgentValue / MaxValue; 
+        }
+    
+        // Skip agent's own goal
+        if (!(AgentID == AgentIndex)) {
+            Grid[Get1DIndexFromPoint(GoalLocation, GridSize)] += GoalValue / MaxValue;
+        }
     }
 
     // Calculate the total size of the visibility grid
@@ -350,7 +385,6 @@ FState AMultiAgentCubeEnvironment::ResetEnv(int NumAgents)
     AssignRandomGridLocations();
 
     // Always make sure after modifying actors
-    Update();
     return State();
 }
 
@@ -426,7 +460,7 @@ FIntPoint AMultiAgentCubeEnvironment::GenerateRandomLocation()
     return RandomPoint;
 }
 
-void AMultiAgentCubeEnvironment::Update()
+void AMultiAgentCubeEnvironment::PostStep()
 {
     CurrentStep += 1;
 }
@@ -434,15 +468,6 @@ void AMultiAgentCubeEnvironment::Update()
 FState AMultiAgentCubeEnvironment::State()
 {
     FState CurrentState;
-    for (int i = 0; i < CurrentAgents; ++i) {
-        /*if (AgentGoalReached(i)) {
-            GoalReset(i);
-        }*/
-        
-        if (AgentOutOfBounds(i) || AgentHasCollided(i)) {
-            AgentReset(i);
-        }
-    }
 
     for (int i = 0; i < CurrentAgents; ++i) {
         CurrentState.Values += AgentGetState(i);
@@ -455,9 +480,9 @@ bool AMultiAgentCubeEnvironment::Done()
 {
     bool allGoals = true;
     for (int i = 0; i < CurrentAgents; ++i) {
-        /*if (AgentOutOfBounds(i) || AgentHasCollided(i)) {
+        if (AgentOutOfBounds(i)) {
             return true;
-        }*/
+        }
         allGoals = allGoals && AgentGoalReached(i);
     }
 
@@ -483,11 +508,28 @@ float AMultiAgentCubeEnvironment::Reward()
     float rewards = 0.0;
     for (int i = 0; i < CurrentAgents; ++i){
         rewards += AgentOutOfBounds(i) ? -1.0 : 0.0;
-        rewards += AgentHasCollided(i) ? -1.0 : 0.0;
-        rewards += AgentGoalReached(i) ? 0.0 : -1.0 * (GridDistance(AgentGoalPositions[i].Key, AgentGoalPositions[i].Value) / (sqrtf(2.0) * static_cast<float>(GridSize)));
+        rewards += AgentCollidedWithAgent(i) ? -1.0 : 0.0; 
+        rewards += AgentWrongGoal(i) ? -1.0 : 0.0; 
+        rewards += AgentGoalReached(i) ? 0.0 : -(GridDistance(AgentGoalPositions[i].Key, AgentGoalPositions[i].Value) / (sqrtf(2.0) * static_cast<float>(GridSize))) / static_cast<float>(GridSize);;
     }
  
     return rewards;
+}
+
+void AMultiAgentCubeEnvironment::PostTransition() {
+    for (int i = 0; i < CurrentAgents; ++i) {
+        if (AgentCollidedWithAgent(i)) {
+            AgentReset(i);
+        }
+
+        if (AgentWrongGoal(i)) {
+            AgentReset(i);
+        }
+
+        /*if (AgentGoalReached(i)) {
+            GoalReset(i);
+        }*/
+    }
 }
 
 void AMultiAgentCubeEnvironment::setCurrentAgents(int NumAgents) {

@@ -113,7 +113,6 @@ FState ACubeEnvironment::ResetEnv(int NumAgents)
     }
 
     // Always make sure after modifying actors
-    Update();
     return State();
 }
 
@@ -132,17 +131,17 @@ void ACubeEnvironment::Act(FAction Action)
     ControlledCube->GetStaticMeshComponent()->SetPhysicsAngularVelocityInDegrees(AngularVelocity);
 }
 
-void ACubeEnvironment::Update() 
-{
-    currentUpdate += 1;
-    CubeWorldRotation = ControlledCube->GetActorRotation();
-    CubeWorldLocation = ControlledCube->GetActorLocation();
-    GoalWorldLocation = GoalObject->GetActorLocation();
-    CubeLocationRelativeToGround = InverseGroundPlaneTransform.TransformPosition(CubeWorldLocation);
-    GoalLocationRelativeToGround = InverseGroundPlaneTransform.TransformPosition(GoalWorldLocation);
-    CubeDistToGoal = FVector::Dist(CubeLocationRelativeToGround, GoalLocationRelativeToGround);
-    CubeOffGroundPlane = IsCubeOffGroundPlane();
-}
+//void ACubeEnvironment::Update() 
+//{
+//    currentUpdate += 1;
+//    CubeWorldRotation = ControlledCube->GetActorRotation();
+//    CubeWorldLocation = ControlledCube->GetActorLocation();
+//    GoalWorldLocation = GoalObject->GetActorLocation();
+//    CubeLocationRelativeToGround = InverseGroundPlaneTransform.TransformPosition(CubeWorldLocation);
+//    GoalLocationRelativeToGround = InverseGroundPlaneTransform.TransformPosition(GoalWorldLocation);
+//    CubeDistToGoal = FVector::Dist(CubeLocationRelativeToGround, GoalLocationRelativeToGround);
+//    CubeOffGroundPlane = IsCubeOffGroundPlane();
+//}
 
 FState ACubeEnvironment::State()
 {

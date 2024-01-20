@@ -17,7 +17,6 @@ void ABaseEnvironment::InitEnv(FBaseInitParams* Params)
 
 FState ABaseEnvironment::ResetEnv(int NumAgents)
 {
-    Update();
     return State();
 }
 
@@ -26,7 +25,12 @@ void ABaseEnvironment::Act(FAction Action)
     // Move actors...
 }
 
-void ABaseEnvironment::Update()
+void ABaseEnvironment::PostStep()
+{
+    // Update internal state...
+}
+
+void ABaseEnvironment::PostTransition()
 {
     // Update internal state...
 }

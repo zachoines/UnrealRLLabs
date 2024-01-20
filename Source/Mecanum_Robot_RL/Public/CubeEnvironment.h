@@ -52,9 +52,6 @@ public:
     // Update actors in environment with provided actions
     virtual void Act(FAction Action) override;
 
-    // Updates the internally held state of the environment.
-    virtual void Update() override;
-
     // Returns the public view of the state. Called after Update 
     virtual FState State() override;
 

@@ -29,8 +29,11 @@ public:
     // Update environment with actions
     virtual void Act(FAction Action);
   
-    // Optional convenience function. Will be called before State(), Done(), Trunc(), and Reward().
-    virtual void Update();
+    // Optional convenience function. Called after Step() in VectorEnvironment.
+    virtual void PostStep();
+
+    // Optional convenience function. Called after Transition() in VectorEnvironment.
+    virtual void PostTransition();
 
     // Returns the public view of the state. Called after Update 
     virtual FState State();

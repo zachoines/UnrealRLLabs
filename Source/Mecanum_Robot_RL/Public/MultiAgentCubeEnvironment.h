@@ -53,30 +53,15 @@ public:
     UPROPERTY(EditAnywhere)
     TArray<AStaticMeshActor*> GoalObjects;
 
-    // Override the InitEnv function to accept the derived struct
     virtual void InitEnv(FBaseInitParams* Params) override;
-
-    // Reset the environment and return the initial state
     virtual FState ResetEnv(int NumAgents) override;
-
-    // Update actors in environment with provided actions
     virtual void Act(FAction Action) override;
-
-    // Updates the internally held state of the environment.
-    virtual void Update() override;
-
-    // Returns the public view of the state. Called after Update 
+    virtual void PostTransition() override;
+    virtual void PostStep() override;
     virtual FState State() override;
-
-    // Returns done conditonz
     virtual bool Done() override;
-
-    // Returns truncation conditon
     virtual bool Trunc() override;
-
-    // Calculate the reward for the current state
     virtual float Reward() override;
-
     void setCurrentAgents(int NumAgents);
 
 private:
@@ -89,8 +74,8 @@ private:
     // Constant
     const int GridSize = 10;
     const int MaxSteps = 32;
-    const float AgentVisibility = 3;
-    const float MaxAgents = 10;
+    const float AgentVisibility = 4;
+    const float MaxAgents = 5;
 
     // State Variables
     int CurrentStep;
@@ -130,7 +115,8 @@ private:
     void GoalReset(int AgentIndex);
     void AgentReset(int AgentIndex);
     bool AgentGoalReached(int AgentIndex);
-    bool AgentHasCollided(int AgentIndex);
+    bool AgentCollidedWithAgent(int AgentIndex);
+    bool AgentWrongGoal(int AgentIndex);
     bool AgentOutOfBounds(int AgentIndex);
     TArray<float> AgentGetState(int AgentIndex);
     int Get1DIndexFromPoint(const FIntPoint& point, int gridSize);

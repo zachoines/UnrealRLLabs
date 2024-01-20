@@ -42,28 +42,27 @@ TArray<FAction> ARLRunner::GetActions(TArray<FState> States)
 
 void ARLRunner::Tick(float DeltaTime)
 {
-    auto [Dones, Truncs, Rewards, LastActions, LastStates, CurrentStates] = VectorEnvironment->Transition();
-    TArray<FAction> Actions = GetActions(CurrentStates);
-    VectorEnvironment->Step(Actions);
-
+    // Record last transition
+    auto [Dones, Truncs, Rewards, LastActions, States, NextStates] = VectorEnvironment->Transition();
     if (CurrentStep > 1) {
         TArray<FExperienceBatch> EnvironmentTrajectories;
         FExperienceBatch Batch;
-        for (int32 i = 0; i < CurrentStates.Num(); i++)
+        for (int32 i = 0; i < States.Num(); i++)
         {
             FExperience Experience;
-            Experience.State = LastStates[i];
+            Experience.State = States[i];
             Experience.Action = LastActions[i];
             Experience.Done = Dones[i];
             Experience.Trunc = Truncs[i];
             Experience.Reward = Rewards[i];
-            Experience.NextState = CurrentStates[i];
+            Experience.NextState = NextStates[i];
             Batch.Experiences.Add(Experience);
         }
 
         EnvironmentTrajectories.Add(Batch);
         AddExperiences(EnvironmentTrajectories);
 
+        // Trigger training if enough elements in buffer
         if (ExperienceBufferInstance->Size() == TrainerParams.BatchSize) {
             CurrentUpdate += 1;
             TArray<FExperienceBatch> Transitions = ARLRunner::SampleExperiences(TrainerParams.BatchSize);
@@ -75,8 +74,13 @@ void ARLRunner::Tick(float DeltaTime)
                 CurrentStep = 0;
             }
         }
-    }
 
+        
+    }
+    
+    // Step through environment
+    TArray<FAction> Actions = GetActions(VectorEnvironment->GetStates());
+    VectorEnvironment->Step(Actions);
     CurrentStep += 1;
 }
 

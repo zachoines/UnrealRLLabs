@@ -354,7 +354,8 @@ class MAPocaAgent(Agent):
     def value_loss(self, old_values, states, next_states, rewards, dones, truncs):
         values = self.shared_critic.values(states)
         with torch.no_grad():
-            targets = self.lambda_returns(rewards, self.shared_critic.values(next_states), dones, truncs)
+            # targets = self.lambda_returns(rewards, self.shared_critic.values(next_states), dones, truncs)
+            targets, _ = self.compute_gae_and_targets(rewards, dones, truncs, values, self.shared_critic.values(next_states))
         loss = self.trust_region_value_loss(
             values,
             old_values,
