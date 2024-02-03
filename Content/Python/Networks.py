@@ -134,14 +134,15 @@ class RSA(nn.Module):
     
     def linear_layer(self, input_size: int, output_size: int) -> torch.nn.Module:
         layer = torch.nn.Linear(input_size, output_size)
-        kernel_gain = (0.125 / input_size) ** 0.5
+        init.xavier_normal_(layer.weight)
+        # kernel_gain = (0.125 / input_size) ** 0.5
 
-        # Apply normal distribution to weights and scale with kernel_gain
-        torch.nn.init.normal_(layer.weight.data)
-        layer.weight.data *= kernel_gain
+        # # Apply normal distribution to weights and scale with kernel_gain
+        # torch.nn.init.normal_(layer.weight.data)
+        # layer.weight.data *= kernel_gain
 
-        # Initialize biases to zero
-        torch.nn.init.zeros_(layer.bias.data)
+        # # Initialize biases to zero
+        # torch.nn.init.zeros_(layer.bias.data)
 
         return layer
 

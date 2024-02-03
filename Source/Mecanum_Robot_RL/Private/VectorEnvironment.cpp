@@ -53,10 +53,15 @@ TTuple<TArray<bool>, TArray<bool>, TArray<float>, TArray<FAction>, TArray<FState
         Dones.Add(Environments[i]->Done());
         Truncs.Add(Environments[i]->Trunc());
         Rewards.Add(Environments[i]->Reward());
-        TmpStates.Add(Environments[i]->State());
-        Environments[i]->PostTransition();   
-    }
     
+        if (Dones[i] || Truncs[i]) {
+            TmpStates.Add(Environments[i]->ResetEnv(CurrentAgents));
+        }
+        else {
+            TmpStates.Add(Environments[i]->State());
+        }
+    }
+
     for (int32 i = 0; i < Environments.Num(); i++)
     {
         Environments[i]->PostTransition();
@@ -65,12 +70,12 @@ TTuple<TArray<bool>, TArray<bool>, TArray<float>, TArray<FAction>, TArray<FState
     CurrentStates = TmpStates;
 
     return TTuple<TArray<bool>, TArray<bool>, TArray<float>, TArray<FAction>, TArray<FState>, TArray<FState>>(
-        Dones, Truncs, Rewards, LastActions, LastStates, CurrentStates
+        Dones, Truncs, Rewards, LastActions, LastStates, TmpStates
     );
 }
 
 /*
-    Gets current states. Reset environments if in a done state from previous step.
+    Gets current states.
 */
 TArray<FState> AVectorEnvironment::GetStates() {
     
@@ -78,11 +83,7 @@ TArray<FState> AVectorEnvironment::GetStates() {
 
     for (int32 i = 0; i < Environments.Num(); i++)
     {
-        TmpStates.Add(
-            Environments[i]->Done() || Environments[i]->Trunc() ? 
-                Environments[i]->ResetEnv(CurrentAgents) : 
-                Environments[i]->State()
-        );
+        TmpStates.Add(Environments[i]->State());
     }
     CurrentStates = TmpStates;
     return TmpStates;

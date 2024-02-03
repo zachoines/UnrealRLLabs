@@ -216,8 +216,8 @@ class MAPocaAgent(Agent):
             max_lr=self.config.policy_learning_rate,
             total_steps=self.config.anneal_steps,
             anneal_strategy='cos',
-            pct_start=.2,
-            final_div_factor= 300,
+            pct_start=0.20,
+            final_div_factor=1000,
         ) 
 
         self.shared_critic_optimizer = optim.AdamW(self.shared_critic.parameters(), lr=self.config.value_learning_rate)
@@ -242,17 +242,17 @@ class MAPocaAgent(Agent):
             max_lr=self.config.value_learning_rate,
             total_steps=self.config.anneal_steps,
             anneal_strategy='cos',
-            pct_start=.2,
-            final_div_factor= 300,
+            pct_start=0.20,
+            final_div_factor=1000,
         )
         self.entropy_scheduler = OneCycleCosineScheduler(
-            self.config.entropy_coefficient, self.config.anneal_steps, pct_start=.2, div_factor=2, final_div_factor=100
+            self.config.entropy_coefficient, self.config.anneal_steps, pct_start=0.20, div_factor=1.0, final_div_factor=1000
         )
         self.policy_clip_scheduler = OneCycleCosineScheduler(
-            self.config.policy_clip, self.config.anneal_steps, pct_start=.2, div_factor=2.0, final_div_factor=4.0
+            self.config.policy_clip, self.config.anneal_steps, pct_start=0.20, div_factor=2.0, final_div_factor=10.0
         )
         self.value_clip_scheduler = OneCycleCosineScheduler(
-            self.config.value_clip, self.config.anneal_steps, pct_start=.2, div_factor=2.0, final_div_factor=4.0
+            self.config.value_clip, self.config.anneal_steps, pct_start=0.20, div_factor=2.0, final_div_factor=10.0
         )
 
         # TODO: Add toggle for continous ICM rewards.
@@ -264,8 +264,8 @@ class MAPocaAgent(Agent):
                 max_lr=self.config.policy_learning_rate,
                 total_steps=self.config.anneal_steps,
                 anneal_strategy='cos',
-                pct_start=.2,
-                final_div_factor= 300,
+                pct_start=0.20,
+                final_div_factor= 1000,
             )
 
     def to_gpu(self, x):
@@ -282,8 +282,10 @@ class MAPocaAgent(Agent):
         if self.config.action_space.has_discrete():
             probabilities = self.policy.probabilities(states)
             m = dist.Categorical(probs=probabilities)
-            
+            self.policy.eval() # To disable dropout 
+
             if eval:
+                
                 actions_indices = m.probs.argmax(dim=-1)
             else:
                 actions_indices = m.sample()
@@ -330,32 +332,32 @@ class MAPocaAgent(Agent):
         value_loss = torch.mean(torch.max(loss_clipped, loss_unclipped))
         return value_loss
  
-    # def trust_region_value_loss(self, values: torch.Tensor, old_values: torch.Tensor, returns: torch.Tensor, epsilon=0.1) -> torch.Tensor:
-    #     # Calculate mean and standard deviation of the differences
-    #     differences = values - old_values
-    #     mean_diff = torch.mean(differences)
-    #     std_dev_diff = torch.std(differences)
+    def trust_region_value_lossV2(self, values: torch.Tensor, old_values: torch.Tensor, returns: torch.Tensor, epsilon=0.1) -> torch.Tensor:
+        # Calculate mean and standard deviation of the differences
+        differences = values - old_values
+        mean_diff = torch.mean(differences)
+        std_dev_diff = torch.std(differences)
 
-    #     # Dynamic epsilon based on mean and standard deviation, but capped by a fixed epsilon
-    #     dynamic_epsilon = min(mean_diff + std_dev_diff, epsilon)
+        # Dynamic epsilon based on mean and standard deviation, but capped by a fixed epsilon
+        dynamic_epsilon = min(mean_diff + std_dev_diff, epsilon)
 
-    #     # Clipping the value predictions
-    #     value_pred_clipped = old_values + differences.clamp(-dynamic_epsilon, dynamic_epsilon)
+        # Clipping the value predictions
+        value_pred_clipped = old_values + differences.clamp(-dynamic_epsilon, dynamic_epsilon)
         
-    #     # Calculating the clipped and unclipped losses
-    #     loss_clipped = (returns - value_pred_clipped) ** 2
-    #     loss_unclipped = (returns - values) ** 2
+        # Calculating the clipped and unclipped losses
+        loss_clipped = (returns - value_pred_clipped) ** 2
+        loss_unclipped = (returns - values) ** 2
 
-    #     # Combining the losses
-    #     value_loss = torch.mean(torch.max(loss_clipped, loss_unclipped))
+        # Combining the losses
+        value_loss = torch.mean(torch.max(loss_clipped, loss_unclipped))
 
-    #     return value_loss
+        return value_loss
 
     def value_loss(self, old_values, states, next_states, rewards, dones, truncs):
         values = self.shared_critic.values(states)
         with torch.no_grad():
-            # targets = self.lambda_returns(rewards, self.shared_critic.values(next_states), dones, truncs)
-            targets, _ = self.compute_gae_and_targets(rewards, dones, truncs, values, self.shared_critic.values(next_states))
+            targets = self.lambda_returns(rewards, self.shared_critic.values(next_states), dones, truncs)
+            # targets, _ = self.compute_gae_and_targets(rewards, dones, truncs, values, self.shared_critic.values(next_states))
         loss = self.trust_region_value_loss(
             values,
             old_values,
@@ -397,6 +399,7 @@ class MAPocaAgent(Agent):
         return loss_policy, entropy
 
     def update(self, states: torch.Tensor, next_states: torch.Tensor, actions: torch.Tensor, rewards: torch.Tensor, dones: torch.Tensor, truncs: torch.Tensor):
+        self.eval()
         with torch.no_grad():
             batch_rewards = rewards.mean()
             
@@ -431,6 +434,7 @@ class MAPocaAgent(Agent):
             if self.config.icm_enabled:
                 icm_rewards = self.to_cpu(icm_rewards)
 
+        self.train()
         num_steps, _, _ = rewards.shape 
         mini_batch_size = num_steps // self.config.num_mini_batches
 
@@ -453,20 +457,6 @@ class MAPocaAgent(Agent):
 
                 # Extract mini-batch data
                 with torch.no_grad():
-                    # mb_batched_agent_states = batched_agent_states[ids]
-                    # mb_batched_groupmates_states = batched_groupmates_states[ids]
-                    # mb_batched_groupmates_actions = batched_groupmates_actions[ids]
-                    # mb_states = states[ids]
-                    # mb_next_states = next_states[ids]
-                    # mb_actions = actions[ids]
-                    # mb_dones = dones[ids]
-                    # mb_truncs = truncs[ids]
-                    # mb_next_states = next_states[ids]
-                    # mb_rewards = rewards[ids]
-                    # mb_old_log_probs = old_log_probs[ids]
-                    # mb_old_values = old_values[ids]
-                    # mb_old_baselines = old_baselines[ids]
-
                     mb_batched_agent_states = self.to_gpu(batched_agent_states[ids])
                     mb_batched_groupmates_states = self.to_gpu(batched_groupmates_states[ids])
                     mb_batched_groupmates_actions = self.to_gpu(batched_groupmates_actions[ids])
@@ -507,6 +497,7 @@ class MAPocaAgent(Agent):
                 
                 if self.config.normalize_advantages:
                     self.advantage_normalizer.update(mb_advantages)
+                    # mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-6) 
                     mb_advantages = self.advantage_normalizer.normalize(mb_advantages)
                 
                 loss_policy, entropy = self.policy_loss(
@@ -531,7 +522,7 @@ class MAPocaAgent(Agent):
                     total_icm_inverse_loss.append(inverse_loss.cpu())
 
                 # Perform backpropagations
-                policy_loss = (loss_policy - self.entropy_scheduler.value() * entropy.mean())
+                policy_loss = (loss_policy - (self.entropy_scheduler.value() * entropy.mean()))
                 shared_critic_loss = loss_value + (0.5 * loss_baseline)
                 total_loss = policy_loss + shared_critic_loss 
                 policy_loss.backward()

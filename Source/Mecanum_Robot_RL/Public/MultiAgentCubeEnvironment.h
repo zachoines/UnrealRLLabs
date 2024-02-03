@@ -74,8 +74,8 @@ private:
     // Constant
     const int GridSize = 10;
     const int MaxSteps = 32;
-    const float AgentVisibility = 4;
-    const float MaxAgents = 5;
+    const float AgentVisibility = 5;
+    const float MaxAgents = 10;
 
     // State Variables
     int CurrentStep;

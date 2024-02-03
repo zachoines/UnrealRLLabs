@@ -73,9 +73,7 @@ void ARLRunner::Tick(float DeltaTime)
                 VectorEnvironment->ResetEnv(CurrentAgents);
                 CurrentStep = 0;
             }
-        }
-
-        
+        } 
     }
     
     // Step through environment
