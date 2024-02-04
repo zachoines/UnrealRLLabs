@@ -114,16 +114,16 @@ class MAPOCAConfig(BaseConfig):
             policy_clip: float = 0.2,
             value_clip: float = 0.1,
             hidden_size = 256,
-            entropy_coefficient: float = 0.05,
-            policy_learning_rate: float = 1e-4,
-            value_learning_rate: float = 1e-4,
+            entropy_coefficient: float = 0.02,
+            policy_learning_rate: float = 2e-4,
+            value_learning_rate: float = 2e-4,
             max_grad_norm: float = 1.0,
             dropout_rate: float = 0.1,
-            num_epocs: int = 2,
+            num_epocs: int = 3,
             num_mini_batches: int = 4,
             normalize_rewards: bool = False,
             normalize_advantages: bool = False,
-            anneal_steps: int = 60000,
+            anneal_steps: int = 30000,
             icm_enabled: bool = False,
             **kwargs
         ):
@@ -213,6 +213,108 @@ class MAPOCAConfig(BaseConfig):
                         "dropout_rate": dropout_rate
                     },
                 },
+            },
+            **kwargs
+        )
+
+        self.embed_size = embed_size
+        self.heads = heads
+        self.lambda_ = lambda_
+        self.policy_clip = policy_clip
+        self.value_clip = value_clip
+        self.max_agents = max_agents
+        self.num_epocs = num_epocs
+        self.num_mini_batches = num_mini_batches
+        self.normalize_rewards = normalize_rewards
+        self.normalize_advantages = normalize_advantages
+        self.anneal_steps = anneal_steps
+        self.icm_enabled = icm_enabled
+
+
+class MAPOCALSTMConfig(BaseConfig):
+    def __init__(
+            self, 
+            obs_space: ObservationSpace,
+            action_space: ActionSpace,
+            embed_size: int = 128,
+            heads: int = 8,
+            max_agents: int = 10,
+            lambda_: float = 0.95,
+            policy_clip: float = 0.2,
+            value_clip: float = 0.1,
+            hidden_size = 256,
+            entropy_coefficient: float = 0.025,
+            policy_learning_rate: float = 2e-4,
+            value_learning_rate: float = 2e-4,
+            max_grad_norm: float = 1.0,
+            dropout_rate: float = 0.1,
+            num_epocs: int = 2,
+            num_mini_batches: int = 4,
+            normalize_rewards: bool = False,
+            normalize_advantages: bool = False,
+            anneal_steps: int = 30000,
+            icm_enabled: bool = False,
+            **kwargs
+        ):
+        super().__init__(
+            obs_space,
+            action_space,
+            entropy_coefficient = entropy_coefficient,
+            policy_learning_rate = policy_learning_rate,
+            value_learning_rate = value_learning_rate,
+            max_grad_norm = max_grad_norm,
+            networks={
+                "RSA": {
+                    "embed_size": embed_size, 
+                    "heads": heads,
+                    "dropout_rate": dropout_rate
+                },
+                "state_encoder": {
+                    "state_dim": obs_space.single_agent_obs_size, 
+                    "embed_size": embed_size
+                },
+                "state_action_encoder": {
+                    "state_dim": obs_space.single_agent_obs_size, 
+                    "action_dim": 
+                        len(action_space.continuous_actions) 
+                        if action_space.has_continuous() 
+                        else len(action_space.discrete_actions), 
+                    "embed_size": embed_size
+                },
+                "state_action_encoder2d": {
+                    "state_size": obs_space.single_agent_obs_size, 
+                    "action_dim": 
+                        len(action_space.continuous_actions) 
+                        if action_space.has_continuous() 
+                        else len(action_space.discrete_actions), 
+                    "embed_size": embed_size,
+                    "dropout_rate": dropout_rate
+                },
+                "state_encoder2d": {
+                    "state_size": obs_space.single_agent_obs_size, 
+                    "embed_size": embed_size,
+                    "dropout_rate": dropout_rate
+                },
+                "value_network": {
+                    "in_features": embed_size + 1,
+                    "hidden_size" : hidden_size,
+                    "dropout_rate": dropout_rate
+                },
+                "policy" : {
+                    "in_features": embed_size,
+                    "out_features": 
+                        len(action_space.continuous_actions) 
+                        if action_space.has_continuous() 
+                        else action_space.discrete_actions[0],
+                    "hidden_size": hidden_size,
+                    "dropout_rate": dropout_rate
+                },
+                "LSTM" : {
+                    "in_features": embed_size, 
+                    "hidden_size": hidden_size, 
+                    "output_size": embed_size, 
+                    "num_layers": 1
+                }
             },
             **kwargs
         )

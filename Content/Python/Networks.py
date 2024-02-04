@@ -284,4 +284,58 @@ class LinearNetwork(nn.Module):
 
     def forward(self, x):
         return self.model(x)
-   
+
+class LSTMNetwork(nn.Module):
+    def __init__(self, in_features: int, hidden_size: int, output_size: int, num_layers: int = 1):
+        super(LSTMNetwork, self).__init__()
+        
+        self.lstm = nn.LSTM(
+            input_size=in_features,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=False
+        )
+        
+        self.output_head = nn.Sequential(
+            nn.Linear(hidden_size, output_size),
+            nn.LeakyReLU(),
+        )
+        
+        self.num_layers = num_layers
+        self.hidden_size = hidden_size
+
+    def init_hidden(self, num_envs, num_agents):
+        """Initialize the hidden state and cell state for a new batch."""
+        batch_size = num_envs * num_agents
+        hidden = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(self.device)
+        cell = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(self.device)
+        return hidden, cell
+
+    def forward(self, x, hidden=None, cell=None, dones=None):
+        num_steps, num_envs, num_agents, _ = x.size()
+        batch_size = num_envs * num_agents
+        
+        # Check if we need to re-initialize hidden and cell states due to batch size change
+        if hidden is None or cell is None or hidden.size(1) != batch_size:
+            hidden, cell = self.init_hidden(num_envs, num_agents)
+
+        # Reshape x to treat each agent of each environment as a separate instance
+        x = x.view(num_steps, batch_size, -1)
+        
+        # Process sequences
+        lstm_outputs, (hidden, cell) = self.lstm(x, (hidden, cell))
+        
+        # Apply the output head to each time step
+        outputs = self.output_head(lstm_outputs.view(-1, self.hidden_size))
+        outputs = outputs.view(num_steps, num_envs, num_agents, -1)
+        
+        # Optionally, handle 'dones' to reset hidden states (not shown here)
+        
+        return outputs, (hidden, cell)
+
+    @property
+    def device(self):
+        """Ensure all tensors are on the same device as the LSTM parameters."""
+        return next(self.parameters()).device
+
+
