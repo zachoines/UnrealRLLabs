@@ -53,7 +53,7 @@ public:
     void Init(FEnvInfo EnvInfo, FTrainParams TrainParams);
 
     UFUNCTION(BlueprintCallable, Category = "SharedMemory")
-    TArray<FAction> GetActions(TArray<FState> States, int NumAgents);
+    TArray<FAction> GetActions(TArray<FState> States, TArray<float> Dones, TArray<float> Truncs, int NumAgents);
 
     UFUNCTION(BlueprintCallable, Category = "SharedMemory")
     void Update(const TArray<FExperienceBatch>& experiences, int NumAgents);

@@ -195,22 +195,6 @@ class MAPocaAgent(Agent):
         self.advantage_normalizer = RunningMeanStdNormalizer(device=self.device)
         
         self.policy_optimizer = optim.AdamW(self.policy.parameters(), lr=self.config.policy_learning_rate)
-        # self.policy_scheduler = CyclicLR(
-        #     self.policy_optimizer, 
-        #     base_lr=self.config.policy_learning_rate/100,  # Lower boundary in the cycle
-        #     max_lr=self.config.policy_learning_rate,    # Upper boundary in the cycle
-        #     step_size_up=100, 
-        #     step_size_down=None,  # If None, it is set to step_size_up
-        #     mode='exp_range',
-        #     gamma=0.99994,  # Factor by which the learning rate decreases each step
-        #     cycle_momentum=False  # Set to False if the optimizer does not use momentum
-        # )
-        # self.policy_scheduler = CosineAnnealingWarmRestarts(
-        #     self.policy_optimizer, 
-        #     T_0=100, 
-        #     T_mult=2, 
-        #     eta_min=self.config.policy_learning_rate/1000
-        # )
         self.policy_scheduler = ModifiedOneCycleLR(
             self.policy_optimizer, 
             max_lr=self.config.policy_learning_rate,
@@ -221,22 +205,6 @@ class MAPocaAgent(Agent):
         ) 
 
         self.shared_critic_optimizer = optim.AdamW(self.shared_critic.parameters(), lr=self.config.value_learning_rate)
-        # self.shared_critic_scheduler = CyclicLR(
-        #     self.shared_critic_optimizer, 
-        #     base_lr=self.config.value_learning_rate/100,  # Lower boundary in the cycle
-        #     max_lr=self.config.value_learning_rate,    # Upper boundary in the cycle
-        #     step_size_up=100, 
-        #     step_size_down=None,  # If None, it is set to step_size_up
-        #     mode='exp_range',
-        #     gamma=0.99994,  # Factor by which the learning rate decreases each step
-        #     cycle_momentum=False  # Set to False if the optimizer does not use momentum
-        # )
-        # self.shared_critic_scheduler = CosineAnnealingWarmRestarts(
-        #     self.policy_optimizer, 
-        #     T_0=100, 
-        #     T_mult=2, 
-        #     eta_min=self.config.value_learning_rate/1000
-        # )
         self.shared_critic_scheduler = ModifiedOneCycleLR(
             self.shared_critic_optimizer, 
             max_lr=self.config.value_learning_rate,
@@ -330,27 +298,6 @@ class MAPocaAgent(Agent):
         loss_clipped = (returns - value_pred_clipped)**2
         loss_unclipped = (returns - values)**2
         value_loss = torch.mean(torch.max(loss_clipped, loss_unclipped))
-        return value_loss
- 
-    def trust_region_value_lossV2(self, values: torch.Tensor, old_values: torch.Tensor, returns: torch.Tensor, epsilon=0.1) -> torch.Tensor:
-        # Calculate mean and standard deviation of the differences
-        differences = values - old_values
-        mean_diff = torch.mean(differences)
-        std_dev_diff = torch.std(differences)
-
-        # Dynamic epsilon based on mean and standard deviation, but capped by a fixed epsilon
-        dynamic_epsilon = min(mean_diff + std_dev_diff, epsilon)
-
-        # Clipping the value predictions
-        value_pred_clipped = old_values + differences.clamp(-dynamic_epsilon, dynamic_epsilon)
-        
-        # Calculating the clipped and unclipped losses
-        loss_clipped = (returns - value_pred_clipped) ** 2
-        loss_unclipped = (returns - values) ** 2
-
-        # Combining the losses
-        value_loss = torch.mean(torch.max(loss_clipped, loss_unclipped))
-
         return value_loss
 
     def value_loss(self, old_values, states, next_states, rewards, dones, truncs):

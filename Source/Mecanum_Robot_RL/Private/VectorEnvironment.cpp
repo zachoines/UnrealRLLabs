@@ -40,18 +40,18 @@ TArray<FState> AVectorEnvironment::ResetEnv(int NumAgents)
     Returns the transition results from the previous step. Does not reset environments, 
     Make sure to call on next tick ofter Step(), otherwise you'll lose that step's transition info.
 */
-TTuple<TArray<bool>, TArray<bool>, TArray<float>, TArray<FAction>, TArray<FState>, TArray<FState>> AVectorEnvironment::Transition()
+TTuple<TArray<float>, TArray<float>, TArray<float>, TArray<FAction>, TArray<FState>, TArray<FState>> AVectorEnvironment::Transition()
 {
-    TArray<bool> Dones;
-    TArray<bool> Truncs;
+    TArray<float> Dones;
+    TArray<float> Truncs;
     TArray<float> Rewards;
     TArray<FState> TmpStates;
     LastStates = CurrentStates;
 
     for (int32 i = 0; i < Environments.Num(); i++)
     {
-        Dones.Add(Environments[i]->Done());
-        Truncs.Add(Environments[i]->Trunc());
+        Dones.Add(static_cast<float>(Environments[i]->Done()));
+        Truncs.Add(static_cast<float>(Environments[i]->Trunc()));
         Rewards.Add(Environments[i]->Reward());
     
         if (Dones[i] || Truncs[i]) {
@@ -69,7 +69,7 @@ TTuple<TArray<bool>, TArray<bool>, TArray<float>, TArray<FAction>, TArray<FState
 
     CurrentStates = TmpStates;
 
-    return TTuple<TArray<bool>, TArray<bool>, TArray<float>, TArray<FAction>, TArray<FState>, TArray<FState>>(
+    return TTuple<TArray<float>, TArray<float>, TArray<float>, TArray<FAction>, TArray<FState>, TArray<FState>>(
         Dones, Truncs, Rewards, LastActions, LastStates, TmpStates
     );
 }

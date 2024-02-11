@@ -112,18 +112,32 @@ class SharedMemoryInterface(EnvCommunicationInterface):
         win32event.WaitForSingleObject(self.states_mutex, win32event.INFINITE)
 
         # Extract the first six floats
+        info_offset = 6
         byte_array = np.frombuffer(self.states_shared_memory.buf, dtype=np.float32)
-        _, _, NumEnvironments, CurrentAgents, StateSize, _ = self.info = np.frombuffer(byte_array[:6], dtype=np.float32).astype(int)
+        _, _, NumEnvironments, CurrentAgents, StateSize, _ = self.info = np.frombuffer(byte_array[:info_offset], dtype=np.float32).astype(int)
 
         # Use the rest of the buffer to create a numpy array for the state
-        state_data = byte_array[6:(NumEnvironments * StateSize) + 6]
+        states_offset = info_offset + (NumEnvironments * StateSize)
+        dones_offset = states_offset + NumEnvironments
+        truncs_offset = dones_offset + NumEnvironments
+
+        state_data = byte_array[info_offset:states_offset]
+        dones_data = byte_array[states_offset:dones_offset]
+        truncs_data = byte_array[dones_offset:truncs_offset] 
         if CurrentAgents > 0: # Multi-agent Environments
             state_array = np.ndarray(shape=(1, NumEnvironments, CurrentAgents, int(StateSize / CurrentAgents)), dtype=np.float32, buffer=state_data)
         else:
             state_array = np.ndarray(shape=(NumEnvironments, StateSize), dtype=np.float32, buffer=state_data)
 
+        dones_array = np.ndarray(shape=(1, NumEnvironments, 1), dtype=np.float32, buffer=dones_data)
+        truncs_array = np.ndarray(shape=(1, NumEnvironments, 1), dtype=np.float32, buffer=truncs_data)
+        
         win32event.ReleaseMutex(self.states_mutex)
-        return torch.tensor(state_array, device=self.device)
+        return (
+            torch.tensor(state_array, device=self.device), 
+            torch.tensor(dones_array, device=self.device), 
+            torch.tensor(truncs_array, device=self.device)
+        )
 
     def send_actions(self, actions: torch.Tensor) -> None:
         win32event.WaitForSingleObject(self.actions_mutex, win32event.INFINITE)

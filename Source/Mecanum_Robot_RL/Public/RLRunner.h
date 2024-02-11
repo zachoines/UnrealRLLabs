@@ -30,7 +30,7 @@ public:
     );
 
     // Get actions from the Python model
-    TArray<FAction> GetActions(TArray<FState> States);
+    TArray<FAction> GetActions(TArray<FState> States, TArray<float> Dones, TArray<float> Truncs);
 
     // Add an experience to the buffer
     void AddExperiences(const TArray<FExperienceBatch>& EnvironmentTrajectories);

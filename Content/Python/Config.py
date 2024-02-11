@@ -107,23 +107,23 @@ class MAPOCAConfig(BaseConfig):
             self, 
             obs_space: ObservationSpace,
             action_space: ActionSpace,
-            embed_size: int = 128,
+            embed_size: int = 256,
             heads: int = 8,
             max_agents: int = 10,
             lambda_: float = 0.95,
             policy_clip: float = 0.2,
             value_clip: float = 0.1,
             hidden_size = 256,
-            entropy_coefficient: float = 0.02,
-            policy_learning_rate: float = 2e-4,
-            value_learning_rate: float = 2e-4,
+            entropy_coefficient: float = 0.05,
+            policy_learning_rate: float = 2.5e-4,
+            value_learning_rate: float = 2.5e-4,
             max_grad_norm: float = 1.0,
             dropout_rate: float = 0.1,
             num_epocs: int = 3,
             num_mini_batches: int = 4,
             normalize_rewards: bool = False,
             normalize_advantages: bool = False,
-            anneal_steps: int = 30000,
+            anneal_steps: int = 60000,
             icm_enabled: bool = False,
             **kwargs
         ):
@@ -236,24 +236,23 @@ class MAPOCALSTMConfig(BaseConfig):
             self, 
             obs_space: ObservationSpace,
             action_space: ActionSpace,
-            embed_size: int = 128,
+            embed_size: int = 256,
             heads: int = 8,
             max_agents: int = 10,
             lambda_: float = 0.95,
-            policy_clip: float = 0.2,
-            value_clip: float = 0.1,
+            policy_clip: float = 0.1,
+            value_clip: float = 0.05,
             hidden_size = 256,
-            entropy_coefficient: float = 0.025,
-            policy_learning_rate: float = 2e-4,
-            value_learning_rate: float = 2e-4,
+            entropy_coefficient: float = 0.05,
+            policy_learning_rate: float = 3e-4,
+            value_learning_rate: float = 3e-4,
             max_grad_norm: float = 1.0,
-            dropout_rate: float = 0.1,
-            num_epocs: int = 2,
+            dropout_rate: float = 0.0,
+            num_epocs: int = 3,
             num_mini_batches: int = 4,
             normalize_rewards: bool = False,
             normalize_advantages: bool = False,
-            anneal_steps: int = 30000,
-            icm_enabled: bool = False,
+            anneal_steps: int = 20000,
             **kwargs
         ):
         super().__init__(
@@ -296,9 +295,15 @@ class MAPOCALSTMConfig(BaseConfig):
                     "dropout_rate": dropout_rate
                 },
                 "value_network": {
-                    "in_features": embed_size + 1,
+                    "in_features": embed_size,
                     "hidden_size" : hidden_size,
                     "dropout_rate": dropout_rate
+                },
+                "Value_LSTM" : {
+                    "in_features": embed_size, 
+                    "output_size": embed_size, 
+                    "num_layers": 1,
+                    "dropout": dropout_rate
                 },
                 "policy" : {
                     "in_features": embed_size,
@@ -309,11 +314,11 @@ class MAPOCALSTMConfig(BaseConfig):
                     "hidden_size": hidden_size,
                     "dropout_rate": dropout_rate
                 },
-                "LSTM" : {
+                "Policy_LSTM" : {
                     "in_features": embed_size, 
-                    "hidden_size": hidden_size, 
                     "output_size": embed_size, 
-                    "num_layers": 1
+                    "num_layers": 1,
+                    "dropout": dropout_rate
                 }
             },
             **kwargs
@@ -330,4 +335,3 @@ class MAPOCALSTMConfig(BaseConfig):
         self.normalize_rewards = normalize_rewards
         self.normalize_advantages = normalize_advantages
         self.anneal_steps = anneal_steps
-        self.icm_enabled = icm_enabled

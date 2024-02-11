@@ -29,7 +29,7 @@ class Agent(nn.Module):
         # This method is already provided by nn.Module, so you might not need to override it unless you have specific requirements.
         pass
 
-    def get_actions(self, states: torch.Tensor, eval: bool = False, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_actions(self, states: torch.Tensor, dones=None, truncs=None, eval: bool = False, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError
     
     def rescaleAction(self, action: torch.Tensor, min: float, max: float) -> torch.Tensor:
@@ -110,6 +110,36 @@ class Agent(nn.Module):
         # Compute bootstrapped targets by adding unnormalized advantages to values 
         targets = values + advantages
         return targets, advantages
+    
+    def compute_targets(self, rewards, terminals, values, values_next):
+            """
+            Compute the target value for each state for the value function update,
+            using Generalized Advantage Estimation (GAE) for smoothing.
+
+            :param rewards: Tensor of rewards received from the environment.
+            :param terminals: Tensor indicating terminal states.
+            :param values: Tensor of value estimates V(s) for each state.
+            :param values_next: Tensor of value estimates V(s') for the next states.
+            :param gamma: Discount factor for future rewards.
+            :param lambda_: Smoothing parameter for GAE.
+            :return: Tensor of target values for each state.
+            """
+            num_steps, _, _ = rewards.shape
+            gae = torch.zeros_like(rewards).to(rewards.device)
+            returns = torch.zeros_like(rewards).to(rewards.device)
+
+            # Handle the last timestep separately as a special case
+            t = num_steps - 1
+            gae[t] = rewards[t] + self.config.gamma * values_next[t] * (1 - terminals[t]) - values[t]  # No gae[t + 1] to accumulate from
+            returns[t] = gae[t] + values[t]
+
+            for t in reversed(range(t)):
+                delta = rewards[t] + self.config.gamma * values_next[t] * (1 - terminals[t]) - values[t]
+                gae[t] = delta + self.config.gamma * self.config.lambda_ * (1 - terminals[t]) * gae[t + 1]
+                returns[t] = gae[t] + values[t]
+
+            return returns
+
     
     def save_train_state(self):
         # Implementation for saving the training state

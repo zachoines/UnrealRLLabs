@@ -40,6 +40,7 @@ void USharedMemoryAgentCommunicator::Init(FEnvInfo EnvInfo, FTrainParams TrainPa
 
     int32 ConfigSize = ConfigJSON.Num() * sizeof(char);
     int32 InfoSize = 6 * sizeof(float);
+    int32 TerminalsMAXSize = params.NumEnvironments * 2 * sizeof(float);
     int32 ActionMAXSize = params.NumEnvironments * NumActions * sizeof(float);
     int32 StatesMAXSize = params.NumEnvironments * StateSize * sizeof(float);
     int32 UpdateMAXSize = params.NumEnvironments * params.BatchSize * ((StateSize * 2) + NumActions + (DoneSize + TruncSize + RewardSize)) * sizeof(float);
@@ -64,7 +65,7 @@ void USharedMemoryAgentCommunicator::Init(FEnvInfo EnvInfo, FTrainParams TrainPa
         NULL,
         PAGE_READWRITE,
         0,
-        StatesMAXSize + InfoSize,
+        StatesMAXSize + InfoSize + TerminalsMAXSize,
         TEXT("StatesSharedMemory")
     );
     if (!StatesSharedMemoryHandle)
@@ -186,7 +187,7 @@ void USharedMemoryAgentCommunicator::WriteConfigToSharedMemory()
     ReleaseMutex(ConfigMutexHandle);
 }
 
-TArray<FAction> USharedMemoryAgentCommunicator::GetActions(TArray<FState> States, int NumAgents)
+TArray<FAction> USharedMemoryAgentCommunicator::GetActions(TArray<FState> States, TArray<float> Dones, TArray<float> Truncs, int NumAgents)
 {
     TArray<FAction> Actions;
 
@@ -211,6 +212,12 @@ TArray<FAction> USharedMemoryAgentCommunicator::GetActions(TArray<FState> States
         FMemory::Memcpy(StateSharedData, state.Values.GetData(), state.Values.Num() * sizeof(float));
         StateSharedData += state.Values.Num();
     }
+
+    FMemory::Memcpy(StateSharedData, Dones.GetData(), Dones.Num() * sizeof(float));
+    StateSharedData += Dones.Num();
+
+    FMemory::Memcpy(StateSharedData, Truncs.GetData(), Truncs.Num() * sizeof(float));
+    StateSharedData += Truncs.Num();
 
     SetEvent(ActionReadyEventHandle);
     WaitForSingleObject(ActionReceivedEventHandle, INFINITE);

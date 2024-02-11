@@ -478,12 +478,7 @@ bool AMultiAgentCubeEnvironment::Done()
         if (AgentOutOfBounds(i) || AgentCollidedWithAgent(i) || AgentWrongGoal(i)) {
             return true;
         }
-        // allGoals = allGoals && AgentGoalReached(i);
     }
-
-    /*if (allGoals) {
-        return true;
-    }*/
 
     return false;
 }
@@ -509,23 +504,11 @@ float AMultiAgentCubeEnvironment::Reward()
         totalrewards += rewards;
     }
  
-    return totalrewards / static_cast<float>(CurrentAgents);
+    return totalrewards; // / static_cast<float>(CurrentAgents);
 }
 
 void AMultiAgentCubeEnvironment::PostTransition() {
-    /*for (int i = 0; i < CurrentAgents; ++i) {
-        if (AgentCollidedWithAgent(i)) {
-            AgentReset(i);
-        }
 
-        if (AgentWrongGoal(i)) {
-            AgentReset(i);
-        }
-
-        if (AgentOutOfBounds(i)) {
-            AgentReset(i);
-        }
-    }*/
 }
 
 void AMultiAgentCubeEnvironment::setCurrentAgents(int NumAgents) {

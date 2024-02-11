@@ -25,7 +25,7 @@ public:
         Perform a step in the environment using the given action :
         Returns transition Tuple for LAST tick: { Done, Trunc, Reward, Action, State, NextState } 
     */
-    TTuple<TArray<bool>, TArray<bool>, TArray<float>, TArray<FAction>, TArray<FState>, TArray<FState>> Transition();
+    TTuple<TArray<float>, TArray<float>, TArray<float>, TArray<FAction>, TArray<FState>, TArray<FState>> Transition();
 
     void Step(TArray<FAction> Actions);
 

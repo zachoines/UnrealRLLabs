@@ -30,10 +30,10 @@ void ARLRunner::InitRunner(
     ExperienceBufferInstance->SetBufferCapacity(TrainParams.BufferSize);
 }
 
-TArray<FAction> ARLRunner::GetActions(TArray<FState> States)
+TArray<FAction> ARLRunner::GetActions(TArray<FState> States, TArray<float> Dones, TArray<float> Truncs)
 {
     if (AgentComm) {
-        return AgentComm->GetActions(States, CurrentAgents);
+        return AgentComm->GetActions(States, Dones, Truncs, CurrentAgents);
     }
     else {
         return VectorEnvironment->SampleActions();
@@ -52,8 +52,8 @@ void ARLRunner::Tick(float DeltaTime)
             FExperience Experience;
             Experience.State = States[i];
             Experience.Action = LastActions[i];
-            Experience.Done = Dones[i];
-            Experience.Trunc = Truncs[i];
+            Experience.Done = static_cast<bool>(Dones[i]);
+            Experience.Trunc = static_cast<bool>(Truncs[i]);
             Experience.Reward = Rewards[i];
             Experience.NextState = NextStates[i];
             Batch.Experiences.Add(Experience);
@@ -77,7 +77,7 @@ void ARLRunner::Tick(float DeltaTime)
     }
     
     // Step through environment
-    TArray<FAction> Actions = GetActions(VectorEnvironment->GetStates());
+    TArray<FAction> Actions = GetActions(VectorEnvironment->GetStates(), Dones, Truncs);
     VectorEnvironment->Step(Actions);
     CurrentStep += 1;
 }

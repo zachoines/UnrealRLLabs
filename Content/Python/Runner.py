@@ -23,11 +23,11 @@ class RLRunner:
             event = self.agentComm.wait_for_event()
             if event == EventType.GET_ACTIONS:
                 
-                states =  self.agentComm.get_states()
+                states, dones, truncs =  self.agentComm.get_states()
                 if self.normalizeStates:
                     self.stateNormalizer.update(states)
                     states = self.stateNormalizer.normalize(states)
-                actions, *other = self.agent.get_actions(states)
+                actions, *other = self.agent.get_actions(states, dones=dones, truncs=truncs)
                 self.agentComm.send_actions(actions)
             elif event == EventType.UPDATE:
                 self.currentUpdate += 1

@@ -5,6 +5,7 @@ from typing import List
 import torch
 import torch.nn as nn
 from typing import List, Tuple
+from torch import Tensor
 import torch.nn.init as init
 
 class DiscretePolicyNetwork(nn.Module):
@@ -135,15 +136,6 @@ class RSA(nn.Module):
     def linear_layer(self, input_size: int, output_size: int) -> torch.nn.Module:
         layer = torch.nn.Linear(input_size, output_size)
         init.xavier_normal_(layer.weight)
-        # kernel_gain = (0.125 / input_size) ** 0.5
-
-        # # Apply normal distribution to weights and scale with kernel_gain
-        # torch.nn.init.normal_(layer.weight.data)
-        # layer.weight.data *= kernel_gain
-
-        # # Initialize biases to zero
-        # torch.nn.init.zeros_(layer.bias.data)
-
         return layer
 
 class StatesEncoder2d(nn.Module):
@@ -286,56 +278,88 @@ class LinearNetwork(nn.Module):
         return self.model(x)
 
 class LSTMNetwork(nn.Module):
-    def __init__(self, in_features: int, hidden_size: int, output_size: int, num_layers: int = 1):
+    def __init__(self, in_features: int, output_size: int, num_layers: int = 1, dropout: float = 1.0):
         super(LSTMNetwork, self).__init__()
         
         self.lstm = nn.LSTM(
             input_size=in_features,
-            hidden_size=hidden_size,
+            hidden_size=output_size,
             num_layers=num_layers,
-            batch_first=False
+            batch_first=False,
+            dropout=dropout
         )
-        
-        self.output_head = nn.Sequential(
-            nn.Linear(hidden_size, output_size),
-            nn.LeakyReLU(),
-        )
-        
+
+        self.init_weights()
+
+        self.hidden_size = output_size
         self.num_layers = num_layers
-        self.hidden_size = hidden_size
+        self.prev_hidden = None
+        self.prev_cell = None
+        self.hidden = None
+        self.cell = None
 
-    def init_hidden(self, num_envs, num_agents):
+    def init_hidden(self, batch_size: int):
         """Initialize the hidden state and cell state for a new batch."""
-        batch_size = num_envs * num_agents
-        hidden = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(self.device)
-        cell = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(self.device)
-        return hidden, cell
+        self.hidden = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(self.device).contiguous()
+        self.cell = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(self.device).contiguous()
 
-    def forward(self, x, hidden=None, cell=None, dones=None):
-        num_steps, num_envs, num_agents, _ = x.size()
-        batch_size = num_envs * num_agents
-        
-        # Check if we need to re-initialize hidden and cell states due to batch size change
-        if hidden is None or cell is None or hidden.size(1) != batch_size:
-            hidden, cell = self.init_hidden(num_envs, num_agents)
+    def get_hidden(self):
+        """Return the current hidden and cell states concatenated."""
+        if self.hidden == None or self.cell == None:
+            return None
+        return torch.cat((self.hidden, self.cell), dim=0) # type: ignore
 
-        # Reshape x to treat each agent of each environment as a separate instance
-        x = x.view(num_steps, batch_size, -1)
-        
-        # Process sequences
-        lstm_outputs, (hidden, cell) = self.lstm(x, (hidden, cell))
-        
-        # Apply the output head to each time step
-        outputs = self.output_head(lstm_outputs.view(-1, self.hidden_size))
-        outputs = outputs.view(num_steps, num_envs, num_agents, -1)
-        
-        # Optionally, handle 'dones' to reset hidden states (not shown here)
-        
-        return outputs, (hidden, cell)
+    def get_prev_hidden(self):
+        """Return the previous hidden and cell states concatenated."""
+        return torch.cat((self.prev_hidden, self.prev_cell), dim=0) # type: ignore
+
+    def set_hidden(self, hidden):
+        """Set the hidden state and cell state to a specific value."""
+        self.hidden, self.cell = torch.split(hidden.clone(), hidden.size(0) // 2, dim=0)
+
+    def forward(self, x, dones=None, input_hidden=None):
+        seq_length, batch_size, *_ = x.size() 
+
+        # Enforce internal hidden state
+        if self.hidden is None or self.hidden.size(1) != batch_size or self.cell is None or self.cell.size(1) != batch_size:
+            self.init_hidden(batch_size)
+
+        # Process each sequence step, taking dones into consideration
+        lstm_outputs = []
+
+        # Set the hidden and cell states
+        if input_hidden is not None:
+            self.set_hidden(input_hidden)
+
+        hidden_outputs = torch.zeros(seq_length, self.num_layers * 2, batch_size, self.hidden_size).to(self.device)
+        for t in range(seq_length):
+            
+            # Reset hidden and cell states for environments that are done
+            if dones is not None:
+                mask = dones[t].to(dtype=torch.bool, device=self.device).view(1, batch_size, 1)
+                self.hidden = self.hidden * (~mask)
+                self.cell = self.cell * (~mask)
+
+            self.prev_hidden = self.hidden
+            self.prev_cell = self.cell
+            hidden_outputs[t] = self.get_hidden()
+            lstm_output, (self.hidden, self.cell) = self.lstm(x[t].unsqueeze(0), (self.hidden, self.cell)) # type: ignore
+            lstm_outputs.append(lstm_output)
+
+        lstm_outputs = torch.cat(lstm_outputs, dim=0)
+        return lstm_outputs, hidden_outputs
 
     @property
-    def device(self):
-        """Ensure all tensors are on the same device as the LSTM parameters."""
+    def device(self) -> torch.device:
+        """Device property to ensure tensors are on the same device as the model."""
         return next(self.parameters()).device
-
-
+    
+    def init_weights(self):
+        """Initialize weights."""
+        for name, param in self.lstm.named_parameters():
+            if 'weight_ih' in name:
+                init.xavier_normal_(param.data)
+            elif 'weight_hh' in name:
+                init.xavier_normal_(param.data)
+            elif 'bias' in name: 
+                param.data.fill_(0)
