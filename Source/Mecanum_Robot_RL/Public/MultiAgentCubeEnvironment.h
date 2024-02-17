@@ -73,8 +73,8 @@ private:
     
     // Constant
     const int GridSize = 10;
-    const int MaxSteps = 64;
-    const float AgentVisibility = 4;
+    const int MaxSteps = 32;
+    const float AgentVisibility = 3;
     const float MaxAgents = 10;
 
     // State Variables
@@ -121,5 +121,6 @@ private:
     TArray<float> AgentGetState(int AgentIndex);
     int Get1DIndexFromPoint(const FIntPoint& point, int gridSize);
     float GridDistance(const FIntPoint& Point1, const FIntPoint& Point2);
+    float map(float x, float in_min, float in_max, float out_min, float out_max);
 };
 

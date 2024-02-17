@@ -130,7 +130,7 @@ class DiscreteMultiAgentICM(nn.Module):
         self.icm_beta = self.config.networks["ICM"]["icm_beta"]
         self.embed_size = self.config.networks["ICM"]["embed_size"] 
         self.rsa = RSA(**self.config.networks["ICM"]["rsa"])
-        self.state_encoder = StatesEncoder2d(**self.config.networks["ICM"]["state_encoder2d"])
+        self.state_encoder = StatesEncoder(**self.config.networks["ICM"]["state_encoder"])
         self.forward_head = LinearNetwork(**self.config.networks["ICM"]["forward_head"])
         self.positional_encodings = PositionalEncoding(state_embedding_size=self.embed_size, max_seq_length=self.config.max_agents)
         self.inverse_head = LinearNetwork(**self.config.networks["ICM"]["inverse_head"])

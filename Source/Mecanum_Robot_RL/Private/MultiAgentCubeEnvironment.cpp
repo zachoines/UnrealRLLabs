@@ -498,13 +498,16 @@ float AMultiAgentCubeEnvironment::Reward()
     float totalrewards = 0.0;
 
     for (int i = 0; i < CurrentAgents; ++i){
-
-        float rewards = -0.0001;
-        rewards += (AgentOutOfBounds(i) || AgentCollidedWithAgent(i) || AgentWrongGoal(i)) ? -1 : AgentGoalReached(i) ? 1.0 : 0.0;
+        float rewards = 0.0;
+        // float normalized_distance = std::clamp(GridDistance(AgentGoalPositions[i].Key, AgentGoalPositions[i].Value) / (sqrtf(2.0) * static_cast<float>(GridSize)), 0.0f, 1.0f);
+        // rewards += (AgentOutOfBounds(i) || AgentCollidedWithAgent(i) || AgentWrongGoal(i)) ? -1.0 : 0.0;
+        // map(-normalized_distance, -1.0, 0.0, 0.0, 1.0);
+        rewards += AgentGoalReached(i) ? 1.0 : -0.00125;
         totalrewards += rewards;
+        // totalrewards += (AgentOutOfBounds(i) || AgentCollidedWithAgent(i) || AgentWrongGoal(i)) ? -1.0 : AgentGoalReached(i) ? 1.0 : -0.0001;
     }
  
-    return totalrewards; // / static_cast<float>(CurrentAgents);
+    return totalrewards / static_cast<float>(CurrentAgents);
 }
 
 void AMultiAgentCubeEnvironment::PostTransition() {
@@ -513,6 +516,10 @@ void AMultiAgentCubeEnvironment::PostTransition() {
 
 void AMultiAgentCubeEnvironment::setCurrentAgents(int NumAgents) {
     CurrentAgents = NumAgents;
+}
+
+float AMultiAgentCubeEnvironment::map(float x, float in_min, float in_max, float out_min, float out_max) {
+    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
 AStaticMeshActor* AMultiAgentCubeEnvironment::InitializeCube()

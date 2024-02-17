@@ -80,7 +80,7 @@ class Agent(nn.Module):
         return td_lambda_returns
 
     
-    def compute_gae_and_targets(self, rewards: torch.Tensor, dones: torch.Tensor, truncs: torch.Tensor, values: torch.Tensor, next_values: torch.Tensor):
+    def compute_gae_and_targets(self, rewards: torch.Tensor, terminals: torch.Tensor, values: torch.Tensor, next_values: torch.Tensor):
         """
         Compute GAE and bootstrapped targets for PPO.
 
@@ -102,7 +102,7 @@ class Agent(nn.Module):
         last_gae_lam = 0
 
         for t in reversed(range(batch_size)):
-            non_terminal = 1.0 - torch.clamp(dones[t, :] + truncs[t, :], 0.0, 1.0)
+            non_terminal = 1.0 - terminals[t, :]
             delta = (rewards[t, :] + (self.config.gamma * next_values[t, :] * non_terminal)) - values[t, :]
             last_gae_lam = delta + (self.config.gamma * self.config.lambda_ * non_terminal * last_gae_lam)
             advantages[t, :] = last_gae_lam * non_terminal
@@ -112,34 +112,33 @@ class Agent(nn.Module):
         return targets, advantages
     
     def compute_targets(self, rewards, terminals, values, values_next):
-            """
-            Compute the target value for each state for the value function update,
-            using Generalized Advantage Estimation (GAE) for smoothing.
+        """
+        Compute the target value for each state for the value function update,
+        using Generalized Advantage Estimation (GAE) for smoothing.
 
-            :param rewards: Tensor of rewards received from the environment.
-            :param terminals: Tensor indicating terminal states.
-            :param values: Tensor of value estimates V(s) for each state.
-            :param values_next: Tensor of value estimates V(s') for the next states.
-            :param gamma: Discount factor for future rewards.
-            :param lambda_: Smoothing parameter for GAE.
-            :return: Tensor of target values for each state.
-            """
-            num_steps, _, _ = rewards.shape
-            gae = torch.zeros_like(rewards).to(rewards.device)
-            returns = torch.zeros_like(rewards).to(rewards.device)
+        :param rewards: Tensor of rewards received from the environment.
+        :param terminals: Tensor indicating terminal states.
+        :param values: Tensor of value estimates V(s) for each state.
+        :param values_next: Tensor of value estimates V(s') for the next states.
+        :param gamma: Discount factor for future rewards.
+        :param lambda_: Smoothing parameter for GAE.
+        :return: Tensor of target values for each state.
+        """
+        num_steps, _, _ = rewards.shape
+        gae = torch.zeros_like(rewards).to(rewards.device)
+        returns = torch.zeros_like(rewards).to(rewards.device)
 
-            # Handle the last timestep separately as a special case
-            t = num_steps - 1
-            gae[t] = rewards[t] + self.config.gamma * values_next[t] * (1 - terminals[t]) - values[t]  # No gae[t + 1] to accumulate from
+        # Handle the last timestep separately as a special case
+        t = num_steps - 1
+        gae[t] = rewards[t] + self.config.gamma * values_next[t] * (1 - terminals[t]) - values[t]  # No gae[t + 1] to accumulate from
+        returns[t] = gae[t] + values[t]
+
+        for t in reversed(range(t)):
+            delta = rewards[t] + self.config.gamma * values_next[t] * (1 - terminals[t]) - values[t]
+            gae[t] = delta + self.config.gamma * self.config.lambda_ * (1 - terminals[t]) * gae[t + 1]
             returns[t] = gae[t] + values[t]
 
-            for t in reversed(range(t)):
-                delta = rewards[t] + self.config.gamma * values_next[t] * (1 - terminals[t]) - values[t]
-                gae[t] = delta + self.config.gamma * self.config.lambda_ * (1 - terminals[t]) * gae[t + 1]
-                returns[t] = gae[t] + values[t]
-
-            return returns
-
+        return returns
     
     def save_train_state(self):
         # Implementation for saving the training state

@@ -16,15 +16,15 @@ class SharedCriticLSTM(nn.Module):
     def __init__(self, config):
         super(SharedCriticLSTM, self).__init__()
         self.config = config
-        self.RSA = RSA(**self.config.networks["RSA"])
-        self.value = ValueNetwork(**self.config.networks["value_network"])
-        self.baseline = ValueNetwork(**self.config.networks["value_network"])
-        self.state_encoder = StatesEncoder(**self.config.networks["state_encoder"])
-        self.state_action_encoder = StatesActionsEncoder(**self.config.networks["state_action_encoder"])
-        self.positional_encodings = PositionalEncoding(state_embedding_size=self.config.embed_size, max_seq_length=self.config.max_agents)
+        self.RSA = RSA(**self.config.networks["value_network"]["RSA"])
+        self.value = ValueNetwork(**self.config.networks["value_network"]["value_head"])
+        self.baseline = ValueNetwork(**self.config.networks["value_network"]["value_head"])
+        self.state_encoder = StatesEncoder(**self.config.networks["value_network"]["state_encoder"])
+        self.state_action_encoder = StatesActionsEncoder(**self.config.networks["value_network"]["state_action_encoder"])
+        self.positional_encodings = PositionalEncoding(state_embedding_size=self.config.networks["value_network"]["RSA"]["embed_size"], max_seq_length=self.config.max_agents)
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.lstm_layer_value = LSTMNetwork(**self.config.networks["Value_LSTM"])
-        self.lstm_layer_baseline = LSTMNetwork(**self.config.networks["Value_LSTM"])
+        self.lstm_layer_value = LSTMNetwork(**self.config.networks["value_network"]["LSTM"])
+        self.lstm_layer_baseline = LSTMNetwork(**self.config.networks["value_network"]["LSTM"])
 
     def baselines(self, batched_agent_states: torch.Tensor, batched_groupmates_states: torch.Tensor, batched_groupmates_actions: torch.Tensor, states: torch.Tensor, actions: torch.Tensor, terminals: torch.Tensor=None, memory_state: torch.Tensor=None) -> torch.Tensor:
         # Reshape to combine steps and envs to simple batched dim
@@ -41,42 +41,41 @@ class SharedCriticLSTM(nn.Module):
         agent_state_encoded = self.state_encoder(batched_agent_states).contiguous().view(num_steps * num_envs * num_agents, 1, -1)
 
         # Combine agent state encoding with groupmates' state-action encodings
-        combined_states_actions = torch.cat([agent_state_encoded, groupmates_states_actions_encoded], dim=1).contiguous()
+        combined_states_actions = torch.cat([
+            agent_state_encoded, 
+            groupmates_states_actions_encoded], 
+            dim=1
+        ).contiguous()
 
         # Pass the combined tensor through RSA
-        rsa_out = self.RSA(combined_states_actions)
+        rsa_out = self.RSA(self.positional_encodings(combined_states_actions))
         
-        # Mean pool over the second dimension (num_agents)
-        rsa_output_mean = rsa_out.mean(dim=1)
+        # Mean or Max pool over the second dimension (num_agents)
+        # rsa_output_mean = rsa_out.mean(dim=1)
+        rsa_out, _ = torch.max(rsa_out, dim=1)
     
-        # Inform currrent number of agents
-        # num_agents_tensor = torch.full((num_steps * num_envs * num_agents, 1), num_agents/self.config.max_agents).to(self.device)
-        # rsa_output_mean = torch.cat([rsa_output_mean, num_agents_tensor], dim=-1)
-
         # Temporal procesing through LSTM
-        rsa_output_mean = rsa_output_mean.contiguous().view(num_steps, num_envs * num_agents, self.config.embed_size)
+        rsa_out = rsa_out.contiguous().view(num_steps, num_envs * num_agents, self.config.networks["value_network"]["RSA"]["embed_size"])
         agent_terminals = terminals.repeat_interleave(num_agents, dim=2).view(num_steps, num_envs * num_agents, 1)
-        lstm_out, memory_states = self.lstm_layer_baseline(rsa_output_mean, dones=agent_terminals, input_hidden=memory_state)
+        lstm_out, memory_states = self.lstm_layer_baseline(rsa_out, dones=agent_terminals, input_hidden=memory_state)
         
         # Get the baselines for all agents from the value network
         baselines = self.baseline(lstm_out)
         return baselines.contiguous().view(num_steps, num_envs, num_agents, 1), memory_states
         
     def values(self, x: torch.Tensor, terminals: torch.Tensor=None, memory_state: torch.Tensor=None) -> torch.Tensor:
-        num_steps, num_envs, num_agents, state_size = x.shape
+        num_steps, num_envs, num_agents, _ = x.shape
         x = self.state_encoder(x)
-        # num_agents_tensor = torch.full((num_steps * num_envs, 1), num_agents/self.config.max_agents).to(self.device)
-        # x = torch.cat([x, num_agents_tensor], dim=-1)
-        x = x.contiguous().view(num_steps, num_envs * num_agents, self.config.embed_size)
-        agent_terminals = terminals.repeat_interleave(num_agents, dim=2).view(num_steps, num_envs * num_agents, 1)
+        x = x.contiguous().view(num_steps * num_envs, num_agents, self.config.networks["value_network"]["state_encoder"]["output_size"])
+        x = self.RSA(self.positional_encodings(x))
+        x = x.contiguous().view(num_steps, num_envs * num_agents, self.config.networks["value_network"]["RSA"]["embed_size"])
         x, memory_states = self.lstm_layer_value(
-            x, 
-            dones=agent_terminals, 
+            x,
+            dones=terminals.repeat_interleave(num_agents, dim=2).view(num_steps, num_envs * num_agents, 1), 
             input_hidden=memory_state
         )
-        x = x.view(num_steps * num_envs, num_agents, self.config.embed_size)
-        x = self.RSA(x)
-        x = torch.mean(x, dim=1).squeeze()
+        x = x.contiguous().view(num_steps * num_envs, num_agents, self.config.networks["value_network"]["LSTM"]["output_size"])
+        x, _ = torch.max(x, dim=1)
         values = self.value(x)
         return values.contiguous().view(num_steps, num_envs, 1), memory_states 
     
@@ -88,32 +87,31 @@ class PolicyNetworkLSTM(nn.Module):
         super(PolicyNetworkLSTM, self).__init__()
         self.config = config
         if self.config.action_space.has_discrete() and not self.config.action_space.has_continuous():
-            if isinstance(self.config.networks["policy"]["out_features"], list):
+            if isinstance(self.config.networks["policy_network"]["policy_head"]["out_features"], list):
                 raise NotImplementedError("Only support for one discrete branch currently!")
             
             self.policy = DiscretePolicyNetwork(
-                **self.config.networks["policy"]
+                **self.config.networks["policy_network"]["policy_head"]
             )
         else:
             raise NotImplementedError("No support for continuous actions yet!")
-        self.state_encoder = StatesEncoder(**self.config.networks["state_encoder"])
-        self.RSA = RSA(**self.config.networks["RSA"])
-        self.positional_encodings = PositionalEncoding(state_embedding_size=self.config.embed_size, max_seq_length=self.config.max_agents)
-        self.lstm_layer = LSTMNetwork(**self.config.networks["Policy_LSTM"])
+        self.state_encoder = StatesEncoder(**self.config.networks["policy_network"]["state_encoder"])
+        self.RSA = RSA(**self.config.networks["policy_network"]["RSA"])
+        self.positional_encodings = PositionalEncoding(state_embedding_size=self.config.networks["policy_network"]["RSA"]["embed_size"], max_seq_length=self.config.max_agents)
+        self.lstm_layer = LSTMNetwork(**self.config.networks["policy_network"]["LSTM"])
 
     def probabilities(self, x: torch.Tensor, terminals: torch.Tensor=None, memory_state: torch.Tensor=None):
-        num_steps, num_envs, num_agents, state_size = x.shape
+        num_steps, num_envs, num_agents, _ = x.shape
         x = self.state_encoder(x)
-        x = x.contiguous().view(num_steps, num_envs * num_agents, self.config.embed_size)
-        agent_terminals = terminals.repeat_interleave(num_agents, dim=2).view(num_steps, num_envs * num_agents, 1)
+        x = x.contiguous().view(num_steps * num_envs, num_agents, self.config.networks["policy_network"]["state_encoder"]["output_size"])
+        x = self.RSA(self.positional_encodings(x))
+        x = x.contiguous().view(num_steps, num_envs * num_agents, self.config.networks["policy_network"]["RSA"]["embed_size"])
         x, memory_states = self.lstm_layer(
             x, 
-            dones=agent_terminals, 
+            dones=terminals.repeat_interleave(num_agents, dim=2).view(num_steps, num_envs * num_agents, 1), 
             input_hidden=memory_state
         )
-        x = x.contiguous().view(num_steps * num_envs, num_agents, self.config.embed_size)
-        x = self.RSA(self.positional_encodings(x))
-        x = x.contiguous().view(num_steps, num_envs, num_agents, self.config.embed_size)
+        x = x.contiguous().view(num_steps, num_envs, num_agents, self.config.networks["policy_network"]["LSTM"]["output_size"])
         return self.policy(x), memory_states
     
     def log_probs(self, states: torch.Tensor, actions: torch.Tensor, terminals: torch.Tensor=None, memory_state: torch.Tensor=None):
@@ -140,7 +138,8 @@ class MAPocaLSTMAgent(Agent):
             max_lr=self.config.policy_learning_rate,
             total_steps=self.config.anneal_steps,
             anneal_strategy='cos',
-            pct_start=0.20,
+            pct_start=0.10,
+            div_factor=100,
             final_div_factor=1000,
         ) 
         self.shared_critic_optimizer = optim.AdamW(self.shared_critic.parameters(), lr=self.config.value_learning_rate)
@@ -149,17 +148,30 @@ class MAPocaLSTMAgent(Agent):
             max_lr=self.config.value_learning_rate,
             total_steps=self.config.anneal_steps,
             anneal_strategy='cos',
-            pct_start=0.20,
+            pct_start=0.10,
+            div_factor=100,
             final_div_factor=1000,
         )
         self.entropy_scheduler = OneCycleCosineScheduler(
-            self.config.entropy_coefficient, self.config.anneal_steps, pct_start=0.20, div_factor=1.0, final_div_factor=1000
+            self.config.entropy_coefficient, 
+            self.config.anneal_steps,
+            pct_start=0.10, 
+            div_factor=1.0,
+            final_div_factor=100
         )
         self.policy_clip_scheduler = OneCycleCosineScheduler(
-            self.config.policy_clip, self.config.anneal_steps, pct_start=0.20, div_factor=2.0, final_div_factor=10.0
+            self.config.policy_clip, 
+            self.config.anneal_steps, 
+            pct_start=0.10, 
+            div_factor=1.0, 
+            final_div_factor=2.0
         )
         self.value_clip_scheduler = OneCycleCosineScheduler(
-            self.config.value_clip, self.config.anneal_steps, pct_start=0.20, div_factor=2.0, final_div_factor=10.0
+            self.config.value_clip, 
+            self.config.anneal_steps, 
+            pct_start=0.10, 
+            div_factor=1.0, 
+            final_div_factor=100.0
         )
         self.last_memory_state = None, None, None
 
@@ -167,7 +179,7 @@ class MAPocaLSTMAgent(Agent):
         if isinstance(x, tuple):
             return tuple(item.to(device=self.gpu_device) for item in x)
         return x.to(device=self.device)
-
+ 
     def to_cpu(self, x):
         if isinstance(x, tuple):
             return tuple(item.to(device=self.cpu_device) for item in x)
@@ -218,8 +230,24 @@ class MAPocaLSTMAgent(Agent):
         batched_groupmates_actions = torch.cat(groupmates_actions_list, dim=2).contiguous()
         return batched_agent_states, batched_groupmates_states, batched_groupmates_actions
     
-    def trust_region_value_loss(self, values: torch.Tensor, old_values: torch.Tensor, returns: torch.Tensor, epsilon=0.1) -> torch.Tensor:
-        value_pred_clipped = old_values + (values - old_values).clamp(-epsilon, epsilon)
+
+    def AgentGroupMatesStates(self, states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        _, _, num_agents, _ = states.shape
+        
+        agent_states_list = []
+        groupmates_states_list = []
+
+        for agent_idx in range(num_agents):
+            agent_states_list.append(states[:, :, agent_idx, :].unsqueeze(2))
+            groupmates_states_list.append(torch.cat([states[:, :, :agent_idx, :], states[:, :, agent_idx+1:, :]], dim=2).unsqueeze(2))
+
+        batched_agent_states = torch.cat(agent_states_list, dim=2).unsqueeze(3).contiguous()
+        batched_groupmates_states = torch.cat(groupmates_states_list, dim=2).contiguous()
+        return batched_agent_states, batched_groupmates_states
+    
+    def trust_region_value_loss(self, values: torch.Tensor, old_values: torch.Tensor, returns: torch.Tensor, epsilon=0.10) -> torch.Tensor:
+        diffs = values - old_values
+        value_pred_clipped = old_values + (diffs).clamp(-epsilon, epsilon)
         loss_clipped = (returns - value_pred_clipped)**2
         loss_unclipped = (returns - values)**2
         value_loss = torch.mean(torch.max(loss_clipped, loss_unclipped))
@@ -242,7 +270,7 @@ class MAPocaLSTMAgent(Agent):
             self.value_clip_scheduler.value()
         )
         return loss, targets
-    
+
     def baseline_loss(self, states: torch.Tensor, actions: torch.Tensor, old_baselines: torch.Tensor, agent_states: torch.Tensor, groupmates_states: torch.Tensor, groupmates_actions: torch.Tensor, targets: torch.Tensor, terminals: torch.Tensor=None, memory_state: torch.Tensor=None) -> Tuple[torch.Tensor, torch.Tensor]:
         _, _, num_agents, _ = states.shape
         total_loss = torch.tensor(0.0).to(self.device)
@@ -372,12 +400,10 @@ class MAPocaLSTMAgent(Agent):
 
             # Process each mini-batch
             for start_idx in mini_batch_start_indices:
-
-                # Mini-batch indices
                 end_idx = min(start_idx + mini_batch_size, states.size(0))
                 ids = slice(start_idx, end_idx)
 
-                # Extract mini-batch data
+                # Extract mini-batch data; Place onto device
                 with torch.no_grad():
                     mb_batched_agent_states = self.to_gpu(batched_agent_states[ids])
                     mb_batched_groupmates_states = self.to_gpu(batched_groupmates_states[ids])
@@ -437,8 +463,7 @@ class MAPocaLSTMAgent(Agent):
 
                 # Perform backpropagations
                 policy_loss = (loss_policy - (self.entropy_scheduler.value() * entropy.mean()))
-                shared_critic_loss = loss_value + (0.5 * loss_baseline)
-                total_loss = policy_loss + shared_critic_loss 
+                shared_critic_loss = loss_value + loss_baseline 
                 policy_loss.backward()
                 shared_critic_loss.backward()
 
@@ -455,7 +480,7 @@ class MAPocaLSTMAgent(Agent):
                 self.policy_clip_scheduler.step()
 
                 # Accumulate Metrics
-                total_loss_combined += [total_loss]
+                total_loss_combined += [policy_loss + shared_critic_loss]
                 total_loss_policy += [loss_policy]
                 total_loss_value += [loss_value]
                 total_loss_baseline += [loss_baseline]
@@ -469,7 +494,7 @@ class MAPocaLSTMAgent(Agent):
         
         self.set_memory_state(*self.last_memory_state)
         return {
-            "Total Loss": total_loss_combined,
+            # "Total Loss": total_loss_combined,
             "Policy Loss": total_loss_policy,
             "Value Loss": total_loss_value,
             "Baseline Loss": total_loss_baseline,
