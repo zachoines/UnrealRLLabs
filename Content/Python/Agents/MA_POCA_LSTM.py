@@ -96,15 +96,47 @@ class PolicyNetworkLSTM(nn.Module):
         else:
             raise NotImplementedError("No support for continuous actions yet!")
         self.state_encoder = StatesEncoder(**self.config.networks["policy_network"]["state_encoder"])
+        self.groupmate_encoder = StatesEncoder(**self.config.networks["policy_network"]["state_encoder"])
         self.RSA = RSA(**self.config.networks["policy_network"]["RSA"])
         self.positional_encodings = PositionalEncoding(state_embedding_size=self.config.networks["policy_network"]["RSA"]["embed_size"], max_seq_length=self.config.max_agents)
         self.lstm_layer = LSTMNetwork(**self.config.networks["policy_network"]["LSTM"])
 
-    def probabilities(self, x: torch.Tensor, terminals: torch.Tensor=None, memory_state: torch.Tensor=None):
-        num_steps, num_envs, num_agents, _ = x.shape
-        x = self.state_encoder(x)
-        x = x.contiguous().view(num_steps * num_envs, num_agents, self.config.networks["policy_network"]["state_encoder"]["output_size"])
+    def AgentGroupMatesStates(self, states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        _, num_envs, num_agents, _ = states.shape
+        
+        agent_states_list = []
+        groupmates_states_list = []
+
+        for agent_idx in range(num_agents):
+            agent_states_list.append(states[:, :, agent_idx, :].unsqueeze(2))
+            groupmates_states_list.append(torch.cat([states[:, :, :agent_idx, :], states[:, :, agent_idx+1:, :]], dim=2).unsqueeze(2))
+
+        batched_agent_states = torch.cat(agent_states_list, dim=2).unsqueeze(3).contiguous()
+        batched_groupmates_states = torch.cat(groupmates_states_list, dim=2).contiguous()
+        return batched_agent_states, batched_groupmates_states
+    
+    def probabilities(self, states: torch.Tensor, batched_agent_states: torch.Tensor, batched_groupmates_states: torch.Tensor, terminals: torch.Tensor=None, memory_state: torch.Tensor=None):
+        num_steps, num_envs, num_agents, state_size = states.shape
+        batched_agent_states = batched_agent_states.contiguous().view(num_steps * num_envs * num_agents, 1, state_size)
+        batched_groupmates_states = batched_groupmates_states.contiguous().view(num_steps * num_envs * num_agents, num_agents - 1, state_size)
+
+        # Encode the agent's states
+        agent_state_encoded = self.state_encoder(batched_agent_states).contiguous().view(num_steps * num_envs * num_agents, 1, -1)
+        groupmates_states_encoded = self.groupmate_encoder(batched_groupmates_states).view(num_steps * num_envs * num_agents, num_agents - 1, -1)
+
+        # Combine agent state encoding with groupmates' state-action encodings
+        x = torch.cat([
+            agent_state_encoded, 
+            groupmates_states_encoded], 
+            dim=1
+        ).contiguous()
+
+        # Pass the combined tensor through RSA
         x = self.RSA(self.positional_encodings(x))
+        
+        # Mean or Max pool over the second dimension (num_agents)
+        x, _ = torch.max(x, dim=1)
+    
         x = x.contiguous().view(num_steps, num_envs * num_agents, self.config.networks["policy_network"]["RSA"]["embed_size"])
         x, memory_states = self.lstm_layer(
             x, 
@@ -114,13 +146,19 @@ class PolicyNetworkLSTM(nn.Module):
         x = x.contiguous().view(num_steps, num_envs, num_agents, self.config.networks["policy_network"]["LSTM"]["output_size"])
         return self.policy(x), memory_states
     
-    def log_probs(self, states: torch.Tensor, actions: torch.Tensor, terminals: torch.Tensor=None, memory_state: torch.Tensor=None):
-        probs, memory_states = self.probabilities(states, terminals, memory_state)
+    def log_probs(self, states: torch.Tensor, batched_agent_states: torch.Tensor, batched_groupmates_states: torch.Tensor, actions: torch.Tensor, terminals: torch.Tensor=None, memory_state: torch.Tensor=None):
+        probs, memory_states = self.probabilities(
+            states, 
+            batched_agent_states, 
+            batched_groupmates_states, 
+            terminals, 
+            memory_state
+        )
         m = dist.Categorical(probs=probs)
         return m.log_prob(actions.squeeze(-1)), m.entropy(), memory_states
 
-    def forward(self, x, terminals: torch.Tensor=None, memory_state: torch.Tensor=None):
-        return self.probabilities(x, terminals, memory_state)
+    def forward(self, x):
+        pass # TODO
     
 class MAPocaLSTMAgent(Agent):
     def __init__(self, config: MAPOCAConfig):
@@ -188,7 +226,8 @@ class MAPocaLSTMAgent(Agent):
     def get_actions(self, states: torch.Tensor, dones: torch.Tensor, truncs: torch.Tensor, eval: bool=False):
         if self.config.action_space.has_discrete():
             self.policy.eval() # To disable dropout 
-            probabilities, _ = self.policy.probabilities(states, torch.logical_or(dones, truncs))
+            agent_states, groupmates_states = self.policy.AgentGroupMatesStates(states)
+            probabilities, _ = self.policy.probabilities(states, agent_states, groupmates_states, torch.logical_or(dones, truncs))
             m = dist.Categorical(probs=probabilities)
             
             if eval:  
@@ -229,21 +268,6 @@ class MAPocaLSTMAgent(Agent):
         batched_groupmates_states = torch.cat(groupmates_states_list, dim=2).contiguous()
         batched_groupmates_actions = torch.cat(groupmates_actions_list, dim=2).contiguous()
         return batched_agent_states, batched_groupmates_states, batched_groupmates_actions
-    
-
-    def AgentGroupMatesStates(self, states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        _, _, num_agents, _ = states.shape
-        
-        agent_states_list = []
-        groupmates_states_list = []
-
-        for agent_idx in range(num_agents):
-            agent_states_list.append(states[:, :, agent_idx, :].unsqueeze(2))
-            groupmates_states_list.append(torch.cat([states[:, :, :agent_idx, :], states[:, :, agent_idx+1:, :]], dim=2).unsqueeze(2))
-
-        batched_agent_states = torch.cat(agent_states_list, dim=2).unsqueeze(3).contiguous()
-        batched_groupmates_states = torch.cat(groupmates_states_list, dim=2).contiguous()
-        return batched_agent_states, batched_groupmates_states
     
     def trust_region_value_loss(self, values: torch.Tensor, old_values: torch.Tensor, returns: torch.Tensor, epsilon=0.10) -> torch.Tensor:
         diffs = values - old_values
@@ -300,8 +324,15 @@ class MAPocaLSTMAgent(Agent):
 
         return total_loss / num_agents, advantages
     
-    def policy_loss(self, prev_log_probs: torch.Tensor, advantages: torch.Tensor, states: torch.Tensor, actions: torch.Tensor, terminals: torch.Tensor=None, memory_state: torch.Tensor=None):
-        log_probs, entropy, _ = self.policy.log_probs(states, actions, terminals, memory_state)
+    def policy_loss(self, states: torch.Tensor, batched_agent_states: torch.Tensor, batched_groupmates_states: torch.Tensor, prev_log_probs: torch.Tensor, advantages: torch.Tensor, actions: torch.Tensor, terminals: torch.Tensor=None, memory_state: torch.Tensor=None):
+        log_probs, entropy, _ = self.policy.log_probs(
+            states,
+            batched_agent_states,
+            batched_groupmates_states,
+            actions, 
+            terminals, 
+            memory_state
+        )
         ratio = torch.exp(log_probs - prev_log_probs)
         loss_policy = -torch.mean(
             torch.min(
@@ -343,13 +374,16 @@ class MAPocaLSTMAgent(Agent):
          
             # For trust region loss
             terminals = torch.logical_or(dones.to(dtype=torch.bool), truncs.to(dtype=torch.bool)).float()
+            
+            batched_agent_states, batched_groupmates_states, batched_groupmates_actions = self.AgentGroupMatesStatesActions(states, actions)
             old_log_probs, _, old_policy_memory = self.policy.log_probs(
-                states, 
+                states,
+                batched_agent_states, 
+                batched_groupmates_states,
                 actions, 
                 terminals, 
                 last_policy_memory
             )
-            batched_agent_states, batched_groupmates_states, batched_groupmates_actions = self.AgentGroupMatesStatesActions(states, actions)
             old_baselines, old_baseline_memory = self.shared_critic.baselines(
                 batched_agent_states, 
                 batched_groupmates_states, 
@@ -453,9 +487,11 @@ class MAPocaLSTMAgent(Agent):
                     # mb_advantages = self.advantage_normalizer.normalize(mb_advantages)
                 
                 loss_policy, entropy = self.policy_loss(
+                    mb_states,
+                    mb_batched_agent_states,
+                    mb_batched_groupmates_states,
                     mb_old_log_probs, 
                     mb_advantages, 
-                    mb_states, 
                     mb_actions,
                     terminals=mb_terminals,
                     memory_state=mb_old_policy_memory[0, :],

@@ -2,6 +2,7 @@ from Config import MAPOCALSTMConfig, MAPOCAConfig, TrainInfo, ObservationSpace, 
 from Agents import Agent
 from Agents.MA_POCA import *
 from Agents.MA_POCA_LSTM import *
+from Agents.MA_POCA_LSTM_V2 import *
 from Agents.A2C import *
 from Environment import SharedMemoryInterface
 from Runner import RLRunner
@@ -12,8 +13,8 @@ if __name__ == "__main__":
     train_info = TrainInfo(**config["TrainInfo"])
     obs_space = ObservationSpace(config['EnvironmentInfo']['StateSize'], **config['EnvironmentInfo']['MultiAgent'])
     action_space = ActionSpace(**config['EnvironmentInfo']['ActionSpace'])
-    agent = MAPocaLSTMAgent(
-        MAPOCALSTMConfig(
+    agent = MAPocaLSTMAgentLight(
+        MAPOCA_LSTM_Light_Config(
             obs_space,
             action_space
         )

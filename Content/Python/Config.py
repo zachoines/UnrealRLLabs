@@ -243,9 +243,9 @@ class MAPOCALSTMConfig(BaseConfig):
             policy_learning_rate: float = 1e-4,
             value_learning_rate: float = 5e-4,
             max_grad_norm: float = .5,
-            dropout_rate: float = 0.0,
+            dropout_rate: float = 0.00,
             num_epocs: int = 4,
-            num_mini_batches: int = 4,
+            num_mini_batches: int = 8,
             normalize_rewards: bool = False,
             normalize_advantages: bool = True,
             anneal_steps: int = 30000,
@@ -262,18 +262,18 @@ class MAPOCALSTMConfig(BaseConfig):
                 "policy_network" : {
                     "state_encoder": {
                         "input_size": obs_space.single_agent_obs_size, 
-                        "output_size": 128,
+                        "output_size": 64,
                         "dropout_rate": dropout_rate
                     },
                     "RSA": {
-                        "embed_size": 128,
-                        "heads": 8,
+                        "embed_size": 64,
+                        "heads": 4,
                         "dropout_rate": dropout_rate
                     },
                     "LSTM" : {
-                        "in_features": 128, 
+                        "in_features": 64, 
                         "output_size": 128, 
-                        "num_layers": 1,
+                        "num_layers": 2,
                         "dropout": dropout_rate
                     },
                     "policy_head" : {
@@ -282,14 +282,14 @@ class MAPOCALSTMConfig(BaseConfig):
                             len(action_space.continuous_actions) 
                             if action_space.has_continuous() 
                             else action_space.discrete_actions[0],
-                        "hidden_size": 128,
+                        "hidden_size": 256,
                         "dropout_rate": dropout_rate
                     },
                 },
                 "value_network" : {
                     "state_encoder": {
                         "input_size": obs_space.single_agent_obs_size, 
-                        "output_size": 128,
+                        "output_size": 64,
                         "dropout_rate": dropout_rate
                     },
                     "state_action_encoder": {
@@ -298,23 +298,23 @@ class MAPOCALSTMConfig(BaseConfig):
                             len(action_space.continuous_actions) 
                             if action_space.has_continuous() 
                             else len(action_space.discrete_actions), 
-                        "output_size": 128,
+                        "output_size": 64,
                         "dropout_rate": dropout_rate
                     },
                     "RSA": {
-                        "embed_size": 128,
-                        "heads": 8,
+                        "embed_size": 64,
+                        "heads": 4,
                         "dropout_rate": dropout_rate
                     },
                     "LSTM" : {
-                        "in_features": 128, 
+                        "in_features": 64, 
                         "output_size": 128, 
-                        "num_layers": 1,
-                        "dropout": 0.0
+                        "num_layers": 2,
+                        "dropout": dropout_rate
                     },
                     "value_head": {
                         "in_features": 128,
-                        "hidden_size": 128,
+                        "hidden_size": 256,
                         "dropout_rate": dropout_rate
                     }
                 }
@@ -325,6 +325,109 @@ class MAPOCALSTMConfig(BaseConfig):
         self.lambda_ = lambda_
         self.policy_clip = policy_clip
         self.value_clip = value_clip
+        self.max_agents = max_agents
+        self.num_epocs = num_epocs
+        self.num_mini_batches = num_mini_batches
+        self.normalize_rewards = normalize_rewards
+        self.normalize_advantages = normalize_advantages
+        self.anneal_steps = anneal_steps
+
+class MAPOCA_LSTM_Light_Config(BaseConfig):
+    def __init__(
+            self, 
+            obs_space: ObservationSpace,
+            action_space: ActionSpace,
+            max_agents: int = 10,
+            lambda_: float = 0.95,
+            policy_clip: float = 0.3,
+            value_clip: float = 0.2,
+            entropy_coefficient: float = 0.15,
+            learning_rate: float = 4e-4,
+            max_grad_norm: float = .5,
+            dropout_rate: float = 0.0,
+            num_epocs: int = 8,
+            num_mini_batches: int = 4,
+            normalize_rewards: bool = False,
+            normalize_advantages: bool = True,
+            anneal_steps: int = 50000,
+            **kwargs
+        ):
+        super().__init__(
+            obs_space,
+            action_space,
+            entropy_coefficient = entropy_coefficient,
+            max_grad_norm = max_grad_norm,
+            networks={
+                "MultiAgentEmbeddingNetwork" : {
+                    "agent_obs_encoder": {
+                        "input_size": obs_space.single_agent_obs_size, 
+                        "output_size":  128,
+                        "dropout_rate": dropout_rate,
+                        "activation": True
+                    },
+                    "agent_embedding_encoder": {
+                        "input_size": 256,
+                        "output_size": 128,
+                        "dropout_rate": dropout_rate,
+                        "activation": True
+                    },
+                    "obs_actions_encoder": {
+                        "state_dim": 128, 
+                        "action_dim": 
+                            len(action_space.continuous_actions) 
+                            if action_space.has_continuous() 
+                            else len(action_space.discrete_actions), 
+                        "output_size":  128, # needs to match output of agent_embedding_encoder
+                        "dropout_rate": dropout_rate,
+                        "activation": True
+                    },    
+                },
+                "LSTM" : {
+                    "in_features": 128, 
+                    "output_size": 256, 
+                    "num_layers": 2,
+                    "dropout": dropout_rate
+                },
+                "RSA": {
+                    "embed_size": 256,
+                    "heads": 16,
+                    "dropout_rate": dropout_rate
+                },
+                "policy_network" : {               
+                    "policy_head" : {
+                        "in_features": 256,
+                        "out_features": 
+                            len(action_space.continuous_actions) 
+                            if action_space.has_continuous() 
+                            else action_space.discrete_actions[0],
+                        "hidden_size": 512,
+                        "dropout_rate": dropout_rate
+                    },
+                },
+                "critic_network" : {
+                    "baseline_head" : {
+                        "in_features": 128,
+                        "hidden_size": 256,
+                        "dropout_rate": dropout_rate
+                    },
+                    "value_head": {
+                        "in_features": 256,
+                        "hidden_size": 512,
+                        "dropout_rate": dropout_rate
+                    },
+                    "value_RSA" : {
+                        "embed_size": 128,
+                        "heads": 8,
+                        "dropout_rate": dropout_rate
+                    }
+                }
+            },
+            **kwargs
+        )
+        self.lambda_ = lambda_
+        self.policy_clip = policy_clip
+        self.value_clip = value_clip
+        self.learning_rate = learning_rate
         self.max_agents = max_agents
         self.num_epocs = num_epocs
         self.num_mini_batches = num_mini_batches

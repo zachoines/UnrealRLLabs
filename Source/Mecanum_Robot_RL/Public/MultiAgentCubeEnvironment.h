@@ -73,7 +73,7 @@ private:
     
     // Constant
     const int GridSize = 10;
-    const int MaxSteps = 32;
+    const int MaxSteps = 128;
     const float AgentVisibility = 3;
     const float MaxAgents = 10;
 

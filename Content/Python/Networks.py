@@ -138,17 +138,17 @@ class RSA(nn.Module):
         return layer
 
 class StatesEncoder(nn.Module):
-    def __init__(self, input_size, output_size, dropout_rate=0.0):
+    def __init__(self, input_size, output_size, dropout_rate=0.0, activation=True):
         super(StatesEncoder, self).__init__()
-        self.fc = LinearNetwork(input_size, output_size, dropout_rate, activation=True)
+        self.fc = LinearNetwork(input_size, output_size, dropout_rate, activation=activation)
         
     def forward(self, x):
         return self.fc(x)
 
 class StatesActionsEncoder(nn.Module):
-    def __init__(self, state_dim, action_dim, output_size, dropout_rate=0.0):
+    def __init__(self, state_dim, action_dim, output_size, dropout_rate=0.0, activation=True):
         super(StatesActionsEncoder, self).__init__()
-        self.fc = LinearNetwork(state_dim + action_dim, output_size, dropout_rate, activation=True)
+        self.fc = LinearNetwork(state_dim + action_dim, output_size, dropout_rate, activation=activation)
         
     def forward(self, observation, action):
         x = torch.cat([observation, action], dim=-1)
@@ -158,11 +158,17 @@ class LinearNetwork(nn.Module):
     def __init__(self, in_features: int, out_features: int, dropout_rate=0.0, activation=True):
         super(LinearNetwork, self).__init__()
 
-        self.model = nn.Sequential(
-            nn.Linear(in_features, out_features),
-            nn.Dropout(p=dropout_rate),
-            nn.LeakyReLU() if activation else {},
-        )
+        if activation:
+            self.model = nn.Sequential(
+                nn.Linear(in_features, out_features),
+                nn.Dropout(p=dropout_rate),
+                nn.LeakyReLU(),
+            )
+        else:
+            self.model = nn.Sequential(
+                nn.Linear(in_features, out_features),
+                nn.Dropout(p=dropout_rate)
+            )
 
         for layer in self.model:
             if isinstance(layer, nn.Linear):

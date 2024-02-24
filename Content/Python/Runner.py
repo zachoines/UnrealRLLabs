@@ -22,7 +22,6 @@ class RLRunner:
         while True:
             event = self.agentComm.wait_for_event()
             if event == EventType.GET_ACTIONS:
-                
                 states, dones, truncs =  self.agentComm.get_states()
                 if self.normalizeStates:
                     self.stateNormalizer.update(states)
