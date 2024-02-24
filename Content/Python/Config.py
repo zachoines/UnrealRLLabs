@@ -339,10 +339,10 @@ class MAPOCA_LSTM_Light_Config(BaseConfig):
             action_space: ActionSpace,
             max_agents: int = 10,
             lambda_: float = 0.95,
-            policy_clip: float = 0.3,
-            value_clip: float = 0.2,
-            entropy_coefficient: float = 0.15,
-            learning_rate: float = 4e-4,
+            policy_clip: float = 0.1,
+            value_clip: float = 0.1,
+            entropy_coefficient: float = 0.1,
+            learning_rate: float = 3e-4,
             max_grad_norm: float = .5,
             dropout_rate: float = 0.0,
             num_epocs: int = 8,
@@ -434,3 +434,34 @@ class MAPOCA_LSTM_Light_Config(BaseConfig):
         self.normalize_rewards = normalize_rewards
         self.normalize_advantages = normalize_advantages
         self.anneal_steps = anneal_steps
+        self.schedulers = {
+            "learning_rate" : {
+                "max_lr": self.learning_rate,
+                "total_steps": self.anneal_steps,
+                "anneal_strategy": 'cos',
+                "pct_start": 0.10,
+                "div_factor": 25,
+                "final_div_factor": 500,
+            },
+            "entropy" : {
+                "max_entropy": self.entropy_coefficient, 
+                "anneal_steps" : self.anneal_steps,
+                "pct_start": 0.10, 
+                "div_factor": 1.0,
+                "final_div_factor": 10
+            },
+            "policy_clip" : {
+                "max_clip": self.policy_clip, 
+                "anneal_steps" : self.anneal_steps,
+                "pct_start": 0.10, 
+                "div_factor": 1.0,
+                "final_div_factor": 4
+            },
+            "value_clip" : {
+                "max_clip": self.value_clip, 
+                "anneal_steps" : self.anneal_steps,
+                "pct_start": 0.10, 
+                "div_factor": 1.0,
+                "final_div_factor": 4
+            }
+        }

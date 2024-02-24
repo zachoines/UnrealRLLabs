@@ -142,33 +142,16 @@ class MAPocaLSTMAgentLight(Agent): # 'Light' as in more memory efficient
         self.optimizer = optim.AdamW(self.parameters(), lr=self.config.learning_rate)
         self.scheduler = ModifiedOneCycleLR(
             self.optimizer, 
-            max_lr=self.config.learning_rate,
-            total_steps=self.config.anneal_steps,
-            anneal_strategy='cos',
-            pct_start=0.10,
-            div_factor=25,
-            final_div_factor=1000,
+            *self.config.schedulers["learning_rate"].values()
         ) 
         self.entropy_scheduler = OneCycleCosineScheduler(
-            self.config.entropy_coefficient, 
-            self.config.anneal_steps,
-            pct_start=0.10, 
-            div_factor=1.0,
-            final_div_factor=50
+            *self.config.schedulers["entropy"].values()
         )
         self.policy_clip_scheduler = OneCycleCosineScheduler(
-            self.config.policy_clip, 
-            self.config.anneal_steps, 
-            pct_start=0.10, 
-            div_factor=1.0, 
-            final_div_factor=4.0
+            *self.config.schedulers["policy_clip"].values()
         )
         self.value_clip_scheduler = OneCycleCosineScheduler(
-            self.config.value_clip, 
-            self.config.anneal_steps, 
-            pct_start=0.10, 
-            div_factor=1.0, 
-            final_div_factor=10.0
+            *self.config.schedulers["value_clip"].values()
         )
         self.last_memory_state = None
         
