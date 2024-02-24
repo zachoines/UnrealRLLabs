@@ -345,11 +345,11 @@ class MAPOCA_LSTM_Light_Config(BaseConfig):
             learning_rate: float = 3e-4,
             max_grad_norm: float = .5,
             dropout_rate: float = 0.0,
-            num_epocs: int = 8,
+            num_epocs: int = 4,
             num_mini_batches: int = 4,
             normalize_rewards: bool = False,
             normalize_advantages: bool = True,
-            anneal_steps: int = 50000,
+            anneal_steps: int = 80000,
             **kwargs
         ):
         super().__init__(
@@ -385,29 +385,29 @@ class MAPOCA_LSTM_Light_Config(BaseConfig):
                 "LSTM" : {
                     "in_features": 128, 
                     "output_size": 256, 
-                    "num_layers": 2,
+                    "num_layers": 1,
                     "dropout": dropout_rate
                 },
                 "RSA": {
                     "embed_size": 256,
-                    "heads": 16,
+                    "heads": 8,
                     "dropout_rate": dropout_rate
                 },
                 "policy_network" : {               
                     "policy_head" : {
-                        "in_features": 256,
+                        "in_features": 512,
                         "out_features": 
                             len(action_space.continuous_actions) 
                             if action_space.has_continuous() 
                             else action_space.discrete_actions[0],
-                        "hidden_size": 512,
+                        "hidden_size": 256,
                         "dropout_rate": dropout_rate
                     },
                 },
                 "critic_network" : {
                     "baseline_head" : {
-                        "in_features": 128,
-                        "hidden_size": 256,
+                        "in_features": 256,
+                        "hidden_size": 512,
                         "dropout_rate": dropout_rate
                     },
                     "value_head": {
@@ -417,7 +417,7 @@ class MAPOCA_LSTM_Light_Config(BaseConfig):
                     },
                     "value_RSA" : {
                         "embed_size": 128,
-                        "heads": 8,
+                        "heads": 4,
                         "dropout_rate": dropout_rate
                     }
                 }
@@ -439,28 +439,28 @@ class MAPOCA_LSTM_Light_Config(BaseConfig):
                 "max_lr": self.learning_rate,
                 "total_steps": self.anneal_steps,
                 "anneal_strategy": 'cos',
-                "pct_start": 0.10,
+                "pct_start": 0.20,
                 "div_factor": 25,
-                "final_div_factor": 500,
+                "final_div_factor": 100,
             },
             "entropy" : {
                 "max_entropy": self.entropy_coefficient, 
-                "anneal_steps" : self.anneal_steps,
-                "pct_start": 0.10, 
+                "anneal_steps": self.anneal_steps,
+                "pct_start": 0.20, 
                 "div_factor": 1.0,
                 "final_div_factor": 10
             },
             "policy_clip" : {
                 "max_clip": self.policy_clip, 
-                "anneal_steps" : self.anneal_steps,
-                "pct_start": 0.10, 
+                "anneal_steps": self.anneal_steps,
+                "pct_start": 0.20, 
                 "div_factor": 1.0,
                 "final_div_factor": 4
             },
             "value_clip" : {
                 "max_clip": self.value_clip, 
                 "anneal_steps" : self.anneal_steps,
-                "pct_start": 0.10, 
+                "pct_start": 0.20, 
                 "div_factor": 1.0,
                 "final_div_factor": 4
             }
