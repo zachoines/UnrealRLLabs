@@ -395,19 +395,19 @@ class MAPOCA_LSTM_Light_Config(BaseConfig):
                 },
                 "policy_network" : {               
                     "policy_head" : {
-                        "in_features": 512,
+                        "in_features": 256,
                         "out_features": 
                             len(action_space.continuous_actions) 
                             if action_space.has_continuous() 
                             else action_space.discrete_actions[0],
-                        "hidden_size": 256,
+                        "hidden_size": 512,
                         "dropout_rate": dropout_rate
                     },
                 },
                 "critic_network" : {
                     "baseline_head" : {
-                        "in_features": 256,
-                        "hidden_size": 512,
+                        "in_features": 128,
+                        "hidden_size": 256,
                         "dropout_rate": dropout_rate
                     },
                     "value_head": {
