@@ -339,7 +339,7 @@ class MAPOCA_LSTM_Light_Config(BaseConfig):
             action_space: ActionSpace,
             max_agents: int = 10,
             lambda_: float = 0.95,
-            policy_clip: float = 0.1,
+            policy_clip: float = 0.2,
             value_clip: float = 0.1,
             entropy_coefficient: float = 0.1,
             learning_rate: float = 3e-4,
@@ -348,8 +348,8 @@ class MAPOCA_LSTM_Light_Config(BaseConfig):
             num_epocs: int = 4,
             num_mini_batches: int = 4,
             normalize_rewards: bool = False,
-            normalize_advantages: bool = True,
-            anneal_steps: int = 80000,
+            normalize_advantages: bool = False,
+            anneal_steps: int = 50000,
             **kwargs
         ):
         super().__init__(
@@ -366,7 +366,7 @@ class MAPOCA_LSTM_Light_Config(BaseConfig):
                         "activation": True
                     },
                     "agent_embedding_encoder": {
-                        "input_size": 256,
+                        "input_size": 128,
                         "output_size": 128,
                         "dropout_rate": dropout_rate,
                         "activation": True
@@ -384,23 +384,23 @@ class MAPOCA_LSTM_Light_Config(BaseConfig):
                 },
                 "LSTM" : {
                     "in_features": 128, 
-                    "output_size": 256, 
-                    "num_layers": 1,
+                    "output_size": 128, 
+                    "num_layers": 2,
                     "dropout": dropout_rate
                 },
                 "RSA": {
-                    "embed_size": 256,
+                    "embed_size": 128,
                     "heads": 8,
                     "dropout_rate": dropout_rate
                 },
                 "policy_network" : {               
                     "policy_head" : {
-                        "in_features": 256,
+                        "in_features": 128,
                         "out_features": 
                             len(action_space.continuous_actions) 
                             if action_space.has_continuous() 
                             else action_space.discrete_actions[0],
-                        "hidden_size": 512,
+                        "hidden_size": 256,
                         "dropout_rate": dropout_rate
                     },
                 },
@@ -411,13 +411,13 @@ class MAPOCA_LSTM_Light_Config(BaseConfig):
                         "dropout_rate": dropout_rate
                     },
                     "value_head": {
-                        "in_features": 256,
-                        "hidden_size": 512,
+                        "in_features": 128,
+                        "hidden_size": 256,
                         "dropout_rate": dropout_rate
                     },
                     "value_RSA" : {
                         "embed_size": 128,
-                        "heads": 4,
+                        "heads": 8,
                         "dropout_rate": dropout_rate
                     }
                 }
@@ -462,6 +462,6 @@ class MAPOCA_LSTM_Light_Config(BaseConfig):
                 "anneal_steps" : self.anneal_steps,
                 "pct_start": 0.20, 
                 "div_factor": 1.0,
-                "final_div_factor": 4
+                "final_div_factor": 10
             }
         }

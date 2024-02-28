@@ -13,11 +13,11 @@
 #include "Public/RLRunner.h"
 #include "Mecanum_Robot_RL.h"
 #include "MultiAgentCubeEnvironment.h"
+#include "TerraShiftEnvironment.h"
 #include "RLRunner.h"
 #include "Public/SharedMemoryAgentCommunicator.h"
 #include "Public/RLTypes.h"
 #include "Mecanum_Robot_RLGameModeBase.generated.h"
-// #include "TorchPlugin/Public/TorchPlugin.h"
 
 UCLASS()
 class AMecanum_Robot_RLGameModeBase : public AGameModeBase

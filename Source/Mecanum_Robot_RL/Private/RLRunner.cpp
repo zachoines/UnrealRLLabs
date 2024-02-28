@@ -44,7 +44,7 @@ void ARLRunner::Tick(float DeltaTime)
 {
     // Record last transition
     auto [Dones, Truncs, Rewards, LastActions, States, NextStates] = VectorEnvironment->Transition();
-    if (CurrentStep > 1) {
+    if (CurrentStep > 1 && AgentComm) {
         TArray<FExperienceBatch> EnvironmentTrajectories;
         FExperienceBatch Batch;
         for (int32 i = 0; i < States.Num(); i++)

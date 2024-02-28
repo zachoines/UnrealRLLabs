@@ -51,7 +51,7 @@ TArray<FVector> AMecanum_Robot_RLGameModeBase::CreateGridLocations(int32 NumEnvi
 void AMecanum_Robot_RLGameModeBase::BeginPlay()
 {   
     bool loaded = ReadJsonConfig(
-        FPaths::ProjectContentDir() + TEXT("EnvConfigs/MultiAgentCube.json"),
+        FPaths::ProjectContentDir() + TEXT("EnvConfigs/TerraShift.json"),
         TrainParams
     );
 

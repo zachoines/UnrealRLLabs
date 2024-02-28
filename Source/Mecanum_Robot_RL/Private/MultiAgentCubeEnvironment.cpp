@@ -500,8 +500,8 @@ float AMultiAgentCubeEnvironment::Reward()
     for (int i = 0; i < CurrentAgents; ++i){
         float rewards = 0.0;
         float normalized_distance = std::clamp(GridDistance(AgentGoalPositions[i].Key, AgentGoalPositions[i].Value) / (sqrtf(2.0) * static_cast<float>(GridSize)), 0.0f, 1.0f);
-        rewards += (AgentOutOfBounds(i) || AgentCollidedWithAgent(i) || AgentWrongGoal(i)) ? -1.0 : 0.0;
-        rewards += AgentGoalReached(i) ? 1.0 : map(-normalized_distance, -1.0, 0.0, -1.0, 1.0);
+        rewards += (AgentOutOfBounds(i) || AgentCollidedWithAgent(i) || AgentWrongGoal(i)) ? -10.0 : 0.0;
+        rewards += AgentGoalReached(i) ? 0.0 : -normalized_distance; // map(-normalized_distance, -1.0, 0.0, 0.0, 1.0);
         totalrewards += rewards;
         // totalrewards += (AgentOutOfBounds(i) || AgentCollidedWithAgent(i) || AgentWrongGoal(i)) ? -1.0 : AgentGoalReached(i) ? 1.0 : -0.0001;
     }
