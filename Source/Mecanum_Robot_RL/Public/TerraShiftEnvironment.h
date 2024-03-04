@@ -28,7 +28,10 @@ struct MECANUM_ROBOT_RL_API FTerraShiftEnvironmentInitParams : public FBaseInitP
     float ColumnHeight = 0.1;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    FVector ObjectSize = { 0.25, 0.25, 0.25 };
+    FVector ObjectSize = { 0.2, 0.2, 0.2 };
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
+    float ObjectMass = { 0.3 };
 };
 
 UCLASS()
@@ -118,9 +121,8 @@ private:
 
     void MoveAgent(int AgentIndex, float Value);
     void SpawnGridObject(FIntPoint SpawnLocation, FIntPoint GaolLocation);
-    AStaticMeshActor* InitializeObject(const FLinearColor& Color);
+    AStaticMeshActor* InitializeGridObject(); // (const FLinearColor& Color);
    
-
     TArray<float> AgentGetState(int AgentIndex);
     int Get1DIndexFromPoint(const FIntPoint& point, int gridSize);
     float GridDistance(const FIntPoint& Point1, const FIntPoint& Point2);

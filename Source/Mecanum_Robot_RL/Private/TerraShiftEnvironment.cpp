@@ -69,6 +69,8 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
             GridCenterPoints[Get1DIndexFromPoint(FIntPoint(i, j), GridSize)] = GridCenter;
         }
     }
+
+    Objects.Add(InitializeGridObject());
 }
 
 AStaticMeshActor* ATerraShiftEnvironment::SpawnColumn(FVector Location, FVector Dimensions, FName Name)
@@ -92,6 +94,7 @@ AStaticMeshActor* ATerraShiftEnvironment::SpawnColumn(FVector Location, FVector 
                     ColumnActor->GetStaticMeshComponent()->SetMaterial(0, Material);
                 }
 
+                ColumnActor->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
                 ColumnActor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
                 ColumnActor->GetStaticMeshComponent()->SetEnableGravity(false);
                 ColumnActor->GetStaticMeshComponent()->SetSimulatePhysics(true);
@@ -185,12 +188,11 @@ void ATerraShiftEnvironment::SetColumnVelocity(int ColumnIndex, float Velocity)
         else
         {
             // Otherwise, apply the desired velocity
-            ConstraintComponent->SetLinearVelocityTarget(FVector(0, 0, 10));
+            ConstraintComponent->SetLinearVelocityTarget(FVector(0, 0, 100));
             ConstraintComponent->SetLinearVelocityDrive(false, false, true);
         }
     }
 }
-
 
 void ATerraShiftEnvironment::ApplyForceToColumn(int ColumnIndex, float ForceMagnitude)
 {   
@@ -206,28 +208,41 @@ void ATerraShiftEnvironment::ApplyForceToColumn(int ColumnIndex, float ForceMagn
     }
 }
 
-AStaticMeshActor* ATerraShiftEnvironment::InitializeObject(const FLinearColor& Color)
+AStaticMeshActor* ATerraShiftEnvironment::InitializeGridObject() // const FLinearColor& Color)
 {
-    UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("StaticMesh'/Engine/BasicShapes/Sphere.Sphere'"));
-    AStaticMeshActor* NewObject = GetWorld()->SpawnActor<AStaticMeshActor>(FVector::ZeroVector, FRotator::ZeroRotator);
-
-    if (NewObject)
+    if (UWorld* World = GetWorld())
     {
-        NewObject->SetMobility(EComponentMobility::Movable);
-        NewObject->GetStaticMeshComponent()->SetStaticMesh(SphereMesh);
-        NewObject->GetStaticMeshComponent()->SetWorldScale3D(TerraShiftParams->ObjectSize);
-        UMaterial* ColoredMaterial = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/StarterContent/Materials/M_Basic_Floor.M_Basic_Floor'"));
-        NewObject->GetStaticMeshComponent()->SetMaterial(0, ColoredMaterial);
+        // Pick a random location from GridCenterPoints
+        int32 RandomIndex = FMath::RandRange(0, GridCenterPoints.Num() - 1);
+        FVector Location = GridCenterPoints[RandomIndex] + FVector(0, 0, 10.0); // 2 units above the column     
+        UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+        AStaticMeshActor* ObjectActor = nullptr;
+        if (SphereMesh)
+        {
+            FActorSpawnParameters SpawnParams;
+            ObjectActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, FRotator::ZeroRotator, SpawnParams);
+            if (ObjectActor)
+            {
+                ObjectActor->GetStaticMeshComponent()->SetStaticMesh(SphereMesh);
+                ObjectActor->GetStaticMeshComponent()->SetWorldScale3D(TerraShiftParams->ObjectSize);
 
-        // Create a dynamic material instance to set the color
-        UMaterialInstanceDynamic* DynMaterial = UMaterialInstanceDynamic::Create(NewObject->GetStaticMeshComponent()->GetMaterial(0), NewObject);
-        DynMaterial->SetVectorParameterValue("Color", Color);
-        NewObject->GetStaticMeshComponent()->SetMaterial(0, DynMaterial);
+                UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/Material/Manip_Object_Material.Manip_Object_Material'"));
+                if (Material)
+                {
+                    ObjectActor->GetStaticMeshComponent()->SetMaterial(0, Material);
+                }
 
-        // TODO::Setup physics properties such as gravity; collisions; friction; mass; etc...
+                ObjectActor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
+                ObjectActor->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+                ObjectActor->GetStaticMeshComponent()->BodyInstance.SetMassOverride(TerraShiftParams->ObjectMass, true);
+                ObjectActor->GetStaticMeshComponent()->SetEnableGravity(true);
+                ObjectActor->GetStaticMeshComponent()->SetSimulatePhysics(true);
+            }
+            
+            return ObjectActor;
+        }
     }
-
-    return NewObject;
+    return nullptr;
 }
 
 void ATerraShiftEnvironment::MoveAgent(int AgentIndex, float Value)
@@ -238,14 +253,6 @@ void ATerraShiftEnvironment::MoveAgent(int AgentIndex, float Value)
     */
     // float NewVel = map(Value, -1.0, 1.0, 0.0, 2.0);
     SetColumnVelocity(AgentIndex, Value);
-}
-
-void ATerraShiftEnvironment::SpawnGridObject(FIntPoint SpawnLocation, FIntPoint GaolLocation)
-{
-    /*
-        This function spawns a new object for the TerraShift grid to manipulate.
-        It will spawn a sphere will have uniform physics properties (mass; grivity; friction; size)
-    */
 }
 
 TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
