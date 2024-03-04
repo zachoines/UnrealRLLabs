@@ -22,191 +22,188 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
     {
         EnvInfo.ActionSpace->Init(ContinuousActions, DiscreteActions);
     }
+
+    // Initialize Scene components
+    TerraShiftRoot = CreateDefaultSubobject<USceneComponent>(TEXT("TerraShiftRoot"));
+    RootComponent = TerraShiftRoot;
 }
 
 void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
 {
-    // Store Params
     TerraShiftParams = static_cast<FTerraShiftEnvironmentInitParams*>(BaseParams);
 
-    // Spawn Platform
-    FVector PlatformSize = FVector(GridSize * 100.0f, GridSize * 100.0f, 10.0f); // Example dimensions
-    AStaticMeshActor* Platform = SpawnPlatform(TerraShiftParams->Location, PlatformSize);
+    // Set TerraShiftRoot at the specified location.
+    TerraShiftRoot->SetWorldLocation(TerraShiftParams->Location);
+    Platform = SpawnPlatform(
+        TerraShiftParams->Location,
+        FVector(TerraShiftParams->GroundPlaneSize, TerraShiftParams->GroundPlaneSize, TerraShiftParams->GroundPlaneSize)
+    );
 
-    // Initialize Grid Center Points and spawn columns with prismatic joints
-    GridCenterPoints.SetNum(GridSize);
+    // Prepare for column spawning and prismatic joint attachment.
+    Columns.SetNum(GridSize * GridSize);
+    PrismaticJoints.SetNum(GridSize * GridSize);
+    GridCenterPoints.SetNum(GridSize * GridSize);
+
+    // Calculate the actual world size of the ground plane
+    FVector PlatformWorldSize = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * 2.0f * TerraShiftParams->GroundPlaneSize;
+    FVector PlatformCenter = Platform->GetActorLocation();
+
+    float CellWidth = (TerraShiftParams->GroundPlaneSize / static_cast<float>(GridSize)) - 1e-2;
+    float CellHeight = TerraShiftParams->ColumnHeight;
     for (int i = 0; i < GridSize; ++i)
     {
-        GridCenterPoints[i].SetNum(GridSize);
+
         for (int j = 0; j < GridSize; ++j)
         {
-            FVector GridCenter = TerraShiftParams->Location + FVector((i - GridSize / 2.0f + 0.5f) * 100.0f, (j - GridSize / 2.0f + 0.5f) * 100.0f, 0.0f); // Adjust for Z if necessary
-            GridCenterPoints[i][j] = GridCenter;
+            FVector GridCenter = PlatformCenter + FVector((i - GridSize / 2.0f + 0.5f) * (PlatformWorldSize.X / GridSize), (j - GridSize / 2.0f + 0.5f) * (PlatformWorldSize.Y / GridSize), TerraShiftParams->ColumnHeight);
+            
+            // Spawn each column.
+            AStaticMeshActor* Column = SpawnColumn(
+                GridCenter, 
+                FVector(CellWidth, CellWidth, CellHeight) ,
+                *FString::Printf(TEXT("ColumnMesh_%d_%d"), i, j)
+            );
 
-            // Spawn and setup each column at GridCenter
-            AStaticMeshActor* Column = SpawnColumn(GridCenter, TerraShiftParams->ColumnSize);
-            AttachPrismaticJoint(Column, Platform);
+            PrismaticJoints[Get1DIndexFromPoint(FIntPoint(i, j), GridSize)] = AttachPrismaticJoint(Column);
+            Columns[Get1DIndexFromPoint(FIntPoint(i, j), GridSize)] = Column;
+            GridCenterPoints[Get1DIndexFromPoint(FIntPoint(i, j), GridSize)] = GridCenter;
         }
     }
 }
 
-void ATerraShiftEnvironment::MoveAgent(int AgentIndex, float position)
+AStaticMeshActor* ATerraShiftEnvironment::SpawnColumn(FVector Location, FVector Dimensions, FName Name)
 {
-    /*
-        This functon takes in an 1d agent index (column within TerraShift grid)
-        and sets the agents position relative to the global "MovementConstraint" (default 0.1).
-    */
-}
-
-void ATerraShiftEnvironment::SpawnGridObject(FIntPoint SpawnLocation, FIntPoint GaolLocation)
-{
-    /*
-        This function spawns a new object for the TerraShift grid to manipulate.
-        It will spawn a sphere will have uniform physics properties (mass; grivity; friction; size)
-    */
-}
-
-
-TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
-{
-    /*
-        This function gets a single agents state (column). 
-        It is comprized of its current position and load.
-    */
-    TArray<float> State;
-    return State;
-}
-
-int ATerraShiftEnvironment::Get1DIndexFromPoint(const FIntPoint& point, int gridSize)
-{
-    return point.X * gridSize + point.Y;
-}
-
-float ATerraShiftEnvironment::GridDistance(const FIntPoint& Point1, const FIntPoint& Point2)
-{
-    return FMath::Sqrt(FMath::Square(static_cast<float>(Point2.X) - static_cast<float>(Point1.X)) + FMath::Square(static_cast<float>(Point2.Y) - static_cast<float>(Point1.Y)));
-}
-
-FVector ATerraShiftEnvironment::GetWorldLocationFromGridIndex(FIntPoint GridIndex)
-{
-    if (GridIndex.X >= 0 && GridIndex.X < GridCenterPoints.Num() && GridIndex.Y >= 0 && GridIndex.Y < GridCenterPoints[0].Num())
+    if (UWorld* World = GetWorld())
     {
-        FVector WorldLocation = GridCenterPoints[GridIndex.X][GridIndex.Y];
-        // WorldLocation.Z += ... // TODO:: Adjust to be flush with column head
+        UStaticMesh* ColumnMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+        AStaticMeshActor* ColumnActor = nullptr;
+        if (ColumnMesh)
+        {
+            FActorSpawnParameters SpawnParams;
+            ColumnActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, FRotator::ZeroRotator, SpawnParams);
+            if (ColumnActor)
+            {
+                ColumnActor->GetStaticMeshComponent()->SetStaticMesh(ColumnMesh);
+                ColumnActor->GetStaticMeshComponent()->SetWorldScale3D(Dimensions);
 
-        return WorldLocation;
+                UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("/Game/Material/Column_Material.Column_Material"));
+                if (Material)
+                {
+                    ColumnActor->GetStaticMeshComponent()->SetMaterial(0, Material);
+                }
+
+                ColumnActor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
+                ColumnActor->GetStaticMeshComponent()->SetEnableGravity(false);
+                ColumnActor->GetStaticMeshComponent()->SetSimulatePhysics(true);
+            }
+        }
+        return ColumnActor;
     }
+    return nullptr;
 }
 
-FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
+UPhysicsConstraintComponent* ATerraShiftEnvironment::AttachPrismaticJoint(AStaticMeshActor* Column)
 {
-    /*
-        This function reinitializes the TerraShift grid to its default neutral positions
-    */
-    CurrentStep = 0;
 
-   
-
-    // Always make sure after modifying actors
-    return State();
-}
-
-void ATerraShiftEnvironment::Act(FAction Action)
-{
-    /*
-        This function passes the calculated action from the caller to the respective agent
-        (column) in TerraShift grid
-    */
-    for (int i = 0; i < Action.Values.Num(); ++i)
+    UPhysicsConstraintComponent* PrismaticJoint = NewObject<UPhysicsConstraintComponent>(Column);
+    if (PrismaticJoint)
     {
-  
-        MoveAgent(i, Action.Values[0]);
+        PrismaticJoint->SetLinearXLimit(ELinearConstraintMotion::LCM_Locked, 0);
+        PrismaticJoint->SetLinearYLimit(ELinearConstraintMotion::LCM_Locked, 0);
+        PrismaticJoint->SetLinearZLimit(ELinearConstraintMotion::LCM_Limited, 10);
+
+        PrismaticJoint->SetAngularSwing1Limit(EAngularConstraintMotion::ACM_Locked, 0);
+        PrismaticJoint->SetAngularSwing2Limit(EAngularConstraintMotion::ACM_Locked, 0);
+        PrismaticJoint->SetAngularTwistLimit(EAngularConstraintMotion::ACM_Locked, 0);
+
+        PrismaticJoint->SetConstrainedComponents(Column->GetStaticMeshComponent(), NAME_None, Platform->GetStaticMeshComponent(), NAME_None);
+        PrismaticJoint->InitComponentConstraint();
+        PrismaticJoint->RegisterComponent();
+        PrismaticJoint->SetActive(true);
     }
+
+    return PrismaticJoint;
 }
 
-FIntPoint ATerraShiftEnvironment::GenerateRandomLocation()
+AStaticMeshActor* ATerraShiftEnvironment::SpawnPlatform(FVector Location, FVector Size)
 {
-    /*
-        Helper function to generate random location within bounds of TerraShift grid
-    */
-    FIntPoint RandomPoint;
-    do
+    if (UWorld* World = GetWorld())
     {
-        RandomPoint.X = FMath::RandRange(0, GridCenterPoints.Num() - 1);
-        RandomPoint.Y = FMath::RandRange(0, GridCenterPoints[0].Num() - 1);
-    } while (UsedLocations.Contains(RandomPoint));
-    return RandomPoint;
-}
+        UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("StaticMesh'/Engine/BasicShapes/Plane.Plane'"));
+        if (PlaneMesh)
+        {
+            FActorSpawnParameters SpawnParams;
+            // SpawnParams.Name = TEXT("GroundPlane");
+            Platform = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, FRotator::ZeroRotator, SpawnParams);
+            if (Platform)
+            {
+                Platform->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
+                Platform->GetStaticMeshComponent()->SetWorldScale3D(Size);
+                Platform->SetMobility(EComponentMobility::Static);
 
-void ATerraShiftEnvironment::PostStep()
-{
-    CurrentStep += 1;
-}
-
-FState ATerraShiftEnvironment::State()
-{
-    /*
-        This function gets each agent;s indivual observations, concatinating them into one 
-        large state array.
-    */
-    FState CurrentState;
-
-    for (int i = 0; i < CurrentAgents; ++i) {
-        CurrentState.Values += AgentGetState(i);
+                UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/Material/Platform_Material.Platform_Material'"));
+                if (Material)
+                {
+                    Material->TwoSided = true;
+                    Platform->GetStaticMeshComponent()->SetMaterial(0, Material);
+                }
+                Platform->GetStaticMeshComponent()->SetMobility(EComponentMobility::Static);
+                Platform->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+                Platform->GetStaticMeshComponent()->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
+            }
+        }
+        return Platform;
     }
-
-    return CurrentState;
+    return nullptr;
 }
 
-bool ATerraShiftEnvironment::Done()
+void ATerraShiftEnvironment::SetColumnHeight(int ColumnIndex, float NewHeight)
 {
-    /*
-        This function check for terminating condition with environment.
-    */
-
-    // TODO: Check if any of the objects are out of bounds.
-    
-    return false;
-}
-
-bool ATerraShiftEnvironment::Trunc()
-{
-    /*
-        This function checks if we have reached the maximum number of steps in the environment
-    */
-    if (CurrentStep > MaxSteps) {
-        CurrentStep = 0;
-        return true;
+    UPhysicsConstraintComponent* ConstraintComponent = PrismaticJoints[ColumnIndex];
+    if (ConstraintComponent)
+    {
+        // Set the target position for the prismatic joint to NewHeight.
+        ConstraintComponent->SetLinearPositionTarget(FVector(0, 0, -10 * NewHeight));
+        ConstraintComponent->SetLinearPositionDrive(false, false, true);
     }
-
-    return false;
 }
 
-float ATerraShiftEnvironment::Reward()
+void ATerraShiftEnvironment::SetColumnVelocity(int ColumnIndex, float Velocity)
 {
-    /*
-        This function determines the collective rewards for the environment
-        +1 for Object reach goal
-        -1 for Object falling out of bounds
-        -0.0001 for step penalty
-    */
-    float totalrewards = 0.0;
-    
-    // TODO
+    AStaticMeshActor* Column = Columns[ColumnIndex];
+    FVector MinLoc = GridCenterPoints[ColumnIndex]; // Assumed to be the minimum allowed height
+    UPhysicsConstraintComponent* ConstraintComponent = PrismaticJoints[ColumnIndex];
 
-    return totalrewards;
+    if (Column && ConstraintComponent)
+    {
+        FVector CurrentLocation = Column->GetActorLocation();
+        if (CurrentLocation.Z <= MinLoc.Z)
+        {
+            ConstraintComponent->SetLinearVelocityTarget(FVector(0, 0, 0));
+            Column->TeleportTo(MinLoc, Column->GetActorRotation(), false, true);
+        }
+        else
+        {
+            // Otherwise, apply the desired velocity
+            ConstraintComponent->SetLinearVelocityTarget(FVector(0, 0, 10));
+            ConstraintComponent->SetLinearVelocityDrive(false, false, true);
+        }
+    }
 }
 
-void ATerraShiftEnvironment::PostTransition() {
 
-}
-
-void ATerraShiftEnvironment::setCurrentAgents(int NumAgents) {
-    CurrentAgents = NumAgents;
-}
-
-float ATerraShiftEnvironment::map(float x, float in_min, float in_max, float out_min, float out_max) {
-    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+void ATerraShiftEnvironment::ApplyForceToColumn(int ColumnIndex, float ForceMagnitude)
+{   
+    AStaticMeshActor* Column = Columns[ColumnIndex];
+    if (Column)
+    {
+        UStaticMeshComponent* MeshComponent = Column->GetStaticMeshComponent();
+        if (MeshComponent)
+        {
+            FVector ForceDirection = FVector(0, 0, 1); // Assuming the Z-axis is the desired direction
+            MeshComponent->AddForce(ForceDirection * ForceMagnitude);
+        }
+    }
 }
 
 AStaticMeshActor* ATerraShiftEnvironment::InitializeObject(const FLinearColor& Color)
@@ -233,111 +230,143 @@ AStaticMeshActor* ATerraShiftEnvironment::InitializeObject(const FLinearColor& C
     return NewObject;
 }
 
-AStaticMeshActor* ATerraShiftEnvironment::SpawnColumn(FVector Location, FVector Dimensions)
+void ATerraShiftEnvironment::MoveAgent(int AgentIndex, float Value)
 {
-    if (UWorld* World = GetWorld())
-    {
-        static ConstructorHelpers::FObjectFinder<UStaticMesh> ColumnMesh(TEXT("StaticMesh'/Engine/BasicShapes/Cube.Cube'"));
-        AStaticMeshActor* ColumnActor = World->SpawnActor<AStaticMeshActor>(Location, FRotator::ZeroRotator);
-        if (ColumnActor && ColumnMesh.Succeeded())
-        {
-            ColumnActor->GetStaticMeshComponent()->SetStaticMesh(ColumnMesh.Object);
-
-            FVector MeshBoundsExtent = ColumnActor->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent;
-            FVector Scale = Dimensions / (MeshBoundsExtent * 2);
-            ColumnActor->GetStaticMeshComponent()->SetWorldScale3D(Scale);
-
-            UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/StarterContent/Materials/M_Metal_Burnished_Steel.M_Metal_Burnished_Steel'"));
-            if (Material)
-            {
-                ColumnActor->GetStaticMeshComponent()->SetMaterial(0, Material);
-            }
-
-            ColumnActor->GetStaticMeshComponent()->SetSimulatePhysics(true);
-            ColumnActor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
-
-            return ColumnActor;
-        }
-    }
-    return nullptr;
+    /*
+        This functon takes in an 1d agent index (column within TerraShift grid)
+        and sets the agents velocity
+    */
+    // float NewVel = map(Value, -1.0, 1.0, 0.0, 2.0);
+    SetColumnVelocity(AgentIndex, Value);
 }
 
-void ATerraShiftEnvironment::AttachPrismaticJoint(AStaticMeshActor* Column, AStaticMeshActor* Platform)
+void ATerraShiftEnvironment::SpawnGridObject(FIntPoint SpawnLocation, FIntPoint GaolLocation)
 {
-    if (!Column || !Platform) return;
-
-    // Create a new physics constraint component
-    UPhysicsConstraintComponent* PrismaticJoint = NewObject<UPhysicsConstraintComponent>(Column);
-    if (!PrismaticJoint) return;
-
-    // Attach the constraint component to the column
-    PrismaticJoint->AttachToComponent(Column->GetRootComponent(), FAttachmentTransformRules::KeepWorldTransform);
-
-    // Now, configure the constraint directly.
-    PrismaticJoint->SetLinearXLimit(ELinearConstraintMotion::LCM_Locked, 0);
-    PrismaticJoint->SetLinearYLimit(ELinearConstraintMotion::LCM_Locked, 0);
-    PrismaticJoint->SetLinearZLimit(ELinearConstraintMotion::LCM_Free, 0);
-
-    PrismaticJoint->SetAngularSwing1Limit(EAngularConstraintMotion::ACM_Locked, 0);
-    PrismaticJoint->SetAngularSwing2Limit(EAngularConstraintMotion::ACM_Locked, 0);
-    PrismaticJoint->SetAngularTwistLimit(EAngularConstraintMotion::ACM_Locked, 0);
-
-    // Initialize the constrained components (Column and Platform)
-    PrismaticJoint->ConstraintActor1 = Column;
-    PrismaticJoint->ConstraintActor2 = Platform; // Use nullptr if you want the world as the second component
-
-    // Optionally, you might want to define the constraint's position and orientation
-    PrismaticJoint->SetRelativeLocationAndRotation(FVector::ZeroVector, FRotator::ZeroRotator);
-
-    // Apply the configuration and activate the joint
-    PrismaticJoint->InitComponentConstraint();
-
-    // Register the constraint component with the engine
-    PrismaticJoint->RegisterComponent();
+    /*
+        This function spawns a new object for the TerraShift grid to manipulate.
+        It will spawn a sphere will have uniform physics properties (mass; grivity; friction; size)
+    */
 }
 
-void ATerraShiftEnvironment::SpawnPlatformWithColumns(FVector CenterPoint, int32 GridSize)
+TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
 {
-    float PlatformWidth = 100.0f;
-    FVector ColumnDimensions = FVector(10.0f, 10.0f, 50.0f);
+    /*
+        This function gets a single agents state (column).
+        It is comprized of its current position and load.
+    */
+    TArray<float> State;
+    return State;
+}
 
-    FVector PlatformSize = FVector(GridSize * PlatformWidth, GridSize * PlatformWidth, 10.0f);
-    AStaticMeshActor* Platform = SpawnPlatform(CenterPoint, PlatformSize);
+int ATerraShiftEnvironment::Get1DIndexFromPoint(const FIntPoint& point, int gridSize)
+{
+    return point.X * gridSize + point.Y;
+}
 
-    FVector StartPoint = CenterPoint - FVector(GridSize / 2.0f * PlatformWidth, GridSize / 2.0f * PlatformWidth, 0.0f);
+float ATerraShiftEnvironment::GridDistance(const FIntPoint& Point1, const FIntPoint& Point2)
+{
+    return FMath::Sqrt(FMath::Square(static_cast<float>(Point2.X) - static_cast<float>(Point1.X)) + FMath::Square(static_cast<float>(Point2.Y) - static_cast<float>(Point1.Y)));
+}
 
-    for (int32 i = 0; i < GridSize; ++i)
+FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
+{
+    /*
+        This function reinitializes the TerraShift grid to its default neutral positions
+    */
+    CurrentStep = 0;
+
+
+
+    // Always make sure after modifying actors
+    return State();
+}
+
+void ATerraShiftEnvironment::Act(FAction Action)
+{
+    /*
+        This function passes the calculated action from the caller to the respective agent
+        (column) in TerraShift grid
+    */
+    /*for (int i = 0; i < Action.Values.Num(); ++i)
     {
-        for (int32 j = 0; j < GridSize; ++j)
-        {
-            FVector ColumnLocation = StartPoint + FVector(i * PlatformWidth + PlatformWidth / 2.0f, j * PlatformWidth + PlatformWidth / 2.0f, ColumnDimensions.Z / 2.0f);
-            AStaticMeshActor* Column = SpawnColumn(ColumnLocation, ColumnDimensions);
-            AttachPrismaticJoint(Column, Platform);
-        }
+
+        MoveAgent(i, Action.Values[0]);
+    }*/
+
+    for (int i = 0; i < MaxAgents; ++i)
+    {
+        MoveAgent(i, FMath::RandRange(-1, 1));
     }
 }
 
-AStaticMeshActor* ATerraShiftEnvironment::SpawnPlatform(FVector Location, FVector Size)
+void ATerraShiftEnvironment::PostStep()
 {
-    UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("StaticMesh'/Engine/BasicShapes/Plane.Plane'"));
-    AStaticMeshActor* Platform = GetWorld()->SpawnActor<AStaticMeshActor>(Location, FRotator::ZeroRotator);
+    CurrentStep += 1;
+}
 
-    if (Platform)
-    {
-        Platform->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
-        Platform->GetStaticMeshComponent()->SetWorldScale3D(Size);
-        Platform->SetMobility(EComponentMobility::Movable);
+FState ATerraShiftEnvironment::State()
+{
+    /*
+        This function gets each agent;s indivual observations, concatinating them into one
+        large state array.
+    */
+    FState CurrentState;
 
-        UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/StarterContent/Materials/M_Wood_Oak.M_Wood_Oak'"));
-        if (Material)
-        {
-            Material->TwoSided = true;
-            Platform->GetStaticMeshComponent()->SetMaterial(0, Material);
-        }
-        Platform->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-        Platform->GetStaticMeshComponent()->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
+    for (int i = 0; i < CurrentAgents; ++i) {
+        CurrentState.Values += AgentGetState(i);
     }
 
-    return Platform;
+    return CurrentState;
+}
+
+bool ATerraShiftEnvironment::Done()
+{
+    /*
+        This function check for terminating condition with environment.
+    */
+
+    // TODO: Check if any of the objects are out of bounds.
+
+    return false;
+}
+
+bool ATerraShiftEnvironment::Trunc()
+{
+    /*
+        This function checks if we have reached the maximum number of steps in the environment
+    */
+    if (CurrentStep > MaxSteps) {
+        CurrentStep = 0;
+        return true;
+    }
+
+    return false;
+}
+
+float ATerraShiftEnvironment::Reward()
+{
+    /*
+        This function determines the collective rewards for the environment
+        +1 for Object reach goal
+        -1 for Object falling out of bounds
+        -0.0001 for step penalty
+    */
+    float totalrewards = 0.0;
+
+    // TODO
+
+    return totalrewards;
+}
+
+void ATerraShiftEnvironment::PostTransition() {
+
+}
+
+void ATerraShiftEnvironment::setCurrentAgents(int NumAgents) {
+    CurrentAgents = NumAgents;
+}
+
+float ATerraShiftEnvironment::map(float x, float in_min, float in_max, float out_min, float out_max) {
+    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 

@@ -33,7 +33,8 @@ void ARLRunner::InitRunner(
 TArray<FAction> ARLRunner::GetActions(TArray<FState> States, TArray<float> Dones, TArray<float> Truncs)
 {
     if (AgentComm) {
-        return AgentComm->GetActions(States, Dones, Truncs, CurrentAgents);
+        // return AgentComm->GetActions(States, Dones, Truncs, CurrentAgents);
+        return VectorEnvironment->SampleActions();
     }
     else {
         return VectorEnvironment->SampleActions();
@@ -44,7 +45,7 @@ void ARLRunner::Tick(float DeltaTime)
 {
     // Record last transition
     auto [Dones, Truncs, Rewards, LastActions, States, NextStates] = VectorEnvironment->Transition();
-    if (CurrentStep > 1 && AgentComm) {
+    if (CurrentStep > 1 && false) {
         TArray<FExperienceBatch> EnvironmentTrajectories;
         FExperienceBatch Batch;
         for (int32 i = 0; i < States.Num(); i++)

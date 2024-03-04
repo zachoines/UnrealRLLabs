@@ -65,6 +65,19 @@ void AMecanum_Robot_RLGameModeBase::BeginPlay()
 
         for (int32 i = 0; i < TrainParams.NumEnvironments; i++)
         {
+            FTerraShiftEnvironmentInitParams* Params = new FTerraShiftEnvironmentInitParams();
+            Params->Location = Locations[i];
+            InitParamsArray.Add(StaticCast<FBaseInitParams*>(Params));
+        }
+
+        Runner->InitRunner(
+            ATerraShiftEnvironment::StaticClass(),
+            InitParamsArray,
+            TrainParams
+        );
+
+        /*for (int32 i = 0; i < TrainParams.NumEnvironments; i++)
+        {
             FMultiAgentCubeEnvironmentInitParams* MultiCubeParams = new FMultiAgentCubeEnvironmentInitParams();
             MultiCubeParams->Location = Locations[i];
             InitParamsArray.Add(StaticCast<FBaseInitParams*>(MultiCubeParams));
@@ -74,7 +87,7 @@ void AMecanum_Robot_RLGameModeBase::BeginPlay()
             AMultiAgentCubeEnvironment::StaticClass(),
             InitParamsArray,
             TrainParams
-        );
+        );*/
     }
     else {
         // TODO:: Throw error

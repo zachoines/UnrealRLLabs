@@ -22,15 +22,14 @@ struct MECANUM_ROBOT_RL_API FTerraShiftEnvironmentInitParams : public FBaseInitP
     GENERATED_USTRUCT_BODY();
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    FVector GroundPlaneSize = FVector::One() * 5.0;
+    float GroundPlaneSize = 2.0;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    FVector ColumnSize = { 0.25, 0.25, 1.0 };
+    float ColumnHeight = 0.1;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
     FVector ObjectSize = { 0.25, 0.25, 0.25 };
 };
-
 
 UCLASS()
 class MECANUM_ROBOT_RL_API ATerraShiftEnvironment : public ABaseEnvironment
@@ -39,20 +38,27 @@ class MECANUM_ROBOT_RL_API ATerraShiftEnvironment : public ABaseEnvironment
 
 public:
 
-    // Sets default values for this actor's properties
     ATerraShiftEnvironment();
 
-    // The columns representing objects
-    UPROPERTY(EditAnywhere)
-    TArray<AStaticMeshActor*> Columns;
+    // The root component for organizing everything in this environment
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraShift")
+    USceneComponent* TerraShiftRoot;
 
     // The plane that agents operate on
     UPROPERTY(EditAnywhere)
-    AStaticMeshActor* GroundPlane;
+    AStaticMeshActor* Platform;
 
     // The objects the TerraShift platform moves
     UPROPERTY(EditAnywhere)
     TArray<AStaticMeshActor*> Objects;
+
+    // The Columns controlled by agents
+    UPROPERTY(EditAnywhere)
+    TArray<AStaticMeshActor*> Columns;
+
+    // Constrain joints connecting the columns with platforms
+    UPROPERTY(EditAnywhere)
+    TArray<UPhysicsConstraintComponent*> PrismaticJoints;
 
     virtual void InitEnv(FBaseInitParams* Params) override;
     virtual FState ResetEnv(int NumAgents) override;
@@ -67,24 +73,33 @@ public:
 
 private:
     FTerraShiftEnvironmentInitParams* TerraShiftParams = nullptr;
-    FVector GroundPlaneSize;
-    FVector ColumnHeadSize;
-    FVector GroundPlaneCenter;
 
     // Constant
-    const int GridSize = 100;
+    const int GridSize = 20;
     const int MaxSteps = 128;
-    const float AgentVisibility = 3;
-    const float MaxAgents = 10;
+    const float MaxAgents = 400;
     const float MovementConstraint = 0.1;
 
     // State Variables
     int CurrentStep;
     int CurrentAgents;
-    FTransform GroundPlaneTransform;
-    FTransform InverseGroundPlaneTransform;
-    TArray<TArray<FVector>> GridCenterPoints;
+    TArray<FVector> GridCenterPoints;
+    
 
+    // Function to spawn a column in the environment
+    AStaticMeshActor* SpawnColumn(FVector Location, FVector Dimensions, FName Name);
+
+    // Function to spawn the ground platform in the environment
+    AStaticMeshActor* SpawnPlatform(FVector Location, FVector Size);
+
+    // Function to attach a prismatic joint between a column and the platform
+    UPhysicsConstraintComponent* AttachPrismaticJoint(AStaticMeshActor* Column);
+
+
+    void SetColumnVelocity(int ColumnIndex, float Velocity);
+    void SetColumnHeight(int ColumnIndex, float NewHeight);
+    void ApplyForceToColumn(int ColumnIndex, float ForceMagnitude);
+    
     const TArray<FLinearColor> Colors = {
         FLinearColor(1.0f, 0.0f, 0.0f),
         FLinearColor(0.0f, 1.0f, 0.0f),
@@ -98,23 +113,13 @@ private:
         FLinearColor(0.5f, 1.0f, 0.0f)
     };
 
+    
     TMap<FIntPoint, TArray<AStaticMeshActor*>> UsedLocations;
-    TMap<AStaticMeshActor*, FIntPoint> ActorToLocationMap;
 
-    TMap<int, TPair<float, float>> ColumnStates;
-    TMap<int, TPair<FIntPoint, FIntPoint>> ObjectGoalPositions;
-
-    void MoveAgent(int AgentIndex, float position);
+    void MoveAgent(int AgentIndex, float Value);
     void SpawnGridObject(FIntPoint SpawnLocation, FIntPoint GaolLocation);
     AStaticMeshActor* InitializeObject(const FLinearColor& Color);
-    
-    AStaticMeshActor* SpawnColumn(FVector Location, FVector Dimensions);
-    AStaticMeshActor* SpawnPlatform(FVector Location, FVector Size);
-    void SpawnPlatformWithColumns(FVector CenterPoint, int32 GridSize);
-    void AttachPrismaticJoint(AStaticMeshActor* Column, AStaticMeshActor* Platform);
-    
-    FIntPoint GenerateRandomLocation();
-    FVector GetWorldLocationFromGridIndex(FIntPoint GridIndex);
+   
 
     TArray<float> AgentGetState(int AgentIndex);
     int Get1DIndexFromPoint(const FIntPoint& point, int gridSize);
