@@ -25,13 +25,16 @@ struct MECANUM_ROBOT_RL_API FTerraShiftEnvironmentInitParams : public FBaseInitP
     float GroundPlaneSize = 2.0;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float ColumnHeight = 0.1;
+    float ColumnHeight = 1;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    FVector ObjectSize = { 0.2, 0.2, 0.2 };
+    FVector ObjectSize = { 0.1, 0.1, 0.1 };
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float ObjectMass = { 0.3 };
+    float ObjectMass = { 0.2 };
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
+    float ColumnMass = { 0.0 };
 };
 
 UCLASS()
@@ -79,9 +82,9 @@ private:
 
     // Constant
     const int GridSize = 20;
-    const int MaxSteps = 128;
-    const float MaxAgents = 400;
-    const float MovementConstraint = 0.1;
+    const int MaxSteps = 1024;
+    const float MaxAgents = GridSize * GridSize;
+    float CurrentPressure = 1.0;
 
     // State Variables
     int CurrentStep;
@@ -90,7 +93,7 @@ private:
     
 
     // Function to spawn a column in the environment
-    AStaticMeshActor* SpawnColumn(FVector Location, FVector Dimensions, FName Name);
+    AStaticMeshActor* SpawnColumn(FVector Dimensions, FName Name);
 
     // Function to spawn the ground platform in the environment
     AStaticMeshActor* SpawnPlatform(FVector Location, FVector Size);
