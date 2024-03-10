@@ -22,19 +22,34 @@ struct MECANUM_ROBOT_RL_API FTerraShiftEnvironmentInitParams : public FBaseInitP
     GENERATED_USTRUCT_BODY();
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float GroundPlaneSize = 2.0;
+    float GroundPlaneSize = 2.0; // m
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float ColumnHeight = 1;
+    float MaxColumnHeight = 10; // cm
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    FVector ObjectSize = { 0.1, 0.1, 0.1 };
+    FVector ObjectSize = { 0.1, 0.1, 0.1 }; // m
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float ObjectMass = { 0.2 };
+    float ObjectMass = 0.2; // kg
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float ColumnMass = { 0.0 };
+    float ColumnMass = 0.01; // kg
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
+    float ColumnVelocity = 20.0; // cm/s
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
+    bool PositionalDrive = false; // Use PID-like position setting
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
+    int TracesPerAgent = 4;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
+    float FOV = 58; // degrees
+
+
+
 };
 
 UCLASS()
@@ -84,9 +99,11 @@ private:
     const int GridSize = 20;
     const int MaxSteps = 1024;
     const float MaxAgents = GridSize * GridSize;
-    float CurrentPressure = 1.0;
+    float CurrentPressure = 0.0;
 
     // State Variables
+    float ScaledHeight = -1;
+    float ScaledWidth = -1;
     int CurrentStep;
     int CurrentAgents;
     TArray<FVector> GridCenterPoints;
@@ -101,11 +118,9 @@ private:
     // Function to attach a prismatic joint between a column and the platform
     UPhysicsConstraintComponent* AttachPrismaticJoint(AStaticMeshActor* Column);
 
-
     void SetColumnVelocity(int ColumnIndex, float Velocity);
     void SetColumnHeight(int ColumnIndex, float NewHeight);
-    void ApplyForceToColumn(int ColumnIndex, float ForceMagnitude);
-    
+  
     const TArray<FLinearColor> Colors = {
         FLinearColor(1.0f, 0.0f, 0.0f),
         FLinearColor(0.0f, 1.0f, 0.0f),
@@ -119,7 +134,6 @@ private:
         FLinearColor(0.5f, 1.0f, 0.0f)
     };
 
-    
     TMap<FIntPoint, TArray<AStaticMeshActor*>> UsedLocations;
 
     void MoveAgent(int AgentIndex, float Value);

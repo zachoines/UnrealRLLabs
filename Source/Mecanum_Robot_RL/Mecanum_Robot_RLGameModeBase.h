@@ -17,7 +17,12 @@
 #include "RLRunner.h"
 #include "Public/SharedMemoryAgentCommunicator.h"
 #include "Public/RLTypes.h"
+
+#include "Engine/TextureRenderTarget2D.h"
+
 #include "Mecanum_Robot_RLGameModeBase.generated.h"
+
+
 
 UCLASS()
 class AMecanum_Robot_RLGameModeBase : public AGameModeBase

@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 
-class FLidarCameraSensorModule : public IModuleInterface
+class FCustomShadersModule : public IModuleInterface
 {
 public:
 

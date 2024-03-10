@@ -2,8 +2,8 @@
 	"FileVersion": 3,
 	"Version": 1,
 	"VersionName": "1.0",
-	"FriendlyName": "LidarCameraSensor",
-	"Description": "GPU Lidar Camera",
+	"FriendlyName": "CustomShaders",
+	"Description": "Custom Ray - Tracing shaders",
 	"Category": "Other",
 	"CreatedBy": "Zach Oines",
 	"CreatedByURL": "",
@@ -16,9 +16,9 @@
 	"Installed": false,
 	"Modules": [
 		{
-			"Name": "LidarCameraSensor",
+			"Name": "CustomShaders",
 			"Type": "Runtime",
-			"LoadingPhase": "Default"
+			"LoadingPhase": "PostConfigInit"
 		}
 	]
 }

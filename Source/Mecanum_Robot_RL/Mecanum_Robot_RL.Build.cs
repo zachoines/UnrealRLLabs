@@ -7,24 +7,17 @@ public class Mecanum_Robot_RL : ModuleRules
     public Mecanum_Robot_RL(ReadOnlyTargetRules Target) : base(Target)
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-
-        PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "Json", "JsonUtilities" }); //, "TorchPlugin" });
+        PublicDependencyModuleNames.AddRange(new string[] {
+            "Core",
+            "CoreUObject",
+            "Engine",
+            "InputCore",
+            "Json",
+            "JsonUtilities",
+            "RenderCore", // Added for rendering support
+            "RHI"         // Added for GPU interface support
+        });
 
         PrivateDependencyModuleNames.AddRange(new string[] { });
-
-        // Ensure the DLL is staged along with the executable
-        // RuntimeDependencies.Add("TorchWrapper.dll");
-
-
-        // PublicAdditionalLibraries.Add("TorchWrapper.dll");
-
-
-        // Uncomment if you are using Slate UI
-        // PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
-
-        // Uncomment if you are using online features
-        // PrivateDependencyModuleNames.Add("OnlineSubsystem");
-
-        // To include OnlineSubsystemSteam, add it to the plugins section in your uproject file with the Enabled attribute set to true
     }
 }

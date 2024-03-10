@@ -9,23 +9,25 @@ RaytracingAccelerationStructure TLAS;
 RAY_TRACING_ENTRY_RAYGEN(RayTraceTestRGS)
 {
     // reconstruct camera direction with a small (far) device z
-    uint2 PixelCoord = DispatchRaysIndex().xy + View.ViewRectMin.xy;
-    float3 WorldPosition;
-    float3 CameraDirection;
+uint2 PixelCoord = DispatchRaysIndex().xy + View.ViewRectMin.xy;
+float3 WorldPosition;
+float3 CameraDirection;
 	ReconstructTranslatedWorldPositionAndCameraDirectionFromDeviceZ(PixelCoord, 0.1f, WorldPosition, CameraDirection);
 
 	// setup ray, simply shoot a long distance
-    RayDesc Ray;
-	Ray.Origin = WorldPosition;
-    Ray.Direction = CameraDirection;
+RayDesc Ray;
+	Ray.Origin =
+WorldPosition;
+    Ray.Direction =
+CameraDirection;
     Ray.TMin = 0.0f;
     Ray.TMax = 9999;
 
 	// consider opaque geometries and front facing triangles only
-    uint RayFlags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
+uint RayFlags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
 
 	// use material closest hit pay load
-    FMinimalPayload Payload = (FMinimalPayload) 0;
+FMinimalPayload Payload = (FMinimalPayload) 0;
 	
 	TraceRay(
     	TLAS,   // AccelerationStructure

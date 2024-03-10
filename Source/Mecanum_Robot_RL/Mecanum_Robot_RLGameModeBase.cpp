@@ -50,48 +50,82 @@ TArray<FVector> AMecanum_Robot_RLGameModeBase::CreateGridLocations(int32 NumEnvi
 
 void AMecanum_Robot_RLGameModeBase::BeginPlay()
 {   
-    bool loaded = ReadJsonConfig(
-        FPaths::ProjectContentDir() + TEXT("EnvConfigs/TerraShift.json"),
-        TrainParams
-    );
+ 
+    // Create the render target dynamically
+    //UTextureRenderTarget2D* NewRenderTarget = NewObject<UTextureRenderTarget2D>(this);
+    //NewRenderTarget->InitAutoFormat(1920, 1080); // or whatever size you need
+    //NewRenderTarget->UpdateResourceImmediate(false);
 
-    if (loaded) {
-        Runner = GetWorld()->SpawnActor<ARLRunner>(ARLRunner::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
-        TArray<FVector> Locations = CreateGridLocations(TrainParams.NumEnvironments, FVector(800.0f, 800.0f, 100.0f));
-    
-        if (TrainParams.NumEnvironments != Locations.Num()) {
-            // TODO:: Throw error
-        }
+    // Ensure you have a blueprint class of your TestRunner to spawn, otherwise use the native class
+    // ATestRunner* TestRunnerActor = GetWorld()->SpawnActor<ATestRunner>(ATestRunner::StaticClass());
 
-        for (int32 i = 0; i < TrainParams.NumEnvironments; i++)
-        {
-            FTerraShiftEnvironmentInitParams* Params = new FTerraShiftEnvironmentInitParams();
-            Params->Location = Locations[i];
-            InitParamsArray.Add(StaticCast<FBaseInitParams*>(Params));
-        }
+    //if (TestRunnerActor)
+    //{
+    //    // Set the render target on the TestRunner actor
+    //    TestRunnerActor->RenderTarget = NewRenderTarget;
 
-        Runner->InitRunner(
-            ATerraShiftEnvironment::StaticClass(),
-            InitParamsArray,
-            TrainParams
-        );
+    //    // Initialize your shader or any other TestRunner specific settings
+    //    // TestRunnerActor->InitializeShader(); // Uncomment or adapt if you have such a method
 
-        /*for (int32 i = 0; i < TrainParams.NumEnvironments; i++)
-        {
-            FMultiAgentCubeEnvironmentInitParams* MultiCubeParams = new FMultiAgentCubeEnvironmentInitParams();
-            MultiCubeParams->Location = Locations[i];
-            InitParamsArray.Add(StaticCast<FBaseInitParams*>(MultiCubeParams));
-        }
+    //    // Add other actors or components as needed to visualize the shader effect
+    //    // You can use UGameplayStatics::SpawnActor or other relevant methods here
 
-        Runner->InitRunner(
-            AMultiAgentCubeEnvironment::StaticClass(),
-            InitParamsArray,
-            TrainParams
-        );*/
-    }
-    else {
-        // TODO:: Throw error
-    }
+    //    // Example of spawning another actor, replace 'AActorType' with your actor's class
+    //    /*
+    //    AActorType* VisualActor = GetWorld()->SpawnActor<AActorType>(AActorType::StaticClass(), SpawnLocation, SpawnRotation);
+    //    if (VisualActor)
+    //    {
+    //        // Set up your visual actor as necessary
+    //    }
+    //    */
+    //}
+
+
+
+
+
+    //bool loaded = ReadJsonConfig(
+    //    FPaths::ProjectContentDir() + TEXT("EnvConfigs/TerraShift.json"),
+    //    TrainParams
+    //);
+
+    //if (loaded) {
+    //    Runner = GetWorld()->SpawnActor<ARLRunner>(ARLRunner::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
+    //    TArray<FVector> Locations = CreateGridLocations(TrainParams.NumEnvironments, FVector(800.0f, 800.0f, 100.0f));
+    //
+    //    if (TrainParams.NumEnvironments != Locations.Num()) {
+    //        // TODO:: Throw error
+    //    }
+
+    //    for (int32 i = 0; i < TrainParams.NumEnvironments; i++)
+    //    {
+    //        FTerraShiftEnvironmentInitParams* Params = new FTerraShiftEnvironmentInitParams();
+    //        Params->Location = Locations[i];
+    //        InitParamsArray.Add(StaticCast<FBaseInitParams*>(Params));
+    //    }
+
+    //    Runner->InitRunner(
+    //        ATerraShiftEnvironment::StaticClass(),
+    //        InitParamsArray,
+    //        TrainParams
+    //    );
+
+    //    /*for (int32 i = 0; i < TrainParams.NumEnvironments; i++)
+    //    {
+    //        FMultiAgentCubeEnvironmentInitParams* MultiCubeParams = new FMultiAgentCubeEnvironmentInitParams();
+    //        MultiCubeParams->Location = Locations[i];
+    //        InitParamsArray.Add(StaticCast<FBaseInitParams*>(MultiCubeParams));
+    //    }
+
+    //    Runner->InitRunner(
+    //        AMultiAgentCubeEnvironment::StaticClass(),
+    //        InitParamsArray,
+    //        TrainParams
+    //    );*/
+    //}
+    //else {
+    //    // TODO:: Throw error
+    //}
 }
 
 bool AMecanum_Robot_RLGameModeBase::ReadJsonConfig(const FString& FilePath, FTrainParams& OutTrainParams)

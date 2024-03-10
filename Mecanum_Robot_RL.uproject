@@ -26,16 +26,8 @@
 			"Enabled": true
 		},
 		{
-			"Name": "MLAdapter",
-			"Enabled": false
-		},
-		{
-			"Name": "TorchPlugin",
-			"Enabled": false
-		},
-		{
-			"Name": "LidarCameraSensor",
-			"Enabled": false
+			"Name": "CustomShaders",
+			"Enabled": true
 		}
 	]
 }
