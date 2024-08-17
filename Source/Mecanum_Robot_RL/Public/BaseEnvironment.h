@@ -6,7 +6,7 @@
 #include "BaseEnvironment.generated.h"
 
 UCLASS()
-class MECANUM_ROBOT_RL_API ABaseEnvironment : public AActor
+class UNREALRLLABS_API ABaseEnvironment : public AActor
 {
     GENERATED_BODY()
 

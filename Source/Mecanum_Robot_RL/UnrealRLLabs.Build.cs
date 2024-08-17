@@ -2,9 +2,9 @@
 
 using UnrealBuildTool;
 
-public class Mecanum_Robot_RL : ModuleRules
+public class UnrealRLLabs : ModuleRules
 {
-    public Mecanum_Robot_RL(ReadOnlyTargetRules Target) : base(Target)
+    public UnrealRLLabs(ReadOnlyTargetRules Target) : base(Target)
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PublicDependencyModuleNames.AddRange(new string[] {

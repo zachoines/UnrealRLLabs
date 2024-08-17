@@ -2,7 +2,7 @@
 
 ABaseEnvironment::ABaseEnvironment()
 {
-    PrimaryActorTick.bCanEverTick = false;
+    PrimaryActorTick.bCanEverTick = true;
 }
 
 void ABaseEnvironment::PostInitializeComponents()

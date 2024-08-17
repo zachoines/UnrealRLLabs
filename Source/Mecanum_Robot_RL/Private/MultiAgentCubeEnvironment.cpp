@@ -109,7 +109,7 @@ void AMultiAgentCubeEnvironment::AssignRandomGridLocations()
 void AMultiAgentCubeEnvironment::MoveAgent(int AgentIndex, FIntPoint Location)
 {
     if (!AgentGoalPositions.Contains(AgentIndex)) {
-        UE_LOG(LogTemp, Log, TEXT("Undefined Agent Index: %"), AgentIndex);
+        UE_LOG(LogTemp, Log, TEXT("Undefined Agent Index: %d"), AgentIndex);
     }
     else 
     {
@@ -141,7 +141,7 @@ void AMultiAgentCubeEnvironment::MoveAgent(int AgentIndex, FIntPoint Location)
 void AMultiAgentCubeEnvironment::MoveGoal(int AgentIndex, FIntPoint Location)
 {
     if (!AgentGoalPositions.Contains(AgentIndex)) {
-        UE_LOG(LogTemp, Log, TEXT("Undefined Agent Index: %"), AgentIndex);
+        UE_LOG(LogTemp, Log, TEXT("Undefined Agent Index: %d"), AgentIndex);
     }
     else
     {
@@ -173,7 +173,7 @@ void AMultiAgentCubeEnvironment::MoveGoal(int AgentIndex, FIntPoint Location)
 bool AMultiAgentCubeEnvironment::AgentCollidedWithAgent(int AgentIndex)
 {
     if (!AgentGoalPositions.Contains(AgentIndex)) {
-        UE_LOG(LogTemp, Log, TEXT("Undefined Agent Index: %"), AgentIndex);
+        UE_LOG(LogTemp, Log, TEXT("Undefined Agent Index: %d"), AgentIndex);
         return false;
     }
 
@@ -201,7 +201,7 @@ bool AMultiAgentCubeEnvironment::AgentCollidedWithAgent(int AgentIndex)
 bool AMultiAgentCubeEnvironment::AgentWrongGoal(int AgentIndex)
 {
     if (!AgentGoalPositions.Contains(AgentIndex)) {
-        UE_LOG(LogTemp, Log, TEXT("Undefined Agent Index: %"), AgentIndex);
+        UE_LOG(LogTemp, Log, TEXT("Undefined Agent Index: %d"), AgentIndex);
         return false;
     }
 
@@ -306,7 +306,7 @@ float AMultiAgentCubeEnvironment::GridDistance(const FIntPoint& Point1, const FI
 bool AMultiAgentCubeEnvironment::AgentGoalReached(int AgentIndex)
 {
     if (!AgentGoalPositions.Contains(AgentIndex)) {
-        UE_LOG(LogTemp, Log, TEXT("Undefined Agent Index: %"), AgentIndex);
+        UE_LOG(LogTemp, Log, TEXT("Undefined Agent Index: %d"), AgentIndex);
         return false;
     }
 
@@ -387,7 +387,7 @@ void AMultiAgentCubeEnvironment::Act(FAction Action)
 {
     if (Action.Values.Num() != ControlledCubes.Num())
     {
-        UE_LOG(LogTemp, Log, TEXT("Incorrect Actions Shape: %"), Action.Values.Num());
+        UE_LOG(LogTemp, Log, TEXT("Incorrect Actions Shape: %d"), Action.Values.Num());
         return;
     }
 
@@ -415,7 +415,7 @@ void AMultiAgentCubeEnvironment::Act(FAction Action)
             break;
         default:
             // No operation
-            UE_LOG(LogTemp, Log, TEXT("Undefined Action Index: %"), Action.Values[i]);
+            UE_LOG(LogTemp, Log, TEXT("Undefined Action Index: %d"), static_cast<int>(Action.Values[i]));
             break;
         }
 
@@ -426,7 +426,7 @@ void AMultiAgentCubeEnvironment::Act(FAction Action)
 void AMultiAgentCubeEnvironment::AgentGoalReset(int AgentIndex)
 {
     if (!AgentGoalPositions.Contains(AgentIndex)) {
-        UE_LOG(LogTemp, Log, TEXT("Undefined Agent Index: %"), AgentIndex);
+        UE_LOG(LogTemp, Log, TEXT("Undefined Agent Index: %d"), AgentIndex);
     }
     GoalReset(AgentIndex);
     AgentReset(AgentIndex);

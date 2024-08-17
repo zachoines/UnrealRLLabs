@@ -1,11 +1,11 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "5.3",
+	"EngineAssociation": "5.4",
 	"Category": "",
 	"Description": "",
 	"Modules": [
 		{
-			"Name": "Mecanum_Robot_RL",
+			"Name": "UnrealRLLabs",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",
 			"AdditionalDependencies": [
@@ -23,11 +23,11 @@
 		},
 		{
 			"Name": "PythonFoundationPackages",
-			"Enabled": true
+			"Enabled": false
 		},
 		{
 			"Name": "CustomShaders",
-			"Enabled": true
+			"Enabled": false
 		}
 	]
 }

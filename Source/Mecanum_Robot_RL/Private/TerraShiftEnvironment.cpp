@@ -1,36 +1,27 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
-
 #include "TerraShiftEnvironment.h"
-
 
 ATerraShiftEnvironment::ATerraShiftEnvironment()
 {
     // Setup Env Info
     EnvInfo.EnvID = 3;
-    EnvInfo.MaxAgents = MaxAgents;
-    EnvInfo.SingleAgentObsSize = 3;
-    EnvInfo.StateSize = EnvInfo.MaxAgents * EnvInfo.SingleAgentObsSize;
     EnvInfo.IsMultiAgent = true;
-
-    const TArray<FContinuousActionSpec>& ContinuousActions = { {-1.0, 1.0} };
-    const TArray<FDiscreteActionSpec>& DiscreteActions = { };
-
-    // Create a default sub-object for ActionSpace
-    EnvInfo.ActionSpace = CreateDefaultSubobject<UActionSpace>(TEXT("ActionSpace"));
-    if (EnvInfo.ActionSpace)
-    {
-        EnvInfo.ActionSpace->Init(ContinuousActions, DiscreteActions);
-    }
 
     // Initialize Scene components
     TerraShiftRoot = CreateDefaultSubobject<USceneComponent>(TEXT("TerraShiftRoot"));
     RootComponent = TerraShiftRoot;
+
+    // Create a default sub-object for ActionSpace
+    EnvInfo.ActionSpace = CreateDefaultSubobject<UActionSpace>(TEXT("ActionSpace"));
 }
 
 void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
 {
     TerraShiftParams = static_cast<FTerraShiftEnvironmentInitParams*>(BaseParams);
+
+    // Set the number of current agents from the initialization parameters
+    CurrentAgents = TerraShiftParams->NumAgents;
+    CurrentStep = 0;
+    LastColumnIndex = INDEX_NONE;
 
     // Set TerraShiftRoot at the specified location.
     TerraShiftRoot->SetWorldLocation(TerraShiftParams->Location);
@@ -39,23 +30,26 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
         FVector(TerraShiftParams->GroundPlaneSize, TerraShiftParams->GroundPlaneSize, TerraShiftParams->GroundPlaneSize)
     );
 
-    // Prepare for column spawning and prismatic joint attachment.
-    Columns.SetNum(GridSize * GridSize);
-    PrismaticJoints.SetNum(GridSize * GridSize);
-    GridCenterPoints.SetNum(GridSize * GridSize);
+    // Prepare for column spawning
+    Columns.SetNum(TerraShiftParams->GridSize * TerraShiftParams->GridSize);
+    GridCenterPoints.SetNum(TerraShiftParams->GridSize * TerraShiftParams->GridSize);
 
-    // Calculate the actual size of world objects
+    // Initialize column velocities to zero
+    ColumnVelocities.SetNum(TerraShiftParams->GridSize * TerraShiftParams->GridSize);
+    for (int i = 0; i < ColumnVelocities.Num(); ++i) {
+        ColumnVelocities[i] = 0.0f;
+    }
+
     FVector PlatformWorldSize = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * 2.0f * TerraShiftParams->GroundPlaneSize;
     FVector PlatformCenter = Platform->GetActorLocation();
 
-    float CellWidth = (TerraShiftParams->GroundPlaneSize / static_cast<float>(GridSize)) - 1e-2;
+    float CellWidth = (TerraShiftParams->GroundPlaneSize / static_cast<float>(TerraShiftParams->GridSize)) - 1e-2;
     float CellHeight = CellWidth;
     AStaticMeshActor* Column = nullptr;
 
-    for (int i = 0; i < GridSize; ++i)
+    for (int i = 0; i < TerraShiftParams->GridSize; ++i)
     {
-
-        for (int j = 0; j < GridSize; ++j)
+        for (int j = 0; j < TerraShiftParams->GridSize; ++j)
         {
             // Spawn each column.
             Column = SpawnColumn(
@@ -65,26 +59,39 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
 
             FVector ColumnWorldSize = Column->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * 2.0f * CellHeight;
             FVector GridCenter = PlatformCenter + FVector(
-                (i - GridSize / 2.0f + 0.5f) * (PlatformWorldSize.X / GridSize),
-                (j - GridSize / 2.0f + 0.5f) * (PlatformWorldSize.Y / GridSize),
+                (i - TerraShiftParams->GridSize / 2.0f + 0.5f) * (PlatformWorldSize.X / TerraShiftParams->GridSize),
+                (j - TerraShiftParams->GridSize / 2.0f + 0.5f) * (PlatformWorldSize.Y / TerraShiftParams->GridSize),
                 ColumnWorldSize.Z / 2
             );
             Column->SetActorLocation(GridCenter);
 
-            PrismaticJoints[Get1DIndexFromPoint(FIntPoint(i, j), GridSize)] = AttachPrismaticJoint(Column);
-            Columns[Get1DIndexFromPoint(FIntPoint(i, j), GridSize)] = Column;
-            GridCenterPoints[Get1DIndexFromPoint(FIntPoint(i, j), GridSize)] = GridCenter;
+            Columns[Get1DIndexFromPoint(FIntPoint(i, j), TerraShiftParams->GridSize)] = Column;
+            GridCenterPoints[Get1DIndexFromPoint(FIntPoint(i, j), TerraShiftParams->GridSize)] = GridCenter;
 
-            SetColumnHeight(Get1DIndexFromPoint(FIntPoint(i, j), GridSize), 0.5);
+            SetColumnHeight(Get1DIndexFromPoint(FIntPoint(i, j), TerraShiftParams->GridSize), 0.5f);
         }
     }
 
-    // Assuming ColumnHeight is adjusted for scale.
-    FVector Bounds = Column->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent;
-    ScaledHeight = Bounds.Z * Column->GetActorScale3D().Z;
-    ScaledWidth = Bounds.X * Column->GetActorScale3D().X;
+    // Set the single agent observation size
+    EnvInfo.SingleAgentObsSize = 6; // Current column location (3) + gridObject location (3)
 
-    Objects.Add(InitializeGridObject());
+    // Set the state size and action space
+    EnvInfo.StateSize = CurrentAgents * EnvInfo.SingleAgentObsSize;
+
+    TArray<FDiscreteActionSpec> DiscreteActions;
+    DiscreteActions.Add({ 8 }); // columnChangeDirection: 8 directions (N, NE, E, SE, S, SW, W, NW)
+    DiscreteActions.Add({ 3 }); // columnHeight: 3 options (accelerate, decelerate, noop)
+
+    if (EnvInfo.ActionSpace)
+    {
+        EnvInfo.ActionSpace->Init({}, DiscreteActions);
+    }
+
+    // Initialize agents (GridObjects)
+    for (int i = 0; i < CurrentAgents; ++i)
+    {
+        Objects.Add(InitializeGridObject());
+    }
 }
 
 AStaticMeshActor* ATerraShiftEnvironment::SpawnColumn(FVector Dimensions, FName Name)
@@ -108,62 +115,16 @@ AStaticMeshActor* ATerraShiftEnvironment::SpawnColumn(FVector Dimensions, FName 
                     ColumnActor->GetStaticMeshComponent()->SetMaterial(0, Material);
                 }
 
-                ColumnActor->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+                ColumnActor->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
                 ColumnActor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
                 ColumnActor->GetStaticMeshComponent()->BodyInstance.SetMassOverride(TerraShiftParams->ColumnMass, true);
-                ColumnActor->GetStaticMeshComponent()->SetEnableGravity(true);
-                ColumnActor->GetStaticMeshComponent()->SetSimulatePhysics(true);
+                ColumnActor->GetStaticMeshComponent()->SetEnableGravity(false); // Disable gravity to prevent columns from falling
+                ColumnActor->GetStaticMeshComponent()->SetSimulatePhysics(false); // Disable physics simulation to prevent columns from being pushed around
             }
         }
         return ColumnActor;
     }
     return nullptr;
-}
-
-UPhysicsConstraintComponent* ATerraShiftEnvironment::AttachPrismaticJoint(AStaticMeshActor* Column)
-{
-    UPhysicsConstraintComponent* PrismaticJoint = NewObject<UPhysicsConstraintComponent>(Column);
-    if (PrismaticJoint)
-    {
-        // Setting up linear and angular limits
-        PrismaticJoint->SetLinearXLimit(ELinearConstraintMotion::LCM_Locked, 0);
-        PrismaticJoint->SetLinearYLimit(ELinearConstraintMotion::LCM_Locked, 0);
-        PrismaticJoint->SetLinearZLimit(ELinearConstraintMotion::LCM_Limited, TerraShiftParams->MaxColumnHeight);
-
-        PrismaticJoint->SetAngularSwing1Limit(EAngularConstraintMotion::ACM_Locked, 0);
-        PrismaticJoint->SetAngularSwing2Limit(EAngularConstraintMotion::ACM_Locked, 0);
-        PrismaticJoint->SetAngularTwistLimit(EAngularConstraintMotion::ACM_Locked, 0);
-
-        // Setting the components to be constrained
-        PrismaticJoint->SetConstrainedComponents(Column->GetStaticMeshComponent(), NAME_None, Platform->GetStaticMeshComponent(), NAME_None);
-
-        // Initializing the component constraint
-        PrismaticJoint->InitComponentConstraint();
-        PrismaticJoint->RegisterComponent();
-
-        // Activate the constraint
-        PrismaticJoint->SetActive(true);
-
-        // Setting up the linear drive
-        PrismaticJoint->SetLinearVelocityDrive(false, false, true);
-        if (TerraShiftParams->PositionalDrive) {
-            PrismaticJoint->SetLinearPositionDrive(false, false, true);
-            PrismaticJoint->SetLinearDriveParams(
-                50000.0, // spring "position strength"
-                10000.0, // damping "velocity strength"
-                0.0 // no limit 
-            );
-        }
-        else {
-            PrismaticJoint->SetLinearDriveParams(
-                10000.0, // spring "position strength"
-                50000.0, // damping "velocity strength"
-                0.0 // no limit 
-            );
-        }
-    }
-
-    return PrismaticJoint;
 }
 
 AStaticMeshActor* ATerraShiftEnvironment::SpawnPlatform(FVector Location, FVector Size)
@@ -174,7 +135,6 @@ AStaticMeshActor* ATerraShiftEnvironment::SpawnPlatform(FVector Location, FVecto
         if (PlaneMesh)
         {
             FActorSpawnParameters SpawnParams;
-            // SpawnParams.Name = TEXT("GroundPlane");
             Platform = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, FRotator::ZeroRotator, SpawnParams);
             if (Platform)
             {
@@ -188,7 +148,6 @@ AStaticMeshActor* ATerraShiftEnvironment::SpawnPlatform(FVector Location, FVecto
                     Material->TwoSided = true;
                     Platform->GetStaticMeshComponent()->SetMaterial(0, Material);
                 }
-                Platform->GetStaticMeshComponent()->SetMobility(EComponentMobility::Static);
                 Platform->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
                 Platform->GetStaticMeshComponent()->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
             }
@@ -201,70 +160,51 @@ AStaticMeshActor* ATerraShiftEnvironment::SpawnPlatform(FVector Location, FVecto
 void ATerraShiftEnvironment::SetColumnHeight(int ColumnIndex, float NewHeight)
 {
     AStaticMeshActor* Column = Columns[ColumnIndex];
-    FVector MinLoc = GridCenterPoints[ColumnIndex];
-    UPhysicsConstraintComponent* ConstraintComponent = PrismaticJoints[ColumnIndex];
-
-    if (Column && ConstraintComponent)
+    if (Column)
     {
-        // FVector CurrentLocation = Column->GetActorLocation();
-        /*if (CurrentLocation.Z < MinLoc.Z)
-        {
-            ConstraintComponent->SetLinearPositionTarget(FVector(0, 0, 0));
-            Column->TeleportTo(MinLoc, Column->GetActorRotation(), false, true);
-        }*/
-        
-        FVector Scale = Column->GetActorScale3D();
-        float AdjustedHeight = (NewHeight * Scale.Z) * TerraShiftParams->MaxColumnHeight;
-
-        ConstraintComponent->SetLinearPositionTarget(FVector(0, 0, AdjustedHeight));
-        ConstraintComponent->SetLinearPositionDrive(false, false, true);
-
         FVector CurrentLocation = Column->GetActorLocation();
-        float CurrentZ = CurrentLocation.Z;
-        float TargetZ = Column->GetRootComponent()->GetComponentLocation().Z + AdjustedHeight; // Assuming base position + height.
-
-        // Determine velocity direction.
-        float Difference = TargetZ - CurrentZ;
-        float VelocityDirection = FMath::Sign(Difference);
-        float VelocityMagnitude = FMath::Abs(Difference) > KINDA_SMALL_NUMBER ? TerraShiftParams->ColumnVelocity : 0; // Apply velocity only if there's a significant difference.
-
-        // Set linear velocity target based on direction.
-        ConstraintComponent->SetLinearVelocityTarget(FVector(0, 0, VelocityMagnitude * VelocityDirection));
-        ConstraintComponent->SetLinearVelocityDrive(false, false, true);
+        CurrentLocation.Z = FMath::Clamp(NewHeight * TerraShiftParams->MaxColumnHeight, 0.0f, TerraShiftParams->MaxColumnHeight);
+        Column->SetActorLocation(CurrentLocation);
     }
 }
 
-void ATerraShiftEnvironment::SetColumnVelocity(int ColumnIndex, float Velocity)
-{
+void ATerraShiftEnvironment::SetColumnAcceleration(int ColumnIndex, float Acceleration) {
     AStaticMeshActor* Column = Columns[ColumnIndex];
-    FVector MinLoc = GridCenterPoints[ColumnIndex];
-    UPhysicsConstraintComponent* ConstraintComponent = PrismaticJoints[ColumnIndex];
+    if (Column) {
+        float MaxHeight = TerraShiftParams->MaxColumnHeight;
+        float MinHeight = 0.0f;
 
-    if (Column && ConstraintComponent)
-    {
-        FVector Scale = Column->GetActorScale3D();
-        float CurrentHeight = Column->GetActorLocation().Z;
-        float MaxHeight = Scale.Z * TerraShiftParams->MaxColumnHeight;
-        float MinHeight = MinLoc.Z;
+        // Update the column's velocity based on the acceleration
+        ColumnVelocities[ColumnIndex] += Acceleration;
 
-        // Going below platform
-        if ((CurrentHeight < MinHeight) && (Velocity < 0.0))
+        // Clamp the velocity if the column is at its limits
+        FVector CurrentLocation = Column->GetActorLocation();
+        float CurrentHeight = CurrentLocation.Z;
+        if ((CurrentHeight >= MaxHeight && ColumnVelocities[ColumnIndex] > 0.0f) ||
+            (CurrentHeight <= MinHeight && ColumnVelocities[ColumnIndex] < 0.0f))
         {
-            Column->TeleportTo(MinLoc, Column->GetActorRotation(), false, true);
-            ConstraintComponent->SetLinearVelocityDrive(false, false, true);
-            ConstraintComponent->SetLinearVelocityTarget(FVector(0, 0, 0));
+            ColumnVelocities[ColumnIndex] = 0.0f;
         }
-        else {
-            ConstraintComponent->SetLinearVelocityTarget(FVector(0, 0, Velocity * TerraShiftParams->ColumnVelocity));
-            ConstraintComponent->SetLinearVelocityDrive(false, false, true);
+    }
+}
+
+void ATerraShiftEnvironment::Tick(float DeltaTime) {
+    Super::Tick(DeltaTime);
+
+    // Update column positions based on their velocities
+    for (int i = 0; i < Columns.Num(); ++i) {
+        AStaticMeshActor* Column = Columns[i];
+        if (Column && ColumnVelocities[i] != 0.0f) {
+            FVector NewLocation = Column->GetActorLocation();
+            NewLocation.Z += ColumnVelocities[i] * DeltaTime;
+            NewLocation.Z = FMath::Clamp(NewLocation.Z, 0.0f, TerraShiftParams->MaxColumnHeight);
+            Column->SetActorLocation(NewLocation);
+
+            // If the column reaches its limit, set its velocity to zero
+            if (NewLocation.Z == 0.0f || NewLocation.Z == TerraShiftParams->MaxColumnHeight) {
+                ColumnVelocities[i] = 0.0f;
+            }
         }
-        //// Going above max
-        //else if ((CurrentHeight > MaxHeight) && (Velocity > 0.0)) {
-        //    FVector MaxLoc(MinLoc.X, MinLoc.Y, MaxHeight);
-        //    // Column->TeleportTo(MaxLoc, Column->GetActorRotation(), false, true);
-        //    ConstraintComponent->SetLinearVelocityDrive(false, false, true);
-        //    ConstraintComponent->SetLinearVelocityTarget(FVector(0, 0, 0));
-        //}
     }
 }
 
@@ -272,9 +212,8 @@ AStaticMeshActor* ATerraShiftEnvironment::InitializeGridObject()
 {
     if (UWorld* World = GetWorld())
     {
-        // Pick a random location from GridCenterPoints
         int32 RandomIndex = FMath::RandRange(0, GridCenterPoints.Num() - 1);
-        FVector Location = GridCenterPoints[RandomIndex] + FVector(0, 0, 10.0);
+        FVector Location = GridCenterPoints[RandomIndex] + FVector(0, 0, 10.0f);
         UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
         AStaticMeshActor* ObjectActor = nullptr;
         if (SphereMesh)
@@ -304,109 +243,143 @@ AStaticMeshActor* ATerraShiftEnvironment::InitializeGridObject()
     return nullptr;
 }
 
-void ATerraShiftEnvironment::MoveAgent(int AgentIndex, float Value)
-{
-    if (TerraShiftParams->PositionalDrive) {
-        SetColumnHeight(
-            AgentIndex,
-            map(Value, -1.0, 1.0, 0.0, 1.0)
-        );
+int ATerraShiftEnvironment::SelectColumn(int AgentIndex, int Direction) const {
+    if (LastColumnIndex == INDEX_NONE)
+    {
+        // First call after InitEnv or ResetEnv, find the closest column to the current grid object
+        FVector AgentPosition = Objects[AgentIndex]->GetActorLocation();
+        float MinDistance = MAX_FLT;
+        int ClosestColumnIndex = INDEX_NONE;
+
+        for (int i = 0; i < Columns.Num(); ++i)
+        {
+            float Distance = FVector::Dist2D(AgentPosition, Columns[i]->GetActorLocation());
+            if (Distance < MinDistance)
+            {
+                MinDistance = Distance;
+                ClosestColumnIndex = i;
+            }
+        }
+        return ClosestColumnIndex;
     }
-    else {
-        SetColumnVelocity(
-            AgentIndex,
-            Value
-        );
+    else
+    {
+        // Determine the next column based on the direction from the last selected column
+        int GridSize = TerraShiftParams->GridSize;
+        int Row = LastColumnIndex / GridSize;
+        int Col = LastColumnIndex % GridSize;
+
+        switch (Direction)
+        {
+        case 0: // N
+            Row = FMath::Clamp(Row - 1, 0, GridSize - 1);
+            break;
+        case 1: // NE
+            Row = FMath::Clamp(Row - 1, 0, GridSize - 1);
+            Col = FMath::Clamp(Col + 1, 0, GridSize - 1);
+            break;
+        case 2: // E
+            Col = FMath::Clamp(Col + 1, 0, GridSize - 1);
+            break;
+        case 3: // SE
+            Row = FMath::Clamp(Row + 1, 0, GridSize - 1);
+            Col = FMath::Clamp(Col + 1, 0, GridSize - 1);
+            break;
+        case 4: // S
+            Row = FMath::Clamp(Row + 1, 0, GridSize - 1);
+            break;
+        case 5: // SW
+            Row = FMath::Clamp(Row + 1, 0, GridSize - 1);
+            Col = FMath::Clamp(Col - 1, 0, GridSize - 1);
+            break;
+        case 6: // W
+            Col = FMath::Clamp(Col - 1, 0, GridSize - 1);
+            break;
+        case 7: // NW
+            Row = FMath::Clamp(Row - 1, 0, GridSize - 1);
+            Col = FMath::Clamp(Col - 1, 0, GridSize - 1);
+            break;
+        default:
+            break;
+        }
+
+        return Row * GridSize + Col;
     }
 }
 
-TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex) {
+TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
+{
     TArray<float> State;
-    FVector PlatformWorldSize = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * 2.0f * TerraShiftParams->GroundPlaneSize;
-    FVector PlatformCenter = Platform->GetActorLocation();
 
-    // Adjust camera height calculation using diagonal and FOV
-    float diagonal = FMath::Sqrt(FMath::Square(PlatformWorldSize.X) + FMath::Square(PlatformWorldSize.Y));
-    float FOVRadians = FMath::DegreesToRadians(TerraShiftParams->FOV);
-    float h = diagonal / (2.0f * FMath::Tan(FOVRadians / 2.0f));
-    FVector CameraLocation = PlatformCenter + FVector(0, 0, h);
-
-    // Update for accurate cell size calculation
-    float CellSize = PlatformWorldSize.X / GridSize; // Assuming square cells
-
-    // Calculate starting point for traces within each agent's corresponding grid cell
-    FVector StartPoint = PlatformCenter - FVector(PlatformWorldSize.X / 2, PlatformWorldSize.Y / 2, 0) + FVector(CellSize / 2, CellSize / 2, 0);
-    FVector CellCenter = StartPoint + FVector((AgentIndex % GridSize) * CellSize, (AgentIndex / GridSize) * CellSize, 0);
-
-    // Tracing logic
-    for (int TraceIndex = 0; TraceIndex < TerraShiftParams->TracesPerAgent; ++TraceIndex) {
-        // Calculate even distribution of traces within the cell
-        FVector TraceEnd = CellCenter - CameraLocation;
-        TraceEnd.Normalize();
-        TraceEnd = CameraLocation + TraceEnd * (h + 100); // 100 is an arbitrary distance to ensure reaching the platform
-
-        FHitResult Hit;
-        FCollisionQueryParams Params;
-        // Params.AddIgnoredActor(Column);
-        bool bHit = GetWorld()->LineTraceSingleByObjectType(Hit, CameraLocation, TraceEnd, FCollisionObjectQueryParams(ECollisionChannel::ECC_PhysicsBody), Params);
-
-        // Debug lines
-        DrawDebugLine(GetWorld(), CameraLocation, TraceEnd, bHit ? FColor::Red : FColor::Green, false, -1.0f, (uint8)'\000', 1.0f);
-
-        // Append hit result to state
-        if (bHit) {
-            State.Add((CameraLocation - Hit.ImpactPoint).Size());
-        }
-        else {
-            State.Add((CameraLocation - TraceEnd).Size());
-        }
+    if (LastColumnIndex != INDEX_NONE)
+    {
+        FVector ColumnLocation = Columns[LastColumnIndex]->GetActorLocation();
+        State.Add(ColumnLocation.X);
+        State.Add(ColumnLocation.Y);
+        State.Add(ColumnLocation.Z);
     }
+
+    FVector AgentPosition = Objects[AgentIndex]->GetActorLocation();
+    State.Add(AgentPosition.X);
+    State.Add(AgentPosition.Y);
+    State.Add(AgentPosition.Z);
 
     return State;
 }
 
-int ATerraShiftEnvironment::Get1DIndexFromPoint(const FIntPoint& point, int gridSize)
+int ATerraShiftEnvironment::Get1DIndexFromPoint(const FIntPoint& Point, int gridSize) const
 {
-    return point.X * gridSize + point.Y;
+    return Point.X * gridSize + Point.Y;
 }
 
-float ATerraShiftEnvironment::GridDistance(const FIntPoint& Point1, const FIntPoint& Point2)
+float ATerraShiftEnvironment::GridDistance(const FIntPoint& Point1, const FIntPoint& Point2) const
 {
     return FMath::Sqrt(FMath::Square(static_cast<float>(Point2.X) - static_cast<float>(Point1.X)) + FMath::Square(static_cast<float>(Point2.Y) - static_cast<float>(Point1.Y)));
 }
 
 FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
 {
-    /*
-        This function reinitializes the TerraShift grid to its default neutral positions
-    */
     CurrentStep = 0;
+    GoalPosition = FVector(FMath::RandRange(-1.0f, 1.0f), FMath::RandRange(-1.0f, 1.0f), 0.0f);
 
+    for (int i = 0; i < Columns.Num(); ++i)
+    {
+        SetColumnHeight(i, 0.5f);
+        ColumnVelocities[i] = 0.0f; // Reset column velocities on reset
+    }
 
+    for (AStaticMeshActor* Object : Objects)
+    {
+        int32 RandomIndex = FMath::RandRange(0, GridCenterPoints.Num() - 1);
+        FVector NewLocation = GridCenterPoints[RandomIndex] + FVector(0, 0, 10.0f);
+        Object->SetActorLocation(NewLocation);
+    }
 
-    // Always make sure after modifying actors
     return State();
 }
 
 void ATerraShiftEnvironment::Act(FAction Action)
 {
-    if ((CurrentStep % 256) == 0) { // TODO:: Remove this once AI is hooked up
-        if (CurrentPressure == 0.0) {
-            CurrentPressure = 1.0;
-        }
-        else if (CurrentPressure == 1.0) {
-            CurrentPressure = -1.0;
-        }
-        else if (CurrentPressure == -1.0) {
-            CurrentPressure = 0.0;
-        }
-    }
-    for (int i = 0; i < MaxAgents; ++i)
+    for (int i = 0; i < Objects.Num(); ++i)
     {
-        MoveAgent(i, 
-            FMath::RandRange(-1.0, 1.0)
-            // CurrentPressure
-        );
+        int Direction = FMath::RoundToInt(Action.Values[i * 2]);
+        int HeightAction = FMath::RoundToInt(Action.Values[i * 2 + 1]);
+
+        int SelectedColumnIndex = SelectColumn(i, Direction);
+
+        switch (HeightAction)
+        {
+        case 0: // accelerate
+            SetColumnAcceleration(SelectedColumnIndex, TerraShiftParams->ColumnAccelConstant);
+            break;
+        case 1: // decelerate
+            SetColumnAcceleration(SelectedColumnIndex, -TerraShiftParams->ColumnAccelConstant);
+            break;
+        case 2: // noop
+            break;
+        }
+
+        LastColumnIndex = SelectedColumnIndex;
     }
 }
 
@@ -417,36 +390,23 @@ void ATerraShiftEnvironment::PostStep()
 
 FState ATerraShiftEnvironment::State()
 {
-    /*
-        This function gets each agent;s indivual observations, concatinating them into one
-        large state array.
-    */
     FState CurrentState;
-
-    for (int i = 0; i < MaxAgents; ++i) {
+    for (int i = 0; i < Objects.Num(); ++i)
+    {
         CurrentState.Values += AgentGetState(i);
     }
-
     return CurrentState;
 }
 
 bool ATerraShiftEnvironment::Done()
 {
-    /*
-        This function check for terminating condition with environment.
-    */
-
-    // TODO: Check if any of the objects are out of bounds.
-
-    return false;
+    return false; // Implement any termination condition if required
 }
 
 bool ATerraShiftEnvironment::Trunc()
 {
-    /*
-        This function checks if we have reached the maximum number of steps in the environment
-    */
-    if (CurrentStep > MaxSteps) {
+    if (CurrentStep > TerraShiftParams->MaxSteps)
+    {
         CurrentStep = 0;
         return true;
     }
@@ -456,28 +416,18 @@ bool ATerraShiftEnvironment::Trunc()
 
 float ATerraShiftEnvironment::Reward()
 {
-    /*
-        This function determines the collective rewards for the environment
-        +1 for Object reach goal
-        -1 for Object falling out of bounds
-        -0.0001 for step penalty
-    */
-    float totalrewards = 0.0;
+    float TotalRewards = 0.0f;
 
-    // TODO
-
-    return totalrewards;
+    // TODO: Calculate rewards based on environment conditions
+    return TotalRewards;
 }
 
-void ATerraShiftEnvironment::PostTransition() {
-
+void ATerraShiftEnvironment::PostTransition()
+{
+    // Handle any cleanup or state transitions post-action
 }
 
-void ATerraShiftEnvironment::setCurrentAgents(int NumAgents) {
-    CurrentAgents = NumAgents;
-}
-
-float ATerraShiftEnvironment::map(float x, float in_min, float in_max, float out_min, float out_max) {
+float ATerraShiftEnvironment::Map(float x, float in_min, float in_max, float out_min, float out_max) const
+{
     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
-

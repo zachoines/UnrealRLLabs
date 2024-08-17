@@ -10,7 +10,7 @@
 
 
 USTRUCT(BlueprintType)
-struct MECANUM_ROBOT_RL_API FCubeEnvironmentInitParams : public FBaseInitParams
+struct UNREALRLLABS_API FCubeEnvironmentInitParams : public FBaseInitParams
 {
     GENERATED_USTRUCT_BODY();
 
@@ -22,7 +22,7 @@ struct MECANUM_ROBOT_RL_API FCubeEnvironmentInitParams : public FBaseInitParams
 };
 
 UCLASS()
-class MECANUM_ROBOT_RL_API ACubeEnvironment : public ABaseEnvironment
+class UNREALRLLABS_API ACubeEnvironment : public ABaseEnvironment
 {
     GENERATED_BODY()
 

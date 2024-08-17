@@ -11,7 +11,7 @@
 #include "SharedMemoryAgentCommunicator.generated.h"
 
 UCLASS(BlueprintType)
-class MECANUM_ROBOT_RL_API USharedMemoryAgentCommunicator : public UObject
+class UNREALRLLABS_API USharedMemoryAgentCommunicator : public UObject
 {
     GENERATED_BODY()
 

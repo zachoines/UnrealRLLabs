@@ -11,7 +11,7 @@
 
 // Derived struct for initialization parameters specific to CubeEnvironment
 USTRUCT(BlueprintType)
-struct MECANUM_ROBOT_RL_API FMultiAgentCubeEnvironmentInitParams : public FBaseInitParams
+struct UNREALRLLABS_API FMultiAgentCubeEnvironmentInitParams : public FBaseInitParams
 {
     GENERATED_USTRUCT_BODY();
 
@@ -24,7 +24,7 @@ struct MECANUM_ROBOT_RL_API FMultiAgentCubeEnvironmentInitParams : public FBaseI
 
 
 UCLASS()
-class MECANUM_ROBOT_RL_API AMultiAgentCubeEnvironment : public ABaseEnvironment
+class UNREALRLLABS_API AMultiAgentCubeEnvironment : public ABaseEnvironment
 {
     GENERATED_BODY()
 

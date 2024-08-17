@@ -11,7 +11,7 @@
 // Local classes
 #include "Public/BaseEnvironment.h"
 #include "Public/RLRunner.h"
-#include "Mecanum_Robot_RL.h"
+#include "UnrealRLLabs.h"
 #include "MultiAgentCubeEnvironment.h"
 #include "TerraShiftEnvironment.h"
 #include "RLRunner.h"
@@ -20,17 +20,17 @@
 
 #include "Engine/TextureRenderTarget2D.h"
 
-#include "Mecanum_Robot_RLGameModeBase.generated.h"
+#include "UnrealRLLabsGameModeBase.generated.h"
 
 
 
 UCLASS()
-class AMecanum_Robot_RLGameModeBase : public AGameModeBase
+class AUnrealRLLabsGameModeBase : public AGameModeBase
 {
     GENERATED_BODY()
 
 public:
-    AMecanum_Robot_RLGameModeBase();
+    AUnrealRLLabsGameModeBase();
 
     virtual void BeginDestroy() override;
     virtual void BeginPlay() override;

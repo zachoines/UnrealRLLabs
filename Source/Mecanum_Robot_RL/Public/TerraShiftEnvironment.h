@@ -1,64 +1,51 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
 #pragma once
 
 #include "CoreMinimal.h"
 #include "BaseEnvironment.h"
 #include "Engine/StaticMeshActor.h"
-#include "Materials/MaterialInstanceDynamic.h"
-#include "MaterialShared.h"
 #include "RLTypes.h"
-
-#include "PhysicsEngine/PhysicsConstraintComponent.h"
-#include "Engine/StaticMeshActor.h"
-#include "Components/StaticMeshComponent.h"
-#include "UObject/ConstructorHelpers.h"
 #include "TerraShiftEnvironment.generated.h"
 
-// Derived struct for initialization parameters specific to CubeEnvironment
+// Struct for initialization parameters specific to TerraShiftEnvironment
 USTRUCT(BlueprintType)
-struct MECANUM_ROBOT_RL_API FTerraShiftEnvironmentInitParams : public FBaseInitParams
+struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParams
 {
     GENERATED_USTRUCT_BODY();
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float GroundPlaneSize = 2.0; // m
+    float GroundPlaneSize = 2.0f; // m
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float MaxColumnHeight = 10; // cm
+    float MaxColumnHeight = 10.0f; // cm
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    FVector ObjectSize = { 0.1, 0.1, 0.1 }; // m
+    FVector ObjectSize = { 0.1f, 0.1f, 0.1f }; // m
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float ObjectMass = 0.2; // kg
+    float ObjectMass = 0.2f; // kg
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float ColumnMass = 0.01; // kg
+    float ColumnMass = 0.01f; // kg
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float ColumnVelocity = 20.0; // cm/s
+    float ColumnVelocity = 20.0f; // cm/s
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    bool PositionalDrive = false; // Use PID-like position setting
+    float ColumnAccelConstant = 0.2f; // Acceleration constant for columns
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int TracesPerAgent = 4;
+    int GridSize = 20; // Size of the grid
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float FOV = 58; // degrees
-
-
-
+    int MaxSteps = 1024; // Maximum steps per episode
 };
 
 UCLASS()
-class MECANUM_ROBOT_RL_API ATerraShiftEnvironment : public ABaseEnvironment
+class UNREALRLLABS_API ATerraShiftEnvironment : public ABaseEnvironment
 {
     GENERATED_BODY()
 
 public:
-
     ATerraShiftEnvironment();
 
     // The root component for organizing everything in this environment
@@ -73,13 +60,9 @@ public:
     UPROPERTY(EditAnywhere)
     TArray<AStaticMeshActor*> Objects;
 
-    // The Columns controlled by agents
+    // The Columns controlled by GridObjects
     UPROPERTY(EditAnywhere)
     TArray<AStaticMeshActor*> Columns;
-
-    // Constrain joints connecting the columns with platforms
-    UPROPERTY(EditAnywhere)
-    TArray<UPhysicsConstraintComponent*> PrismaticJoints;
 
     virtual void InitEnv(FBaseInitParams* Params) override;
     virtual FState ResetEnv(int NumAgents) override;
@@ -90,24 +73,20 @@ public:
     virtual bool Done() override;
     virtual bool Trunc() override;
     virtual float Reward() override;
-    void setCurrentAgents(int NumAgents);
+
+    // Override the Tick function to update column positions
+    virtual void Tick(float DeltaTime) override;
 
 private:
     FTerraShiftEnvironmentInitParams* TerraShiftParams = nullptr;
 
-    // Constant
-    const int GridSize = 20;
-    const int MaxSteps = 1024;
-    const float MaxAgents = GridSize * GridSize;
-    float CurrentPressure = 0.0;
-
     // State Variables
-    float ScaledHeight = -1;
-    float ScaledWidth = -1;
     int CurrentStep;
     int CurrentAgents;
+    int LastColumnIndex;
+    FVector GoalPosition;
     TArray<FVector> GridCenterPoints;
-    
+    TArray<float> ColumnVelocities; // Store column velocities
 
     // Function to spawn a column in the environment
     AStaticMeshActor* SpawnColumn(FVector Dimensions, FName Name);
@@ -115,34 +94,13 @@ private:
     // Function to spawn the ground platform in the environment
     AStaticMeshActor* SpawnPlatform(FVector Location, FVector Size);
 
-    // Function to attach a prismatic joint between a column and the platform
-    UPhysicsConstraintComponent* AttachPrismaticJoint(AStaticMeshActor* Column);
-
-    void SetColumnVelocity(int ColumnIndex, float Velocity);
     void SetColumnHeight(int ColumnIndex, float NewHeight);
-  
-    const TArray<FLinearColor> Colors = {
-        FLinearColor(1.0f, 0.0f, 0.0f),
-        FLinearColor(0.0f, 1.0f, 0.0f),
-        FLinearColor(0.0f, 0.0f, 1.0f),
-        FLinearColor(1.0f, 1.0f, 0.0f),
-        FLinearColor(1.0f, 0.0f, 1.0f),
-        FLinearColor(0.0f, 1.0f, 1.0f),
-        FLinearColor(1.0f, 0.5f, 0.0f),
-        FLinearColor(0.5f, 0.0f, 1.0f),
-        FLinearColor(1.0f, 0.0f, 0.5f),
-        FLinearColor(0.5f, 1.0f, 0.0f)
-    };
+    void SetColumnAcceleration(int ColumnIndex, float Acceleration);
+    AStaticMeshActor* InitializeGridObject();
 
-    TMap<FIntPoint, TArray<AStaticMeshActor*>> UsedLocations;
-
-    void MoveAgent(int AgentIndex, float Value);
-    void SpawnGridObject(FIntPoint SpawnLocation, FIntPoint GaolLocation);
-    AStaticMeshActor* InitializeGridObject(); // (const FLinearColor& Color);
-   
+    int SelectColumn(int AgentIndex, int Direction) const;
     TArray<float> AgentGetState(int AgentIndex);
-    int Get1DIndexFromPoint(const FIntPoint& point, int gridSize);
-    float GridDistance(const FIntPoint& Point1, const FIntPoint& Point2);
-    float map(float x, float in_min, float in_max, float out_min, float out_max);
+    int Get1DIndexFromPoint(const FIntPoint& point, int gridSize) const;
+    float GridDistance(const FIntPoint& Point1, const FIntPoint& Point2) const;
+    float Map(float x, float in_min, float in_max, float out_min, float out_max) const;
 };
-

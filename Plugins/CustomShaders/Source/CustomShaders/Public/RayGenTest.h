@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../Private/RayTracing/RayTracingScene.h"
+#include "../Private/SceneRendering.h"
 #include "Components/ActorComponent.h"
 #include "RenderGraphUtils.h"
 #include "Engine/TextureRenderTargetVolume.h"
@@ -8,17 +10,17 @@
 #include "ShaderParameterStruct.h"
 #include "RenderTargetPool.h"
 #include "RHI.h"
+#include "RHIUtilities.h"
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 #include "RayTracingDefinitions.h"
 #include "RayTracingPayloadType.h"
-#include "../Private/RayTracing/RayTracingScene.h"
-#include "../Private/SceneRendering.h"
 #include "RenderGraphUtils.h"
-
+#include "SceneInterface.h"
+#include "Camera/CameraComponent.h"
+#include "Camera/CameraActor.h"
 #include "RayGenTest.generated.h"
 
-class FRayTracingScene;
 
 struct FRayGenTestParameters
 {
@@ -38,16 +40,17 @@ struct FRayGenTestParameters
 	UTextureRenderTarget2D* RenderTarget;
 	FRayTracingScene* Scene;
 	FIntPoint CachedRenderTargetSize;
+	FTransform CameraTransform;
 };
 
 UCLASS()
-class URayGenTest : public UActorComponent
+class ARayGenTest : public AActor
 {
 public:
 	GENERATED_BODY()
 
-	URayGenTest();
-
+	ARayGenTest();
+	virtual void BeginPlay() override;
 	void BeginRendering();
 	void EndRendering();
 	void UpdateParameters(FRayGenTestParameters& DrawParameters);
@@ -62,6 +65,8 @@ public:
 	volatile bool bCachedParamsAreValid;
 
 	/// We create the shader's output texture and UAV and save to avoid reallocation
+	FBufferRHIRef CameraDataBuffer;
 	FTexture2DRHIRef ShaderOutputTexture;
 	FUnorderedAccessViewRHIRef ShaderOutputTextureUAV;
+	FUnorderedAccessViewRHIRef CameraDataBufferUAV;
 };

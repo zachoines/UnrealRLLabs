@@ -5,7 +5,7 @@
 #include "RLTypes.generated.h"
 
 USTRUCT(BlueprintType)
-struct MECANUM_ROBOT_RL_API FTrainParams
+struct UNREALRLLABS_API FTrainParams
 {
     GENERATED_USTRUCT_BODY()
 
@@ -30,7 +30,7 @@ struct MECANUM_ROBOT_RL_API FTrainParams
 };
 
 USTRUCT(BlueprintType)
-struct MECANUM_ROBOT_RL_API FEnvInfo
+struct UNREALRLLABS_API FEnvInfo
 {
     GENERATED_USTRUCT_BODY()
 
@@ -54,7 +54,7 @@ struct MECANUM_ROBOT_RL_API FEnvInfo
 };
 
 USTRUCT(BlueprintType)
-struct MECANUM_ROBOT_RL_API FAction
+struct UNREALRLLABS_API FAction
 {
     GENERATED_BODY()
 
@@ -63,7 +63,7 @@ struct MECANUM_ROBOT_RL_API FAction
 };
 
 USTRUCT(BlueprintType)
-struct MECANUM_ROBOT_RL_API FState
+struct UNREALRLLABS_API FState
 {
     GENERATED_BODY()
 
@@ -72,7 +72,7 @@ struct MECANUM_ROBOT_RL_API FState
 };
 
 USTRUCT(BlueprintType)
-struct MECANUM_ROBOT_RL_API FBaseInitParams
+struct UNREALRLLABS_API FBaseInitParams
 {
     GENERATED_USTRUCT_BODY()
 
@@ -81,6 +81,13 @@ struct MECANUM_ROBOT_RL_API FBaseInitParams
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
     int NumAgents;
+
+    /*UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
+    int MaxAgents;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
+    int MinAgents;*/
+
 };
 
 

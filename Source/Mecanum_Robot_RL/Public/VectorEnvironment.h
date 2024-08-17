@@ -7,7 +7,7 @@
 #include "VectorEnvironment.generated.h"
 
 UCLASS()
-class MECANUM_ROBOT_RL_API AVectorEnvironment : public AActor
+class UNREALRLLABS_API AVectorEnvironment : public AActor
 {
     GENERATED_BODY()
 

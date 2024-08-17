@@ -25,7 +25,7 @@ struct FDiscreteActionSpec
 };
 
 UCLASS()
-class MECANUM_ROBOT_RL_API UActionSpace : public UObject
+class UNREALRLLABS_API UActionSpace : public UObject
 {
     GENERATED_BODY()
 

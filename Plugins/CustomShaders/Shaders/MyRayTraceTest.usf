@@ -2,48 +2,64 @@
 #include "/Engine/Private/RayTracing/RayTracingCommon.ush"
 #include "/Engine/Private/RayTracing/RayTracingHitGroupCommon.ush"
 
-
 RWTexture2D<float4> outTex;
 RaytracingAccelerationStructure TLAS;
 
+// Parameters from C++
+float3 wsCamPos;
+float3 wsCamU; // camera up vector
+float3 wsCamV; // camera right vector
+float3 wsCamW; // camera forward vector
+
 RAY_TRACING_ENTRY_RAYGEN(RayTraceTestRGS)
 {
-    // reconstruct camera direction with a small (far) device z
-uint2 PixelCoord = DispatchRaysIndex().xy + View.ViewRectMin.xy;
-float3 WorldPosition;
-float3 CameraDirection;
-	ReconstructTranslatedWorldPositionAndCameraDirectionFromDeviceZ(PixelCoord, 0.1f, WorldPosition, CameraDirection);
+    uint2 PixelCoord = DispatchRaysIndex().xy;
+    uint2 ScreenSize = uint2(1080, 1080); // Hardcoded screen size for example
 
-	// setup ray, simply shoot a long distance
-RayDesc Ray;
-	Ray.Origin =
-WorldPosition;
-    Ray.Direction =
-CameraDirection;
+        // Use the passed camera parameters
+    float3 CameraPosition = wsCamPos;
+    float3 CameraForward = normalize(wsCamW);
+    float3 CameraUp = wsCamU;
+    float3 CameraRight = wsCamV;
+
+    float FieldOfView = radians(90.0f); // Field of view in radians
+    float AspectRatio = ScreenSize.x / float(ScreenSize.y);
+
+    // Calculate the ray direction for the current pixel
+    float2 NDC = (float2(PixelCoord) / float2(ScreenSize)) * 2.0f - 1.0f; // Normalized Device Coordinates
+    NDC.y *= -1.0f; // Invert Y for correct image orientation
+
+    float2 ScreenSpace = NDC * float2(tan(FieldOfView * 0.5f) * AspectRatio, tan(FieldOfView * 0.5f));
+    float3 RayDirection = normalize(CameraForward + ScreenSpace.x * CameraRight + ScreenSpace.y * CameraUp);
+
+    // Setup the ray
+    RayDesc Ray;
+    Ray.Origin = CameraPosition;
+    Ray.Direction = RayDirection;
     Ray.TMin = 0.0f;
-    Ray.TMax = 9999;
+    Ray.TMax = 9999.0f;
 
-	// consider opaque geometries and front facing triangles only
-uint RayFlags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
+    // Consider opaque geometries and front-facing triangles only
+    uint RayFlags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
 
-	// use material closest hit pay load
-FMinimalPayload Payload = (FMinimalPayload) 0;
-	
-	TraceRay(
-    	TLAS,   // AccelerationStructure
-    	RayFlags,
-    	RAY_TRACING_MASK_OPAQUE,          // InstanceInclusionMask, defined by UE4
-    	RAY_TRACING_SHADER_SLOT_MATERIAL, // RayContributionToHitGroupIndex, defined by UE4
-    	RAY_TRACING_NUM_SHADER_SLOTS,     // MultiplierForGeometryContributionToShaderIndex, defined by UE4
-    	0,      // MissShaderIndex
-    	Ray,    // RayDesc
-    	Payload // Payload
+    // Use material closest hit payload
+    FMinimalPayload Payload = (FMinimalPayload) 0;
+
+    TraceRay(
+        TLAS,   // AccelerationStructure
+        RayFlags,
+        RAY_TRACING_MASK_OPAQUE,          // InstanceInclusionMask, defined by UE4
+        RAY_TRACING_SHADER_SLOT_MATERIAL, // RayContributionToHitGroupIndex, defined by UE4
+        RAY_TRACING_NUM_SHADER_SLOTS,     // MultiplierForGeometryContributionToShaderIndex, defined by UE4
+        0,      // MissShaderIndex
+        Ray,    // RayDesc
+        Payload // Payload
     );
 
-	if (Payload.IsHit())
+    if (Payload.IsHit())
         outTex[PixelCoord] = 1.0f;
-	else
-		outTex[PixelCoord] = 0.0f;
+    else
+        outTex[PixelCoord] = 0.0f;
 }
 
 [shader("miss")]

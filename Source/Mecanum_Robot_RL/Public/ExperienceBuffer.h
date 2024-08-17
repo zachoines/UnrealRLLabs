@@ -8,7 +8,7 @@
 #include "ExperienceBuffer.generated.h"
 
 USTRUCT(BlueprintType)
-struct MECANUM_ROBOT_RL_API FExperience
+struct UNREALRLLABS_API FExperience
 {
     GENERATED_BODY()
 
@@ -32,7 +32,7 @@ struct MECANUM_ROBOT_RL_API FExperience
 };
 
 USTRUCT(BlueprintType)
-struct MECANUM_ROBOT_RL_API FExperienceBatch
+struct UNREALRLLABS_API FExperienceBatch
 {
     GENERATED_USTRUCT_BODY()
 
@@ -41,7 +41,7 @@ struct MECANUM_ROBOT_RL_API FExperienceBatch
 };
 
 UCLASS(Blueprintable, BlueprintType)
-class MECANUM_ROBOT_RL_API UExperienceBuffer : public UObject
+class UNREALRLLABS_API UExperienceBuffer : public UObject
 {
     GENERATED_BODY()
 

@@ -11,7 +11,7 @@
 
 
 UCLASS(Blueprintable, BlueprintType)
-class MECANUM_ROBOT_RL_API ARLRunner : public AActor
+class UNREALRLLABS_API ARLRunner : public AActor
 {
     GENERATED_BODY()
 

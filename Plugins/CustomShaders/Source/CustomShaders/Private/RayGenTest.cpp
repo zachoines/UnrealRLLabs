@@ -1,5 +1,6 @@
 #include "RayGenTest.h"
 
+
 #define NUM_THREADS_PER_GROUP_DIMENSION 8
 
 class FRayGenTestRGS : public FGlobalShader
@@ -11,7 +12,11 @@ class FRayGenTestRGS : public FGlobalShader
 		SHADER_PARAMETER_UAV(RWTexture2D<float4>, outTex)
 		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
-		END_SHADER_PARAMETER_STRUCT()
+		SHADER_PARAMETER(FVector3f, wsCamPos)
+		SHADER_PARAMETER(FVector3f, wsCamU)
+		SHADER_PARAMETER(FVector3f, wsCamV)
+		SHADER_PARAMETER(FVector3f, wsCamW)
+	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
@@ -40,7 +45,7 @@ class FRayGenTestCHS : public FGlobalShader
 	DECLARE_GLOBAL_SHADER(FRayGenTestCHS)
 	SHADER_USE_ROOT_PARAMETER_STRUCT(FRayGenTestCHS, FGlobalShader)
 
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+		static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
 		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
 	}
@@ -59,7 +64,7 @@ class FRayGenTestMS : public FGlobalShader
 	DECLARE_GLOBAL_SHADER(FRayGenTestMS)
 	SHADER_USE_ROOT_PARAMETER_STRUCT(FRayGenTestMS, FGlobalShader)
 
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+		static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
 		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
 	}
@@ -73,42 +78,53 @@ class FRayGenTestMS : public FGlobalShader
 };
 IMPLEMENT_GLOBAL_SHADER(FRayGenTestMS, "/Plugins/CustomShaders/MyRayTraceTest.usf", "RayTraceTestMS", SF_RayMiss);
 
-URayGenTest::URayGenTest()
+ARayGenTest::ARayGenTest()
 {
 }
 
-void URayGenTest::BeginRendering()
+void ARayGenTest::BeginPlay()
 {
-	//If the handle is already initialized and valid, no need to do anything
+	Super::BeginPlay();
+}
+
+void ARayGenTest::BeginRendering()
+{
+	// If the handle is already initialized and valid, no need to do anything
 	if (PostOpaqueRenderDelegate.IsValid())
 	{
 		return;
 	}
-	//Get the Renderer Module and add our entry to the callbacks so it can be executed each frame after the scene rendering is done
+
+	// Get the Renderer Module and add our entry to the callbacks so it can be executed each frame
+	// after the scene rendering is done.
 	const FName RendererModuleName("Renderer");
 	IRendererModule* RendererModule = FModuleManager::GetModulePtr<IRendererModule>(RendererModuleName);
 	if (RendererModule)
 	{
-		PostOpaqueRenderDelegate = RendererModule->RegisterPostOpaqueRenderDelegate(FPostOpaqueRenderDelegate::CreateUObject(this, &URayGenTest::Execute_RenderThread));
+		PostOpaqueRenderDelegate = RendererModule->RegisterPostOpaqueRenderDelegate(FPostOpaqueRenderDelegate::CreateUObject(this, &ARayGenTest::Execute_RenderThread));
 	}
 
-	// create output texture
+	// Create output texture
 	FIntPoint TextureSize = { CachedParams.RenderTarget->SizeX, CachedParams.RenderTarget->SizeY };
-	FRHITextureCreateDesc TextureDesc = FRHITextureCreateDesc::Create2D(TEXT("RaytracingTestOutput"), TextureSize.X, TextureSize.Y, CachedParams.RenderTarget->GetFormat());
+	FRHITextureCreateDesc TextureDesc = FRHITextureCreateDesc::Create2D(
+		TEXT("RaytracingTestOutput"),
+		TextureSize.X,
+		TextureSize.Y,
+		CachedParams.RenderTarget->GetFormat());
 	TextureDesc.AddFlags(TexCreate_ShaderResource | TexCreate_UAV);
 	ShaderOutputTexture = RHICreateTexture(TextureDesc);
 	ShaderOutputTextureUAV = RHICreateUnorderedAccessView(ShaderOutputTexture);
 }
 
-//Stop the compute shader execution
-void URayGenTest::EndRendering()
+void ARayGenTest::EndRendering()
 {
-	//If the handle is not valid then there's no cleanup to do
+	// If the handle is not valid then there's no cleanup to do
 	if (!PostOpaqueRenderDelegate.IsValid())
 	{
 		return;
 	}
-	//Get the Renderer Module and remove our entry from the PostOpaqueRender callback
+
+	// Get the Renderer Module and remove our entry from the PostOpaqueRender callback
 	const FName RendererModuleName("Renderer");
 	IRendererModule* RendererModule = FModuleManager::GetModulePtr<IRendererModule>(RendererModuleName);
 	if (RendererModule)
@@ -119,46 +135,50 @@ void URayGenTest::EndRendering()
 	PostOpaqueRenderDelegate.Reset();
 }
 
-void URayGenTest::UpdateParameters(FRayGenTestParameters& DrawParameters)
+void ARayGenTest::UpdateParameters(FRayGenTestParameters& DrawParameters)
 {
 	CachedParams = DrawParameters;
 	bCachedParamsAreValid = true;
 }
 
-void URayGenTest::Execute_RenderThread(FPostOpaqueRenderParameters& Parameters)
-#if RHI_RAYTRACING
+// This is the main function where you'll use the camera transform from TestRunner
+void ARayGenTest::Execute_RenderThread(FPostOpaqueRenderParameters& Parameters)
 {
+#if RHI_RAYTRACING
 	FRDGBuilder* GraphBuilder = Parameters.GraphBuilder;
 	FRHICommandListImmediate& RHICmdList = GraphBuilder->RHICmdList;
-	//If there's no cached parameters to use, skip
-	//If no Render Target is supplied in the cachedParams, skip
+
 	if (!(bCachedParamsAreValid && CachedParams.RenderTarget))
 	{
 		return;
 	}
 
-	//Render Thread Assertion
+	// Render Thread Assertion
 	check(IsInRenderingThread());
 
-	// set shader parameters
+	// Set shader parameters
 	FRayGenTestRGS::FParameters* PassParameters = GraphBuilder->AllocParameters<FRayGenTestRGS::FParameters>();
 	PassParameters->ViewUniformBuffer = Parameters.View->ViewUniformBuffer;
 	PassParameters->outTex = ShaderOutputTextureUAV;
 
-	// define render pass needed parameters
+	// Render pass parameters
 	TShaderMapRef<FRayGenTestRGS> RayGenTestRGS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
 	FIntPoint TextureSize = { CachedParams.RenderTarget->SizeX, CachedParams.RenderTarget->SizeY };
 	FRHIRayTracingScene* RHIScene = CachedParams.Scene->GetRHIRayTracingScene();
 
-	// add the ray trace dispatch pass
 	GraphBuilder->AddPass(
 		RDG_EVENT_NAME("RayGenTest"),
 		PassParameters,
 		ERDGPassFlags::Compute,
-		[this, PassParameters, RayGenTestRGS, TextureSize, RHIScene](FRHIRayTracingCommandList& RHICmdList)
+		[this, Parameters, PassParameters, RayGenTestRGS, TextureSize, RHIScene](FRHIRayTracingCommandList& RHICmdList)
 		{
-			PassParameters->TLAS = GetWorld()->Scene->GetRenderScene()->RayTracingScene.GetLayerView(ERayTracingSceneLayer::Base)->GetRHI();
-			
+			// Access and use the CameraTransform from CachedParams
+			PassParameters->TLAS = CachedParams.Scene->GetLayerView(ERayTracingSceneLayer::Base)->GetRHI();
+			PassParameters->wsCamPos = static_cast<FVector3f>(CachedParams.CameraTransform.GetTranslation());
+			PassParameters->wsCamU = static_cast<FVector3f>(CachedParams.CameraTransform.GetUnitAxis(EAxis::Y));
+			PassParameters->wsCamV = static_cast<FVector3f>(CachedParams.CameraTransform.GetUnitAxis(EAxis::X));
+			PassParameters->wsCamW = static_cast<FVector3f>(CachedParams.CameraTransform.GetUnitAxis(EAxis::Z));
+
 			FRayTracingShaderBindingsWriter GlobalResources;
 			SetShaderParameters(GlobalResources, RayGenTestRGS, *PassParameters);
 
@@ -183,6 +203,8 @@ void URayGenTest::Execute_RenderThread(FPostOpaqueRenderParameters& Parameters)
 
 			// dispatch ray trace shader
 			FRayTracingPipelineState* PipeLine = PipelineStateCache::GetAndOrCreateRayTracingPipelineState(RHICmdList, PSOInitializer);
+	
+
 			RHICmdList.SetRayTracingMissShader(RHIScene, 0, PipeLine, 0 /* ShaderIndexInPipeline */, 0, nullptr, 0);
 			RHICmdList.RayTraceDispatch(PipeLine, RayGenTestRGS.GetRayTracingShader(), RHIScene, GlobalResources, TextureSize.X, TextureSize.Y);
 		}

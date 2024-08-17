@@ -9,31 +9,42 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/StaticMesh.h"
+#include "Components/SceneCaptureComponent2D.h"  // Added for SceneCaptureComponent2D
+
+#include "CoreMinimal.h"
+#include "Camera/CameraComponent.h"
+#include "RendererInterface.h"
+#include "RenderGraphUtils.h"
+
 #include "TestRunner.generated.h"
 
 UCLASS()
 class ATestRunner : public AActor
 {
-	GENERATED_BODY()
+    GENERATED_BODY()
 
 public:
-	ATestRunner();
-	URayGenTest* Test;
-	AStaticMeshActor* PlaneActor;
-	UMaterialInstanceDynamic* DynMaterial;
+    ATestRunner();
+    ARayGenTest* Test;
+    AStaticMeshActor* PlaneActor;
+    UMaterialInstanceDynamic* DynMaterial;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = ShaderDemo)
-	class UTextureRenderTarget2D* RenderTarget = nullptr;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = ShaderDemo)
+    class UTextureRenderTarget2D* RenderTarget = nullptr;
+
+    // Dedicated SceneCaptureComponent2D for the static camera
+    UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "Ray Tracing")
+    USceneCaptureComponent2D* StaticCaptureComponent;
 
 protected:
-	virtual void BeginPlay() override;
-	void UpdateTestParameters();
-	void InitializeRayTracer();
+    virtual void BeginPlay() override;
+    void UpdateTestParameters();
+    void InitializeRayTracer();
 
-	float TranscurredTime; ///< allows us to add a delay on BeginPlay() 
-	bool Initialized;
+    float TranscurredTime;
+    bool Initialized;
 
 public:
-	virtual void Tick(float DeltaTime) override;
-	virtual void BeginDestroy() override;
+    virtual void Tick(float DeltaTime) override;
+    virtual void BeginDestroy() override;
 };

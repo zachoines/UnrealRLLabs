@@ -7,7 +7,7 @@
 #include "Runner.generated.h"
 
 UCLASS()
-class MECANUM_ROBOT_RL_API ARunner : public AActor
+class UNREALRLLABS_API ARunner : public AActor
 {
 	GENERATED_BODY()
 	
