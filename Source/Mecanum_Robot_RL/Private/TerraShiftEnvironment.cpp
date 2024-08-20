@@ -21,10 +21,11 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
     // Set the number of current agents from the initialization parameters
     CurrentAgents = TerraShiftParams->NumAgents;
     CurrentStep = 0;
-    LastColumnIndex = INDEX_NONE;
 
     // Set TerraShiftRoot at the specified location.
     TerraShiftRoot->SetWorldLocation(TerraShiftParams->Location);
+
+    // Spawn the platform
     Platform = SpawnPlatform(
         TerraShiftParams->Location,
         FVector(TerraShiftParams->GroundPlaneSize, TerraShiftParams->GroundPlaneSize, TerraShiftParams->GroundPlaneSize)
@@ -45,14 +46,13 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
 
     float CellWidth = (TerraShiftParams->GroundPlaneSize / static_cast<float>(TerraShiftParams->GridSize)) - 1e-2;
     float CellHeight = CellWidth;
-    AStaticMeshActor* Column = nullptr;
 
     for (int i = 0; i < TerraShiftParams->GridSize; ++i)
     {
         for (int j = 0; j < TerraShiftParams->GridSize; ++j)
         {
             // Spawn each column.
-            Column = SpawnColumn(
+            AStaticMeshActor* Column = SpawnColumn(
                 FVector(CellWidth, CellWidth, CellHeight),
                 *FString::Printf(TEXT("ColumnMesh_%d_%d"), i, j)
             );
@@ -66,32 +66,149 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
             Column->SetActorLocation(GridCenter);
 
             Columns[Get1DIndexFromPoint(FIntPoint(i, j), TerraShiftParams->GridSize)] = Column;
+            SetColumnColor(Get1DIndexFromPoint(FIntPoint(i, j), TerraShiftParams->GridSize), FLinearColor(FLinearColor::White));
             GridCenterPoints[Get1DIndexFromPoint(FIntPoint(i, j), TerraShiftParams->GridSize)] = GridCenter;
 
             SetColumnHeight(Get1DIndexFromPoint(FIntPoint(i, j), TerraShiftParams->GridSize), 0.5f);
         }
     }
 
+    // Spawn the chute at a location above the tallest possible column
+    FVector PlatformExtent = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * Platform->GetActorScale3D();
+    FVector ChuteLocation = Platform->GetActorLocation() + FVector(0, 0, PlatformExtent.Z + TerraShiftParams->MaxColumnHeight + TerraShiftParams->ChuteHeight + 4 * TerraShiftParams->MaxColumnHeight);
+    Chute = SpawnChute(ChuteLocation);
+
     // Set the single agent observation size
-    EnvInfo.SingleAgentObsSize = 6; // Current column location (3) + gridObject location (3)
+    EnvInfo.SingleAgentObsSize = 6;
 
     // Set the state size and action space
     EnvInfo.StateSize = CurrentAgents * EnvInfo.SingleAgentObsSize;
 
     TArray<FDiscreteActionSpec> DiscreteActions;
-    DiscreteActions.Add({ 8 }); // columnChangeDirection: 8 directions (N, NE, E, SE, S, SW, W, NW)
-    DiscreteActions.Add({ 3 }); // columnHeight: 3 options (accelerate, decelerate, noop)
+    DiscreteActions.Add({ 8 }); // columnChangeDirection: 8 directions
+    DiscreteActions.Add({ 3 }); // columnHeight: 3 options
 
     if (EnvInfo.ActionSpace)
     {
         EnvInfo.ActionSpace->Init({}, DiscreteActions);
     }
 
-    // Initialize agents (GridObjects)
+    // Initialize agents (GridObjects) 
     for (int i = 0; i < CurrentAgents; ++i)
     {
         Objects.Add(InitializeGridObject());
     }
+
+    // Initialize arrays for LastColumnIndex and AgentGoalIndices
+    LastColumnIndexArray.SetNum(CurrentAgents);
+    AgentGoalIndices.SetNum(CurrentAgents);
+
+    // Call ResetEnv to initialize goal positions, object positions, and other reset logic
+    // ResetEnv(CurrentAgents);
+}
+
+FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
+{
+    CurrentStep = 0;
+    CurrentAgents = NumAgents;
+
+    // Handle potential change in the number of agents and their associated data
+    if (Objects.Num() != NumAgents) {
+        // Destroy existing objects if there are more than needed
+        while (Objects.Num() > NumAgents) {
+            AStaticMeshActor* LastObject = Objects.Pop();
+            if (LastObject) {
+                LastObject->Destroy();
+            }
+        }
+
+        // Spawn new objects if there are fewer than needed
+        while (Objects.Num() < NumAgents) {
+            Objects.Add(InitializeGridObject());
+        }
+
+        // Resize arrays for LastColumnIndex and GoalPosition
+        LastColumnIndexArray.SetNum(NumAgents);
+        AgentGoalIndices.SetNum(NumAgents);
+    }
+
+    // Reset column heights and velocities
+    for (int i = 0; i < Columns.Num(); ++i)
+    {
+        SetColumnHeight(i, 0.5f);
+        ColumnVelocities[i] = 0.0f;
+    }
+
+    // Calculate CellWidth 
+    float CellWidth = (TerraShiftParams->GroundPlaneSize / static_cast<float>(TerraShiftParams->GridSize)) - 1e-2;
+    int GridSize = TerraShiftParams->GridSize;
+
+    // Reset goal positions to be on the edges of the grid
+    GoalPositionArray.SetNum(TerraShiftParams->NumGoals); // Set the number of goals based on config
+    TArray<FIntPoint> GoalIndices2D;
+    GoalIndices2D.SetNum(TerraShiftParams->NumGoals);
+
+    // Select distinct goal positions on the edges
+    for (int i = 0; i < TerraShiftParams->NumGoals; ++i) {
+        int Side;
+        FIntPoint GoalIndex2D;
+        do {
+            Side = FMath::RandRange(0, 3);
+            switch (Side)
+            {
+            case 0: // Top
+                GoalIndex2D = FIntPoint(FMath::RandRange(0, GridSize - 1), 0);
+                break;
+            case 1: // Bottom
+                GoalIndex2D = FIntPoint(FMath::RandRange(0, GridSize - 1), GridSize - 1);
+                break;
+            case 2: // Left
+                GoalIndex2D = FIntPoint(0, FMath::RandRange(0, GridSize - 1));
+                break;
+            case 3: // Right
+                GoalIndex2D = FIntPoint(GridSize - 1, FMath::RandRange(0, GridSize - 1));
+                break;
+            }
+        } while (GoalIndices2D.Contains(GoalIndex2D)); // Ensure the goal is unique
+
+        GoalIndices2D[i] = GoalIndex2D;
+        GoalPositionArray[i] = GridCenterPoints[Get1DIndexFromPoint(GoalIndex2D, GridSize)];
+    }
+
+    // Color the goal columns
+    for (int i = 0; i < TerraShiftParams->NumGoals; ++i) {
+        // Cycle through the GoalColors array
+        FLinearColor GoalColor = GoalColors[i % GoalColors.Num()];
+        SetColumnColor(Get1DIndexFromPoint(GoalIndices2D[i], GridSize), GoalColor);
+    }
+
+    // Reset the positions of all objects and randomly assign goals
+    for (int i = 0; i < Objects.Num(); ++i)
+    {
+        Objects[i]->SetActorLocation(Chute->GetActorLocation());
+
+        // Randomly assign a goal to this agent
+        AgentGoalIndices[i] = FMath::RandRange(0, TerraShiftParams->NumGoals - 1);
+
+        // Reset LastColumnIndex for this agent
+        LastColumnIndexArray[i] = INDEX_NONE;
+    }
+
+    // Randomly change the position of the chute within platform bounds
+    if (Chute) {
+        // Calculate a new random location within the platform bounds
+        FVector PlatformCenter = Platform->GetActorLocation();
+        FVector PlatformExtent = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * Platform->GetActorScale3D();
+        FVector NewChuteLocation = PlatformCenter + FVector(
+            FMath::RandRange(-PlatformExtent.X + TerraShiftParams->ChuteRadius, PlatformExtent.X - TerraShiftParams->ChuteRadius),
+            FMath::RandRange(-PlatformExtent.Y + TerraShiftParams->ChuteRadius, PlatformExtent.Y - TerraShiftParams->ChuteRadius),
+            TerraShiftParams->ChuteHeight + 2 * TerraShiftParams->MaxColumnHeight // Position above the platform
+        );
+
+        Chute->SetActorLocation(NewChuteLocation);
+    }
+
+    return State();
 }
 
 AStaticMeshActor* ATerraShiftEnvironment::SpawnColumn(FVector Dimensions, FName Name)
@@ -109,17 +226,17 @@ AStaticMeshActor* ATerraShiftEnvironment::SpawnColumn(FVector Dimensions, FName 
                 ColumnActor->GetStaticMeshComponent()->SetStaticMesh(ColumnMesh);
                 ColumnActor->GetStaticMeshComponent()->SetWorldScale3D(Dimensions);
 
-                UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("/Game/Material/Column_Material.Column_Material"));
+                /*UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("/Game/Material/Column_Material.Column_Material"));
                 if (Material)
                 {
                     ColumnActor->GetStaticMeshComponent()->SetMaterial(0, Material);
-                }
+                }*/
 
                 ColumnActor->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
                 ColumnActor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
                 ColumnActor->GetStaticMeshComponent()->BodyInstance.SetMassOverride(TerraShiftParams->ColumnMass, true);
-                ColumnActor->GetStaticMeshComponent()->SetEnableGravity(false); // Disable gravity to prevent columns from falling
-                ColumnActor->GetStaticMeshComponent()->SetSimulatePhysics(false); // Disable physics simulation to prevent columns from being pushed around
+                ColumnActor->GetStaticMeshComponent()->SetEnableGravity(false);
+                ColumnActor->GetStaticMeshComponent()->SetSimulatePhysics(false);
             }
         }
         return ColumnActor;
@@ -153,6 +270,28 @@ AStaticMeshActor* ATerraShiftEnvironment::SpawnPlatform(FVector Location, FVecto
             }
         }
         return Platform;
+    }
+    return nullptr;
+}
+
+AStaticMeshActor* ATerraShiftEnvironment::SpawnChute(FVector Location)
+{
+    if (UWorld* World = GetWorld())
+    {
+        UStaticMesh* CylinderMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+        if (CylinderMesh)
+        {
+            FActorSpawnParameters SpawnParams;
+            Chute = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, FRotator(0, 0, 180), SpawnParams); // 180-degree rotation to face downwards
+            if (Chute)
+            {
+                Chute->GetStaticMeshComponent()->SetStaticMesh(CylinderMesh);
+                Chute->GetStaticMeshComponent()->SetWorldScale3D(FVector(TerraShiftParams->ChuteRadius, TerraShiftParams->ChuteRadius, TerraShiftParams->ChuteHeight / 2)); // Adjust height scaling
+                Chute->SetMobility(EComponentMobility::Static);
+                Chute->GetStaticMeshComponent()->SetEnableGravity(false);
+            }
+        }
+        return Chute;
     }
     return nullptr;
 }
@@ -212,8 +351,9 @@ AStaticMeshActor* ATerraShiftEnvironment::InitializeGridObject()
 {
     if (UWorld* World = GetWorld())
     {
-        int32 RandomIndex = FMath::RandRange(0, GridCenterPoints.Num() - 1);
-        FVector Location = GridCenterPoints[RandomIndex] + FVector(0, 0, 10.0f);
+        // Spawn the object slightly above the chute's opening
+        FVector Location = Chute->GetActorLocation() - FVector(0, 0, TerraShiftParams->ChuteHeight / 2 + TerraShiftParams->ObjectSize.Z / 2 + 0.1f);
+
         UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
         AStaticMeshActor* ObjectActor = nullptr;
         if (SphereMesh)
@@ -222,7 +362,7 @@ AStaticMeshActor* ATerraShiftEnvironment::InitializeGridObject()
             ObjectActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, FRotator::ZeroRotator, SpawnParams);
             if (ObjectActor)
             {
-                ObjectActor->Tags.Add(FName("Ball")); // Tagging the object as 'Ball'
+                ObjectActor->Tags.Add(FName("Ball"));
                 ObjectActor->GetStaticMeshComponent()->SetStaticMesh(SphereMesh);
                 ObjectActor->GetStaticMeshComponent()->SetWorldScale3D(TerraShiftParams->ObjectSize);
 
@@ -243,8 +383,9 @@ AStaticMeshActor* ATerraShiftEnvironment::InitializeGridObject()
     return nullptr;
 }
 
-int ATerraShiftEnvironment::SelectColumn(int AgentIndex, int Direction) const {
-    if (LastColumnIndex == INDEX_NONE)
+int ATerraShiftEnvironment::SelectColumn(int AgentIndex, int Direction) const
+{
+    if (LastColumnIndexArray[AgentIndex] == INDEX_NONE)
     {
         // First call after InitEnv or ResetEnv, find the closest column to the current grid object
         FVector AgentPosition = Objects[AgentIndex]->GetActorLocation();
@@ -266,8 +407,8 @@ int ATerraShiftEnvironment::SelectColumn(int AgentIndex, int Direction) const {
     {
         // Determine the next column based on the direction from the last selected column
         int GridSize = TerraShiftParams->GridSize;
-        int Row = LastColumnIndex / GridSize;
-        int Col = LastColumnIndex % GridSize;
+        int Row = LastColumnIndexArray[AgentIndex] / GridSize;
+        int Col = LastColumnIndexArray[AgentIndex] % GridSize;
 
         switch (Direction)
         {
@@ -311,9 +452,9 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
 {
     TArray<float> State;
 
-    if (LastColumnIndex != INDEX_NONE)
+    if (LastColumnIndexArray[AgentIndex] != INDEX_NONE)
     {
-        FVector ColumnLocation = Columns[LastColumnIndex]->GetActorLocation();
+        FVector ColumnLocation = Columns[LastColumnIndexArray[AgentIndex]]->GetActorLocation();
         State.Add(ColumnLocation.X);
         State.Add(ColumnLocation.Y);
         State.Add(ColumnLocation.Z);
@@ -337,35 +478,22 @@ float ATerraShiftEnvironment::GridDistance(const FIntPoint& Point1, const FIntPo
     return FMath::Sqrt(FMath::Square(static_cast<float>(Point2.X) - static_cast<float>(Point1.X)) + FMath::Square(static_cast<float>(Point2.Y) - static_cast<float>(Point1.Y)));
 }
 
-FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
-{
-    CurrentStep = 0;
-    GoalPosition = FVector(FMath::RandRange(-1.0f, 1.0f), FMath::RandRange(-1.0f, 1.0f), 0.0f);
-
-    for (int i = 0; i < Columns.Num(); ++i)
-    {
-        SetColumnHeight(i, 0.5f);
-        ColumnVelocities[i] = 0.0f; // Reset column velocities on reset
-    }
-
-    for (AStaticMeshActor* Object : Objects)
-    {
-        int32 RandomIndex = FMath::RandRange(0, GridCenterPoints.Num() - 1);
-        FVector NewLocation = GridCenterPoints[RandomIndex] + FVector(0, 0, 10.0f);
-        Object->SetActorLocation(NewLocation);
-    }
-
-    return State();
-}
-
 void ATerraShiftEnvironment::Act(FAction Action)
 {
+    // Ensure the action array has the correct size for the current number of agents
+    if (Action.Values.Num() != Objects.Num() * 2) {
+        UE_LOG(LogTemp, Error, TEXT("Action array size mismatch. Expected %d, got %d"), Objects.Num() * 2, Action.Values.Num());
+        return;
+    }
+
     for (int i = 0; i < Objects.Num(); ++i)
     {
+        // Corrected action indexing
         int Direction = FMath::RoundToInt(Action.Values[i * 2]);
         int HeightAction = FMath::RoundToInt(Action.Values[i * 2 + 1]);
 
         int SelectedColumnIndex = SelectColumn(i, Direction);
+        LastColumnIndexArray[i] = SelectedColumnIndex; // Update LastColumnIndex for this agent
 
         switch (HeightAction)
         {
@@ -378,8 +506,6 @@ void ATerraShiftEnvironment::Act(FAction Action)
         case 2: // noop
             break;
         }
-
-        LastColumnIndex = SelectedColumnIndex;
     }
 }
 
@@ -418,7 +544,23 @@ float ATerraShiftEnvironment::Reward()
 {
     float TotalRewards = 0.0f;
 
-    // TODO: Calculate rewards based on environment conditions
+    for (int i = 0; i < Objects.Num(); ++i)
+    {
+        FVector ObjectPosition = Objects[i]->GetActorLocation();
+        // Get the goal position for this agent based on its assigned goal index
+        FVector GoalPosition = GoalPositionArray[AgentGoalIndices[i]];
+
+        // Calculate the distance to the goal
+        float DistanceToGoal = FVector::Dist(ObjectPosition, GoalPosition);
+
+        // Provide a reward based on the inverse of the distance 
+        // (closer to the goal = higher reward)
+        float RewardForAgent = 1.0f / (DistanceToGoal + 1e-5); // Add a small epsilon to avoid division by zero
+
+        // You can adjust the reward scaling or add other factors as needed
+        TotalRewards += RewardForAgent;
+    }
+
     return TotalRewards;
 }
 
@@ -430,4 +572,19 @@ void ATerraShiftEnvironment::PostTransition()
 float ATerraShiftEnvironment::Map(float x, float in_min, float in_max, float out_min, float out_max) const
 {
     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+void ATerraShiftEnvironment::SetColumnColor(int ColumnIndex, FLinearColor Color)
+{
+    AStaticMeshActor* Column = Columns[ColumnIndex];
+    if (Column)
+    {
+        UMaterial* BaseMaterial = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/StarterContent/Materials/M_Basic_Floor.M_Basic_Floor'"));
+        Column->GetStaticMeshComponent()->SetMaterial(0, BaseMaterial);
+
+        // Create a dynamic material instance to set the color
+        UMaterialInstanceDynamic* DynMaterial = UMaterialInstanceDynamic::Create(Column->GetStaticMeshComponent()->GetMaterial(0), Column);
+        DynMaterial->SetVectorParameterValue("Color", Color);
+        Column->GetStaticMeshComponent()->SetMaterial(0, DynMaterial);
+    }
 }

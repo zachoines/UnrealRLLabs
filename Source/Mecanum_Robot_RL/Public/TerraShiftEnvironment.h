@@ -38,6 +38,31 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
     int MaxSteps = 1024; // Maximum steps per episode
+
+    // Chute parameters
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chute Params")
+    float ChuteRadius = 0.2f; // Radius of the chute
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chute Params")
+    float ChuteHeight = 0.5f; // Height of the chute
+
+    // Number of goals in the environment
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
+    int32 NumGoals = 2;
+};
+
+// Array of colors for goals
+const TArray<FLinearColor> GoalColors = {
+        FLinearColor(1.0f, 0.0f, 0.0f),
+        FLinearColor(0.0f, 1.0f, 0.0f),
+        FLinearColor(0.0f, 0.0f, 1.0f),
+        FLinearColor(1.0f, 1.0f, 0.0f),
+        FLinearColor(1.0f, 0.0f, 1.0f),
+        FLinearColor(0.0f, 1.0f, 1.0f),
+        FLinearColor(1.0f, 0.5f, 0.0f),
+        FLinearColor(0.5f, 0.0f, 1.0f),
+        FLinearColor(1.0f, 0.0f, 0.5f),
+        FLinearColor(0.5f, 1.0f, 0.0f)
 };
 
 UCLASS()
@@ -64,6 +89,10 @@ public:
     UPROPERTY(EditAnywhere)
     TArray<AStaticMeshActor*> Columns;
 
+    // The chute from which objects spawn
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraShift")
+    AStaticMeshActor* Chute;
+
     virtual void InitEnv(FBaseInitParams* Params) override;
     virtual FState ResetEnv(int NumAgents) override;
     virtual void Act(FAction Action) override;
@@ -83,10 +112,11 @@ private:
     // State Variables
     int CurrentStep;
     int CurrentAgents;
-    int LastColumnIndex;
-    FVector GoalPosition;
+    TArray<int> LastColumnIndexArray;
+    TArray<FVector> GoalPositionArray;
+    TArray<int32> AgentGoalIndices;
     TArray<FVector> GridCenterPoints;
-    TArray<float> ColumnVelocities; // Store column velocities
+    TArray<float> ColumnVelocities;
 
     // Function to spawn a column in the environment
     AStaticMeshActor* SpawnColumn(FVector Dimensions, FName Name);
@@ -94,9 +124,15 @@ private:
     // Function to spawn the ground platform in the environment
     AStaticMeshActor* SpawnPlatform(FVector Location, FVector Size);
 
+    // Function to spawn the chute
+    AStaticMeshActor* SpawnChute(FVector Location);
+
     void SetColumnHeight(int ColumnIndex, float NewHeight);
     void SetColumnAcceleration(int ColumnIndex, float Acceleration);
     AStaticMeshActor* InitializeGridObject();
+
+    // Function to set the color of a column
+    void SetColumnColor(int ColumnIndex, FLinearColor Color);
 
     int SelectColumn(int AgentIndex, int Direction) const;
     TArray<float> AgentGetState(int AgentIndex);

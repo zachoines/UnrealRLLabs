@@ -120,19 +120,24 @@ FAction AVectorEnvironment::EnvSample(UActionSpace* ActionSpace)
 {
     FAction SampledAction;
 
-    // Sample discrete actions
-    for (const FDiscreteActionSpec& DiscreteAction : ActionSpace->DiscreteActions)
-    {
-        int32 RandomChoice = FMath::RandRange(0, DiscreteAction.NumChoices - 1);
-        SampledAction.Values.Add(static_cast<float>(RandomChoice));
-    }
+    // For each agent
+    for (int i = 0; i < CurrentAgents; i++) {
+        
+        // Sample discrete actions
+        for (const FDiscreteActionSpec& DiscreteAction : ActionSpace->DiscreteActions)
+        {
+            int32 RandomChoice = FMath::RandRange(0, DiscreteAction.NumChoices - 1);
+            SampledAction.Values.Add(static_cast<float>(RandomChoice));
+        }
 
-    // Sample continuous actions
-    for (const FContinuousActionSpec& ContinuousAction : ActionSpace->ContinuousActions)
-    {
-        float RandomValue = FMath::RandRange(ContinuousAction.Low, ContinuousAction.High);
-        SampledAction.Values.Add(RandomValue);
+        // Sample continuous actions
+        for (const FContinuousActionSpec& ContinuousAction : ActionSpace->ContinuousActions)
+        {
+            float RandomValue = FMath::RandRange(ContinuousAction.Low, ContinuousAction.High);
+            SampledAction.Values.Add(RandomValue);
+        }
     }
+    
 
     return SampledAction;
 }

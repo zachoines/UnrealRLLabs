@@ -6,8 +6,8 @@
       "BufferSize": 32,
       "BatchSize": 32,
       "NumEnvironments": 1,
-      "MaxAgents" : 400,
-      "MinAgents" : 400,
-      "AgentsResetFrequency": -1
+      "MaxAgents" : 5,
+      "MinAgents" : 1,
+      "AgentsResetFrequency": 256
     }
   }
