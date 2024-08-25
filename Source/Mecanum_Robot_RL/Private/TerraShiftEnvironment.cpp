@@ -73,10 +73,12 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
         }
     }
 
-    // Spawn the chute at a location above the tallest possible column
+    
+    // Spawn the runway at a location above the grid-platform
     FVector PlatformExtent = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * Platform->GetActorScale3D();
-    FVector ChuteLocation = Platform->GetActorLocation() + FVector(0, 0, PlatformExtent.Z + TerraShiftParams->MaxColumnHeight + TerraShiftParams->ChuteHeight + 4 * TerraShiftParams->MaxColumnHeight);
-    Chute = SpawnChute(ChuteLocation);
+    FVector RunwayLocation = Platform->GetActorLocation() + FVector(PlatformExtent.X, 0.0f, TerraShiftParams->MaxColumnHeight * 4); // Slightly above the platform
+
+    SpawnRunway(RunwayLocation, TerraShiftParams->RunwayLength, TerraShiftParams->RunwayWidth, TerraShiftParams->WallHeight);
 
     // Set the single agent observation size
     EnvInfo.SingleAgentObsSize = 6;
@@ -93,7 +95,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
         EnvInfo.ActionSpace->Init({}, DiscreteActions);
     }
 
-    // Initialize agents (GridObjects) 
+    // Initialize agents (GridObjects)
     for (int i = 0; i < CurrentAgents; ++i)
     {
         Objects.Add(InitializeGridObject());
@@ -183,27 +185,28 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
     // Reset the positions of all objects and randomly assign goals
     for (int i = 0; i < Objects.Num(); ++i)
     {
-        Objects[i]->SetActorLocation(Chute->GetActorLocation());
+        // Assuming the floor is the first static mesh component attached to the RunwayContainer
+        UStaticMeshComponent* RunwayFloor = Cast<UStaticMeshComponent>(RunwayContainer->GetComponentByClass(UStaticMeshComponent::StaticClass()));
+        if (RunwayFloor)
+        {
+            FBoxSphereBounds RunwayBounds = RunwayFloor->Bounds;
+            FVector RunwayCenter = RunwayBounds.Origin;
+            FVector RunwayExtent = RunwayBounds.BoxExtent;
+
+            FVector RandomLocation = FVector(
+                FMath::FRandRange(RunwayCenter.X - RunwayExtent.X, RunwayCenter.X + RunwayExtent.X),
+                FMath::FRandRange(RunwayCenter.Y - RunwayExtent.Y, RunwayCenter.Y + RunwayExtent.Y),
+                RunwayCenter.Z + RunwayExtent.Z // Start above the runway
+            );
+
+            Objects[i]->SetActorLocation(RandomLocation);
+        }
 
         // Randomly assign a goal to this agent
         AgentGoalIndices[i] = FMath::RandRange(0, TerraShiftParams->NumGoals - 1);
 
         // Reset LastColumnIndex for this agent
         LastColumnIndexArray[i] = INDEX_NONE;
-    }
-
-    // Randomly change the position of the chute within platform bounds
-    if (Chute) {
-        // Calculate a new random location within the platform bounds
-        FVector PlatformCenter = Platform->GetActorLocation();
-        FVector PlatformExtent = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * Platform->GetActorScale3D();
-        FVector NewChuteLocation = PlatformCenter + FVector(
-            FMath::RandRange(-PlatformExtent.X + TerraShiftParams->ChuteRadius, PlatformExtent.X - TerraShiftParams->ChuteRadius),
-            FMath::RandRange(-PlatformExtent.Y + TerraShiftParams->ChuteRadius, PlatformExtent.Y - TerraShiftParams->ChuteRadius),
-            TerraShiftParams->ChuteHeight + 4 * TerraShiftParams->MaxColumnHeight // Position above the platform
-        );
-
-        Chute->SetActorLocation(NewChuteLocation);
     }
 
     return State();
@@ -223,13 +226,6 @@ AStaticMeshActor* ATerraShiftEnvironment::SpawnColumn(FVector Dimensions, FName 
             {
                 ColumnActor->GetStaticMeshComponent()->SetStaticMesh(ColumnMesh);
                 ColumnActor->GetStaticMeshComponent()->SetWorldScale3D(Dimensions);
-
-                /*UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("/Game/Material/Column_Material.Column_Material"));
-                if (Material)
-                {
-                    ColumnActor->GetStaticMeshComponent()->SetMaterial(0, Material);
-                }*/
-
                 ColumnActor->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
                 ColumnActor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
                 ColumnActor->GetStaticMeshComponent()->BodyInstance.SetMassOverride(TerraShiftParams->ColumnMass, true);
@@ -272,24 +268,151 @@ AStaticMeshActor* ATerraShiftEnvironment::SpawnPlatform(FVector Location, FVecto
     return nullptr;
 }
 
-AStaticMeshActor* ATerraShiftEnvironment::SpawnChute(FVector Location)
+void ATerraShiftEnvironment::SpawnRunway(FVector Location, float RunwayLength, float RunwayWidth, float WallHeight)
 {
     if (UWorld* World = GetWorld())
     {
-        UStaticMesh* CylinderMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
-        if (CylinderMesh)
+        // Create an empty container for the runway and walls
+        RunwayContainer = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, FRotator::ZeroRotator);
+        RunwayContainer->SetMobility(EComponentMobility::Movable);
+
+        // Create the runway floor
+        UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
+        AStaticMeshActor* RunwayFloor = nullptr;
+        if (PlaneMesh)
         {
             FActorSpawnParameters SpawnParams;
-            Chute = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, FRotator(0, 0, 180), SpawnParams); // 180-degree rotation to face downwards
-            if (Chute)
+            RunwayFloor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+            if (RunwayFloor)
             {
-                Chute->GetStaticMeshComponent()->SetStaticMesh(CylinderMesh);
-                Chute->GetStaticMeshComponent()->SetWorldScale3D(FVector(TerraShiftParams->ChuteRadius, TerraShiftParams->ChuteRadius, TerraShiftParams->ChuteHeight / 2)); // Adjust height scaling
-                Chute->SetMobility(EComponentMobility::Movable);
-                Chute->GetStaticMeshComponent()->SetEnableGravity(false);
+                RunwayFloor->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
+                RunwayFloor->SetMobility(EComponentMobility::Movable);
+                RunwayFloor->GetStaticMeshComponent()->SetWorldScale3D(FVector(RunwayLength, RunwayWidth, 1.0f));
+                RunwayFloor->AttachToActor(RunwayContainer, FAttachmentTransformRules::KeepRelativeTransform);
+
+                UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/Material/Platform_Material.Platform_Material'"));
+                if (Material)
+                {
+                    Material->TwoSided = true;
+                    RunwayFloor->GetStaticMeshComponent()->SetMaterial(0, Material);
+                }
+
+                RunwayFloor->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+                RunwayFloor->GetStaticMeshComponent()->SetEnableGravity(false);
+                RunwayFloor->GetStaticMeshComponent()->SetSimulatePhysics(false);
             }
         }
-        return Chute;
+
+        // Get the extent of the runway floor after scaling
+        FVector RunwayFloorExtent = RunwayFloor->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * RunwayFloor->GetActorScale3D();
+
+        // Create the walls for the runway
+        UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+        UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("/Game/Material/Column_Material.Column_Material"));
+          
+        for (int i = 0; i < 3; ++i)
+        {
+            FRotator WallRotation = FRotator::ZeroRotator;
+            FVector WallLocation = FVector::ZeroVector;
+            FVector WallScale = FVector::ZeroVector;
+
+            AStaticMeshActor* Wall = nullptr;
+            if (CubeMesh)
+            {
+                Wall = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass());
+                if (Wall)
+                {
+                    Wall->GetStaticMeshComponent()->SetStaticMesh(CubeMesh);
+                    Wall->SetMobility(EComponentMobility::Movable);
+                    Wall->AttachToActor(RunwayContainer, FAttachmentTransformRules::KeepRelativeTransform);
+                    
+                    switch (i)
+                    {
+                    case 0: // Left wall
+                        WallScale = FVector(RunwayLength, 0.05f, WallHeight);
+                        break;
+                    case 1: // Right wall
+                        WallScale = FVector(RunwayLength, 0.05f, WallHeight);
+                        break;
+                    case 2: // Back wall (closing off the runway)
+                        WallScale = FVector(0.05f, RunwayWidth, WallHeight);
+                        break;
+                    }
+                    
+                    Wall->GetStaticMeshComponent()->SetWorldScale3D(WallScale);
+                    FVector WallExtent = Wall->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * Wall->GetActorScale3D();
+
+                    switch (i)
+                    {
+                    case 0: // Left wall
+                        WallLocation = FVector(0, -RunwayFloorExtent.Y, WallExtent.Z);
+                        break;
+                    case 1: // Right wall
+                        WallLocation = FVector(0, RunwayFloorExtent.Y, WallExtent.Z);
+                        break;
+                    case 2: // Back wall (closing off the runway)
+                        WallLocation = FVector(RunwayFloorExtent.X, 0, WallExtent.Z);
+                        break;
+                    }
+
+                    Wall->SetActorRelativeLocation(WallLocation);
+                    Wall->SetActorRelativeRotation(WallRotation);
+
+                    if (Material)
+                    {
+                        Wall->GetStaticMeshComponent()->SetMaterial(0, Material);
+                    }
+                }
+            }
+        }
+
+        // Position the entire runway container at the correct location and rotation
+        FRotator RunwayRotation(30.0f, 0.0f, 0.0f);
+        RunwayContainer->SetActorLocation(Location + FVector(RunwayFloorExtent.X / 2.0, 0.0, 0.0));
+        RunwayContainer->SetActorRotation(RunwayRotation);
+    }
+}
+
+AStaticMeshActor* ATerraShiftEnvironment::InitializeGridObject()
+{
+    if (UWorld* World = GetWorld())
+    {
+        // Calculate a random position on the runway
+        FBoxSphereBounds RunwayBounds = RunwayContainer->GetStaticMeshComponent()->Bounds;
+        FVector RunwayCenter = RunwayBounds.Origin;
+        FVector RunwayExtent = RunwayBounds.BoxExtent;
+
+        FVector RandomLocation = FVector(
+            FMath::FRandRange(RunwayCenter.X - RunwayExtent.X, RunwayCenter.X + RunwayExtent.X),
+            FMath::FRandRange(RunwayCenter.Y - RunwayExtent.Y, RunwayCenter.Y + RunwayExtent.Y),
+            RunwayCenter.Z + RunwayExtent.Z + 1.0 // Start above the runway
+        );
+
+        UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+        AStaticMeshActor* ObjectActor = nullptr;
+        if (SphereMesh)
+        {
+            FActorSpawnParameters SpawnParams;
+            ObjectActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), RandomLocation, FRotator::ZeroRotator, SpawnParams);
+            if (ObjectActor)
+            {
+                ObjectActor->Tags.Add(FName("Ball"));
+                ObjectActor->GetStaticMeshComponent()->SetStaticMesh(SphereMesh);
+                ObjectActor->GetStaticMeshComponent()->SetWorldScale3D(TerraShiftParams->ObjectSize);
+
+                UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/Material/Manip_Object_Material.Manip_Object_Material'"));
+                if (Material)
+                {
+                    ObjectActor->GetStaticMeshComponent()->SetMaterial(0, Material);
+                }
+
+                ObjectActor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
+                ObjectActor->GetStaticMeshComponent()->BodyInstance.SetMassOverride(TerraShiftParams->ObjectMass, true);
+                ObjectActor->GetStaticMeshComponent()->SetEnableGravity(true);
+                ObjectActor->GetStaticMeshComponent()->SetSimulatePhysics(true);
+            }
+            return ObjectActor;
+        }
     }
     return nullptr;
 }
@@ -343,42 +466,6 @@ void ATerraShiftEnvironment::Tick(float DeltaTime) {
             }
         }
     }
-}
-
-AStaticMeshActor* ATerraShiftEnvironment::InitializeGridObject()
-{
-    if (UWorld* World = GetWorld())
-    {
-        // Spawn the object slightly above the chute's opening
-        FVector Location = Chute->GetActorLocation() - FVector(0, 0, TerraShiftParams->ChuteHeight / 2 + TerraShiftParams->ObjectSize.Z / 2 + 0.1f);
-
-        UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
-        AStaticMeshActor* ObjectActor = nullptr;
-        if (SphereMesh)
-        {
-            FActorSpawnParameters SpawnParams;
-            ObjectActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, FRotator::ZeroRotator, SpawnParams);
-            if (ObjectActor)
-            {
-                ObjectActor->Tags.Add(FName("Ball"));
-                ObjectActor->GetStaticMeshComponent()->SetStaticMesh(SphereMesh);
-                ObjectActor->GetStaticMeshComponent()->SetWorldScale3D(TerraShiftParams->ObjectSize);
-
-                UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/Material/Manip_Object_Material.Manip_Object_Material'"));
-                if (Material)
-                {
-                    ObjectActor->GetStaticMeshComponent()->SetMaterial(0, Material);
-                }
-
-                ObjectActor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
-                ObjectActor->GetStaticMeshComponent()->BodyInstance.SetMassOverride(TerraShiftParams->ObjectMass, true);
-                ObjectActor->GetStaticMeshComponent()->SetEnableGravity(true);
-                ObjectActor->GetStaticMeshComponent()->SetSimulatePhysics(true);
-            }
-            return ObjectActor;
-        }
-    }
-    return nullptr;
 }
 
 int ATerraShiftEnvironment::SelectColumn(int AgentIndex, int Direction) const
@@ -571,10 +658,10 @@ bool ATerraShiftEnvironment::Done()
 {
     for (int i = 0; i < Objects.Num(); ++i)
     {
-        if (ObjectOffPlatform(i))
+        /*if (ObjectOffPlatform(i))
         {
             return true;
-        }
+        }*/
 
         if (ObjectReachedWrongGoal(i))
         {

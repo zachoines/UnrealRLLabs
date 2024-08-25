@@ -39,16 +39,18 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
     int MaxSteps = 1024; // Maximum steps per episode
 
-    // Chute parameters
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chute Params")
-    float ChuteRadius = 0.2f; // Radius of the chute
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chute Params")
-    float ChuteHeight = 0.5f; // Height of the chute
-
-    // Number of goals in the environment
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int32 NumGoals = 3;
+    int NumGoals = 3;
+
+    // Runway parameters
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway Params")
+    float RunwayLength = 1.0f; // m
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway Params")
+    float RunwayWidth = 0.5f; // m
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Runway Params")
+    float WallHeight = 0.2f; // m
 };
 
 // Array of colors for goals
@@ -89,9 +91,9 @@ public:
     UPROPERTY(EditAnywhere)
     TArray<AStaticMeshActor*> Columns;
 
-    // The chute from which objects spawn
+    // The runway from which objects spawn
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraShift")
-    AStaticMeshActor* Chute;
+    AStaticMeshActor* RunwayContainer;
 
     virtual void InitEnv(FBaseInitParams* Params) override;
     virtual FState ResetEnv(int NumAgents) override;
@@ -124,8 +126,8 @@ private:
     // Function to spawn the ground platform in the environment
     AStaticMeshActor* SpawnPlatform(FVector Location, FVector Size);
 
-    // Function to spawn the chute
-    AStaticMeshActor* SpawnChute(FVector Location);
+    // Function to spawn the runway
+    void SpawnRunway(FVector Location, float RunwayLength, float RunwayWidth, float WallHeight);
 
     void SetColumnHeight(int ColumnIndex, float NewHeight);
     void SetColumnAcceleration(int ColumnIndex, float Acceleration);
@@ -139,7 +141,7 @@ private:
     int Get1DIndexFromPoint(const FIntPoint& point, int gridSize) const;
     float GridDistance(const FIntPoint& Point1, const FIntPoint& Point2) const;
     float Map(float x, float in_min, float in_max, float out_min, float out_max) const;
-   
+
     // Helper function to check if the object is off the platform
     bool ObjectOffPlatform(int AgentIndex) const;
 
