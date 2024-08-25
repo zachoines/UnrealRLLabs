@@ -48,7 +48,7 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
 
     // Number of goals in the environment
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int32 NumGoals = 2;
+    int32 NumGoals = 3;
 };
 
 // Array of colors for goals
@@ -62,7 +62,7 @@ const TArray<FLinearColor> GoalColors = {
         FLinearColor(1.0f, 0.5f, 0.0f),
         FLinearColor(0.5f, 0.0f, 1.0f),
         FLinearColor(1.0f, 0.0f, 0.5f),
-        FLinearColor(0.5f, 1.0f, 0.0f)
+        FLinearColor(0.5f, 1.0f, 0.0f),
 };
 
 UCLASS()
@@ -139,4 +139,10 @@ private:
     int Get1DIndexFromPoint(const FIntPoint& point, int gridSize) const;
     float GridDistance(const FIntPoint& Point1, const FIntPoint& Point2) const;
     float Map(float x, float in_min, float in_max, float out_min, float out_max) const;
+   
+    // Helper function to check if the object is off the platform
+    bool ObjectOffPlatform(int AgentIndex) const;
+
+    // Helper function to check if the object has reached the wrong goal
+    bool ObjectReachedWrongGoal(int AgentIndex) const;
 };

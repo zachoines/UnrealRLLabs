@@ -102,9 +102,6 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
     // Initialize arrays for LastColumnIndex and AgentGoalIndices
     LastColumnIndexArray.SetNum(CurrentAgents);
     AgentGoalIndices.SetNum(CurrentAgents);
-
-    // Call ResetEnv to initialize goal positions, object positions, and other reset logic
-    // ResetEnv(CurrentAgents);
 }
 
 FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
@@ -132,10 +129,11 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
         AgentGoalIndices.SetNum(NumAgents);
     }
 
-    // Reset column heights and velocities
+    // Reset columns
     for (int i = 0; i < Columns.Num(); ++i)
     {
         SetColumnHeight(i, 0.5f);
+        SetColumnColor(i, FLinearColor(0.0f, 0.0f, 0.0f));
         ColumnVelocities[i] = 0.0f;
     }
 
@@ -202,7 +200,7 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
         FVector NewChuteLocation = PlatformCenter + FVector(
             FMath::RandRange(-PlatformExtent.X + TerraShiftParams->ChuteRadius, PlatformExtent.X - TerraShiftParams->ChuteRadius),
             FMath::RandRange(-PlatformExtent.Y + TerraShiftParams->ChuteRadius, PlatformExtent.Y - TerraShiftParams->ChuteRadius),
-            TerraShiftParams->ChuteHeight + 2 * TerraShiftParams->MaxColumnHeight // Position above the platform
+            TerraShiftParams->ChuteHeight + 4 * TerraShiftParams->MaxColumnHeight // Position above the platform
         );
 
         Chute->SetActorLocation(NewChuteLocation);
@@ -287,7 +285,7 @@ AStaticMeshActor* ATerraShiftEnvironment::SpawnChute(FVector Location)
             {
                 Chute->GetStaticMeshComponent()->SetStaticMesh(CylinderMesh);
                 Chute->GetStaticMeshComponent()->SetWorldScale3D(FVector(TerraShiftParams->ChuteRadius, TerraShiftParams->ChuteRadius, TerraShiftParams->ChuteHeight / 2)); // Adjust height scaling
-                Chute->SetMobility(EComponentMobility::Static);
+                Chute->SetMobility(EComponentMobility::Movable);
                 Chute->GetStaticMeshComponent()->SetEnableGravity(false);
             }
         }
@@ -478,6 +476,51 @@ float ATerraShiftEnvironment::GridDistance(const FIntPoint& Point1, const FIntPo
     return FMath::Sqrt(FMath::Square(static_cast<float>(Point2.X) - static_cast<float>(Point1.X)) + FMath::Square(static_cast<float>(Point2.Y) - static_cast<float>(Point1.Y)));
 }
 
+bool ATerraShiftEnvironment::ObjectOffPlatform(int AgentIndex) const
+{
+    FVector ObjectPosition = Objects[AgentIndex]->GetActorLocation();
+    FVector PlatformExtent = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * Platform->GetActorScale3D();
+    FVector PlatformCenter = Platform->GetActorLocation();
+
+    // Check if the object is within the bounds of the platform
+    if (ObjectPosition.X < PlatformCenter.X - PlatformExtent.X ||
+        ObjectPosition.X > PlatformCenter.X + PlatformExtent.X ||
+        ObjectPosition.Y < PlatformCenter.Y - PlatformExtent.Y ||
+        ObjectPosition.Y > PlatformCenter.Y + PlatformExtent.Y)
+    {
+        return true;
+    }
+    return false;
+}
+
+bool ATerraShiftEnvironment::ObjectReachedWrongGoal(int AgentIndex) const
+{
+    FVector ObjectPosition = Objects[AgentIndex]->GetActorLocation();
+    FVector ObjectExtent = Objects[AgentIndex]->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * Objects[AgentIndex]->GetActorScale3D();
+
+    for (int i = 0; i < GoalPositionArray.Num(); ++i)
+    {
+        // Skip checking the correct goal for this agent
+        if (i == AgentGoalIndices[AgentIndex])
+        {
+            continue;
+        }
+
+        FVector GoalPosition = GoalPositionArray[i];
+
+        // Check if the object is within the wrong goal area
+        if (ObjectPosition.X + ObjectExtent.X > GoalPosition.X - ObjectExtent.X &&
+            ObjectPosition.X - ObjectExtent.X < GoalPosition.X + ObjectExtent.X &&
+            ObjectPosition.Y + ObjectExtent.Y > GoalPosition.Y - ObjectExtent.Y &&
+            ObjectPosition.Y - ObjectExtent.Y < GoalPosition.Y + ObjectExtent.Y)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void ATerraShiftEnvironment::Act(FAction Action)
 {
     // Ensure the action array has the correct size for the current number of agents
@@ -526,7 +569,20 @@ FState ATerraShiftEnvironment::State()
 
 bool ATerraShiftEnvironment::Done()
 {
-    return false; // Implement any termination condition if required
+    for (int i = 0; i < Objects.Num(); ++i)
+    {
+        if (ObjectOffPlatform(i))
+        {
+            return true;
+        }
+
+        if (ObjectReachedWrongGoal(i))
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool ATerraShiftEnvironment::Trunc()

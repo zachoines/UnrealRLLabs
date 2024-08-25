@@ -45,7 +45,7 @@ TTuple<TArray<float>, TArray<float>, TArray<float>, TArray<FAction>, TArray<FSta
     TArray<float> Dones;
     TArray<float> Truncs;
     TArray<float> Rewards;
-    TArray<FState> TmpStates;
+    TArray<FState> States;
     LastStates = CurrentStates;
 
     for (int32 i = 0; i < Environments.Num(); i++)
@@ -53,24 +53,32 @@ TTuple<TArray<float>, TArray<float>, TArray<float>, TArray<FAction>, TArray<FSta
         Dones.Add(static_cast<float>(Environments[i]->Done()));
         Truncs.Add(static_cast<float>(Environments[i]->Trunc()));
         Rewards.Add(Environments[i]->Reward());
+        States.Add(Environments[i]->State());
     
-        if (Dones[i] || Truncs[i]) {
+        /*if (Dones[i] || Truncs[i]) {
             TmpStates.Add(Environments[i]->ResetEnv(CurrentAgents));
         }
         else {
             TmpStates.Add(Environments[i]->State());
-        }
-    }
+        } */
 
-    for (int32 i = 0; i < Environments.Num(); i++)
-    {
         Environments[i]->PostTransition();
+
+        if (Dones[i] || Truncs[i]) {
+            Environments[i]->ResetEnv(CurrentAgents);
+        }
+
     }
 
-    CurrentStates = TmpStates;
+    /*for (int32 i = 0; i < Environments.Num(); i++)
+    {
+        Environments[i]->PostTransition();  
+    }*/
+
+    CurrentStates = States;
 
     return TTuple<TArray<float>, TArray<float>, TArray<float>, TArray<FAction>, TArray<FState>, TArray<FState>>(
-        Dones, Truncs, Rewards, LastActions, LastStates, TmpStates
+        Dones, Truncs, Rewards, LastActions, LastStates, States
     );
 }
 
