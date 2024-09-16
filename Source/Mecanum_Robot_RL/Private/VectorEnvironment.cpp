@@ -55,13 +55,6 @@ TTuple<TArray<float>, TArray<float>, TArray<float>, TArray<FAction>, TArray<FSta
         Rewards.Add(Environments[i]->Reward());
         States.Add(Environments[i]->State());
     
-        /*if (Dones[i] || Truncs[i]) {
-            TmpStates.Add(Environments[i]->ResetEnv(CurrentAgents));
-        }
-        else {
-            TmpStates.Add(Environments[i]->State());
-        } */
-
         Environments[i]->PostTransition();
 
         if (Dones[i] || Truncs[i]) {
@@ -69,11 +62,6 @@ TTuple<TArray<float>, TArray<float>, TArray<float>, TArray<FAction>, TArray<FSta
         }
 
     }
-
-    /*for (int32 i = 0; i < Environments.Num(); i++)
-    {
-        Environments[i]->PostTransition();  
-    }*/
 
     CurrentStates = States;
 

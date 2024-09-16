@@ -2,15 +2,12 @@
 
 ATerraShiftEnvironment::ATerraShiftEnvironment()
 {
-    // Setup Env Info
     EnvInfo.EnvID = 3;
     EnvInfo.IsMultiAgent = true;
 
-    // Initialize Scene components
     TerraShiftRoot = CreateDefaultSubobject<USceneComponent>(TEXT("TerraShiftRoot"));
     RootComponent = TerraShiftRoot;
 
-    // Create a default sub-object for ActionSpace
     EnvInfo.ActionSpace = CreateDefaultSubobject<UActionSpace>(TEXT("ActionSpace"));
 }
 
@@ -18,28 +15,19 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
 {
     TerraShiftParams = static_cast<FTerraShiftEnvironmentInitParams*>(BaseParams);
 
-    // Set the number of current agents from the initialization parameters
-    CurrentAgents = TerraShiftParams->NumAgents;
+    MaxAgents = TerraShiftParams->MaxAgents;
+    CurrentAgents = BaseParams->NumAgents;
     CurrentStep = 0;
 
-    // Set TerraShiftRoot at the specified location.
     TerraShiftRoot->SetWorldLocation(TerraShiftParams->Location);
 
-    // Spawn the platform
     Platform = SpawnPlatform(
         TerraShiftParams->Location,
         FVector(TerraShiftParams->GroundPlaneSize, TerraShiftParams->GroundPlaneSize, TerraShiftParams->GroundPlaneSize)
     );
 
-    // Prepare for column spawning
     Columns.SetNum(TerraShiftParams->GridSize * TerraShiftParams->GridSize);
     GridCenterPoints.SetNum(TerraShiftParams->GridSize * TerraShiftParams->GridSize);
-
-    // Initialize column velocities to zero
-    ColumnVelocities.SetNum(TerraShiftParams->GridSize * TerraShiftParams->GridSize);
-    for (int i = 0; i < ColumnVelocities.Num(); ++i) {
-        ColumnVelocities[i] = 0.0f;
-    }
 
     FVector PlatformWorldSize = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * 2.0f * TerraShiftParams->GroundPlaneSize;
     FVector PlatformCenter = Platform->GetActorLocation();
@@ -51,59 +39,53 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
     {
         for (int j = 0; j < TerraShiftParams->GridSize; ++j)
         {
-            // Spawn each column.
-            AStaticMeshActor* Column = SpawnColumn(
-                FVector(CellWidth, CellWidth, CellHeight),
-                *FString::Printf(TEXT("ColumnMesh_%d_%d"), i, j)
-            );
+            AColumn* Column = GetWorld()->SpawnActor<AColumn>(AColumn::StaticClass());
+            if (Column)
+            {
+                FVector GridCenter = PlatformCenter + FVector(
+                    (i - TerraShiftParams->GridSize / 2.0f + 0.5f) * (PlatformWorldSize.X / TerraShiftParams->GridSize),
+                    (j - TerraShiftParams->GridSize / 2.0f + 0.5f) * (PlatformWorldSize.Y / TerraShiftParams->GridSize),
+                    CellHeight / 2
+                );
 
-            FVector ColumnWorldSize = Column->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * 2.0f * CellHeight;
-            FVector GridCenter = PlatformCenter + FVector(
-                (i - TerraShiftParams->GridSize / 2.0f + 0.5f) * (PlatformWorldSize.X / TerraShiftParams->GridSize),
-                (j - TerraShiftParams->GridSize / 2.0f + 0.5f) * (PlatformWorldSize.Y / TerraShiftParams->GridSize),
-                ColumnWorldSize.Z / 2
-            );
-            Column->SetActorLocation(GridCenter);
+                Column->InitColumn(FVector(CellWidth, CellWidth, CellHeight), GridCenter, TerraShiftParams->MaxColumnHeight);
 
-            Columns[Get1DIndexFromPoint(FIntPoint(i, j), TerraShiftParams->GridSize)] = Column;
-            SetColumnColor(Get1DIndexFromPoint(FIntPoint(i, j), TerraShiftParams->GridSize), FLinearColor(FLinearColor::White));
-            GridCenterPoints[Get1DIndexFromPoint(FIntPoint(i, j), TerraShiftParams->GridSize)] = GridCenter;
-
-            SetColumnHeight(Get1DIndexFromPoint(FIntPoint(i, j), TerraShiftParams->GridSize), 0.5f);
+                Columns[Get1DIndexFromPoint(FIntPoint(i, j), TerraShiftParams->GridSize)] = Column;
+                GridCenterPoints[Get1DIndexFromPoint(FIntPoint(i, j), TerraShiftParams->GridSize)] = GridCenter;
+            }
         }
     }
 
-    
-    // Spawn the runway at a location above the grid-platform
-    FVector PlatformExtent = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * Platform->GetActorScale3D();
-    FVector RunwayLocation = Platform->GetActorLocation() + FVector(PlatformExtent.X, 0.0f, TerraShiftParams->MaxColumnHeight * 4); // Slightly above the platform
-
-    SpawnRunway(RunwayLocation, TerraShiftParams->RunwayLength, TerraShiftParams->RunwayWidth, TerraShiftParams->WallHeight);
-
-    // Set the single agent observation size
     EnvInfo.SingleAgentObsSize = 6;
-
-    // Set the state size and action space
-    EnvInfo.StateSize = CurrentAgents * EnvInfo.SingleAgentObsSize;
+    EnvInfo.StateSize = MaxAgents * EnvInfo.SingleAgentObsSize;
 
     TArray<FDiscreteActionSpec> DiscreteActions;
-    DiscreteActions.Add({ 8 }); // columnChangeDirection: 8 directions
-    DiscreteActions.Add({ 3 }); // columnHeight: 3 options
+    DiscreteActions.Add({ 8 }); // Column direction actions
+    DiscreteActions.Add({ 3 }); // Column height actions
 
     if (EnvInfo.ActionSpace)
     {
         EnvInfo.ActionSpace->Init({}, DiscreteActions);
     }
 
-    // Initialize agents (GridObjects)
-    for (int i = 0; i < CurrentAgents; ++i)
+    UMaterial* DefaultObjectMaterial = LoadObject<UMaterial>(this, TEXT("Material'/Game/Material/Manip_Object_Material.Manip_Object_Material'"));
+    UStaticMesh* DefaultObjectMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+
+    // Spawn the maximum number of grid objects (MaxAgents)
+    for (int i = 0; i < MaxAgents; ++i)
     {
-        Objects.Add(InitializeGridObject());
+        AGridObject* GridObject = GetWorld()->SpawnActor<AGridObject>(AGridObject::StaticClass());
+        GridObject->InitializeGridObject(TerraShiftParams->ObjectSize, DefaultObjectMesh, DefaultObjectMaterial);
+        Objects.Add(GridObject);
+
+        // Initially hide all grid objects; only activate when required
+        GridObject->SetGridObjectActive(false);
     }
 
-    // Initialize arrays for LastColumnIndex and AgentGoalIndices
-    LastColumnIndexArray.SetNum(CurrentAgents);
-    AgentGoalIndices.SetNum(CurrentAgents);
+    LastColumnIndexArray.SetNum(MaxAgents);
+    AgentGoalIndices.SetNum(MaxAgents);
+
+    SetActiveGridObjects(CurrentAgents);  
 }
 
 FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
@@ -111,368 +93,134 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
     CurrentStep = 0;
     CurrentAgents = NumAgents;
 
-    // Handle potential change in the number of agents and their associated data
-    if (Objects.Num() != NumAgents) {
-        // Destroy existing objects if there are more than needed
-        while (Objects.Num() > NumAgents) {
-            AStaticMeshActor* LastObject = Objects.Pop();
-            if (LastObject) {
-                LastObject->Destroy();
-            }
-        }
-
-        // Spawn new objects if there are fewer than needed
-        while (Objects.Num() < NumAgents) {
-            Objects.Add(InitializeGridObject());
-        }
-
-        // Resize arrays for LastColumnIndex and GoalPosition
-        LastColumnIndexArray.SetNum(NumAgents);
-        AgentGoalIndices.SetNum(NumAgents);
-    }
-
-    // Reset columns
-    for (int i = 0; i < Columns.Num(); ++i)
-    {
-        SetColumnHeight(i, 0.5f);
-        SetColumnColor(i, FLinearColor(0.0f, 0.0f, 0.0f));
-        ColumnVelocities[i] = 0.0f;
-    }
-
-    // Calculate CellWidth 
-    float CellWidth = (TerraShiftParams->GroundPlaneSize / static_cast<float>(TerraShiftParams->GridSize)) - 1e-2;
-    int GridSize = TerraShiftParams->GridSize;
-
-    // Reset goal positions to be on the edges of the grid
-    GoalPositionArray.SetNum(TerraShiftParams->NumGoals); // Set the number of goals based on config
+    // Reset goals and columns
+    GoalPositionArray.SetNum(TerraShiftParams->NumGoals);
     TArray<FIntPoint> GoalIndices2D;
     GoalIndices2D.SetNum(TerraShiftParams->NumGoals);
 
-    // Select distinct goal positions on the edges
-    for (int i = 0; i < TerraShiftParams->NumGoals; ++i) {
+    for (int i = 0; i < TerraShiftParams->NumGoals; ++i)
+    {
         int Side;
         FIntPoint GoalIndex2D;
-        do {
+        do
+        {
             Side = FMath::RandRange(0, 3);
             switch (Side)
             {
             case 0: // Top
-                GoalIndex2D = FIntPoint(FMath::RandRange(0, GridSize - 1), 0);
+                GoalIndex2D = FIntPoint(FMath::RandRange(0, TerraShiftParams->GridSize - 1), 0);
                 break;
             case 1: // Bottom
-                GoalIndex2D = FIntPoint(FMath::RandRange(0, GridSize - 1), GridSize - 1);
+                GoalIndex2D = FIntPoint(FMath::RandRange(0, TerraShiftParams->GridSize - 1), TerraShiftParams->GridSize - 1);
                 break;
             case 2: // Left
-                GoalIndex2D = FIntPoint(0, FMath::RandRange(0, GridSize - 1));
+                GoalIndex2D = FIntPoint(0, FMath::RandRange(0, TerraShiftParams->GridSize - 1));
                 break;
             case 3: // Right
-                GoalIndex2D = FIntPoint(GridSize - 1, FMath::RandRange(0, GridSize - 1));
+                GoalIndex2D = FIntPoint(TerraShiftParams->GridSize - 1, FMath::RandRange(0, TerraShiftParams->GridSize - 1));
                 break;
             }
-        } while (GoalIndices2D.Contains(GoalIndex2D)); // Ensure the goal is unique
+        } while (GoalIndices2D.Contains(GoalIndex2D));
 
         GoalIndices2D[i] = GoalIndex2D;
-        GoalPositionArray[i] = GridCenterPoints[Get1DIndexFromPoint(GoalIndex2D, GridSize)];
+        GoalPositionArray[i] = GridCenterPoints[Get1DIndexFromPoint(GoalIndex2D, TerraShiftParams->GridSize)];
     }
 
-    // Color the goal columns
-    for (int i = 0; i < TerraShiftParams->NumGoals; ++i) {
-        // Cycle through the GoalColors array
-        FLinearColor GoalColor = GoalColors[i % GoalColors.Num()];
-        SetColumnColor(Get1DIndexFromPoint(GoalIndices2D[i], GridSize), GoalColor);
-    }
-
-    // Reset the positions of all objects and randomly assign goals
-    for (int i = 0; i < Objects.Num(); ++i)
+    // Reset columns aned set goal locations
+    for (int i = 0; i < Columns.Num(); ++i)
     {
-        // Assuming the floor is the first static mesh component attached to the RunwayContainer
-        UStaticMeshComponent* RunwayFloor = Cast<UStaticMeshComponent>(RunwayContainer->GetComponentByClass(UStaticMeshComponent::StaticClass()));
-        if (RunwayFloor)
-        {
-            FBoxSphereBounds RunwayBounds = RunwayFloor->Bounds;
-            FVector RunwayCenter = RunwayBounds.Origin;
-            FVector RunwayExtent = RunwayBounds.BoxExtent;
-
-            FVector RandomLocation = FVector(
-                FMath::FRandRange(RunwayCenter.X - RunwayExtent.X, RunwayCenter.X + RunwayExtent.X),
-                FMath::FRandRange(RunwayCenter.Y - RunwayExtent.Y, RunwayCenter.Y + RunwayExtent.Y),
-                RunwayCenter.Z + RunwayExtent.Z // Start above the runway
-            );
-
-            Objects[i]->SetActorLocation(RandomLocation);
-        }
-
-        // Randomly assign a goal to this agent
-        AgentGoalIndices[i] = FMath::RandRange(0, TerraShiftParams->NumGoals - 1);
-
-        // Reset LastColumnIndex for this agent
-        LastColumnIndexArray[i] = INDEX_NONE;
+        Columns[i]->ResetColumn();
     }
+
+    for (int i = 0; i < TerraShiftParams->NumGoals; ++i)
+    {
+        FLinearColor GoalColor = GoalColors[i % GoalColors.Num()];
+        Columns[Get1DIndexFromPoint(GoalIndices2D[i], TerraShiftParams->GridSize)]->SetColumnColor(GoalColor);
+    }
+
+    SetActiveGridObjects(CurrentAgents);  // Activate the grid objects based on the current number of agents
 
     return State();
 }
 
-AStaticMeshActor* ATerraShiftEnvironment::SpawnColumn(FVector Dimensions, FName Name)
+void ATerraShiftEnvironment::SetActiveGridObjects(int NumAgents)
 {
-    if (UWorld* World = GetWorld())
+    for (int i = 0; i < MaxAgents; ++i)
     {
-        UStaticMesh* ColumnMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
-        AStaticMeshActor* ColumnActor = nullptr;
-        if (ColumnMesh)
+        if (i < NumAgents)
         {
-            FActorSpawnParameters SpawnParams;
-            ColumnActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
-            if (ColumnActor)
-            {
-                ColumnActor->GetStaticMeshComponent()->SetStaticMesh(ColumnMesh);
-                ColumnActor->GetStaticMeshComponent()->SetWorldScale3D(Dimensions);
-                ColumnActor->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
-                ColumnActor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
-                ColumnActor->GetStaticMeshComponent()->BodyInstance.SetMassOverride(TerraShiftParams->ColumnMass, true);
-                ColumnActor->GetStaticMeshComponent()->SetEnableGravity(false);
-                ColumnActor->GetStaticMeshComponent()->SetSimulatePhysics(false);
-            }
+            // Get the extent of the object, scaled by TerraShiftParams->ObjectSize
+            FVector GridObjectExtent = Objects[i]->GetObjectExtent() * TerraShiftParams->ObjectSize;
+
+            // Use GetComponentBounds to get platform bounds considering scale
+            FVector PlatformOrigin, PlatformExtent;
+            Platform->GetStaticMeshComponent()->GetLocalBounds(PlatformOrigin, PlatformExtent);
+            PlatformExtent *= Platform->GetActorScale3D(); // Scale it to match platform's world size
+
+            FVector PlatformCenter = Platform->GetActorLocation();
+
+            // Compute a random location above and within the platform bounds
+            FVector RandomLocation = PlatformCenter + FVector(
+                FMath::RandRange(-PlatformExtent.X + GridObjectExtent.X, PlatformExtent.X - GridObjectExtent.X),
+                FMath::RandRange(-PlatformExtent.Y + GridObjectExtent.Y, PlatformExtent.Y - GridObjectExtent.Y),
+                PlatformCenter.Z + PlatformExtent.Z + GridObjectExtent.Z + (TerraShiftParams->MaxColumnHeight * 2.0) // Ensure it's above the platform
+            );
+
+            SetSpawnGridObject(
+                i,
+                static_cast<float>(i) * TerraShiftParams->SpawnDelay,
+                RandomLocation
+            );
         }
-        return ColumnActor;
+        else
+        {
+            Objects[i]->SetGridObjectActive(false); // Deactivate unused agents
+        }
     }
-    return nullptr;
+}
+
+void ATerraShiftEnvironment::SetSpawnGridObject(int AgentIndex, float Delay, FVector Location)
+{
+    FTimerHandle TimerHandle;
+    GetWorldTimerManager().SetTimer(
+        TimerHandle,
+        [this, AgentIndex, Location]() {
+            Objects[AgentIndex]->SetActorLocationAndActivate(Location);
+        },
+        Delay,
+        false
+    );
 }
 
 AStaticMeshActor* ATerraShiftEnvironment::SpawnPlatform(FVector Location, FVector Size)
 {
     if (UWorld* World = GetWorld())
     {
-        UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("StaticMesh'/Engine/BasicShapes/Plane.Plane'"));
-        if (PlaneMesh)
-        {
-            FActorSpawnParameters SpawnParams;
-            Platform = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, FRotator::ZeroRotator, SpawnParams);
-            if (Platform)
-            {
-                Platform->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
-                Platform->GetStaticMeshComponent()->SetWorldScale3D(Size);
-                Platform->SetMobility(EComponentMobility::Static);
-
-                UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/Material/Platform_Material.Platform_Material'"));
-                if (Material)
-                {
-                    Material->TwoSided = true;
-                    Platform->GetStaticMeshComponent()->SetMaterial(0, Material);
-                }
-                Platform->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-                Platform->GetStaticMeshComponent()->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
-            }
-        }
-        return Platform;
-    }
-    return nullptr;
-}
-
-void ATerraShiftEnvironment::SpawnRunway(FVector Location, float RunwayLength, float RunwayWidth, float WallHeight)
-{
-    if (UWorld* World = GetWorld())
-    {
-        // Create an empty container for the runway and walls
-        RunwayContainer = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, FRotator::ZeroRotator);
-        RunwayContainer->SetMobility(EComponentMobility::Movable);
-
-        // Create the runway floor
         UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
-        AStaticMeshActor* RunwayFloor = nullptr;
         if (PlaneMesh)
         {
             FActorSpawnParameters SpawnParams;
-            RunwayFloor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
-            if (RunwayFloor)
+            AStaticMeshActor* NewPlatform = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, FRotator::ZeroRotator, SpawnParams);
+            if (NewPlatform)
             {
-                RunwayFloor->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
-                RunwayFloor->SetMobility(EComponentMobility::Movable);
-                RunwayFloor->GetStaticMeshComponent()->SetWorldScale3D(FVector(RunwayLength, RunwayWidth, 1.0f));
-                RunwayFloor->AttachToActor(RunwayContainer, FAttachmentTransformRules::KeepRelativeTransform);
-
-                UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/Material/Platform_Material.Platform_Material'"));
-                if (Material)
-                {
-                    Material->TwoSided = true;
-                    RunwayFloor->GetStaticMeshComponent()->SetMaterial(0, Material);
-                }
-
-                RunwayFloor->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-                RunwayFloor->GetStaticMeshComponent()->SetEnableGravity(false);
-                RunwayFloor->GetStaticMeshComponent()->SetSimulatePhysics(false);
+                NewPlatform->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
+                NewPlatform->GetStaticMeshComponent()->SetWorldScale3D(Size);
+                NewPlatform->SetMobility(EComponentMobility::Static);
+                NewPlatform->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+                NewPlatform->GetStaticMeshComponent()->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
             }
-        }
-
-        // Get the extent of the runway floor after scaling
-        FVector RunwayFloorExtent = RunwayFloor->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * RunwayFloor->GetActorScale3D();
-
-        // Create the walls for the runway
-        UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
-        UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("/Game/Material/Column_Material.Column_Material"));
-          
-        for (int i = 0; i < 3; ++i)
-        {
-            FRotator WallRotation = FRotator::ZeroRotator;
-            FVector WallLocation = FVector::ZeroVector;
-            FVector WallScale = FVector::ZeroVector;
-
-            AStaticMeshActor* Wall = nullptr;
-            if (CubeMesh)
-            {
-                Wall = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass());
-                if (Wall)
-                {
-                    Wall->GetStaticMeshComponent()->SetStaticMesh(CubeMesh);
-                    Wall->SetMobility(EComponentMobility::Movable);
-                    Wall->AttachToActor(RunwayContainer, FAttachmentTransformRules::KeepRelativeTransform);
-                    
-                    switch (i)
-                    {
-                    case 0: // Left wall
-                        WallScale = FVector(RunwayLength, 0.05f, WallHeight);
-                        break;
-                    case 1: // Right wall
-                        WallScale = FVector(RunwayLength, 0.05f, WallHeight);
-                        break;
-                    case 2: // Back wall (closing off the runway)
-                        WallScale = FVector(0.05f, RunwayWidth, WallHeight);
-                        break;
-                    }
-                    
-                    Wall->GetStaticMeshComponent()->SetWorldScale3D(WallScale);
-                    FVector WallExtent = Wall->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * Wall->GetActorScale3D();
-
-                    switch (i)
-                    {
-                    case 0: // Left wall
-                        WallLocation = FVector(0, -RunwayFloorExtent.Y, WallExtent.Z);
-                        break;
-                    case 1: // Right wall
-                        WallLocation = FVector(0, RunwayFloorExtent.Y, WallExtent.Z);
-                        break;
-                    case 2: // Back wall (closing off the runway)
-                        WallLocation = FVector(RunwayFloorExtent.X, 0, WallExtent.Z);
-                        break;
-                    }
-
-                    Wall->SetActorRelativeLocation(WallLocation);
-                    Wall->SetActorRelativeRotation(WallRotation);
-
-                    if (Material)
-                    {
-                        Wall->GetStaticMeshComponent()->SetMaterial(0, Material);
-                    }
-                }
-            }
-        }
-
-        // Position the entire runway container at the correct location and rotation
-        FRotator RunwayRotation(30.0f, 0.0f, 0.0f);
-        RunwayContainer->SetActorLocation(Location + FVector(RunwayFloorExtent.X / 2.0, 0.0, 0.0));
-        RunwayContainer->SetActorRotation(RunwayRotation);
-    }
-}
-
-AStaticMeshActor* ATerraShiftEnvironment::InitializeGridObject()
-{
-    if (UWorld* World = GetWorld())
-    {
-        // Calculate a random position on the runway
-        FBoxSphereBounds RunwayBounds = RunwayContainer->GetStaticMeshComponent()->Bounds;
-        FVector RunwayCenter = RunwayBounds.Origin;
-        FVector RunwayExtent = RunwayBounds.BoxExtent;
-
-        FVector RandomLocation = FVector(
-            FMath::FRandRange(RunwayCenter.X - RunwayExtent.X, RunwayCenter.X + RunwayExtent.X),
-            FMath::FRandRange(RunwayCenter.Y - RunwayExtent.Y, RunwayCenter.Y + RunwayExtent.Y),
-            RunwayCenter.Z + RunwayExtent.Z + 1.0 // Start above the runway
-        );
-
-        UStaticMesh* SphereMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
-        AStaticMeshActor* ObjectActor = nullptr;
-        if (SphereMesh)
-        {
-            FActorSpawnParameters SpawnParams;
-            ObjectActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), RandomLocation, FRotator::ZeroRotator, SpawnParams);
-            if (ObjectActor)
-            {
-                ObjectActor->Tags.Add(FName("Ball"));
-                ObjectActor->GetStaticMeshComponent()->SetStaticMesh(SphereMesh);
-                ObjectActor->GetStaticMeshComponent()->SetWorldScale3D(TerraShiftParams->ObjectSize);
-
-                UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/Material/Manip_Object_Material.Manip_Object_Material'"));
-                if (Material)
-                {
-                    ObjectActor->GetStaticMeshComponent()->SetMaterial(0, Material);
-                }
-
-                ObjectActor->GetStaticMeshComponent()->SetMobility(EComponentMobility::Movable);
-                ObjectActor->GetStaticMeshComponent()->BodyInstance.SetMassOverride(TerraShiftParams->ObjectMass, true);
-                ObjectActor->GetStaticMeshComponent()->SetEnableGravity(true);
-                ObjectActor->GetStaticMeshComponent()->SetSimulatePhysics(true);
-            }
-            return ObjectActor;
+            return NewPlatform;
         }
     }
     return nullptr;
 }
 
-void ATerraShiftEnvironment::SetColumnHeight(int ColumnIndex, float NewHeight)
-{
-    AStaticMeshActor* Column = Columns[ColumnIndex];
-    if (Column)
-    {
-        FVector CurrentLocation = Column->GetActorLocation();
-        CurrentLocation.Z = FMath::Clamp(NewHeight * TerraShiftParams->MaxColumnHeight, 0.0f, TerraShiftParams->MaxColumnHeight);
-        Column->SetActorLocation(CurrentLocation);
-    }
-}
 
-void ATerraShiftEnvironment::SetColumnAcceleration(int ColumnIndex, float Acceleration) {
-    AStaticMeshActor* Column = Columns[ColumnIndex];
-    if (Column) {
-        float MaxHeight = TerraShiftParams->MaxColumnHeight;
-        float MinHeight = 0.0f;
-
-        // Update the column's velocity based on the acceleration
-        ColumnVelocities[ColumnIndex] += Acceleration;
-
-        // Clamp the velocity if the column is at its limits
-        FVector CurrentLocation = Column->GetActorLocation();
-        float CurrentHeight = CurrentLocation.Z;
-        if ((CurrentHeight >= MaxHeight && ColumnVelocities[ColumnIndex] > 0.0f) ||
-            (CurrentHeight <= MinHeight && ColumnVelocities[ColumnIndex] < 0.0f))
-        {
-            ColumnVelocities[ColumnIndex] = 0.0f;
-        }
-    }
-}
-
-void ATerraShiftEnvironment::Tick(float DeltaTime) {
-    Super::Tick(DeltaTime);
-
-    // Update column positions based on their velocities
-    for (int i = 0; i < Columns.Num(); ++i) {
-        AStaticMeshActor* Column = Columns[i];
-        if (Column && ColumnVelocities[i] != 0.0f) {
-            FVector NewLocation = Column->GetActorLocation();
-            NewLocation.Z += ColumnVelocities[i] * DeltaTime;
-            NewLocation.Z = FMath::Clamp(NewLocation.Z, 0.0f, TerraShiftParams->MaxColumnHeight);
-            Column->SetActorLocation(NewLocation);
-
-            // If the column reaches its limit, set its velocity to zero
-            if (NewLocation.Z == 0.0f || NewLocation.Z == TerraShiftParams->MaxColumnHeight) {
-                ColumnVelocities[i] = 0.0f;
-            }
-        }
-    }
-}
 
 int ATerraShiftEnvironment::SelectColumn(int AgentIndex, int Direction) const
 {
     if (LastColumnIndexArray[AgentIndex] == INDEX_NONE)
     {
-        // First call after InitEnv or ResetEnv, find the closest column to the current grid object
         FVector AgentPosition = Objects[AgentIndex]->GetActorLocation();
         float MinDistance = MAX_FLT;
         int ClosestColumnIndex = INDEX_NONE;
@@ -490,7 +238,6 @@ int ATerraShiftEnvironment::SelectColumn(int AgentIndex, int Direction) const
     }
     else
     {
-        // Determine the next column based on the direction from the last selected column
         int GridSize = TerraShiftParams->GridSize;
         int Row = LastColumnIndexArray[AgentIndex] / GridSize;
         int Col = LastColumnIndexArray[AgentIndex] % GridSize;
@@ -536,7 +283,6 @@ int ATerraShiftEnvironment::SelectColumn(int AgentIndex, int Direction) const
 TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
 {
     TArray<float> State;
-
     if (LastColumnIndexArray[AgentIndex] != INDEX_NONE)
     {
         FVector ColumnLocation = Columns[LastColumnIndexArray[AgentIndex]]->GetActorLocation();
@@ -553,37 +299,100 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
     return State;
 }
 
-int ATerraShiftEnvironment::Get1DIndexFromPoint(const FIntPoint& Point, int gridSize) const
+int ATerraShiftEnvironment::Get1DIndexFromPoint(const FIntPoint& Point, int GridSize) const
 {
-    return Point.X * gridSize + Point.Y;
+    return Point.X * GridSize + Point.Y;
 }
 
-float ATerraShiftEnvironment::GridDistance(const FIntPoint& Point1, const FIntPoint& Point2) const
+
+void ATerraShiftEnvironment::PostStep()
 {
-    return FMath::Sqrt(FMath::Square(static_cast<float>(Point2.X) - static_cast<float>(Point1.X)) + FMath::Square(static_cast<float>(Point2.Y) - static_cast<float>(Point1.Y)));
+    CurrentStep += 1;
 }
 
-bool ATerraShiftEnvironment::ObjectOffPlatform(int AgentIndex) const
+FState ATerraShiftEnvironment::State()
 {
-    FVector ObjectPosition = Objects[AgentIndex]->GetActorLocation();
-    FVector PlatformExtent = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * Platform->GetActorScale3D();
-    FVector PlatformCenter = Platform->GetActorLocation();
-
-    // Check if the object is within the bounds of the platform
-    if (ObjectPosition.X < PlatformCenter.X - PlatformExtent.X ||
-        ObjectPosition.X > PlatformCenter.X + PlatformExtent.X ||
-        ObjectPosition.Y < PlatformCenter.Y - PlatformExtent.Y ||
-        ObjectPosition.Y > PlatformCenter.Y + PlatformExtent.Y)
+    FState CurrentState;
+    for (int i = 0; i < Objects.Num(); ++i)
     {
+        CurrentState.Values += AgentGetState(i);
+    }
+    return CurrentState;
+}
+
+bool ATerraShiftEnvironment::Done()
+{
+    for (int i = 0; i < Objects.Num(); ++i)
+    {
+        if (ObjectOffPlatform(i)) {
+            return true;
+        }
+        if (ObjectReachedWrongGoal(i))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool ATerraShiftEnvironment::Trunc()
+{
+    if (CurrentStep > TerraShiftParams->MaxSteps)
+    {
+        CurrentStep = 0;
         return true;
     }
+
     return false;
+}
+
+float ATerraShiftEnvironment::Reward()
+{
+    float TotalRewards = 0.0f;
+
+    for (int i = 0; i < Objects.Num(); ++i)
+    {
+        FVector ObjectPosition = Objects[i]->GetActorLocation();
+        FVector GoalPosition = GoalPositionArray[AgentGoalIndices[i]];
+
+        float DistanceToGoal = FVector::Dist(ObjectPosition, GoalPosition);
+
+        // Provide a reward based on the inverse of the distance to the goal, with small epsilon to avoid division by zero
+        float RewardForAgent = 1.0f / (DistanceToGoal + 1e-5);
+
+        TotalRewards += RewardForAgent;
+    }
+
+    return TotalRewards;
+}
+
+void ATerraShiftEnvironment::PostTransition()
+{
+    // Handle any cleanup or state transitions post-action
+}
+
+float ATerraShiftEnvironment::Map(float x, float in_min, float in_max, float out_min, float out_max) const
+{
+    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
 bool ATerraShiftEnvironment::ObjectReachedWrongGoal(int AgentIndex) const
 {
+    if (!Objects.IsValidIndex(AgentIndex) || !Objects[AgentIndex])
+    {
+        // If the object is off the grid or invalid, skip further checks
+        return false;
+    }
+
     FVector ObjectPosition = Objects[AgentIndex]->GetActorLocation();
-    FVector ObjectExtent = Objects[AgentIndex]->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * Objects[AgentIndex]->GetActorScale3D();
+    FVector ObjectExtent = Objects[AgentIndex]->GetObjectExtent();
+
+    if (ObjectExtent.IsZero())
+    {
+        // If the object doesn't have a valid extent, return false
+        return false;
+    }
 
     for (int i = 0; i < GoalPositionArray.Num(); ++i)
     {
@@ -618,116 +427,53 @@ void ATerraShiftEnvironment::Act(FAction Action)
 
     for (int i = 0; i < Objects.Num(); ++i)
     {
-        // Corrected action indexing
+        // Extract direction and height action for each agent
         int Direction = FMath::RoundToInt(Action.Values[i * 2]);
         int HeightAction = FMath::RoundToInt(Action.Values[i * 2 + 1]);
 
+        // Select the appropriate column for the agent to influence
         int SelectedColumnIndex = SelectColumn(i, Direction);
-        LastColumnIndexArray[i] = SelectedColumnIndex; // Update LastColumnIndex for this agent
+        LastColumnIndexArray[i] = SelectedColumnIndex; // Update the last selected column index
 
+        // Apply the action on the selected column through the Column class
         switch (HeightAction)
         {
         case 0: // accelerate
-            SetColumnAcceleration(SelectedColumnIndex, TerraShiftParams->ColumnAccelConstant);
+            Columns[SelectedColumnIndex]->SetColumnAcceleration(TerraShiftParams->ColumnAccelConstant);
             break;
         case 1: // decelerate
-            SetColumnAcceleration(SelectedColumnIndex, -TerraShiftParams->ColumnAccelConstant);
+            Columns[SelectedColumnIndex]->SetColumnAcceleration(-TerraShiftParams->ColumnAccelConstant);
             break;
-        case 2: // noop
+        case 2: // noop (no operation)
+            break;
+        default:
+            UE_LOG(LogTemp, Warning, TEXT("Invalid HeightAction value"));
             break;
         }
     }
 }
 
-void ATerraShiftEnvironment::PostStep()
+bool ATerraShiftEnvironment::ObjectOffPlatform(int AgentIndex) const
 {
-    CurrentStep += 1;
-}
-
-FState ATerraShiftEnvironment::State()
-{
-    FState CurrentState;
-    for (int i = 0; i < Objects.Num(); ++i)
+    if (!Objects.IsValidIndex(AgentIndex) || !Objects[AgentIndex])
     {
-        CurrentState.Values += AgentGetState(i);
-    }
-    return CurrentState;
-}
-
-bool ATerraShiftEnvironment::Done()
-{
-    for (int i = 0; i < Objects.Num(); ++i)
-    {
-        /*if (ObjectOffPlatform(i))
-        {
-            return true;
-        }*/
-
-        if (ObjectReachedWrongGoal(i))
-        {
-            return true;
-        }
+        // If the object index is invalid or the object is null, consider it off the platform
+        return true;
     }
 
-    return false;
-}
+    FVector ObjectPosition = Objects[AgentIndex]->GetActorLocation();
+    FVector PlatformExtent = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * Platform->GetActorScale3D();
+    FVector PlatformCenter = Platform->GetActorLocation();
 
-bool ATerraShiftEnvironment::Trunc()
-{
-    if (CurrentStep > TerraShiftParams->MaxSteps)
+    // Check if the object is within the bounds of the platform
+    if (ObjectPosition.X < PlatformCenter.X - PlatformExtent.X ||
+        ObjectPosition.X > PlatformCenter.X + PlatformExtent.X ||
+        ObjectPosition.Y < PlatformCenter.Y - PlatformExtent.Y ||
+        ObjectPosition.Y > PlatformCenter.Y + PlatformExtent.Y)
     {
-        CurrentStep = 0;
         return true;
     }
 
     return false;
 }
 
-float ATerraShiftEnvironment::Reward()
-{
-    float TotalRewards = 0.0f;
-
-    for (int i = 0; i < Objects.Num(); ++i)
-    {
-        FVector ObjectPosition = Objects[i]->GetActorLocation();
-        // Get the goal position for this agent based on its assigned goal index
-        FVector GoalPosition = GoalPositionArray[AgentGoalIndices[i]];
-
-        // Calculate the distance to the goal
-        float DistanceToGoal = FVector::Dist(ObjectPosition, GoalPosition);
-
-        // Provide a reward based on the inverse of the distance 
-        // (closer to the goal = higher reward)
-        float RewardForAgent = 1.0f / (DistanceToGoal + 1e-5); // Add a small epsilon to avoid division by zero
-
-        // You can adjust the reward scaling or add other factors as needed
-        TotalRewards += RewardForAgent;
-    }
-
-    return TotalRewards;
-}
-
-void ATerraShiftEnvironment::PostTransition()
-{
-    // Handle any cleanup or state transitions post-action
-}
-
-float ATerraShiftEnvironment::Map(float x, float in_min, float in_max, float out_min, float out_max) const
-{
-    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
-}
-
-void ATerraShiftEnvironment::SetColumnColor(int ColumnIndex, FLinearColor Color)
-{
-    AStaticMeshActor* Column = Columns[ColumnIndex];
-    if (Column)
-    {
-        UMaterial* BaseMaterial = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/StarterContent/Materials/M_Basic_Floor.M_Basic_Floor'"));
-        Column->GetStaticMeshComponent()->SetMaterial(0, BaseMaterial);
-
-        // Create a dynamic material instance to set the color
-        UMaterialInstanceDynamic* DynMaterial = UMaterialInstanceDynamic::Create(Column->GetStaticMeshComponent()->GetMaterial(0), Column);
-        DynMaterial->SetVectorParameterValue("Color", Color);
-        Column->GetStaticMeshComponent()->SetMaterial(0, DynMaterial);
-    }
-}
