@@ -27,7 +27,6 @@ void AGridObject::InitializeGridObject(FVector InObjectSize, UStaticMesh* Mesh, 
     // Set the size and physics for the mesh component
     MeshComponent->SetWorldScale3D(InObjectSize);
     MeshComponent->SetSimulatePhysics(true);
-    // MeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
     MeshComponent->SetMobility(EComponentMobility::Movable);
     SetActorHiddenInGame(true);
 

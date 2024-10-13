@@ -21,9 +21,9 @@ public:
     // Reset the environment and return the initial state
     TArray<FState> ResetEnv(int NumAgents);
 
-    /* 
+    /*
         Perform a step in the environment using the given action :
-        Returns transition Tuple for LAST tick: { Done, Trunc, Reward, Action, State, NextState } 
+        Returns transition Tuple for LAST tick: { Done, Trunc, Reward, Action, State, NextState }
     */
     TTuple<TArray<float>, TArray<float>, TArray<float>, TArray<FAction>, TArray<FState>, TArray<FState>> Transition();
 
@@ -45,6 +45,8 @@ private:
     TArray<FAction> LastActions;
     TArray<FState> LastStates;
     TArray<FState> CurrentStates;
+    TArray<float> Dones;
+    TArray<float> Truncs;
 
     FAction EnvSample(UActionSpace* ActionSpace);
 };

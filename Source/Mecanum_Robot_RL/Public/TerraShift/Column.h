@@ -1,3 +1,5 @@
+// Column.h
+
 #pragma once
 
 #include "CoreMinimal.h"
@@ -16,17 +18,14 @@ public:
     // Initialize the column with its size, position, and maximum height
     void InitColumn(FVector Dimensions, FVector Location, float MaxHeight);
 
-    // Set the column's height as a percentage of MaxHeight
-    void SetColumnHeight(float NewHeight);
+    // Set the column's height based on a scalar from -1 to 1
+    void SetColumnHeight(float ScalarHeight);
 
-    // Get the current height as a percentage of MaxHeight
+    // Get the current height as a scalar from -1 to 1
     float GetColumnHeight() const;
 
     // Set the color of the column
     void SetColumnColor(FLinearColor Color);
-
-    // Set the acceleration of the column (modifies velocity)
-    void SetColumnAcceleration(float Acceleration);
 
     // Reset the column to its initial state
     void ResetColumn();
@@ -35,18 +34,17 @@ protected:
     // Called when the game starts or when the actor is spawned
     virtual void BeginPlay() override;
 
-public:
-    // Called every frame to update the column's position based on velocity
-    virtual void Tick(float DeltaTime) override;
-
 private:
     // The static mesh component representing the column
     UPROPERTY(VisibleAnywhere)
     UStaticMeshComponent* ColumnMesh;
 
+    // Dynamic material instance to set the column color
+    UMaterialInstanceDynamic* DynMaterial;
+
     // The maximum height the column can reach
     float MaximumHeight;
 
-    // The current velocity of the column
-    float Velocity;
+    // The starting position (location) of the column
+    FVector StartingLocation;
 };

@@ -118,6 +118,8 @@ bool AUnrealRLLabsGameModeBase::ReadJsonConfig(const FString& FilePath, FTrainPa
     OutTrainParams.BufferSize = TrainParamsJson->GetIntegerField(TEXT("BufferSize"));
     OutTrainParams.BatchSize = TrainParamsJson->GetIntegerField(TEXT("BatchSize"));
     OutTrainParams.NumEnvironments = TrainParamsJson->GetIntegerField(TEXT("NumEnvironments"));
+    OutTrainParams.ActionRepeat = TrainParamsJson->GetIntegerField(TEXT("ActionRepeat
+        "));
 
     // Multi-Agent Params
     OutTrainParams.MaxAgents = TrainParamsJson->GetIntegerField(TEXT("MaxAgents"));

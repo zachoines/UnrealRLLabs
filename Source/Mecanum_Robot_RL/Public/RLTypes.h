@@ -27,6 +27,9 @@ struct UNREALRLLABS_API FTrainParams
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Train Params")
     int AgentsResetFrequency;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Train Params")
+    int ActionRepeat;
 };
 
 USTRUCT(BlueprintType)

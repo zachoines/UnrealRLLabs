@@ -9,7 +9,6 @@
 #include "RLTypes.h"
 #include "RLRunner.generated.h"
 
-
 UCLASS(Blueprintable, BlueprintType)
 class UNREALRLLABS_API ARLRunner : public AActor
 {
@@ -53,6 +52,8 @@ private:
 
     unsigned long int CurrentStep;
     unsigned long int CurrentUpdate;
+    int ActionRepeatCounter;
+    TArray<FAction> Actions;
 
     FTrainParams TrainerParams;
 };

@@ -1,3 +1,5 @@
+// Column.cpp
+
 #include "TerraShift/Column.h"
 #include "Engine/StaticMesh.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -5,52 +7,52 @@
 
 AColumn::AColumn()
 {
-    PrimaryActorTick.bCanEverTick = true;
+    PrimaryActorTick.bCanEverTick = false;
 
     ColumnMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ColumnMesh"));
+    DynMaterial = nullptr;
     RootComponent = ColumnMesh;
 
-    ColumnMesh->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+    ColumnMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+    ColumnMesh->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
     ColumnMesh->SetMobility(EComponentMobility::Movable);
-    ColumnMesh->SetEnableGravity(false);
-    ColumnMesh->SetSimulatePhysics(false);
 }
 
 void AColumn::InitColumn(FVector Dimensions, FVector Location, float MaxHeight)
 {
-
     UStaticMesh* ColumnMeshAsset = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
 
     if (ColumnMeshAsset)
     {
         ColumnMesh->SetStaticMesh(ColumnMeshAsset);
         ColumnMesh->SetWorldScale3D(Dimensions);
-
-        // Set collision, mobility, and physics properties
-        ColumnMesh->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
-        ColumnMesh->SetMobility(EComponentMobility::Movable);
-        ColumnMesh->BodyInstance.SetMassOverride(0.01f, true);
-        ColumnMesh->SetEnableGravity(false);
-        ColumnMesh->SetSimulatePhysics(false);
-
         SetActorLocation(Location);
         this->MaximumHeight = MaxHeight;
-        SetColumnHeight(0.5f);
-        SetColumnColor(FLinearColor(1.0f, 1.0f, 1.0f));
+        this->StartingLocation = Location;
+        SetColumnHeight(0.0f);
+        UMaterial* BaseMaterial = LoadObject<UMaterial>(nullptr, TEXT("/Game/StarterContent/Materials/M_Basic_Floor.M_Basic_Floor"));
+        if (BaseMaterial)
+        {
+            DynMaterial = UMaterialInstanceDynamic::Create(BaseMaterial, this);
+            if (DynMaterial)
+            {
+                ColumnMesh->SetMaterial(0, DynMaterial);
+                SetColumnColor(FLinearColor(0.0f, 0.0f, 0.0f));
+            }
+        }
     }
 }
 
-void AColumn::SetColumnHeight(float NewHeight)
+void AColumn::SetColumnHeight(float ScalarHeight)
 {
-    FVector CurrentLocation = GetActorLocation();
-    CurrentLocation.Z = FMath::Clamp(NewHeight * MaximumHeight, 0.0f, MaximumHeight);
-    SetActorLocation(CurrentLocation);
+    ScalarHeight = FMath::Clamp(ScalarHeight, -1.0f, 1.0f);
+    FVector NewLocation = StartingLocation;
+    NewLocation.Z += ScalarHeight * MaximumHeight;
+    SetActorLocation(NewLocation);
 }
 
 void AColumn::SetColumnColor(FLinearColor Color)
 {
-    // Create a dynamic material instance to set the column color
-    UMaterialInstanceDynamic* DynMaterial = UMaterialInstanceDynamic::Create(ColumnMesh->GetMaterial(0), this);
     if (DynMaterial)
     {
         DynMaterial->SetVectorParameterValue("Color", Color);
@@ -58,53 +60,20 @@ void AColumn::SetColumnColor(FLinearColor Color)
     }
 }
 
-void AColumn::SetColumnAcceleration(float Acceleration)
-{
-    // Update the velocity of the column by adding the acceleration
-    Velocity += Acceleration;
-}
-
-void AColumn::Tick(float DeltaTime)
-{
-    Super::Tick(DeltaTime);
-
-    // Update the column's position based on its velocity
-    FVector CurrentLocation = GetActorLocation();
-    CurrentLocation.Z += Velocity * DeltaTime;
-    CurrentLocation.Z = FMath::Clamp(CurrentLocation.Z, 0.0f, MaximumHeight);
-
-    // If the column hits the maximum or minimum height, stop its movement
-    if (CurrentLocation.Z == 0.0f || CurrentLocation.Z == MaximumHeight)
-    {
-        Velocity = 0.0f;
-    }
-
-    SetActorLocation(CurrentLocation);
-}
-
 void AColumn::ResetColumn()
 {
-    Velocity = 0.0f;
-    SetColumnHeight(0.5f);
-    SetColumnColor(FLinearColor(1.0f, 1.0f, 1.0f));
+    SetColumnHeight(0.0f);
+    SetColumnColor(FLinearColor(0.5f, 0.5f, 0.5f));
 }
 
 void AColumn::BeginPlay()
 {
     Super::BeginPlay();
-
-    if (ColumnMesh)
-    {
-        UMaterial* BaseMaterial = LoadObject<UMaterial>(nullptr, TEXT("/Game/StarterContent/Materials/M_Basic_Floor.M_Basic_Floor"));
-        if (BaseMaterial)
-        {
-            ColumnMesh->SetMaterial(0, BaseMaterial);
-        }
-    }
 }
 
 float AColumn::GetColumnHeight() const
 {
-    // Get the current height as a percentage of MaxHeight
-    return GetActorLocation().Z / MaximumHeight;
+    // Calculate the height as a scalar from -1 to 1
+    float DeltaZ = GetActorLocation().Z - StartingLocation.Z;
+    return DeltaZ / MaximumHeight;
 }

@@ -8,6 +8,7 @@
       "NumEnvironments": 1,
       "MaxAgents" : 10,
       "MinAgents" : 2,
-      "AgentsResetFrequency": 256
+      "AgentsResetFrequency": 256,
+      "ActionRepeat": 5
     }
   }
