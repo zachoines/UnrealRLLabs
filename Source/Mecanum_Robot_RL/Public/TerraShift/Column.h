@@ -15,13 +15,13 @@ public:
     // Constructor
     AColumn();
 
-    // Initialize the column with its size, position, and maximum height
-    void InitColumn(FVector Dimensions, FVector Location, float MaxHeight);
+    // Initialize the column with its scale, position, and maximum scale factor
+    void InitColumn(FVector Scale, FVector Location, float MaxScaleFactor);
 
-    // Set the column's height based on a scalar from -1 to 1
+    // Set the column's height based on a scalar from 0 to 1
     void SetColumnHeight(float ScalarHeight);
 
-    // Get the current height as a scalar from -1 to 1
+    // Get the current height as a scalar from 0 to 1
     float GetColumnHeight() const;
 
     // Set the color of the column
@@ -42,9 +42,18 @@ private:
     // Dynamic material instance to set the column color
     UMaterialInstanceDynamic* DynMaterial;
 
-    // The maximum height the column can reach
-    float MaximumHeight;
+    // The starting scale of the column
+    FVector StartingScale;
 
-    // The starting position (location) of the column
+    // The maximum scale factor for the column's height
+    float MaximumScaleFactor;
+
+    // The original height of the column mesh (before scaling)
+    float OriginalMeshHeight;
+
+    // The starting location of the column
     FVector StartingLocation;
+
+    // The current scalar height
+    float CurrentScalarHeight;
 };

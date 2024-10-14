@@ -1,4 +1,4 @@
-// ATerraShiftEnvironment.cpp
+// TerraShiftEnvironment.cpp
 
 #include "TerraShiftEnvironment.h"
 #include "Engine/World.h"
@@ -6,6 +6,7 @@
 #include "Materials/Material.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "Engine/StaticMesh.h"
 
 ATerraShiftEnvironment::ATerraShiftEnvironment()
 {
@@ -41,18 +42,35 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
 
     Platform = SpawnPlatform(
         TerraShiftParams->Location,
-        FVector(TerraShiftParams->GroundPlaneSize, TerraShiftParams->GroundPlaneSize, TerraShiftParams->GroundPlaneSize)
+        FVector(TerraShiftParams->GroundPlaneSize, TerraShiftParams->GroundPlaneSize, 1.0f) // Z scale set to 1.0f
     );
 
+    // Initialize columns
     Columns.SetNum(TerraShiftParams->GridSize * TerraShiftParams->GridSize);
     GridCenterPoints.SetNum(TerraShiftParams->GridSize * TerraShiftParams->GridSize);
 
-    FVector PlatformWorldSize = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * 2.0f * TerraShiftParams->GroundPlaneSize;
+    FVector PlatformScale = Platform->GetActorScale3D();
+    FVector PlatformWorldSize = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * 2.0f * PlatformScale;
     FVector PlatformCenter = Platform->GetActorLocation();
 
-    float CellWidth = (TerraShiftParams->GroundPlaneSize / static_cast<float>(TerraShiftParams->GridSize)) - 1e-4;
-    float CellHeight = CellWidth * TerraShiftParams->ColumnHeight;
+    // Calculate cell dimensions
+    float CellWidth = PlatformWorldSize.X / static_cast<float>(TerraShiftParams->GridSize);
+    float CellLength = PlatformWorldSize.Y / static_cast<float>(TerraShiftParams->GridSize);
 
+    // Load column mesh to get its original dimensions
+    UStaticMesh* ColumnMeshAsset = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+    FVector ColumnMeshExtent = ColumnMeshAsset->GetBounds().BoxExtent * 2.0f;
+    float OriginalColumnHeight = ColumnMeshExtent.Z;
+
+    // Calculate initial and maximum column heights in world units
+    float MinColumnHeight = CellWidth * TerraShiftParams->ColumnHeight;
+    float MaxColumnHeight = MinColumnHeight * TerraShiftParams->MaxColumnHeight;
+
+    // Calculate starting and maximum scale factors
+    float StartingScaleZ = MinColumnHeight / OriginalColumnHeight;
+    float MaximumScaleFactor = TerraShiftParams->MaxColumnHeight;
+
+    // Initialize columns
     for (int i = 0; i < TerraShiftParams->GridSize; ++i)
     {
         for (int j = 0; j < TerraShiftParams->GridSize; ++j)
@@ -60,13 +78,20 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
             AColumn* Column = GetWorld()->SpawnActor<AColumn>(AColumn::StaticClass());
             if (Column)
             {
+                // Position base on top of platform
                 FVector GridCenter = PlatformCenter + FVector(
-                    (i - TerraShiftParams->GridSize / 2.0f + 0.5f) * (PlatformWorldSize.X / TerraShiftParams->GridSize),
-                    (j - TerraShiftParams->GridSize / 2.0f + 0.5f) * (PlatformWorldSize.Y / TerraShiftParams->GridSize),
-                    0.0f // Set Z to 0.0f
+                    (i - TerraShiftParams->GridSize / 2.0f + 0.5f) * CellWidth,
+                    (j - TerraShiftParams->GridSize / 2.0f + 0.5f) * CellLength,
+                    PlatformCenter.Z + (OriginalColumnHeight * StartingScaleZ) / 2.0f
                 );
 
-                Column->InitColumn(FVector(CellWidth, CellWidth, CellHeight), GridCenter, TerraShiftParams->MaxColumnHeight);
+                FVector ColumnScale = FVector(
+                    CellWidth / ColumnMeshExtent.X,
+                    CellLength / ColumnMeshExtent.Y,
+                    StartingScaleZ
+                );
+
+                Column->InitColumn(ColumnScale, GridCenter, MaximumScaleFactor);
 
                 // Attach the column to the platform
                 Column->AttachToActor(Platform, FAttachmentTransformRules::KeepWorldTransform);
@@ -123,8 +148,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
         AgentParametersArray[i] = AgentParam;
     }
 
-    
-
+    // Load materials and meshes
     UMaterial* DefaultObjectMaterial = LoadObject<UMaterial>(this, TEXT("Material'/Game/Material/Manip_Object_Material.Manip_Object_Material'"));
     UStaticMesh* DefaultObjectMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 
@@ -244,7 +268,7 @@ void ATerraShiftEnvironment::SetActiveGridObjects(int NumAgents)
             FVector RandomLocation = PlatformCenter + FVector(
                 FMath::RandRange(-PlatformExtent.X + GridObjectExtent.X, PlatformExtent.X - GridObjectExtent.X),
                 FMath::RandRange(-PlatformExtent.Y + GridObjectExtent.Y, PlatformExtent.Y - GridObjectExtent.Y),
-                PlatformCenter.Z + PlatformExtent.Z + GridObjectExtent.Z + (TerraShiftParams->MaxColumnHeight * 4.0) // Ensure it's above the platform
+                PlatformCenter.Z + PlatformExtent.Z + GridObjectExtent.Z + (PlatformExtent.Z * 0.1f) // Ensure it's above the platform
             );
 
             SetSpawnGridObject(
@@ -283,8 +307,9 @@ AStaticMeshActor* ATerraShiftEnvironment::SpawnPlatform(FVector Location, FVecto
                 NewPlatform->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
                 NewPlatform->GetStaticMeshComponent()->SetWorldScale3D(Size);
                 NewPlatform->SetMobility(EComponentMobility::Static);
-                NewPlatform->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-                NewPlatform->GetStaticMeshComponent()->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
+                NewPlatform->GetStaticMeshComponent()->SetSimulatePhysics(false);
+                // NewPlatform->GetStaticMeshComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+                // NewPlatform->GetStaticMeshComponent()->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
             }
             return NewPlatform;
         }
@@ -321,7 +346,7 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
     State.Add(Agent.Frequency);
     State.Add(Agent.Phase);
     State.Add(Agent.Sigma);
-    State.Add(Agent.Time);    
+    State.Add(Agent.Time);
     State.Add(ObjectRelativePosition.X);
     State.Add(ObjectRelativePosition.Y);
     State.Add(ObjectRelativePosition.Z);
@@ -446,8 +471,8 @@ void ATerraShiftEnvironment::Act(FAction Action)
             int Index = Get1DIndexFromPoint(FIntPoint(i, j), GridSize);
             float HeightValue = HeightMap[i][j];
 
-            // Normalize HeightValue to -1 to 1
-            float NormalizedHeight = FMath::Clamp(HeightValue / TerraShiftParams->MaxColumnHeight, -1.0f, 1.0f);
+            // Normalize HeightValue to 0 to 1 (since columns cannot go below the platform)
+            float NormalizedHeight = FMath::Clamp((HeightValue + TerraShiftParams->MaxColumnHeight) / (2.0f * TerraShiftParams->MaxColumnHeight), 0.0f, 1.0f);
 
             Columns[Index]->SetColumnHeight(NormalizedHeight);
         }
@@ -480,7 +505,8 @@ bool ATerraShiftEnvironment::ObjectOffPlatform(int AgentIndex) const
 FVector ATerraShiftEnvironment::GridPositionToWorldPosition(FVector2D GridPosition)
 {
     FVector PlatformCenter = Platform->GetActorLocation();
-    FVector PlatformWorldSize = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * 2.0f * TerraShiftParams->GroundPlaneSize;
+    FVector PlatformScale = Platform->GetActorScale3D();
+    FVector PlatformWorldSize = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * 2.0f * PlatformScale;
 
     float PosX = PlatformCenter.X + (GridPosition.X - TerraShiftParams->GridSize / 2.0f + 0.5f) * (PlatformWorldSize.X / TerraShiftParams->GridSize);
     float PosY = PlatformCenter.Y + (GridPosition.Y - TerraShiftParams->GridSize / 2.0f + 0.5f) * (PlatformWorldSize.Y / TerraShiftParams->GridSize);

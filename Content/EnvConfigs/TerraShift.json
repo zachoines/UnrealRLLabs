@@ -9,6 +9,6 @@
       "MaxAgents" : 10,
       "MinAgents" : 2,
       "AgentsResetFrequency": 256,
-      "ActionRepeat": 5
+      "ActionRepeat": 1
     }
   }

@@ -16,20 +16,25 @@ AColumn::AColumn()
     ColumnMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
     ColumnMesh->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
     ColumnMesh->SetMobility(EComponentMobility::Movable);
+
+    CurrentScalarHeight = -1.0f; // Initialize to an invalid value to ensure the first update occurs
 }
 
-void AColumn::InitColumn(FVector Dimensions, FVector Location, float MaxHeight)
+void AColumn::InitColumn(FVector Scale, FVector Location, float MaxScaleFactor)
 {
     UStaticMesh* ColumnMeshAsset = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
 
     if (ColumnMeshAsset)
     {
         ColumnMesh->SetStaticMesh(ColumnMeshAsset);
-        ColumnMesh->SetWorldScale3D(Dimensions);
+        this->OriginalMeshHeight = ColumnMeshAsset->GetBounds().BoxExtent.Z * 2.0f;
+        SetActorScale3D(Scale);
         SetActorLocation(Location);
-        this->MaximumHeight = MaxHeight;
+        this->StartingScale = Scale;
+        this->MaximumScaleFactor = MaxScaleFactor;
         this->StartingLocation = Location;
-        SetColumnHeight(0.0f);
+        this->CurrentScalarHeight = -1.0f; // Ensure the first call to SetColumnHeight updates the column
+        SetColumnHeight(0.0f); // Start at minimum height
         UMaterial* BaseMaterial = LoadObject<UMaterial>(nullptr, TEXT("/Game/StarterContent/Materials/M_Basic_Floor.M_Basic_Floor"));
         if (BaseMaterial)
         {
@@ -37,7 +42,7 @@ void AColumn::InitColumn(FVector Dimensions, FVector Location, float MaxHeight)
             if (DynMaterial)
             {
                 ColumnMesh->SetMaterial(0, DynMaterial);
-                SetColumnColor(FLinearColor(0.0f, 0.0f, 0.0f));
+                SetColumnColor(FLinearColor(0.5f, 0.5f, 0.5f));
             }
         }
     }
@@ -45,10 +50,28 @@ void AColumn::InitColumn(FVector Dimensions, FVector Location, float MaxHeight)
 
 void AColumn::SetColumnHeight(float ScalarHeight)
 {
-    ScalarHeight = FMath::Clamp(ScalarHeight, -1.0f, 1.0f);
-    FVector NewLocation = StartingLocation;
-    NewLocation.Z += ScalarHeight * MaximumHeight;
-    SetActorLocation(NewLocation);
+    ScalarHeight = FMath::Clamp(ScalarHeight, 0.0f, 1.0f); // Ensure scalar is between 0 and 1
+
+    // Only update if ScalarHeight has changed
+    if (!FMath::IsNearlyEqual(ScalarHeight, CurrentScalarHeight))
+    {
+        CurrentScalarHeight = ScalarHeight;
+
+        float NewScaleZ = StartingScale.Z * (1.0f + ScalarHeight * (MaximumScaleFactor - 1.0f));
+        FVector NewScale = StartingScale;
+        NewScale.Z = NewScaleZ;
+
+        // Adjust location to keep the bottom at the same position
+        float OriginalHeight = OriginalMeshHeight * StartingScale.Z;
+        float NewHeight = OriginalMeshHeight * NewScaleZ;
+        float DeltaHeight = (NewHeight - OriginalHeight) / 2.0f;
+
+        FVector NewLocation = StartingLocation;
+        NewLocation.Z += DeltaHeight;
+
+        SetActorScale3D(NewScale);
+        SetActorLocation(NewLocation);
+    }
 }
 
 void AColumn::SetColumnColor(FLinearColor Color)
@@ -62,8 +85,9 @@ void AColumn::SetColumnColor(FLinearColor Color)
 
 void AColumn::ResetColumn()
 {
-    SetColumnHeight(0.0f);
-    SetColumnColor(FLinearColor(0.5f, 0.5f, 0.5f));
+    CurrentScalarHeight = -1.0f; // Reset current scalar height to ensure update
+    SetColumnHeight(0.0f); // Reset to minimum height
+    SetColumnColor(FLinearColor(0.5f, 0.5f, 0.5f)); // Default color
 }
 
 void AColumn::BeginPlay()
@@ -73,7 +97,5 @@ void AColumn::BeginPlay()
 
 float AColumn::GetColumnHeight() const
 {
-    // Calculate the height as a scalar from -1 to 1
-    float DeltaZ = GetActorLocation().Z - StartingLocation.Z;
-    return DeltaZ / MaximumHeight;
+    return CurrentScalarHeight;
 }

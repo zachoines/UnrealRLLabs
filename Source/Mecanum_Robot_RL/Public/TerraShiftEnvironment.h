@@ -36,10 +36,7 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
     float ColumnMass = 0.01f; // kg
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float ColumnAccelConstant = 0.2f; // Acceleration constant for columns
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int GridSize = 100; // Size of the grid
+    int GridSize = 20; // Size of the grid
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
     int MaxSteps = 1024; // Maximum steps per episode
