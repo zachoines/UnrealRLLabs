@@ -3,33 +3,35 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Components/StaticMeshComponent.h"
-#include "string"
+#include "Engine/StaticMesh.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "GridObject.generated.h"
 
 UCLASS()
-class UNREALRLLABS_API AGridObject : public AActor
-{
+class UNREALRLLABS_API AGridObject : public AActor {
     GENERATED_BODY()
 
 public:
     AGridObject();
 
-    // Function to initialize the grid object with a mesh, material and size
-    void InitializeGridObject(FVector InObjectSize, UStaticMesh* Mesh, UMaterial* Material);
+    // Initialize the grid object with a mesh and size
+    void InitializeGridObject(FVector InObjectSize);
 
-    // Function to activate or deactivate the grid object
+    // Set the grid object to be active or inactive
     void SetGridObjectActive(bool bIsActive);
 
-    // Function to set the location and activate the grid object
-    void SetActorLocationAndActivate(FVector NewLocation);
-
-    // New function to get the bounds of the object's mesh
+    // Get the bounds of the grid object
     FVector GetObjectExtent() const;
 
-private:
+    // Check if the grid object is active
+    bool IsActive() const;
+
+    // Static mesh component for visualization
     UPROPERTY(VisibleAnywhere)
-    UStaticMesh* ObjectMesh;
     UStaticMeshComponent* MeshComponent;
-    UMaterial* ObjectMaterial;
-    FVector ObjectSize;
+
+private:
+    
+    // Whether the grid object is active
+    bool bIsActive;
 };

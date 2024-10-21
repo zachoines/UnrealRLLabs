@@ -1,56 +1,50 @@
 #include "TerraShift/GridObject.h"
 
-AGridObject::AGridObject()
-{
+AGridObject::AGridObject() {
     PrimaryActorTick.bCanEverTick = false;
 
-    // Create default subobjects
+    // Create the mesh component
     MeshComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("MeshComponent"));
-    ObjectMesh = CreateDefaultSubobject<UStaticMesh>(TEXT("DefaultMesh"));
-    ObjectMaterial = CreateDefaultSubobject<UMaterial>(TEXT("DefaultMaterial"));
     RootComponent = MeshComponent;
-}
 
-void AGridObject::InitializeGridObject(FVector InObjectSize, UStaticMesh* Mesh, UMaterial* Material)
-{
-    // Set mesh and material
-    if (Mesh)
-    {
-        MeshComponent->SetStaticMesh(Mesh);
-    }
-
-    if (Material)
-    {
-        MeshComponent->SetMaterial(0, Material);
-    }
-
-    // Set the size and physics for the mesh component
-    MeshComponent->SetWorldScale3D(InObjectSize);
-    MeshComponent->SetSimulatePhysics(true);
+    // Set default properties
+    MeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+    MeshComponent->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Ignore);
+    MeshComponent->SetCollisionResponseToChannel(ECollisionChannel::ECC_WorldStatic, ECollisionResponse::ECR_Block);
     MeshComponent->SetMobility(EComponentMobility::Movable);
-    SetActorHiddenInGame(true);
 
-    ObjectSize = InObjectSize;
+    bIsActive = false;
 }
 
-void AGridObject::SetGridObjectActive(bool SetActive)
-{
-    SetActorHiddenInGame(!SetActive);
-    MeshComponent->SetSimulatePhysics(SetActive);
-}
+void AGridObject::InitializeGridObject(FVector InObjectSize) {
+    // Set the default mesh (a cube)
+    UStaticMesh* DefaultMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+    if (DefaultMesh) {
+        MeshComponent->SetStaticMesh(DefaultMesh);
+        MeshComponent->SetWorldScale3D(InObjectSize);
 
-void AGridObject::SetActorLocationAndActivate(FVector NewLocation)
-{
-    SetGridObjectActive(true);
-    SetActorLocation(NewLocation);
-}
-
-FVector AGridObject::GetObjectExtent() const
-{
-    if (MeshComponent && MeshComponent->GetStaticMesh())
-    {
-        return MeshComponent->GetStaticMesh()->GetBounds().BoxExtent * GetActorScale3D();
+        // Create and assign a dynamic material instance
+        UMaterial* BaseMaterial = LoadObject<UMaterial>(nullptr, TEXT("/Game/StarterContent/Materials/M_Basic_Floor.M_Basic_Floor"));
+        if (BaseMaterial) {
+            UMaterialInstanceDynamic* DynMaterial = UMaterialInstanceDynamic::Create(BaseMaterial, this);
+            MeshComponent->SetMaterial(0, DynMaterial);
+        }
     }
+    
+    SetGridObjectActive(false);
+}
 
-    return FVector::ZeroVector;
+void AGridObject::SetGridObjectActive(bool bInIsActive) {
+    bIsActive = bInIsActive;
+    SetActorHiddenInGame(!bIsActive);
+    // MeshComponent->SetSimulatePhysics(bIsActive);
+    MeshComponent->SetSimulatePhysics(false);
+}
+
+FVector AGridObject::GetObjectExtent() const {
+    return MeshComponent->Bounds.BoxExtent * GetActorScale3D();
+}
+
+bool AGridObject::IsActive() const {
+    return bIsActive;
 }

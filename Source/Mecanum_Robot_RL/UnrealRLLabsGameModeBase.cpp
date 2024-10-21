@@ -58,7 +58,7 @@ void AUnrealRLLabsGameModeBase::BeginPlay()
 
     if (loaded) {
         Runner = GetWorld()->SpawnActor<ARLRunner>(ARLRunner::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
-        TArray<FVector> Locations = CreateGridLocations(TrainParams.NumEnvironments, FVector(800.0f, 800.0f, 100.0f));
+        TArray<FVector> Locations = CreateGridLocations(TrainParams.NumEnvironments, FVector(100.0f, 100.0f, 100.0f));
     
         if (TrainParams.NumEnvironments != Locations.Num()) {
             // TODO:: Throw error

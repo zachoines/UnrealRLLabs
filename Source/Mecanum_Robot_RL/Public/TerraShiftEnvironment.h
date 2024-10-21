@@ -1,42 +1,41 @@
-// ATerraShiftEnvironment.h
-
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/World.h"
+#include "TimerManager.h"
+#include "Materials/Material.h"
+#include "UObject/ConstructorHelpers.h"
+#include "Kismet/KismetMathLibrary.h"
+#include "Engine/StaticMesh.h"
 #include "BaseEnvironment.h"
 #include "Engine/StaticMeshActor.h"
+#include "TimerManager.h"
+
 #include "RLTypes.h"
-#include "TerraShift/Column.h"
-#include "TerraShift/GridObject.h"
+#include "TerraShift/Grid.h"
+#include "TerraShift/GridObjectManager.h"
 #include "TerraShift/MorletWavelets2D.h"
 #include "TerraShiftEnvironment.generated.h"
 
-// Struct for initialization parameters specific to TerraShiftEnvironment
+// Environment initialization parameters
 USTRUCT(BlueprintType)
-struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParams
-{
+struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParams {
     GENERATED_USTRUCT_BODY();
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float GroundPlaneSize = 2.0f; // m
+    float PlatformSize = 1.0f; // meters
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float MaxColumnHeight =2.0f; // cm
+    float MaxColumnHeight = 1.0f; // meters, maximum height of the columns
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float ColumnHeight = 1.0f; // Relative scaler
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    FVector ObjectSize = FVector(0.1f, 0.1f, 0.1f); // m
+    FVector ObjectSize = FVector(0.10f, 0.10f, 0.10f); // meters, size of the grid objects
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
     float ObjectMass = 0.2f; // kg
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float ColumnMass = 0.01f; // kg
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int GridSize = 20; // Size of the grid
+    int GridSize = 100; // Number of cells along one side of the grid
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
     int MaxSteps = 1024; // Maximum steps per episode
@@ -45,14 +44,17 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
     int NumGoals = 3; // Number of goals for agents
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float SpawnDelay = 1.0f; // Delay between each GridObject spawn
+    float SpawnDelay = 1.0f; // Delay between each GridObject spawn in seconds
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
     int MaxAgents = 10; // Maximum number of agents
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
+    float EffectiveRadius = 1;
+
     // Agent wave parameter ranges
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
-    FVector2D AmplitudeRange = FVector2D(5.0f, 10.0f);
+    FVector2D AmplitudeRange = FVector2D(0.5f, 1.0f);
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
     FVector2D WaveOrientationRange = FVector2D(0.0f, 2 * PI);
@@ -64,30 +66,15 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
     FVector2D PhaseRange = FVector2D(0.0f, 2 * PI);
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
-    FVector2D SigmaRange = FVector2D(2.0f, 10.0f);
+    FVector2D SigmaRange = FVector2D(0.5f, 5.0f); // Updated for more visible wavelets
 
     // Agent movement parameter ranges
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Movement Parameters")
-    FVector2D VelocityRange = FVector2D(-3.0f, 3.0f);
-};
-
-// Array of colors for goals
-const TArray<FLinearColor> GoalColors = {
-    FLinearColor(1.0f, 0.0f, 0.0f),
-    FLinearColor(0.0f, 1.0f, 0.0f),
-    FLinearColor(0.0f, 0.0f, 1.0f),
-    FLinearColor(1.0f, 1.0f, 0.0f),
-    FLinearColor(1.0f, 0.0f, 1.0f),
-    FLinearColor(0.0f, 1.0f, 1.0f),
-    FLinearColor(1.0f, 0.5f, 0.0f),
-    FLinearColor(0.5f, 0.0f, 1.0f),
-    FLinearColor(1.0f, 0.0f, 0.5f),
-    FLinearColor(0.5f, 1.0f, 0.0f),
+    FVector2D VelocityRange = FVector2D(-0.3f, 0.3f); // Adjusted for meters per second
 };
 
 UCLASS()
-class UNREALRLLABS_API ATerraShiftEnvironment : public ABaseEnvironment
-{
+class UNREALRLLABS_API ATerraShiftEnvironment : public ABaseEnvironment {
     GENERATED_BODY()
 
 public:
@@ -102,13 +89,13 @@ public:
     UPROPERTY(EditAnywhere)
     AStaticMeshActor* Platform;
 
-    // The objects controlled by agents
+    // The Grid
     UPROPERTY(EditAnywhere)
-    TArray<AGridObject*> Objects;
+    AGrid* Grid;
 
-    // The columns in the environment
+    // Grid Object Manager
     UPROPERTY(EditAnywhere)
-    TArray<AColumn*> Columns;
+    AGridObjectManager* GridObjectManager;
 
     virtual void InitEnv(FBaseInitParams* Params) override;
     virtual FState ResetEnv(int NumAgents) override;
@@ -125,36 +112,46 @@ private:
     int MaxAgents;
     int CurrentStep;
     int CurrentAgents;
-    TArray<int> LastColumnIndexArray;
-    TArray<FVector> GoalPositionArray;
     TArray<int32> AgentGoalIndices;
+    TArray<FVector> GoalPositionArray;
     TArray<FVector> GridCenterPoints;
     TArray<AgentParameters> AgentParametersArray;
+    FVector PlatformWorldSize;
+    FVector PlatformCenter;
 
     // Morlet Wavelets simulator
     MorletWavelets2D* WaveSimulator;
 
-    // Function to spawn the platform in the environment
-    AStaticMeshActor* SpawnPlatform(FVector Location, FVector Size);
+    // inits properties usable by calling glasses for data structures
+    void SetupActionAndObservationSpace();
 
-    // Function to "spawn" grid object with a delay
-    void SetSpawnGridObject(int AgentIndex, float Delay, FVector Location);
+    // Function to spawn the platform in the environment
+    AStaticMeshActor* SpawnPlatform(FVector Location);
+
+    // Helper function to generate random positions on the grid for spawning particles
+    FVector GenerateRandomGridLocation() const;
+
+    // Helper function to generate random goal indices for edge-bound positions
+    FIntPoint GenerateRandomGoalIndex() const;
 
     // Function to get the current state of an agent
     TArray<float> AgentGetState(int AgentIndex);
 
+    // Determines if object has fallen off platform
+    bool ObjectOffPlatform(int AgentIndex);
+
     // Helper function to convert a 2D grid point to a 1D index
     int Get1DIndexFromPoint(const FIntPoint& Point, int GridSize) const;
 
-    // Helper function to check if the object has moved off the platform
-    bool ObjectOffPlatform(int AgentIndex) const;
-
-    // Function to map a value between two ranges
-    float Map(float x, float in_min, float in_max, float out_min, float out_max) const;
-
-    // Sets number of currently active GridObjects to random locations
-    void SetActiveGridObjects(int NumAgents);
-
     // Helper function to convert grid position to world position
     FVector GridPositionToWorldPosition(FVector2D GridPosition);
+
+    // Sets the number of currently active GridObjects at random locations
+    void SetActiveGridObjects(int NumAgents);
+
+    // Update columns and grid objects based on height map
+    void UpdateColumnsAndGridObjects(const Matrix2D& HeightMap);
+
+    // Helper function to map values between two ranges
+    float Map(float x, float in_min, float in_max, float out_min, float out_max);
 };

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
+using UnrealBuildTool.Rules;
 
 public class UnrealRLLabs : ModuleRules
 {
@@ -15,7 +16,9 @@ public class UnrealRLLabs : ModuleRules
             "Json",
             "JsonUtilities",
             "RenderCore", // Added for rendering support
-            "RHI"         // Added for GPU interface support
+            "RHI",         // Added for GPU interface support
+            "ProceduralMeshComponent",
+            "Niagara"
         });
 
         PrivateDependencyModuleNames.AddRange(new string[] { });
