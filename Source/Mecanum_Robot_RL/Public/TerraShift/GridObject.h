@@ -2,9 +2,6 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
-#include "Components/StaticMeshComponent.h"
-#include "Engine/StaticMesh.h"
-#include "Materials/MaterialInstanceDynamic.h"
 #include "GridObject.generated.h"
 
 UCLASS()
@@ -14,24 +11,36 @@ class UNREALRLLABS_API AGridObject : public AActor {
 public:
     AGridObject();
 
-    // Initialize the grid object with a mesh and size
+    // Initializes the grid object with the specified size
     void InitializeGridObject(FVector InObjectSize);
 
-    // Set the grid object to be active or inactive
+    // Sets the grid object to be active or inactive
     void SetGridObjectActive(bool bIsActive);
 
-    // Get the bounds of the grid object
+    // Gets the bounds of the grid object
     FVector GetObjectExtent() const;
 
-    // Check if the grid object is active
+    // Checks if the grid object is active
     bool IsActive() const;
 
+    // Enables or disables physics simulation for the grid object
+    void SetSimulatePhysics(bool bEnablePhysics);
+
+    // Sets the color of the grid object
+    void SetGridObjectColor(FLinearColor Color);
+
+    // Root component (non-simulating)
+    UPROPERTY(VisibleAnywhere, Category = "Components")
+    USceneComponent* GridObjectRoot;
+
     // Static mesh component for visualization
-    UPROPERTY(VisibleAnywhere)
+    UPROPERTY(VisibleAnywhere, Category = "Components")
     UStaticMeshComponent* MeshComponent;
 
 private:
-    
     // Whether the grid object is active
     bool bIsActive;
+
+    // Dynamic material instance for changing colors
+    UMaterialInstanceDynamic* DynMaterial;
 };

@@ -77,20 +77,24 @@ void AColumn::UpdateColumnPosition(float NewHeight) {
     SetActorRelativeLocation(NewPosition);
 }
 
-void AColumn::SetSimulatePhysics(bool bEnablePhysics) {
-    ColumnMesh->SetSimulatePhysics(bEnablePhysics);
+void AColumn::SetSimulatePhysics(bool bEnableCollision) {
+    // Ensure physics simulation is disabled so the columns remain stationary
+    ColumnMesh->SetSimulatePhysics(false);
     ColumnMesh->SetEnableGravity(false);
 
-    if (bEnablePhysics) {
-        // Enable collision and physics
+    if (bEnableCollision) {
+        // Enable collision without physics simulation
         ColumnMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-        ColumnMesh->SetCollisionObjectType(ECollisionChannel::ECC_PhysicsBody);
+        ColumnMesh->SetCollisionObjectType(ECollisionChannel::ECC_WorldStatic); // Mark as static object
         ColumnMesh->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
-        ColumnMesh->SetCollisionResponseToChannel(ECollisionChannel::ECC_Pawn, ECollisionResponse::ECR_Block);
+
+        // Optionally, set collision responses for specific channels if needed
+        // ColumnMesh->SetCollisionResponseToChannel(ECollisionChannel::ECC_Pawn, ECollisionResponse::ECR_Block);
+
         SetColumnColor(FLinearColor::Blue);
     }
     else {
-        // Disable collision and physics
+        // Disable collision
         ColumnMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
         SetColumnColor(FLinearColor::White);
     }

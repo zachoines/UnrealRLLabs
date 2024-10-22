@@ -4,6 +4,8 @@
 
 // Constructor
 ATerraShiftEnvironment::ATerraShiftEnvironment() {
+    PrimaryActorTick.bCanEverTick = true;
+    PrimaryActorTick.TickGroup = TG_PostPhysics;
     EnvInfo.EnvID = 3;
     EnvInfo.IsMultiAgent = true;
     EnvInfo.ActionSpace = CreateDefaultSubobject<UActionSpace>(TEXT("ActionSpace"));
@@ -15,9 +17,17 @@ ATerraShiftEnvironment::ATerraShiftEnvironment() {
     GridObjectManager = CreateDefaultSubobject<AGridObjectManager>(TEXT("GridObjectManager"));;
     WaveSimulator = nullptr;
     Grid = nullptr;
+    Intialized = false;
 }
 
-// Destructor
+void ATerraShiftEnvironment::Tick(float DeltaTime) {
+    Super::Tick(DeltaTime);
+
+    if (Intialized) {
+        UpdateActiveColumns();
+    }
+}
+
 ATerraShiftEnvironment::~ATerraShiftEnvironment() {
     if (WaveSimulator) {
         delete WaveSimulator;
@@ -115,6 +125,8 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams) {
         // Randomly assign a goal index for each agent
         AgentGoalIndices[i] = FMath::RandRange(0, TerraShiftParams->NumGoals - 1);
     }
+
+    Intialized = true;
 }
 
 FState ATerraShiftEnvironment::ResetEnv(int NumAgents) {
@@ -278,9 +290,6 @@ void ATerraShiftEnvironment::Act(FAction Action) {
     if (Grid) {
         Grid->UpdateColumnHeights(HeightMap);
     }
-
-    // Update active columns based on GridObjects' proximity
-    UpdateActiveColumns();
 }
 
 void ATerraShiftEnvironment::UpdateActiveColumns() {
@@ -471,7 +480,6 @@ FVector ATerraShiftEnvironment::GridPositionToWorldPosition(FVector2D GridPositi
 }
 
 float ATerraShiftEnvironment::Map(float x, float in_min, float in_max, float out_min, float out_max) {
-    // Map a value from one range to another
     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
@@ -489,6 +497,5 @@ bool ATerraShiftEnvironment::ObjectOffPlatform(int AgentIndex) {
 }
 
 int ATerraShiftEnvironment::Get1DIndexFromPoint(const FIntPoint& Point, int GridSize) const {
-    // Convert a 2D grid index to a 1D index
     return Point.X * GridSize + Point.Y;
 }

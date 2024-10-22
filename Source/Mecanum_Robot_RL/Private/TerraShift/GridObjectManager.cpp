@@ -80,7 +80,7 @@ TSet<int32> AGridObjectManager::GetActiveColumnsInProximity(int32 GridSize, cons
         }
 
         // Get the GridObject's location in world space
-        FVector ObjectLocation = GridObject->GetActorLocation();
+        FVector ObjectLocation = GridObject->MeshComponent->GetComponentLocation();
 
         // Get the GridObject's bounds in world space
         FBoxSphereBounds ObjectBoundsWorld = GridObject->MeshComponent->CalcBounds(

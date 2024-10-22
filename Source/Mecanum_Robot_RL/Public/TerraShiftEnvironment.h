@@ -113,6 +113,7 @@ private:
     int CurrentStep;
     int CurrentAgents;
     float CellSize;
+    bool Intialized;
     TArray<int32> AgentGoalIndices;
     TArray<FVector> GoalPositionArray;
     TArray<FVector> GridCenterPoints;
@@ -158,4 +159,7 @@ private:
 
     // Updates the internally managed list of grid columns that have collisions enabled
     void UpdateActiveColumns();
+
+    // Override the Tick function
+    virtual void Tick(float DeltaTime) override;
 };
