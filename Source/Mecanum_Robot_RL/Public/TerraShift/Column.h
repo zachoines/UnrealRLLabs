@@ -13,39 +13,42 @@ class UNREALRLLABS_API AColumn : public AActor {
 public:
     AColumn();
 
-    // Initialize the column with its position and maximum height
+    // Initializes the column with a given scale and location
     void InitColumn(FVector Scale, FVector Location);
 
-    // Set the column's height directly in local space
+    // Sets the column's height and updates its position
     bool SetColumnHeight(float NewHeight);
 
-    // Get the current column height
-    float GetColumnHeight() const;
-
-    // Reset the column to its default height
+    // Resets the column to its initial state
     void ResetColumn();
 
-    // Toggle for Physics/Collisions
+    // Retrieves the current height of the column
+    float GetColumnHeight() const;
+
+    // Enables or disables physics simulation for the column
     void SetSimulatePhysics(bool bEnablePhysics);
 
-    // The static mesh component representing the column
-    UPROPERTY(VisibleAnywhere)
-    UStaticMeshComponent* ColumnMesh;
-
-    // Set the color of the column
+    // Sets the color of the column
     void SetColumnColor(FLinearColor Color);
 
-private:
+    // The root component for the column (non-simulating)
+    UPROPERTY(VisibleAnywhere, Category = "Components")
+    USceneComponent* ColumnRoot;
 
+    // The static mesh component representing the column
+    UPROPERTY(VisibleAnywhere, Category = "Components")
+    UStaticMeshComponent* ColumnMesh;
+
+private:
     // The current height of the column
     float CurrentHeight;
 
     // The starting position of the column
     FVector StartingPosition;
 
-    // Dynamic material instance to set the column color
+    // Dynamic material instance for changing colors
     UMaterialInstanceDynamic* DynMaterial;
 
-    // Helper function to update the mesh position
-    void UpdateColumnPosition(float fNewHeight);
+    // Updates the column's position based on its height
+    void UpdateColumnPosition(float NewHeight);
 };

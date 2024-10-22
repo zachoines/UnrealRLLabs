@@ -52,7 +52,23 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams) {
     // Calculate platform dimensions and determine grid cell size
     PlatformWorldSize = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * 2.0f * Platform->GetActorScale3D();
     PlatformCenter = Platform->GetActorLocation();
-    float CellSize = PlatformWorldSize.X / static_cast<float>(TerraShiftParams->GridSize);
+    CellSize = PlatformWorldSize.X / static_cast<float>(TerraShiftParams->GridSize);
+
+    // Initialize GridCenterPoints to match the grid size
+    GridCenterPoints.SetNum(TerraShiftParams->GridSize * TerraShiftParams->GridSize);
+
+    // Calculate grid center points
+    for (int32 X = 0; X < TerraShiftParams->GridSize; ++X) {
+        for (int32 Y = 0; Y < TerraShiftParams->GridSize; ++Y) {
+            // Calculate the center location of each column in the grid
+            float CenterX = PlatformCenter.X - (PlatformWorldSize.X / 2.0f) + (X * CellSize) + (CellSize / 2.0f);
+            float CenterY = PlatformCenter.Y - (PlatformWorldSize.Y / 2.0f) + (Y * CellSize) + (CellSize / 2.0f);
+            float CenterZ = PlatformCenter.Z;
+
+            int32 Index = X * TerraShiftParams->GridSize + Y;
+            GridCenterPoints[Index] = FVector(CenterX, CenterY, CenterZ);
+        }
+    }
 
     // Initialize the grid at the center of the platform, slightly elevated
     FVector GridLocation = PlatformCenter;
@@ -222,6 +238,8 @@ void ATerraShiftEnvironment::Act(FAction Action) {
 
     float DeltaTime = GetWorld()->GetDeltaSeconds();
     TArray<AgentParameters> AgentParametersArrayCopy;
+
+    // Process agent actions and update agent parameters
     for (int i = 0; i < CurrentAgents; ++i) {
         int ActionIndex = i * NumAgentActions;
 
@@ -256,27 +274,53 @@ void ATerraShiftEnvironment::Act(FAction Action) {
 
     // Update wave heights using the current agent parameters
     const Matrix2D& HeightMap = WaveSimulator->Update(AgentParametersArrayCopy);
-    UpdateColumnsAndGridObjects(HeightMap);
-}
-
-void ATerraShiftEnvironment::UpdateColumnsAndGridObjects(const Matrix2D& HeightMap) {
+    
     if (Grid) {
-        // Update column heights using the height map
         Grid->UpdateColumnHeights(HeightMap);
     }
 
-    // Determine active columns in proximity to grid objects
-    TArray<int32> ActiveColumnIndices;
-    TArray<bool> EnablePhysics;
+    // Update active columns based on GridObjects' proximity
+    UpdateActiveColumns();
+}
 
-    if (GridObjectManager) {
-        ActiveColumnIndices = GridObjectManager->GetActiveColumnsInProximity(GridCenterPoints, TerraShiftParams->EffectiveRadius);
+void ATerraShiftEnvironment::UpdateActiveColumns() {
+    if (!Grid || !GridObjectManager) {
+        return; // Safety check
     }
+
+    // Determine currently active columns based on proximity to GridObjects
+    TSet<int32> NewActiveColumns = GridObjectManager->GetActiveColumnsInProximity(
+        TerraShiftParams->GridSize, GridCenterPoints, PlatformCenter, PlatformWorldSize.X, CellSize
+    );
+
+    // Calculate columns that need to be toggled on or off
+    TSet<int32> ColumnsToEnable = NewActiveColumns.Difference(ActiveColumns);
+    TSet<int32> ColumnsToDisable = ActiveColumns.Difference(NewActiveColumns);
 
     // Enable or disable physics for relevant columns
-    if (Grid) {
-        Grid->EnablePhysicsForColumnsInProximity(ActiveColumnIndices, EnablePhysics);
+    if (Grid && (ColumnsToEnable.Num() > 0 || ColumnsToDisable.Num() > 0)) {
+        // Create arrays to match the indices for toggling physics
+        TArray<int32> ColumnsToToggle;
+        TArray<bool> EnablePhysics;
+
+        // Add columns to enable physics
+        for (int32 ColumnIndex : ColumnsToEnable) {
+            ColumnsToToggle.Add(ColumnIndex);
+            EnablePhysics.Add(true);
+        }
+
+        // Add columns to disable physics
+        for (int32 ColumnIndex : ColumnsToDisable) {
+            ColumnsToToggle.Add(ColumnIndex);
+            EnablePhysics.Add(false);
+        }
+
+        // Toggle physics for the specified columns
+        Grid->TogglePhysicsForColumns(ColumnsToToggle, EnablePhysics);
     }
+
+    // Update the active columns set after toggling
+    ActiveColumns = NewActiveColumns;
 }
 
 FState ATerraShiftEnvironment::State() {
@@ -417,7 +461,6 @@ FIntPoint ATerraShiftEnvironment::GenerateRandomGoalIndex() const {
 }
 
 FVector ATerraShiftEnvironment::GridPositionToWorldPosition(FVector2D GridPosition) {
-    float CellSize = TerraShiftParams->PlatformSize / static_cast<float>(TerraShiftParams->GridSize);
     float GridHalfSize = (TerraShiftParams->GridSize * CellSize) / 2.0f;
 
     return FVector(

@@ -66,7 +66,7 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
     FVector2D PhaseRange = FVector2D(0.0f, 2 * PI);
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
-    FVector2D SigmaRange = FVector2D(0.5f, 5.0f); // Updated for more visible wavelets
+    FVector2D SigmaRange = FVector2D(0.5f, 5.0f);
 
     // Agent movement parameter ranges
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Movement Parameters")
@@ -112,6 +112,7 @@ private:
     int MaxAgents;
     int CurrentStep;
     int CurrentAgents;
+    float CellSize;
     TArray<int32> AgentGoalIndices;
     TArray<FVector> GoalPositionArray;
     TArray<FVector> GridCenterPoints;
@@ -119,10 +120,13 @@ private:
     FVector PlatformWorldSize;
     FVector PlatformCenter;
 
+    // Active columns currently having physics enabled
+    TSet<int32> ActiveColumns;
+
     // Morlet Wavelets simulator
     MorletWavelets2D* WaveSimulator;
 
-    // inits properties usable by calling glasses for data structures
+    // Initializes properties for action and observation space
     void SetupActionAndObservationSpace();
 
     // Function to spawn the platform in the environment
@@ -137,7 +141,7 @@ private:
     // Function to get the current state of an agent
     TArray<float> AgentGetState(int AgentIndex);
 
-    // Determines if object has fallen off platform
+    // Determines if object has fallen off the platform
     bool ObjectOffPlatform(int AgentIndex);
 
     // Helper function to convert a 2D grid point to a 1D index
@@ -149,9 +153,9 @@ private:
     // Sets the number of currently active GridObjects at random locations
     void SetActiveGridObjects(int NumAgents);
 
-    // Update columns and grid objects based on height map
-    void UpdateColumnsAndGridObjects(const Matrix2D& HeightMap);
-
     // Helper function to map values between two ranges
     float Map(float x, float in_min, float in_max, float out_min, float out_max);
+
+    // Updates the internally managed list of grid columns that have collisions enabled
+    void UpdateActiveColumns();
 };

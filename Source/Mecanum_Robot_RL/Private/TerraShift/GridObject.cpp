@@ -37,8 +37,8 @@ void AGridObject::InitializeGridObject(FVector InObjectSize) {
 void AGridObject::SetGridObjectActive(bool bInIsActive) {
     bIsActive = bInIsActive;
     SetActorHiddenInGame(!bIsActive);
-    // MeshComponent->SetSimulatePhysics(bIsActive);
-    MeshComponent->SetSimulatePhysics(false);
+    MeshComponent->SetSimulatePhysics(bIsActive);
+    // MeshComponent->SetSimulatePhysics(false);
 }
 
 FVector AGridObject::GetObjectExtent() const {

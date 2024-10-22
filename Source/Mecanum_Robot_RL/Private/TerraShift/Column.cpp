@@ -1,50 +1,52 @@
 #include "TerraShift/Column.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "UObject/ConstructorHelpers.h"
+#include "Engine/StaticMesh.h"
+#include "Materials/Material.h"
 
 AColumn::AColumn() {
     PrimaryActorTick.bCanEverTick = false;
 
-    ColumnMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ColumnMesh"));
-    RootComponent = ColumnMesh;
-    SetSimulatePhysics(false);
-    CurrentHeight = 0.0f;
-}
+    // Create the root component (non-simulating)
+    ColumnRoot = CreateDefaultSubobject<USceneComponent>(TEXT("ColumnRoot"));
+    RootComponent = ColumnRoot;
 
-// Toggle fo Physics
-void AColumn::SetSimulatePhysics(bool bEnablePhysics) {
-    SetActorEnableCollision(bEnablePhysics);
-    if (bEnablePhysics) {
-        // Enable collision and physics
-        ColumnMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-        ColumnMesh->SetCollisionObjectType(ECollisionChannel::ECC_WorldStatic);
-        ColumnMesh->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
-        ColumnMesh->SetCollisionResponseToChannel(ECollisionChannel::ECC_Pawn, ECollisionResponse::ECR_Block);
-        ColumnMesh->SetSimulatePhysics(true);
-        ColumnMesh->SetEnableGravity(true);
-        ColumnMesh->SetMobility(EComponentMobility::Movable);
-    }
-    else {
-        // Disable collision and physics
-        ColumnMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-        ColumnMesh->SetSimulatePhysics(false);
-        ColumnMesh->SetEnableGravity(false);
-        ColumnMesh->SetMobility(EComponentMobility::Movable);
-    }
+    // Create the mesh component and attach it to the root
+    ColumnMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ColumnMesh"));
+    ColumnMesh->SetupAttachment(ColumnRoot);
+
+    // Disable physics simulation on the root component
+    ColumnRoot->SetMobility(EComponentMobility::Movable);
+
+    // Initialize variables
+    CurrentHeight = 0.0f;
+    DynMaterial = nullptr;
 }
 
 void AColumn::InitColumn(FVector Scale, FVector Location) {
-    UStaticMesh* ColumnMeshAsset = LoadObject<UStaticMesh>(this, TEXT("/Engine/BasicShapes/Cube.Cube"));
+    // Load the cube mesh asset
+    UStaticMesh* ColumnMeshAsset = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
     if (ColumnMeshAsset) {
         ColumnMesh->SetStaticMesh(ColumnMeshAsset);
-        SetActorScale3D(Scale);
-        SetActorRelativeLocation(Location);
-        this->StartingPosition = Location;
+        ColumnMesh->SetWorldScale3D(Scale);
+        ColumnMesh->SetRelativeLocation(FVector::ZeroVector);
 
-        // Set dynamic material
-        UMaterial* BaseMaterial = LoadObject<UMaterial>(this, TEXT("/Game/StarterContent/Materials/M_Basic_Floor.M_Basic_Floor"));
+        // Set the actor's location
+        SetActorRelativeLocation(Location);
+        StartingPosition = Location;
+
+        // Load and set the dynamic material
+        UMaterial* BaseMaterial = LoadObject<UMaterial>(nullptr, TEXT("/Game/StarterContent/Materials/M_Basic_Floor.M_Basic_Floor"));
         if (BaseMaterial) {
             DynMaterial = UMaterialInstanceDynamic::Create(BaseMaterial, this);
             ColumnMesh->SetMaterial(0, DynMaterial);
         }
+
+        // Initialize collision settings
+        ColumnMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+        ColumnMesh->SetSimulatePhysics(false);
+        ColumnMesh->SetEnableGravity(false);
+        ColumnMesh->SetMobility(EComponentMobility::Movable);
 
         ResetColumn();
     }
@@ -56,13 +58,13 @@ bool AColumn::SetColumnHeight(float NewHeight) {
         UpdateColumnPosition(NewHeight);
         return true;
     }
-    else {
-        return false;
-    }
+    return false;
 }
 
 void AColumn::ResetColumn() {
-    SetColumnHeight(0.0);
+    SetColumnHeight(0.0f);
+    SetSimulatePhysics(false);
+    SetColumnColor(FLinearColor::White);
 }
 
 float AColumn::GetColumnHeight() const {
@@ -75,13 +77,28 @@ void AColumn::UpdateColumnPosition(float NewHeight) {
     SetActorRelativeLocation(NewPosition);
 }
 
-void AColumn::SetColumnColor(FLinearColor Color)
-{
-    if (DynMaterial)
-    {
+void AColumn::SetSimulatePhysics(bool bEnablePhysics) {
+    ColumnMesh->SetSimulatePhysics(bEnablePhysics);
+    ColumnMesh->SetEnableGravity(false);
+
+    if (bEnablePhysics) {
+        // Enable collision and physics
+        ColumnMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+        ColumnMesh->SetCollisionObjectType(ECollisionChannel::ECC_PhysicsBody);
+        ColumnMesh->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
+        ColumnMesh->SetCollisionResponseToChannel(ECollisionChannel::ECC_Pawn, ECollisionResponse::ECR_Block);
+        SetColumnColor(FLinearColor::Blue);
+    }
+    else {
+        // Disable collision and physics
+        ColumnMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+        SetColumnColor(FLinearColor::White);
+    }
+}
+
+void AColumn::SetColumnColor(FLinearColor Color) {
+    if (DynMaterial) {
         DynMaterial->SetVectorParameterValue("Color", Color);
         ColumnMesh->SetMaterial(0, DynMaterial);
     }
 }
-
-
