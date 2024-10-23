@@ -85,18 +85,8 @@ void AColumn::SetSimulatePhysics(bool bEnableCollision) {
     if (bEnableCollision) {
         // Enable collision without physics simulation
         ColumnMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-        ColumnMesh->SetCollisionObjectType(ECollisionChannel::ECC_WorldStatic); // Mark as static object
+        ColumnMesh->SetCollisionObjectType(ECollisionChannel::ECC_WorldStatic);
         ColumnMesh->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
-
-        // Optionally, set collision responses for specific channels if needed
-        // ColumnMesh->SetCollisionResponseToChannel(ECollisionChannel::ECC_Pawn, ECollisionResponse::ECR_Block);
-
-        SetColumnColor(FLinearColor::Blue);
-    }
-    else {
-        // Disable collision
-        ColumnMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-        SetColumnColor(FLinearColor::White);
     }
 }
 

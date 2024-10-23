@@ -1,4 +1,6 @@
 #include "TerraShift/Grid.h"
+#include "Engine/World.h"
+#include "Engine/Engine.h" // For logging
 
 AGrid::AGrid() {
     PrimaryActorTick.bCanEverTick = false;
@@ -35,12 +37,7 @@ void AGrid::UpdateColumnHeights(const Matrix2D& HeightMap) {
             int32 Index = X * GridSize + Y;
             if (Columns.IsValidIndex(Index)) {
                 float NewHeight = FMath::Clamp(HeightMap[X][Y], MinHeight, MaxHeight);
-                
-                if (Columns[Index]->SetColumnHeight(NewHeight)) {
-                    /*float HeightRatio = Map(NewHeight, MinHeight, MaxHeight, 0.0f, 1.0f);
-                    FLinearColor NewColor = FLinearColor::LerpUsingHSV(FLinearColor::Black, FLinearColor::White, HeightRatio);
-                    Columns[Index]->SetColumnColor(NewColor);*/
-                }
+                Columns[Index]->SetColumnHeight(NewHeight);
             }
         }
     }
@@ -123,10 +120,10 @@ FVector AGrid::GetColumnOffsets(int32 X, int32 Y) const {
             FVector LocalTopOffset = ColumnBounds.BoxExtent * Column->ColumnMesh->GetRelativeScale3D();
 
             // Add the column's current height to get the total local Z-offset
-            return LocalTopOffset + Column->GetColumnHeight();
+            return LocalTopOffset + FVector(0.0f, 0.0f, Column->GetColumnHeight());
         }
     }
-    return FVector::Zero();
+    return FVector::ZeroVector;
 }
 
 FVector2D AGrid::CalculateEdgeCorrectiveOffsets(int32 X, int32 Y) const {
@@ -150,4 +147,29 @@ FVector2D AGrid::CalculateEdgeCorrectiveOffsets(int32 X, int32 Y) const {
     }
 
     return FVector2D::ZeroVector;
+}
+
+int32 AGrid::GetTotalColumns() const {
+    return Columns.Num();
+}
+
+float AGrid::GetColumnHeight(int32 ColumnIndex) const {
+    if (Columns.IsValidIndex(ColumnIndex)) {
+        return Columns[ColumnIndex]->GetColumnHeight();
+    }
+    return 0.0f;
+}
+
+void AGrid::SetColumnColor(int32 ColumnIndex, const FLinearColor& Color) {
+    if (Columns.IsValidIndex(ColumnIndex)) {
+        Columns[ColumnIndex]->SetColumnColor(Color);
+    }
+}
+
+float AGrid::GetMinHeight() const {
+    return MinHeight;
+}
+
+float AGrid::GetMaxHeight() const {
+    return MaxHeight;
 }

@@ -24,10 +24,10 @@ public:
     // Get the world location of a specified grid object
     FVector GetGridObjectWorldLocation(int32 Index) const;
 
-    // Get the current grid object locations as FVector2D (grid space)
-    TArray<FVector2D> GetGridObjectLocations() const;
+    // Get active grid objects
+    TArray<AGridObject*> GetActiveGridObjects() const;
 
-    // Get the current grid object world locations
+    // Get active columns in proximity to grid objects
     TSet<int32> GetActiveColumnsInProximity(int32 GridSize, const TArray<FVector>& ColumnCenters, const FVector& PlatformCenter, float PlatformSize, float CellSize) const;
 
 private:

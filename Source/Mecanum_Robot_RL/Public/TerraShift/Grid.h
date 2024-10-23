@@ -22,7 +22,7 @@ public:
 
     // Enable or disable physics for specified columns based on proximity data
     void TogglePhysicsForColumns(const TArray<int32>& ColumnIndices, const TArray<bool>& EnablePhysics);
-    
+
     // Reset the grid to its initial state
     void ResetGrid();
 
@@ -32,23 +32,39 @@ public:
     // Get the center positions of all columns
     TArray<FVector> GetColumnCenters() const;
 
-    // Gets column localspace offsets
+    // Gets column local space offsets
     FVector GetColumnOffsets(int32 X, int32 Y) const;
 
     // Helper function to calculate the world position of a column based on grid indices
     FVector CalculateColumnLocation(int32 X, int32 Y, float Height) const;
 
-    // Funciton to set the localspace min/max Z movement of columns 
+    // Function to set the local space min/max Z movement of columns 
     void SetColumnMovementBounds(float Min, float Max);
 
+    // Calculate corrective offsets for edge columns
     FVector2D CalculateEdgeCorrectiveOffsets(int32 X, int32 Y) const;
 
+    // Get the total number of columns
+    int32 GetTotalColumns() const;
+
+    // Get the height of a specific column
+    float GetColumnHeight(int32 ColumnIndex) const;
+
+    // Set the color of a specific column
+    void SetColumnColor(int32 ColumnIndex, const FLinearColor& Color);
+
+    // Get the minimum column height
+    float GetMinHeight() const;
+
+    // Get the maximum column height
+    float GetMaxHeight() const;
 
 private:
 
-    // Min localspace movement of columns
+    // Min local space movement of columns
     float MinHeight;
 
+    // Max local space movement of columns
     float MaxHeight;
 
     // Number of cells along one side of the grid

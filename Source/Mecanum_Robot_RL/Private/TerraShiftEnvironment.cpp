@@ -18,14 +18,29 @@ ATerraShiftEnvironment::ATerraShiftEnvironment() {
     WaveSimulator = nullptr;
     Grid = nullptr;
     Intialized = false;
+
+    GoalColors = {
+        FLinearColor(0.388f, 0.192f, 0.0f),   // Umber
+        FLinearColor(0.576f, 0.353f, 0.243f), // Cacao
+        FLinearColor(0.714f, 0.537f, 0.404f), // Mocha
+        FLinearColor(0.690f, 0.255f, 0.051f), // Rust
+        FLinearColor(0.545f, 0.271f, 0.075f), // Saddle Brown
+        FLinearColor(0.824f, 0.412f, 0.118f), // Terracotta
+        FLinearColor(0.761f, 0.698f, 0.502f), // Sand
+        FLinearColor(0.824f, 0.706f, 0.549f), // Latte
+        FLinearColor(0.282f, 0.235f, 0.196f), // Taupe
+        FLinearColor(0.941f, 0.894f, 0.835f)  // Plaster
+    };
 }
 
 void ATerraShiftEnvironment::Tick(float DeltaTime) {
     Super::Tick(DeltaTime);
 
-    if (Intialized) {
-        UpdateActiveColumns();
-    }
+    // Update active columns after physics simulation
+    UpdateActiveColumns();
+
+    // Update column and GridObject colors
+    UpdateColumnGoalObjectColors();
 }
 
 ATerraShiftEnvironment::~ATerraShiftEnvironment() {
@@ -330,6 +345,79 @@ void ATerraShiftEnvironment::UpdateActiveColumns() {
 
     // Update the active columns set after toggling
     ActiveColumns = NewActiveColumns;
+}
+
+void ATerraShiftEnvironment::UpdateColumnGoalObjectColors() {
+    if (!Grid || !GridObjectManager) {
+        return;
+    }
+
+    // Map goal indices to colors
+    TMap<int32, FLinearColor> GoalIndexToColor;
+    int32 NumGoals = GoalPositionArray.Num();
+    for (int32 i = 0; i < NumGoals; ++i) {
+        FLinearColor Color = GoalColors[i % GoalColors.Num()];
+        GoalIndexToColor.Add(i, Color);
+    }
+
+    // Highlight goal columns with their respective colors
+    TSet<int32> GoalColumnIndices;
+    for (int32 GoalIndex = 0; GoalIndex < NumGoals; ++GoalIndex) {
+        FVector GoalPosition = GoalPositionArray[GoalIndex];
+        int32 ClosestColumnIndex = FindClosestColumnIndex(GoalPosition, GridCenterPoints);
+        if (ClosestColumnIndex != -1) {
+            Grid->SetColumnColor(ClosestColumnIndex, GoalIndexToColor[GoalIndex]);
+            GoalColumnIndices.Add(ClosestColumnIndex);
+        }
+    }
+
+    // Set GridObjects to match their goal colors
+    TArray<AGridObject*> GridObjects = GridObjectManager->GetActiveGridObjects();
+    for (int32 i = 0; i < GridObjects.Num(); ++i) {
+        AGridObject* GridObject = GridObjects[i];
+        if (GridObject) {
+            int32 GoalIndex = AgentGoalIndices[i];
+            if (GoalIndexToColor.Contains(GoalIndex)) {
+                FLinearColor GoalColor = GoalIndexToColor[GoalIndex];
+                GridObject->SetGridObjectColor(GoalColor);
+            }
+        }
+    }
+
+    // Set active columns (physics enabled) to black
+    for (int32 ColumnIndex : ActiveColumns) {
+        Grid->SetColumnColor(ColumnIndex, FLinearColor::Black);
+    }
+
+    // Set other columns' colors based on their height (heat map from black to white)
+    float MinHeight = Grid->GetMinHeight();
+    float MaxHeight = Grid->GetMaxHeight();
+
+    for (int32 ColumnIndex = 0; ColumnIndex < Grid->GetTotalColumns(); ++ColumnIndex) {
+        if (ActiveColumns.Contains(ColumnIndex) || GoalColumnIndices.Contains(ColumnIndex)) {
+            // Skip columns already colored
+            continue;
+        }
+        float Height = Grid->GetColumnHeight(ColumnIndex);
+        float HeightRatio = FMath::GetMappedRangeValueClamped(FVector2D(MinHeight, MaxHeight), FVector2D(0.0f, 1.0f), Height);
+        FLinearColor Color = FLinearColor::LerpUsingHSV(FLinearColor::Black, FLinearColor::White, HeightRatio);
+        Grid->SetColumnColor(ColumnIndex, Color);
+    }
+}
+
+int32 ATerraShiftEnvironment::FindClosestColumnIndex(const FVector& Position, const TArray<FVector>& ColumnCenters) const {
+    int32 ClosestIndex = -1;
+    float MinDistance = FLT_MAX;
+
+    for (int32 i = 0; i < ColumnCenters.Num(); ++i) {
+        float Distance = FVector::Dist2D(Position, ColumnCenters[i]);
+        if (Distance < MinDistance) {
+            MinDistance = Distance;
+            ClosestIndex = i;
+        }
+    }
+
+    return ClosestIndex;
 }
 
 FState ATerraShiftEnvironment::State() {

@@ -2,6 +2,7 @@
 #include "TimerManager.h"
 #include "Engine/World.h"
 #include "TerraShift/GridObject.h"
+#include "Engine/Engine.h" // For logging
 
 // Constructor
 AGridObjectManager::AGridObjectManager() {
@@ -18,29 +19,29 @@ void AGridObjectManager::SpawnGridObjects(const TArray<FVector>& Locations, FVec
 
 void AGridObjectManager::SpawnGridObjectAtLocation(FVector InLocation, FVector ObjectSize, float SpawnDelay) {
     if (UWorld* World = GetWorld()) {
-        AGridObject* NewGridObject = World->SpawnActor<AGridObject>(AGridObject::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
-        if (NewGridObject) {
-            NewGridObject->InitializeGridObject(ObjectSize);
-            NewGridObject->AttachToComponent(RootComponent, FAttachmentTransformRules::KeepRelativeTransform);
-            GridObjects.Add(NewGridObject);
-        }
-
         FTimerHandle TimerHandle;
         World->GetTimerManager().SetTimer(
             TimerHandle,
-            [this, NewGridObject, InLocation, ObjectSize]() {
-                if (NewGridObject) {
-                    FVector Location = InLocation;
-                    // Calculate the local bounds of the grid object
-                    FBoxSphereBounds GridObjectBounds = NewGridObject->MeshComponent->CalcLocalBounds();
-                    FVector LocalOffsets = GridObjectBounds.BoxExtent * NewGridObject->MeshComponent->GetRelativeScale3D();
+            [this, InLocation, ObjectSize]() {
+                if (UWorld* InnerWorld = GetWorld()) {
+                    AGridObject* NewGridObject = InnerWorld->SpawnActor<AGridObject>(AGridObject::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
+                    if (NewGridObject) {
+                        NewGridObject->InitializeGridObject(ObjectSize);
+                        NewGridObject->AttachToComponent(RootComponent, FAttachmentTransformRules::KeepRelativeTransform);
+                        GridObjects.Add(NewGridObject);
 
-                    // Adjust the Z offset to ensure the GridObject is fully within the grid
-                    Location.Z += LocalOffsets.Z;
+                        FVector Location = InLocation;
+                        // Calculate the local bounds of the grid object
+                        FBoxSphereBounds GridObjectBounds = NewGridObject->MeshComponent->CalcLocalBounds();
+                        FVector LocalOffsets = GridObjectBounds.BoxExtent * NewGridObject->MeshComponent->GetRelativeScale3D();
 
-                    // Set the adjusted location for the GridObject
-                    NewGridObject->SetActorRelativeLocation(Location);
-                    NewGridObject->SetGridObjectActive(true);
+                        // Adjust the Z offset to ensure the GridObject is fully within the grid
+                        Location.Z += LocalOffsets.Z;
+
+                        // Set the adjusted location for the GridObject
+                        NewGridObject->SetActorRelativeLocation(Location);
+                        NewGridObject->SetGridObjectActive(true);
+                    }
                 }
             },
             SpawnDelay,
@@ -54,6 +55,7 @@ void AGridObjectManager::ResetGridObjects() {
     for (AGridObject* GridObject : GridObjects) {
         if (GridObject) {
             GridObject->SetGridObjectActive(false);
+            GridObject->SetActorRelativeLocation(FVector::ZeroVector);
         }
     }
 }
@@ -66,6 +68,18 @@ FVector AGridObjectManager::GetGridObjectWorldLocation(int32 Index) const {
     return FVector::ZeroVector;
 }
 
+// Retrieves active grid objects
+TArray<AGridObject*> AGridObjectManager::GetActiveGridObjects() const {
+    TArray<AGridObject*> ActiveObjects;
+    for (AGridObject* GridObject : GridObjects) {
+        if (GridObject && GridObject->IsActive()) {
+            ActiveObjects.Add(GridObject);
+        }
+    }
+    return ActiveObjects;
+}
+
+// Retrieves active columns in proximity to grid objects
 TSet<int32> AGridObjectManager::GetActiveColumnsInProximity(int32 GridSize, const TArray<FVector>& ColumnCenters, const FVector& PlatformCenter, float PlatformSize, float CellSize) const {
     TSet<int32> ActiveColumnIndices;
 
@@ -144,16 +158,4 @@ int32 AGridObjectManager::FindClosestColumnIndex(const FVector& Location, const 
 // Helper function to convert 1D index to 2D grid coordinates
 FIntPoint AGridObjectManager::Get2DIndexFrom1D(int32 Index, int32 GridSize) const {
     return FIntPoint(Index / GridSize, Index % GridSize);
-}
-
-// Retrieves the 2D grid locations of active GridObjects
-TArray<FVector2D> AGridObjectManager::GetGridObjectLocations() const {
-    TArray<FVector2D> Locations;
-    for (const AGridObject* GridObject : GridObjects) {
-        if (GridObject && GridObject->IsActive()) {
-            FVector WorldLocation = GridObject->GetActorLocation();
-            Locations.Add(FVector2D(WorldLocation.X, WorldLocation.Y));
-        }
-    }
-    return Locations;
 }

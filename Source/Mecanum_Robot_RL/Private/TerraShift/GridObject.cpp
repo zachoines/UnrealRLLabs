@@ -60,22 +60,18 @@ void AGridObject::SetGridObjectActive(bool bInIsActive) {
 void AGridObject::SetSimulatePhysics(bool bEnablePhysics) {
     MeshComponent->SetSimulatePhysics(bEnablePhysics);
     MeshComponent->SetEnableGravity(true);
+    SetGridObjectColor(FLinearColor::Gray);
 
     if (bEnablePhysics) {
         // Enable collision and physics
         MeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
         MeshComponent->SetCollisionObjectType(ECollisionChannel::ECC_PhysicsBody);
         MeshComponent->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
-
-        // Optionally, adjust collision responses
-        // MeshComponent->SetCollisionResponseToChannel(ECollisionChannel::ECC_WorldStatic, ECollisionResponse::ECR_Block);
-
-        SetGridObjectColor(FLinearColor::Red);
     }
     else {
         // Disable collision and physics
         MeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-        SetGridObjectColor(FLinearColor::White);
+        
     }
 }
 

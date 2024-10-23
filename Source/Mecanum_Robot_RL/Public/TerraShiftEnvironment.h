@@ -107,6 +107,9 @@ public:
     virtual bool Trunc() override;
     virtual float Reward() override;
 
+    // Array of colors for the goals
+    TArray<FLinearColor> GoalColors;
+
 private:
     FTerraShiftEnvironmentInitParams* TerraShiftParams = nullptr;
     int MaxAgents;
@@ -159,6 +162,12 @@ private:
 
     // Updates the internally managed list of grid columns that have collisions enabled
     void UpdateActiveColumns();
+
+    // Function to update column and GridObject colors
+    void UpdateColumnGoalObjectColors();
+
+    // Helper function to find the closest column index to a position
+    int32 FindClosestColumnIndex(const FVector& Position, const TArray<FVector>& ColumnCenters) const;
 
     // Override the Tick function
     virtual void Tick(float DeltaTime) override;
