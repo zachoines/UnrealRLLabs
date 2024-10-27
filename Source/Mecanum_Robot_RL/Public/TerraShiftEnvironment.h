@@ -47,10 +47,13 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
     float SpawnDelay = 1.0f; // Delay between each GridObject spawn in seconds
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
+    float RespawnDelay = 1.0f; // Delay before respawning a GridObject
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
     int MaxAgents = 10; // Maximum number of agents
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float EffectiveRadius = 1;
+    float GoalThreshold = 0.1f; // Threshold distance to consider a goal reached
 
     // Agent wave parameter ranges
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
@@ -130,25 +133,31 @@ private:
     // Morlet Wavelets simulator
     MorletWavelets2D* WaveSimulator;
 
+    // Array to track whether each agent has an active GridObject
+    TArray<bool> AgentHasActiveGridObject;
+
+    // Reward buffer to accumulate rewards based on events
+    float RewardBuffer;
+
     // Initializes properties for action and observation space
     void SetupActionAndObservationSpace();
 
     // Function to spawn the platform in the environment
     AStaticMeshActor* SpawnPlatform(FVector Location);
 
-    // Helper function to generate random positions on the grid for spawning particles
+    // Helper function to generate random positions on the grid for spawning GridObjects
     FVector GenerateRandomGridLocation() const;
 
-    // Helper function to generate random goal indices for edge-bound positions
-    FIntPoint GenerateRandomGoalIndex() const;
+    // Helper function to generate random corner positions on the grid for goals
+    FVector GenerateRandomCornerGridLocation() const;
 
     // Function to get the current state of an agent
     TArray<float> AgentGetState(int AgentIndex);
 
-    // Determines if object has fallen off the platform
+    // Determines if a GridObject has fallen off the platform
     bool ObjectOffPlatform(int AgentIndex);
 
-    // Helper function to convert a 2D grid point to a 1D index
+    // Helper function to convert a 1D index to a 2D grid point
     int Get1DIndexFromPoint(const FIntPoint& Point, int GridSize) const;
 
     // Helper function to convert grid position to world position
@@ -171,4 +180,14 @@ private:
 
     // Override the Tick function
     virtual void Tick(float DeltaTime) override;
+
+    // Checks for GridObjects that need to be respawned based on specified conditions
+    void CheckAndRespawnGridObjects();
+
+    // Respawns a GridObject and updates agent parameters
+    void RespawnGridObject(int32 AgentIndex);
+
+    // Function to handle when a GridObject is spawned
+    UFUNCTION()
+    void OnGridObjectSpawned(int32 Index, AGridObject* NewGridObject);
 };

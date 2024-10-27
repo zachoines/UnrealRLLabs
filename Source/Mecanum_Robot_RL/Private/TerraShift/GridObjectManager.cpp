@@ -8,45 +8,65 @@
 AGridObjectManager::AGridObjectManager() {
     PrimaryActorTick.bCanEverTick = false;
     RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("GridObjectManagerRoot"));
+
+    // Initialize ObjectSize to a default value
+    ObjectSize = FVector(0.1f, 0.1f, 0.1f);
+}
+
+// Set the size of GridObjects to be spawned
+void AGridObjectManager::SetObjectSize(FVector InObjectSize) {
+    ObjectSize = InObjectSize;
 }
 
 // Spawns GridObjects at the given locations with the specified size and delay
-void AGridObjectManager::SpawnGridObjects(const TArray<FVector>& Locations, FVector ObjectSize, float SpawnDelay) {
+void AGridObjectManager::SpawnGridObjects(const TArray<FVector>& Locations, FVector InObjectSize, float SpawnDelay) {
+    // Set the object size
+    ObjectSize = InObjectSize;
+
     for (int i = 0; i < Locations.Num(); i++) {
-        SpawnGridObjectAtLocation(Locations[i], ObjectSize, SpawnDelay * static_cast<float>(i));
+        float TotalSpawnDelay = SpawnDelay * static_cast<float>(i);
+
+        // Schedule the spawn with a delay
+        if (UWorld* World = GetWorld()) {
+            FTimerHandle TimerHandle;
+            World->GetTimerManager().SetTimer(
+                TimerHandle,
+                [this, i, Location = Locations[i]]() {
+                    SpawnGridObjectAtIndex(i, Location);
+                },
+                TotalSpawnDelay,
+                false
+            );
+        }
     }
 }
 
-void AGridObjectManager::SpawnGridObjectAtLocation(FVector InLocation, FVector ObjectSize, float SpawnDelay) {
+// Spawns a GridObject at a specific index and location
+void AGridObjectManager::SpawnGridObjectAtIndex(int32 Index, FVector InLocation) {
     if (UWorld* World = GetWorld()) {
-        FTimerHandle TimerHandle;
-        World->GetTimerManager().SetTimer(
-            TimerHandle,
-            [this, InLocation, ObjectSize]() {
-                if (UWorld* InnerWorld = GetWorld()) {
-                    AGridObject* NewGridObject = InnerWorld->SpawnActor<AGridObject>(AGridObject::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
-                    if (NewGridObject) {
-                        NewGridObject->InitializeGridObject(ObjectSize);
-                        NewGridObject->AttachToComponent(RootComponent, FAttachmentTransformRules::KeepRelativeTransform);
-                        GridObjects.Add(NewGridObject);
+        AGridObject* NewGridObject = World->SpawnActor<AGridObject>(AGridObject::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
+        if (NewGridObject) {
+            NewGridObject->InitializeGridObject(ObjectSize);
+            NewGridObject->AttachToComponent(RootComponent, FAttachmentTransformRules::KeepRelativeTransform);
 
-                        FVector Location = InLocation;
-                        // Calculate the local bounds of the grid object
-                        FBoxSphereBounds GridObjectBounds = NewGridObject->MeshComponent->CalcLocalBounds();
-                        FVector LocalOffsets = GridObjectBounds.BoxExtent * NewGridObject->MeshComponent->GetRelativeScale3D();
+            // Expand if adding new
+            if (GridObjects.Num() <= Index) {
+                GridObjects.SetNum(Index + 1);
+            }
+            GridObjects[Index] = NewGridObject;
 
-                        // Adjust the Z offset to ensure the GridObject is fully within the grid
-                        Location.Z += LocalOffsets.Z;
+            // Adjust location to ensure the GridObject is above the Grid
+            FVector Location = InLocation;
+            FBoxSphereBounds GridObjectBounds = NewGridObject->MeshComponent->CalcLocalBounds();
+            FVector LocalOffsets = GridObjectBounds.BoxExtent * NewGridObject->MeshComponent->GetRelativeScale3D();
+            Location.Z += LocalOffsets.Z * 2; // So GridObjects dont spawn in each other
 
-                        // Set the adjusted location for the GridObject
-                        NewGridObject->SetActorRelativeLocation(Location);
-                        NewGridObject->SetGridObjectActive(true);
-                    }
-                }
-            },
-            SpawnDelay,
-            false
-        );
+            NewGridObject->SetActorRelativeLocation(Location);
+            NewGridObject->SetGridObjectActive(true);
+
+            // Notify that a GridObject has been spawned
+            OnGridObjectSpawned.Broadcast(Index, NewGridObject);
+        }
     }
 }
 
@@ -158,4 +178,48 @@ int32 AGridObjectManager::FindClosestColumnIndex(const FVector& Location, const 
 // Helper function to convert 1D index to 2D grid coordinates
 FIntPoint AGridObjectManager::Get2DIndexFrom1D(int32 Index, int32 GridSize) const {
     return FIntPoint(Index / GridSize, Index % GridSize);
+}
+
+// Deactivates a GridObject at a specific index
+void AGridObjectManager::DeactivateGridObject(int32 Index) {
+    if (GridObjects.IsValidIndex(Index)) {
+        AGridObject* GridObject = GridObjects[Index];
+        if (GridObject) {
+            GridObject->SetGridObjectActive(false);
+        }
+    }
+}
+
+// Deletes a GridObject at a specific index
+void AGridObjectManager::DeleteGridObject(int32 Index) {
+    if (GridObjects.IsValidIndex(Index)) {
+        AGridObject* GridObject = GridObjects[Index];
+        if (GridObject) {
+            GridObject->Destroy();
+            GridObjects[Index] = nullptr;
+        }
+    }
+}
+
+// Respawns a GridObject at a specific index and location after a delay
+void AGridObjectManager::RespawnGridObjectAtLocation(int32 Index, FVector InLocation, float SpawnDelay) {
+    if (UWorld* World = GetWorld()) {
+        FTimerHandle TimerHandle;
+        World->GetTimerManager().SetTimer(
+            TimerHandle,
+            [this, Index, InLocation]() {
+                SpawnGridObjectAtIndex(Index, InLocation);
+            },
+            SpawnDelay,
+            false
+        );
+    }
+}
+
+// Get a GridObject by index
+AGridObject* AGridObjectManager::GetGridObject(int32 Index) const {
+    if (GridObjects.IsValidIndex(Index)) {
+        return GridObjects[Index];
+    }
+    return nullptr;
 }

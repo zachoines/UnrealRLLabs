@@ -13,11 +13,13 @@ ATerraShiftEnvironment::ATerraShiftEnvironment() {
     TerraShiftRoot = CreateDefaultSubobject<USceneComponent>(TEXT("TerraShiftRoot"));
     RootComponent = TerraShiftRoot;
 
-    
-    GridObjectManager = CreateDefaultSubobject<AGridObjectManager>(TEXT("GridObjectManager"));;
+    GridObjectManager = CreateDefaultSubobject<AGridObjectManager>(TEXT("GridObjectManager"));
     WaveSimulator = nullptr;
     Grid = nullptr;
     Intialized = false;
+
+    // Initialize RewardBuffer
+    RewardBuffer = 0.0f;
 
     GoalColors = {
         FLinearColor(0.388f, 0.192f, 0.0f),   // Umber
@@ -36,11 +38,16 @@ ATerraShiftEnvironment::ATerraShiftEnvironment() {
 void ATerraShiftEnvironment::Tick(float DeltaTime) {
     Super::Tick(DeltaTime);
 
-    // Update active columns after physics simulation
-    UpdateActiveColumns();
+    if (Intialized) {
+        // Update active columns after physics simulation
+        UpdateActiveColumns();
 
-    // Update column and GridObject colors
-    UpdateColumnGoalObjectColors();
+        // Update column and GridObject colors
+        UpdateColumnGoalObjectColors();
+
+        // Check and respawn GridObjects if necessary
+        CheckAndRespawnGridObjects();
+    }
 }
 
 ATerraShiftEnvironment::~ATerraShiftEnvironment() {
@@ -63,6 +70,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams) {
     // Initialize AgentParametersArray to match CurrentAgents
     AgentParametersArray.SetNum(CurrentAgents);
     AgentGoalIndices.SetNum(CurrentAgents);
+    AgentHasActiveGridObject.SetNum(CurrentAgents);
 
     // Set the environment root's world location
     TerraShiftRoot->SetWorldLocation(TerraShiftParams->Location);
@@ -115,6 +123,9 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams) {
     GridObjectManager = GetWorld()->SpawnActor<AGridObjectManager>(AGridObjectManager::StaticClass());
     if (GridObjectManager) {
         GridObjectManager->AttachToActor(Platform, FAttachmentTransformRules::KeepRelativeTransform);
+        GridObjectManager->SetObjectSize(TerraShiftParams->ObjectSize);
+        // Bind to the GridObjectManager's event
+        GridObjectManager->OnGridObjectSpawned.AddDynamic(this, &ATerraShiftEnvironment::OnGridObjectSpawned);
     }
 
     // Initialize wave simulator
@@ -139,6 +150,9 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams) {
 
         // Randomly assign a goal index for each agent
         AgentGoalIndices[i] = FMath::RandRange(0, TerraShiftParams->NumGoals - 1);
+
+        // Set AgentHasActiveGridObject to false initially as grid objects spawn over time
+        AgentHasActiveGridObject[i] = false;
     }
 
     Intialized = true;
@@ -151,10 +165,20 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents) {
     // Reset AgentParametersArray to match CurrentAgents
     AgentParametersArray.SetNum(CurrentAgents);
     AgentGoalIndices.SetNum(CurrentAgents);
+    AgentHasActiveGridObject.SetNum(CurrentAgents);
+
+    // Reset RewardBuffer
+    RewardBuffer = 0.0f;
 
     // Reset goals, grid, and grid objects
     GoalPositionArray.Empty();
     GoalPositionArray.SetNum(TerraShiftParams->NumGoals);
+
+    // Generate random goal positions along the four corners
+    for (int32 i = 0; i < TerraShiftParams->NumGoals; ++i) {
+        FVector GoalPosition = GenerateRandomCornerGridLocation();
+        GoalPositionArray[i] = GoalPosition;
+    }
 
     if (Grid) {
         Grid->ResetGrid();
@@ -182,6 +206,9 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents) {
 
         // Reassign goal indices for each agent
         AgentGoalIndices[i] = FMath::RandRange(0, TerraShiftParams->NumGoals - 1);
+
+        // Set AgentHasActiveGridObject to false initially
+        AgentHasActiveGridObject[i] = false;
     }
 
     // Set active grid objects for the new agents
@@ -206,7 +233,7 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex) {
 
     // Get the world position of the grid object for the agent
     FVector ObjectWorldPosition = FVector::ZeroVector;
-    if (GridObjectManager) {
+    if (AgentHasActiveGridObject[AgentIndex] && GridObjectManager) {
         ObjectWorldPosition = GridObjectManager->GetGridObjectWorldLocation(AgentIndex);
     }
 
@@ -238,6 +265,9 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex) {
     State.Add(GoalRelativePosition.X);
     State.Add(GoalRelativePosition.Y);
 
+    // Add a flag indicating if the GridObject is active
+    State.Add(AgentHasActiveGridObject[AgentIndex] ? 1.0f : 0.0f);
+
     return State;
 }
 
@@ -252,7 +282,7 @@ void ATerraShiftEnvironment::SetActiveGridObjects(int NumAgents) {
         SpawnLocations.Add(RandomLocation);
     }
 
-    // Spawn GridObjects at specified locations
+    // Spawn GridObjects at specified locations with a spawn delay
     GridObjectManager->SpawnGridObjects(SpawnLocations, TerraShiftParams->ObjectSize, TerraShiftParams->SpawnDelay);
 }
 
@@ -301,7 +331,7 @@ void ATerraShiftEnvironment::Act(FAction Action) {
 
     // Update wave heights using the current agent parameters
     const Matrix2D& HeightMap = WaveSimulator->Update(AgentParametersArrayCopy);
-    
+
     if (Grid) {
         Grid->UpdateColumnHeights(HeightMap);
     }
@@ -437,8 +467,13 @@ void ATerraShiftEnvironment::PostStep() {
 }
 
 bool ATerraShiftEnvironment::Done() {
-    // This function checks if the environment should be marked as done
-    // Currently set to always return false (no terminal state)
+    // Check if all agents are inactive
+    //for (bool bActive : AgentHasActiveGridObject) {
+    //    if (bActive) {
+    //        return false; // At least one agent is still active
+    //    }
+    //}
+    //return true; // All agents are inactive
     return false;
 }
 
@@ -452,14 +487,15 @@ bool ATerraShiftEnvironment::Trunc() {
 }
 
 float ATerraShiftEnvironment::Reward() {
-    // Calculate and return the reward for the current step
-    // This function can be modified to fit the specific reward calculation logic
-    return 0.0f;
+    // Return the total reward accumulated in the RewardBuffer and reset it
+    float TotalReward = RewardBuffer;
+    RewardBuffer = 0.0f;
+    return TotalReward;
 }
 
 void ATerraShiftEnvironment::SetupActionAndObservationSpace() {
     const int NumAgentWaveParameters = 11;
-    const int NumAgentStateParameters = NumAgentWaveParameters + 3 + 2; // Includes position, velocity, wave parameters, object position, and goal position
+    const int NumAgentStateParameters = NumAgentWaveParameters + 3 + 2 + 1; // Includes position, velocity, wave parameters, object position, goal position, and active flag
     EnvInfo.SingleAgentObsSize = NumAgentStateParameters;
     EnvInfo.StateSize = MaxAgents * EnvInfo.SingleAgentObsSize;
 
@@ -484,6 +520,7 @@ AStaticMeshActor* ATerraShiftEnvironment::SpawnPlatform(FVector Location) {
             FActorSpawnParameters SpawnParams;
             AStaticMeshActor* NewPlatform = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, FRotator::ZeroRotator, SpawnParams);
             if (NewPlatform) {
+                // No Physics or collisions. Just Visual.
                 NewPlatform->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
                 NewPlatform->SetMobility(EComponentMobility::Movable);
                 NewPlatform->GetStaticMeshComponent()->SetSimulatePhysics(false);
@@ -544,17 +581,47 @@ FVector ATerraShiftEnvironment::GenerateRandomGridLocation() const {
     return SpawnLocation;
 }
 
-FIntPoint ATerraShiftEnvironment::GenerateRandomGoalIndex() const {
-    // Generate random goal indices along the edges of the grid
-    int Side = FMath::RandRange(0, 3);
-    FIntPoint GoalIndex2D;
-    switch (Side) {
-    case 0: GoalIndex2D = FIntPoint(FMath::RandRange(0, TerraShiftParams->GridSize - 1), 0); break;          // Top
-    case 1: GoalIndex2D = FIntPoint(FMath::RandRange(0, TerraShiftParams->GridSize - 1), TerraShiftParams->GridSize - 1); break; // Bottom
-    case 2: GoalIndex2D = FIntPoint(0, FMath::RandRange(0, TerraShiftParams->GridSize - 1)); break;          // Left
-    case 3: GoalIndex2D = FIntPoint(TerraShiftParams->GridSize - 1, FMath::RandRange(0, TerraShiftParams->GridSize - 1)); break; // Right
+FVector ATerraShiftEnvironment::GenerateRandomCornerGridLocation() const {
+    if (!Grid) {
+        return FVector::ZeroVector; // Safety check
     }
-    return GoalIndex2D;
+
+    // Randomly select one of the four corners
+    int32 Corner = FMath::RandRange(0, 3);
+    int32 X = 0;
+    int32 Y = 0;
+    switch (Corner) {
+    case 0: // Top-Left corner
+        X = 0;
+        Y = 0;
+        break;
+    case 1: // Top-Right corner
+        X = TerraShiftParams->GridSize - 1;
+        Y = 0;
+        break;
+    case 2: // Bottom-Left corner
+        X = 0;
+        Y = TerraShiftParams->GridSize - 1;
+        break;
+    case 3: // Bottom-Right corner
+        X = TerraShiftParams->GridSize - 1;
+        Y = TerraShiftParams->GridSize - 1;
+        break;
+    }
+
+    // Get the column's offsets (X, Y, Z) relative to the grid
+    FVector ColumnOffsets = Grid->GetColumnOffsets(X, Y);
+
+    // Get the grid's relative Z-location from its root component
+    float GridRelativeZ = Grid->GetRootComponent()->GetRelativeLocation().Z;
+
+    // Add the grid's relative Z-location to the column's Z offset
+    float RelativeHeight = GridRelativeZ + ColumnOffsets.Z;
+
+    // Calculate the final goal location
+    FVector GoalLocation = Grid->CalculateColumnLocation(X, Y, RelativeHeight);
+
+    return GoalLocation;
 }
 
 FVector ATerraShiftEnvironment::GridPositionToWorldPosition(FVector2D GridPosition) {
@@ -574,16 +641,118 @@ float ATerraShiftEnvironment::Map(float x, float in_min, float in_max, float out
 bool ATerraShiftEnvironment::ObjectOffPlatform(int AgentIndex) {
     if (!GridObjectManager) return true;
 
-    FVector ObjectPosition = GridObjectManager->GetGridObjectWorldLocation(AgentIndex);
+    AGridObject* GridObject = GridObjectManager->GetGridObject(AgentIndex);
+    if (!GridObject) return true;
+
+    // Get the GridObject's world location
+    FVector ObjectWorldPosition = GridObject->MeshComponent->GetComponentLocation();
+
+    // Transform the GridObject's world position into the Platform's local space
+    FVector ObjectRelativePosition = Platform->GetActorTransform().InverseTransformPosition(ObjectWorldPosition);
+
+    // Get the GridObject's extent (half-size)
+    FVector GridObjectExtent = GridObject->MeshComponent->Bounds.BoxExtent * GridObject->MeshComponent->GetComponentScale();
+
+    // Get the platform's extent (half-size)
     FVector PlatformExtent = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * Platform->GetActorScale3D();
 
-    // Check if the object is within the bounds of the platform
-    return ObjectPosition.X < PlatformCenter.X - PlatformExtent.X ||
-        ObjectPosition.X > PlatformCenter.X + PlatformExtent.X ||
-        ObjectPosition.Y < PlatformCenter.Y - PlatformExtent.Y ||
-        ObjectPosition.Y > PlatformCenter.Y + PlatformExtent.Y;
+    // Calculate the allowable range for the GridObject's center to be over the platform
+    float AllowedMinX = -PlatformExtent.X + GridObjectExtent.X;
+    float AllowedMaxX = PlatformExtent.X - GridObjectExtent.X;
+    float AllowedMinY = -PlatformExtent.Y + GridObjectExtent.Y;
+    float AllowedMaxY = PlatformExtent.Y - GridObjectExtent.Y;
+
+    // Check if the GridObject's center is within the allowable range along X and Y
+    bool IsWithinX = ObjectRelativePosition.X >= AllowedMinX && ObjectRelativePosition.X <= AllowedMaxX;
+    bool IsWithinY = ObjectRelativePosition.Y >= AllowedMinY && ObjectRelativePosition.Y <= AllowedMaxY;
+
+    // If the object is outside the allowable range on either axis, it's more than 50% off
+    return !(IsWithinX && IsWithinY);
 }
 
 int ATerraShiftEnvironment::Get1DIndexFromPoint(const FIntPoint& Point, int GridSize) const {
     return Point.X * GridSize + Point.Y;
+}
+
+void ATerraShiftEnvironment::CheckAndRespawnGridObjects() {
+    float GoalThreshold = 0.1f; // Threshold distance to consider a goal reached
+
+    for (int32 AgentIndex = 0; AgentIndex < CurrentAgents; ++AgentIndex) {
+        AGridObject* GridObject = GridObjectManager->GetGridObject(AgentIndex);
+        if (!GridObject || !GridObject->IsActive()) {
+            continue;
+        }
+
+        // Get the GridObject's location
+        FVector ObjectLocation = GridObject->GetActorLocation();
+
+        // Check if the GridObject has fallen off the platform
+        if (ObjectOffPlatform(AgentIndex)) {
+            // Respawn the GridObject
+            RespawnGridObject(AgentIndex);
+            // Update RewardBuffer
+            RewardBuffer += -1.0f;
+            continue;
+        }
+
+        // Check if the GridObject has reached any goal
+        bool bReachedGoal = false;
+        for (int32 GoalIndex = 0; GoalIndex < GoalPositionArray.Num(); ++GoalIndex) {
+            FVector GoalLocation = GoalPositionArray[GoalIndex];
+            float DistanceToGoal = FVector::Dist2D(ObjectLocation, GoalLocation);
+
+            if (DistanceToGoal <= GoalThreshold) {
+                bReachedGoal = true;
+                if (GoalIndex == AgentGoalIndices[AgentIndex]) {
+                    // Reached assigned goal
+                    // Remove the GridObject
+                    GridObject->SetGridObjectActive(false);
+                    GridObjectManager->DeleteGridObject(AgentIndex);
+                    AgentHasActiveGridObject[AgentIndex] = false;
+                    // Update RewardBuffer
+                    RewardBuffer += 1.0f;
+                }
+                else {
+                    // Reached wrong goal
+                    // Respawn the GridObject
+                    RespawnGridObject(AgentIndex);
+                    // Update RewardBuffer
+                    RewardBuffer += -1.0f;
+                }
+                break; // Exit the goal checking loop
+            }
+        }
+
+        // No further action needed if a goal was reached
+        if (bReachedGoal) {
+            continue;
+        }
+    }
+}
+
+void ATerraShiftEnvironment::RespawnGridObject(int32 AgentIndex) {
+    if (!GridObjectManager) return;
+
+    // Set the agent's GridObject as inactive
+    if (AgentHasActiveGridObject.IsValidIndex(AgentIndex)) {
+        AgentHasActiveGridObject[AgentIndex] = false;
+    }
+
+    // Delete the existing GridObject
+    GridObjectManager->DeleteGridObject(AgentIndex);
+
+    // Generate a new random spawn location
+    FVector NewSpawnLocation = GenerateRandomGridLocation();
+
+    // Assign a new goal index
+    AgentGoalIndices[AgentIndex] = FMath::RandRange(0, TerraShiftParams->NumGoals - 1);
+
+    // Spawn a new GridObject at the new location after a delay
+    GridObjectManager->RespawnGridObjectAtLocation(AgentIndex, NewSpawnLocation, TerraShiftParams->RespawnDelay);
+}
+
+void ATerraShiftEnvironment::OnGridObjectSpawned(int32 Index, AGridObject* NewGridObject) {
+    if (AgentHasActiveGridObject.IsValidIndex(Index)) {
+        AgentHasActiveGridObject[Index] = true;
+    }
 }

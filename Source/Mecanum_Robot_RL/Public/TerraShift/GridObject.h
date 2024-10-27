@@ -29,6 +29,9 @@ public:
     // Sets the color of the grid object
     void SetGridObjectColor(FLinearColor Color);
 
+    // Reset the GridObject to a new location
+    void ResetGridObject(FVector NewLocation);
+
     // Root component (non-simulating)
     UPROPERTY(VisibleAnywhere, Category = "Components")
     USceneComponent* GridObjectRoot;

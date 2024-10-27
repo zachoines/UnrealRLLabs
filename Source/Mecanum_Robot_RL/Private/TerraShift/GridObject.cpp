@@ -71,7 +71,6 @@ void AGridObject::SetSimulatePhysics(bool bEnablePhysics) {
     else {
         // Disable collision and physics
         MeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-        
     }
 }
 
@@ -88,4 +87,27 @@ FVector AGridObject::GetObjectExtent() const {
 
 bool AGridObject::IsActive() const {
     return bIsActive;
+}
+
+void AGridObject::ResetGridObject(FVector NewLocation) {
+    
+
+    // Reset physics state
+    MeshComponent->SetPhysicsLinearVelocity(FVector::ZeroVector, false);
+    MeshComponent->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector, false);
+
+    // Access the BodyInstance to clear forces and torques
+    if (MeshComponent->BodyInstance.IsValidBodyInstance()) {
+        MeshComponent->BodyInstance.ClearForces();
+        MeshComponent->BodyInstance.ClearTorques();
+    }
+
+    // Deactivate the grid object
+    SetGridObjectActive(false);
+
+    // Reset location
+    SetActorRelativeLocation(NewLocation);
+
+    // Reactivate the grid object
+    SetGridObjectActive(true);
 }
