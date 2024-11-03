@@ -15,7 +15,9 @@
 #include "TerraShift/Grid.h"
 #include "TerraShift/GridObjectManager.h"
 #include "TerraShift/MorletWavelets2D.h"
+#include "TerraShift/GoalPlatform.h"
 #include "TerraShiftEnvironment.generated.h"
+
 
 // Environment initialization parameters
 USTRUCT(BlueprintType)
@@ -73,7 +75,7 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
 
     // Agent movement parameter ranges
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Movement Parameters")
-    FVector2D VelocityRange = FVector2D(-0.3f, 0.3f); // Adjusted for meters per second
+    FVector2D VelocityRange = FVector2D(-10.0f, 10.0f); // Adjusted for meters per second
 };
 
 UCLASS()
@@ -121,7 +123,6 @@ private:
     float CellSize;
     bool Intialized;
     TArray<int32> AgentGoalIndices;
-    TArray<FVector> GoalPositionArray;
     TArray<FVector> GridCenterPoints;
     TArray<AgentParameters> AgentParametersArray;
     FVector PlatformWorldSize;
@@ -139,6 +140,10 @@ private:
     // Reward buffer to accumulate rewards based on events
     float RewardBuffer;
 
+    // Goal platforms and their locations
+    TArray<AGoalPlatform*> GoalPlatforms; // Updated to use AGoalPlatform*
+    TArray<FVector> GoalPlatformLocations; // Local locations of goal platforms
+
     // Initializes properties for action and observation space
     void SetupActionAndObservationSpace();
 
@@ -148,20 +153,8 @@ private:
     // Helper function to generate random positions on the grid for spawning GridObjects
     FVector GenerateRandomGridLocation() const;
 
-    // Helper function to generate random corner positions on the grid for goals
-    FVector GenerateRandomCornerGridLocation() const;
-
     // Function to get the current state of an agent
     TArray<float> AgentGetState(int AgentIndex);
-
-    // Determines if a GridObject has fallen off the platform
-    bool ObjectOffPlatform(int AgentIndex);
-
-    // Helper function to convert a 1D index to a 2D grid point
-    int Get1DIndexFromPoint(const FIntPoint& Point, int GridSize) const;
-
-    // Helper function to convert grid position to world position
-    FVector GridPositionToWorldPosition(FVector2D GridPosition);
 
     // Sets the number of currently active GridObjects at random locations
     void SetActiveGridObjects(int NumAgents);
@@ -190,4 +183,11 @@ private:
     // Function to handle when a GridObject is spawned
     UFUNCTION()
     void OnGridObjectSpawned(int32 Index, AGridObject* NewGridObject);
+
+    // New Functions for goal platforms
+    FVector CalculateGoalPlatformLocation(int EdgeIndex); // Calculates goal platform location
+    void UpdateGoal(int GoalIndex); // Updates/creates goal platforms
+
+    // Helper function to convert grid position to world position
+    FVector GridPositionToWorldPosition(FVector2D GridPosition) const;
 };

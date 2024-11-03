@@ -17,8 +17,11 @@ public:
     // Sets the grid object to be active or inactive
     void SetGridObjectActive(bool bIsActive);
 
-    // Gets the bounds of the grid object
+    // Gets the world bounds of the grid object
     FVector GetObjectExtent() const;
+
+    // Gets the world lo0cation of the grid object
+    FVector GetObjectLocation() const;
 
     // Checks if the grid object is active
     bool IsActive() const;

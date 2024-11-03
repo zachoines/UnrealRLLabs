@@ -85,6 +85,10 @@ FVector AGridObject::GetObjectExtent() const {
     return MeshComponent->Bounds.BoxExtent * GetActorScale3D();
 }
 
+FVector AGridObject::GetObjectLocation() const {
+    return MeshComponent->GetComponentLocation();
+}
+
 bool AGridObject::IsActive() const {
     return bIsActive;
 }

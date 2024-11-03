@@ -26,17 +26,22 @@ void AGridObjectManager::SpawnGridObjects(const TArray<FVector>& Locations, FVec
     for (int i = 0; i < Locations.Num(); i++) {
         float TotalSpawnDelay = SpawnDelay * static_cast<float>(i);
 
-        // Schedule the spawn with a delay
-        if (UWorld* World = GetWorld()) {
-            FTimerHandle TimerHandle;
-            World->GetTimerManager().SetTimer(
-                TimerHandle,
-                [this, i, Location = Locations[i]]() {
-                    SpawnGridObjectAtIndex(i, Location);
-                },
-                TotalSpawnDelay,
-                false
-            );
+        if (TotalSpawnDelay == 0) {
+            SpawnGridObjectAtIndex(i, Locations[i]); // Spawn the first right away
+        }
+        else {
+            // Schedule the spawn with a delay
+            if (UWorld* World = GetWorld()) {
+                FTimerHandle TimerHandle;
+                World->GetTimerManager().SetTimer(
+                    TimerHandle,
+                    [this, i, Location = Locations[i]]() {
+                        SpawnGridObjectAtIndex(i, Location);
+                    },
+                    TotalSpawnDelay,
+                    false
+                );
+            }
         }
     }
 }
