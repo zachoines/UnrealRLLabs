@@ -18,7 +18,6 @@
 #include "TerraShift/GoalPlatform.h"
 #include "TerraShiftEnvironment.generated.h"
 
-
 // Environment initialization parameters
 USTRUCT(BlueprintType)
 struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParams {
@@ -136,6 +135,9 @@ private:
 
     // Array to track whether each agent has an active GridObject
     TArray<bool> AgentHasActiveGridObject;
+
+    // New array to track whether each GridObject has reached its goal
+    TArray<bool> GridObjectHasReachedGoal;
 
     // Reward buffer to accumulate rewards based on events
     float RewardBuffer;

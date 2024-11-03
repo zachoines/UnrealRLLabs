@@ -1,6 +1,5 @@
 #include "TerraShiftEnvironment.h"
 
-
 // Constructor
 ATerraShiftEnvironment::ATerraShiftEnvironment()
 {
@@ -147,6 +146,13 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
     AgentParametersArray.SetNum(CurrentAgents);
     AgentGoalIndices.SetNum(CurrentAgents);
     AgentHasActiveGridObject.SetNum(CurrentAgents);
+    GridObjectHasReachedGoal.SetNum(CurrentAgents);
+
+    // Initialize GridObjectHasReachedGoal to false
+    for (int32 i = 0; i < CurrentAgents; ++i)
+    {
+        GridObjectHasReachedGoal[i] = false;
+    }
 
     // Reset RewardBuffer
     RewardBuffer = 0.0f;
@@ -404,17 +410,19 @@ void ATerraShiftEnvironment::UpdateColumnGoalObjectColors()
     }
 
     // Set GridObjects to match their goal colors
-    TArray<AGridObject*> GridObjects = GridObjectManager->GetActiveGridObjects();
-    for (int32 i = 0; i < GridObjects.Num(); ++i)
+    for (int32 AgentIndex = 0; AgentIndex < CurrentAgents; ++AgentIndex)
     {
-        AGridObject* GridObject = GridObjects[i];
-        if (GridObject)
+        if (AgentHasActiveGridObject[AgentIndex])
         {
-            int32 GoalIndex = AgentGoalIndices[i];
-            if (GoalIndexToColor.Contains(GoalIndex))
+            AGridObject* GridObject = GridObjectManager->GetGridObject(AgentIndex);
+            if (GridObject && GridObject->IsActive())
             {
-                FLinearColor GoalColor = GoalIndexToColor[GoalIndex];
-                GridObject->SetGridObjectColor(GoalColor);
+                int32 GoalIndex = AgentGoalIndices[AgentIndex];
+                if (GoalIndexToColor.Contains(GoalIndex))
+                {
+                    FLinearColor GoalColor = GoalIndexToColor[GoalIndex];
+                    GridObject->SetGridObjectColor(GoalColor);
+                }
             }
         }
     }
@@ -483,24 +491,14 @@ void ATerraShiftEnvironment::PostStep()
 
 bool ATerraShiftEnvironment::Done()
 {
-    for (bool bActive : AgentHasActiveGridObject)
+    for (int32 AgentIndex = 0; AgentIndex < CurrentAgents; ++AgentIndex)
     {
-        if (bActive)
+        if (!GridObjectHasReachedGoal[AgentIndex])
         {
-            return false; // At least one agent is still active
+            return false; // At least one GridObject hasn't reached its goal
         }
     }
-
-    // If we are not on first frame (no active grid objects yet)
-    if (CurrentStep > 0)
-    {
-        // All agents are inactive
-        return true;
-    }
-    else
-    {
-        return false;
-    }
+    return true; // All GridObjects have reached their goals
 }
 
 bool ATerraShiftEnvironment::Trunc()
@@ -647,7 +645,7 @@ void ATerraShiftEnvironment::CheckAndRespawnGridObjects()
             RewardBuffer += -1.0f;
             continue;
         }
-        
+
         // Check if the GridObject has reached its goal platform
         int32 GoalIndex = AgentGoalIndices[AgentIndex];
         FVector GoalWorldPosition = GoalPlatforms[GoalIndex]->GetActorLocation();
@@ -660,6 +658,7 @@ void ATerraShiftEnvironment::CheckAndRespawnGridObjects()
             GridObject->SetGridObjectActive(false);
             GridObjectManager->DeleteGridObject(AgentIndex);
             AgentHasActiveGridObject[AgentIndex] = false;
+            GridObjectHasReachedGoal[AgentIndex] = true; // Mark as reached goal
 
             // Update RewardBuffer
             RewardBuffer += 1.0f;
@@ -668,7 +667,6 @@ void ATerraShiftEnvironment::CheckAndRespawnGridObjects()
         }
     }
 }
-
 
 void ATerraShiftEnvironment::RespawnGridObject(int32 AgentIndex)
 {
