@@ -179,7 +179,7 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
     GoalPlatforms.Empty();
     GoalPlatformLocations.Empty();
 
-    // Randomly update number of current goals between 1 and 4
+    // Randomly update number of current goals between 1 and 4 (for the four edges of platform)
     int32 NumGoals = FMath::RandRange(1, 4);
     TerraShiftParams->NumGoals = NumGoals;
 
@@ -268,7 +268,7 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
     State.Add(ObjectRelativePosition.Z);
     State.Add(GoalRelativePosition.X);
     State.Add(GoalRelativePosition.Y);
-    State.Add(GoalRelativePosition.Z); // Added Z coordinate
+    State.Add(GoalRelativePosition.Z);
 
     // Add a flag indicating if the GridObject is active
     State.Add(AgentHasActiveGridObject[AgentIndex] ? 1.0f : 0.0f);
@@ -295,6 +295,7 @@ void ATerraShiftEnvironment::SetActiveGridObjects(int NumAgents)
 
 void ATerraShiftEnvironment::Act(FAction Action)
 {
+    RewardBuffer = 0.0;
     const int NumAgentActions = EnvInfo.ActionSpace->ContinuousActions.Num();
     if (Action.Values.Num() != CurrentAgents * NumAgentActions)
     {
@@ -514,10 +515,7 @@ bool ATerraShiftEnvironment::Trunc()
 
 float ATerraShiftEnvironment::Reward()
 {
-    // Return the total reward accumulated in the RewardBuffer and reset it
-    float TotalReward = RewardBuffer;
-    RewardBuffer = 0.0f;
-    return TotalReward;
+    return RewardBuffer;
 }
 
 void ATerraShiftEnvironment::SetupActionAndObservationSpace()
@@ -618,7 +616,7 @@ float ATerraShiftEnvironment::Map(float x, float in_min, float in_max, float out
 
 void ATerraShiftEnvironment::CheckAndRespawnGridObjects()
 {
-    float GoalThreshold = TerraShiftParams->GoalThreshold; // Use the threshold from params
+    float GoalThreshold = TerraShiftParams->GoalThreshold;
 
     for (int32 AgentIndex = 0; AgentIndex < CurrentAgents; ++AgentIndex)
     {

@@ -45,8 +45,8 @@ private:
     TArray<FAction> LastActions;
     TArray<FState> LastStates;
     TArray<FState> CurrentStates;
-    TArray<float> Dones;
-    TArray<float> Truncs;
+    TArray<float> CurrentDones;
+    TArray<float> CurrentTruncs;
 
     FAction EnvSample(UActionSpace* ActionSpace);
 };

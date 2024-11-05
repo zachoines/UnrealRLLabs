@@ -36,10 +36,10 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
     float ObjectMass = 0.2f; // kg
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int GridSize = 100; // Number of cells along one side of the grid
+    int GridSize = 50; // Number of cells along one side of the grid
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int MaxSteps = 1024; // Maximum steps per episode
+    int MaxSteps = 1000000; // Maximum steps per episode
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
     int NumGoals = 3; // Number of goals for agents
