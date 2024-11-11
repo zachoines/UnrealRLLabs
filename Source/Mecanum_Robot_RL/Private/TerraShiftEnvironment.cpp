@@ -126,12 +126,13 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
     {
         GridObjectManager->AttachToActor(Platform, FAttachmentTransformRules::KeepRelativeTransform);
         GridObjectManager->SetObjectSize(TerraShiftParams->ObjectSize);
-        // Bind to the GridObjectManager's event
+        
+        // Bind to the GridObjectManager's event, for async/gradual like spawning
         GridObjectManager->OnGridObjectSpawned.AddDynamic(this, &ATerraShiftEnvironment::OnGridObjectSpawned);
     }
 
     // Initialize wave simulator
-    WaveSimulator = new MorletWavelets2D(TerraShiftParams->GridSize, TerraShiftParams->GridSize, CellSize);
+    WaveSimulator = new MorletWavelets2D(TerraShiftParams->GridSize, TerraShiftParams->GridSize);
     WaveSimulator->Initialize();
 
     Intialized = true;
@@ -193,16 +194,14 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
     for (int32 i = 0; i < CurrentAgents; ++i)
     {
         AgentParameters AgentParam;
-        AgentParam.Position = FVector2f(FMath::FRandRange(0.0f, static_cast<float>(TerraShiftParams->GridSize)),
-            FMath::FRandRange(0.0f, static_cast<float>(TerraShiftParams->GridSize)));
         AgentParam.Velocity = FVector2f(0.0f, 0.0f);
         AgentParam.Amplitude = FMath::FRandRange(TerraShiftParams->AmplitudeRange.X, TerraShiftParams->AmplitudeRange.Y);
         AgentParam.WaveOrientation = FMath::FRandRange(TerraShiftParams->WaveOrientationRange.X, TerraShiftParams->WaveOrientationRange.Y);
         AgentParam.Wavenumber = FMath::FRandRange(TerraShiftParams->WavenumberRange.X, TerraShiftParams->WavenumberRange.Y);
+        AgentParam.PhaseVelocity = FMath::FRandRange(TerraShiftParams->PhaseVelocityRange.X, TerraShiftParams->PhaseVelocityRange.Y); // New line
         AgentParam.Phase = FMath::FRandRange(TerraShiftParams->PhaseRange.X, TerraShiftParams->PhaseRange.Y);
         AgentParam.Sigma = FMath::FRandRange(TerraShiftParams->SigmaRange.X, TerraShiftParams->SigmaRange.Y);
         AgentParam.Time = 0.0f;
-        AgentParam.Frequency = AgentParam.Wavenumber * WaveSimulator->GetPhaseVelocity();
 
         AgentParametersArray[i] = AgentParam;
 
@@ -217,7 +216,7 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
     SetActiveGridObjects(CurrentAgents);
 
     // Reset the wave simulator
-    WaveSimulator->Reset();
+    WaveSimulator->Reset(CurrentAgents);
 
     return State();
 }
@@ -244,25 +243,28 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
 
     FVector ObjectRelativePosition = Platform->GetActorTransform().InverseTransformPosition(ObjectWorldPosition);
 
-    float AgentPosX_Grid = Agent.Position.X;
-    float AgentPosY_Grid = Agent.Position.Y;
-    FVector AgentWorldPosition = GridPositionToWorldPosition(FVector2D(AgentPosX_Grid, AgentPosY_Grid));
+    // Retrieve Agent Position
+    FVector2f AgentGridPosition = WaveSimulator->GetAgentPosition(AgentIndex);
+    FVector AgentWorldPosition = GridPositionToWorldPosition(FVector2D(AgentGridPosition.X, AgentGridPosition.Y));
     FVector AgentRelativePosition = Platform->GetActorTransform().InverseTransformPosition(AgentWorldPosition);
 
     int AgentGoalIndex = AgentGoalIndices[AgentIndex];
     FVector GoalRelativePosition = GoalPlatformLocations[AgentGoalIndex];
 
-    State.Add(AgentRelativePosition.X);
-    State.Add(AgentRelativePosition.Y);
+    // Add wave parameters to state
     State.Add(Agent.Velocity.X);
     State.Add(Agent.Velocity.Y);
     State.Add(Agent.Amplitude);
     State.Add(Agent.WaveOrientation);
     State.Add(Agent.Wavenumber);
-    State.Add(Agent.Frequency);
+    State.Add(Agent.PhaseVelocity);
     State.Add(Agent.Phase);
     State.Add(Agent.Sigma);
     State.Add(Agent.Time);
+
+    // Add positions to state
+    State.Add(AgentRelativePosition.X);
+    State.Add(AgentRelativePosition.Y);
     State.Add(ObjectRelativePosition.X);
     State.Add(ObjectRelativePosition.Y);
     State.Add(ObjectRelativePosition.Z);
@@ -316,26 +318,19 @@ void ATerraShiftEnvironment::Act(FAction Action)
         float Amplitude = Map(Action.Values[ActionIndex + 2], -1.0f, 1.0f, TerraShiftParams->AmplitudeRange.X, TerraShiftParams->AmplitudeRange.Y);
         float WaveOrientation = Map(Action.Values[ActionIndex + 3], -1.0f, 1.0f, TerraShiftParams->WaveOrientationRange.X, TerraShiftParams->WaveOrientationRange.Y);
         float Wavenumber = Map(Action.Values[ActionIndex + 4], -1.0f, 1.0f, TerraShiftParams->WavenumberRange.X, TerraShiftParams->WavenumberRange.Y);
-        float Phase = Map(Action.Values[ActionIndex + 5], -1.0f, 1.0f, TerraShiftParams->PhaseRange.X, TerraShiftParams->PhaseRange.Y);
-        float Sigma = Map(Action.Values[ActionIndex + 6], -1.0f, 1.0f, TerraShiftParams->SigmaRange.X, TerraShiftParams->SigmaRange.Y);
+        float PhaseVelocity = Map(Action.Values[ActionIndex + 5], -1.0f, 1.0f, TerraShiftParams->PhaseVelocityRange.X, TerraShiftParams->PhaseVelocityRange.Y);
+        float Phase = Map(Action.Values[ActionIndex + 6], -1.0f, 1.0f, TerraShiftParams->PhaseRange.X, TerraShiftParams->PhaseRange.Y);
+        float Sigma = Map(Action.Values[ActionIndex + 7], -1.0f, 1.0f, TerraShiftParams->SigmaRange.X, TerraShiftParams->SigmaRange.Y);
 
         AgentParameters& AgentParam = AgentParametersArray[i];
-
         AgentParam.Velocity = FVector2f(VelocityX, VelocityY);
         AgentParam.Amplitude = Amplitude;
         AgentParam.WaveOrientation = WaveOrientation;
         AgentParam.Wavenumber = Wavenumber;
+        AgentParam.PhaseVelocity = PhaseVelocity;
         AgentParam.Phase = Phase;
         AgentParam.Sigma = Sigma;
-        AgentParam.Position += AgentParam.Velocity * DeltaTime;
-
-        // Keep agents within grid boundaries
-        float GridSize = static_cast<float>(TerraShiftParams->GridSize);
-        AgentParam.Position.X = FMath::Fmod(AgentParam.Position.X + GridSize, GridSize);
-        AgentParam.Position.Y = FMath::Fmod(AgentParam.Position.Y + GridSize, GridSize);
-
         AgentParam.Time += DeltaTime;
-        AgentParam.Frequency = AgentParam.Wavenumber * WaveSimulator->GetPhaseVelocity();
 
         AgentParametersArrayCopy.Add(AgentParam);
     }
@@ -452,24 +447,6 @@ void ATerraShiftEnvironment::UpdateColumnGoalObjectColors()
     }
 }
 
-int32 ATerraShiftEnvironment::FindClosestColumnIndex(const FVector& Position, const TArray<FVector>& ColumnCenters) const
-{
-    int32 ClosestIndex = -1;
-    float MinDistance = FLT_MAX;
-
-    for (int32 i = 0; i < ColumnCenters.Num(); ++i)
-    {
-        float Distance = FVector::Dist2D(Position, ColumnCenters[i]);
-        if (Distance < MinDistance)
-        {
-            MinDistance = Distance;
-            ClosestIndex = i;
-        }
-    }
-
-    return ClosestIndex;
-}
-
 FState ATerraShiftEnvironment::State()
 {
     FState CurrentState;
@@ -521,11 +498,11 @@ float ATerraShiftEnvironment::Reward()
 void ATerraShiftEnvironment::SetupActionAndObservationSpace()
 {
     const int NumAgentWaveParameters = 11;
-    const int NumAgentStateParameters = NumAgentWaveParameters + 3 + 3 + 1; // Includes position, velocity, wave parameters, object position, goal position (now 3D), and active flag
+    const int NumAgentStateParameters = NumAgentWaveParameters + 3 + 3 + 1; // Includes position, velocity, wave parameters, object position, goal position, and active flag
     EnvInfo.SingleAgentObsSize = NumAgentStateParameters;
     EnvInfo.StateSize = MaxAgents * EnvInfo.SingleAgentObsSize;
 
-    const int NumAgentActions = 7; // VelocityX, VelocityY, Amplitude, WaveOrientation, Wavenumber, Phase, Sigma
+    const int NumAgentActions = 8; // VelocityX, VelocityY, Amplitude, WaveOrientation, Wavenumber, Phase, Sigma, PhaseVelocity
     TArray<FContinuousActionSpec> ContinuousActions;
     for (int32 i = 0; i < NumAgentActions; ++i)
     {

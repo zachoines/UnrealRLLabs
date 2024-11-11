@@ -12,7 +12,6 @@ H0 = 0              # Base height of the grid
 # Morlet Wavelet Parameters
 DECAY_FACTOR = 0.01  # Decay factor for the columns (0 < DECAY_FACTOR <= 1)
 V_MAX = 1.0          # Maximum speed of column height change per frame
-SIGMA = 10.0          # Spread of the Gaussian envelope
 
 # Create meshgrid for grid coordinates
 x = np.linspace(0, GRID_SIZE, GRID_SIZE)
@@ -25,24 +24,27 @@ agent_positions = np.random.uniform(0, GRID_SIZE, (N_AGENTS, 2))
 # Initialize agent directions (angles in radians) for movement
 agent_directions = np.random.uniform(0, 2 * np.pi, N_AGENTS)
 
-# Initialize agent speeds for movement
-agent_speeds = np.random.uniform(1.0, 3.0, N_AGENTS)
+# Initialize agent speeds for movement, allowing for zero speed (stationary agents)
+agent_speeds = np.random.uniform(-10.0, 10.0, N_AGENTS)
 
-# Initialize agent amplitudes
-agent_amplitudes = np.random.uniform(5.0, 10.0, N_AGENTS)
+# Initialize agent amplitudes, allowing for zero amplitude (no wave produced)
+agent_amplitudes = np.random.uniform(0.0, 10.0, N_AGENTS)
 
-# Initialize agent wave propagation orientations
+# Initialize agent wave propagation orientations within [0, 2*pi]
 agent_wave_orientations = np.random.uniform(0, 2 * np.pi, N_AGENTS)
 
-# Initialize agent wavenumbers (controls frequency of oscillations)
-agent_wavenumbers = np.random.uniform(0.2, 0.5, N_AGENTS)
+# Initialize agent wavenumbers, allowing for zero wavenumber (no oscillations)
+agent_wavenumbers = np.random.uniform(0.0, 1.5, N_AGENTS)
 
-# Initialize agent angular frequencies (assuming a phase velocity v_p)
-phase_velocity = 1.0  # You can adjust the phase velocity as needed
+# Initialize agent angular frequencies, allowing for zero (no temporal oscillation)
+phase_velocity = 1.0
 agent_frequencies = agent_wavenumbers * phase_velocity
 
-# Initialize agent phases
+# Initialize agent phases within [0, 2*pi] for random initial phases
 agent_phases = np.random.uniform(0, 2 * np.pi, N_AGENTS)
+
+# Initialize spread (sigma), allowing for high localization with near-zero values
+agent_sigmas = np.random.uniform(0.01, 15.0, N_AGENTS)
 
 # Initialize grid heights
 heights = np.zeros((GRID_SIZE, GRID_SIZE))
@@ -53,7 +55,7 @@ ax = fig.add_subplot(111, projection='3d')
 
 # Function to update the plot
 def update_plot(frame_number):
-    global agent_positions, agent_directions, agent_speeds, agent_amplitudes, agent_wave_orientations, agent_wavenumbers, agent_frequencies, agent_phases, heights
+    global agent_positions, agent_directions, agent_speeds, agent_amplitudes, agent_wave_orientations, agent_wavenumbers, agent_frequencies, agent_phases, agent_sigmas, heights
 
     time = frame_number * FRAME_SKIP
 
@@ -78,7 +80,11 @@ def update_plot(frame_number):
         k_a = agent_wavenumbers[a]
         omega_a = agent_frequencies[a]
         phi_a = agent_phases[a]
-        sigma = SIGMA  # Can vary per agent if desired
+        sigma = agent_sigmas[a]
+
+        # Skip calculations if amplitude or sigma is close to zero
+        if A_a == 0 or sigma < 0.01:
+            continue
 
         # Shift coordinates relative to agent position
         X_shifted = X - x_a

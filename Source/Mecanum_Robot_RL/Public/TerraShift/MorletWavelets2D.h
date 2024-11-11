@@ -5,8 +5,6 @@
 
 enum class EAgentParameterIndex
 {
-    PositionX,
-    PositionY,
     VelocityX,
     VelocityY,
     Amplitude,
@@ -21,12 +19,11 @@ enum class EAgentParameterIndex
 
 struct AgentParameters
 {
-    FVector2f Position;
     FVector2f Velocity;
     float Amplitude;
     float WaveOrientation;
     float Wavenumber;
-    float Frequency;
+    float PhaseVelocity; // Agent-specific phase velocity
     float Phase;
     float Sigma;
     float Time;
@@ -34,14 +31,12 @@ struct AgentParameters
     TArray<float> ToArray() const
     {
         return {
-            Position.X,
-            Position.Y,
             Velocity.X,
             Velocity.Y,
             Amplitude,
             WaveOrientation,
             Wavenumber,
-            Frequency,
+            PhaseVelocity,
             Phase,
             Sigma,
             Time
@@ -52,18 +47,15 @@ struct AgentParameters
     {
         switch (Index)
         {
-        case EAgentParameterIndex::PositionX: return Position.X;
-        case EAgentParameterIndex::PositionY: return Position.Y;
         case EAgentParameterIndex::VelocityX: return Velocity.X;
         case EAgentParameterIndex::VelocityY: return Velocity.Y;
         case EAgentParameterIndex::Amplitude: return Amplitude;
         case EAgentParameterIndex::WaveOrientation: return WaveOrientation;
         case EAgentParameterIndex::Wavenumber: return Wavenumber;
-        case EAgentParameterIndex::Frequency: return Frequency;
+        case EAgentParameterIndex::Frequency: return PhaseVelocity;
         case EAgentParameterIndex::Phase: return Phase;
         case EAgentParameterIndex::Sigma: return Sigma;
         case EAgentParameterIndex::Time: return Time;
-        case EAgentParameterIndex::Count: return static_cast<int>(EAgentParameterIndex::Count);
         default: return 0.0f;
         }
     }
@@ -74,32 +66,33 @@ class UNREALRLLABS_API MorletWavelets2D
 private:
     int32 GridSizeX;
     int32 GridSizeY;
-    float PhaseVelocity;
 
     Matrix2D XGrid;
     Matrix2D YGrid;
-
     Matrix2D Heights;
+
+    // Current positions of agents, initially centered on the grid
+    TArray<FVector2f> AgentPositions;
 
     // Clamping range for smooth height transitions
     float MaxDeltaHeight = 0.05f;
 
 public:
     // Constructor
-    MorletWavelets2D(int32 InGridSizeX, int32 InGridSizeY, float InPhaseVelocity = 1.0f);
+    MorletWavelets2D(int32 InGridSizeX, int32 InGridSizeY);
 
     // Initialize grid coordinates and heights
     void Initialize();
 
-    // Update function with height movement clamping
+    // Update function with position propagation and height movement clamping
     Matrix2D Update(const TArray<AgentParameters>& UpdatedParameters);
 
-    // Reset function
-    void Reset();
+    // Reset function to center agents on the grid
+    void Reset(int32 NumAgents);
 
     // Get the current height map
     const Matrix2D& GetHeights() const;
 
-    // Get phase velocity
-    float GetPhaseVelocity() const;
+    // Get the current position of a specific agent
+    FVector2f GetAgentPosition(int32 AgentIndex) const;
 };

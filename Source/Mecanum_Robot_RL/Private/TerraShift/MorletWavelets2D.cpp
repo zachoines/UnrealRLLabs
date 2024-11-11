@@ -2,8 +2,8 @@
 #include "Math/UnrealMathUtility.h"
 
 // Constructor
-MorletWavelets2D::MorletWavelets2D(int32 InGridSizeX, int32 InGridSizeY, float InPhaseVelocity)
-    : GridSizeX(InGridSizeX), GridSizeY(InGridSizeY), PhaseVelocity(InPhaseVelocity)
+MorletWavelets2D::MorletWavelets2D(int32 InGridSizeX, int32 InGridSizeY)
+    : GridSizeX(InGridSizeX), GridSizeY(InGridSizeY)
 {
     Initialize();
 }
@@ -29,58 +29,73 @@ void MorletWavelets2D::Initialize()
     Heights = Matrix2D(GridSizeY, GridSizeX, 0.0f);
 }
 
-// Update function with height movement clamping
+// Reset function to center all agents on the grid
+void MorletWavelets2D::Reset(int32 NumAgents)
+{
+    AgentPositions.Init(FVector2f(GridSizeX / 2.0f, GridSizeY / 2.0f), NumAgents);
+    Heights.Init(0.0f);
+}
+
+// Update function with position propagation and height clamping
 Matrix2D MorletWavelets2D::Update(const TArray<AgentParameters>& UpdatedParameters)
 {
     Matrix2D NewHeights(GridSizeY, GridSizeX, 0.0f);
 
-    for (const AgentParameters& Agent : UpdatedParameters)
+    for (int32 AgentIndex = 0; AgentIndex < UpdatedParameters.Num(); ++AgentIndex)
     {
-        float x_a = Agent.Position.X;
-        float y_a = Agent.Position.Y;
+        const AgentParameters& Agent = UpdatedParameters[AgentIndex];
+
+        // Update agent position based on velocity and wrap within grid bounds
+        float DeltaX = Agent.Velocity.X * FMath::Cos(Agent.WaveOrientation);
+        float DeltaY = Agent.Velocity.Y * FMath::Sin(Agent.WaveOrientation);
+
+        AgentPositions[AgentIndex].X = FMath::Fmod(AgentPositions[AgentIndex].X + DeltaX + GridSizeX, GridSizeX);
+        AgentPositions[AgentIndex].Y = FMath::Fmod(AgentPositions[AgentIndex].Y + DeltaY + GridSizeY, GridSizeY);
+
+        float x_a = AgentPositions[AgentIndex].X;
+        float y_a = AgentPositions[AgentIndex].Y;
         float A_a = Agent.Amplitude;
         float theta_a = Agent.WaveOrientation;
         float k_a = Agent.Wavenumber;
-        float omega_a = Agent.Frequency;
+        float phase_velocity_a = Agent.PhaseVelocity;
+        float omega_a = k_a * phase_velocity_a;
         float phi_a = Agent.Phase;
-        float sigma_a = Agent.Sigma;
+        float sigma_a = FMath::Max(Agent.Sigma, 0.01f);
         float Time = Agent.Time;
 
+        if (A_a == 0.0f || sigma_a < 0.01f) continue;
+
+        // Shift coordinates relative to agent position
         Matrix2D XShifted = XGrid - x_a;
         Matrix2D YShifted = YGrid - y_a;
 
+        // Rotate coordinates
         float CosTheta = FMath::Cos(theta_a);
         float SinTheta = FMath::Sin(theta_a);
-
         Matrix2D XRot = (XShifted * CosTheta) + (YShifted * SinTheta);
-        Matrix2D YRot = (XShifted * (-SinTheta)) + (YShifted * CosTheta);
+        Matrix2D YRot = (XShifted * -SinTheta) + (YShifted * CosTheta);
 
+        // Gaussian envelope
         Matrix2D Envelope = ((XRot * XRot + YRot * YRot) / (-2.0f * sigma_a * sigma_a)).Exp();
 
+        // Morlet wavelet calculation with phase
         Matrix2D Phase = XRot * k_a - omega_a * Time + phi_a;
         Matrix2D Wave = Envelope * (Phase.Cos()) * A_a;
 
         NewHeights += Wave;
     }
 
-    // Smooth transition by clamping height movement
+    // Smooth height transition with clamping
     for (int32 i = 0; i < GridSizeY; ++i)
     {
         for (int32 j = 0; j < GridSizeX; ++j)
         {
             float DeltaHeight = FMath::Clamp(NewHeights[i][j] - Heights[i][j], -MaxDeltaHeight, MaxDeltaHeight);
-            float MaxHeight = FMath::Clamp(NewHeights[i][j] - Heights[i][j], -MaxDeltaHeight, MaxDeltaHeight);
             Heights[i][j] += DeltaHeight;
         }
     }
 
     return Heights;
-}
-
-// Reset function
-void MorletWavelets2D::Reset()
-{
-    Heights.Init(0.0f);
 }
 
 // Get the current height map
@@ -89,8 +104,8 @@ const Matrix2D& MorletWavelets2D::GetHeights() const
     return Heights;
 }
 
-// Get phase velocity
-float MorletWavelets2D::GetPhaseVelocity() const
+// Get the current position of a specific agent
+FVector2f MorletWavelets2D::GetAgentPosition(int32 AgentIndex) const
 {
-    return PhaseVelocity;
+    return AgentPositions.IsValidIndex(AgentIndex) ? AgentPositions[AgentIndex] : FVector2f(0.0f, 0.0f);
 }

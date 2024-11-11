@@ -10,7 +10,7 @@ FRAME_SKIP = 5      # Frame skip for visualization
 H0 = 0              # Base height of the grid
 
 # Gabor-Morlet Hybrid Wavelet Parameters
-DECAY_FACTOR = 0.95  # Decay factor for the columns (0 < DECAY_FACTOR <= 1)
+DECAY_FACTOR = 0.01  # Decay factor for the columns (0 < DECAY_FACTOR <= 1)
 V_MAX = 1.0          # Maximum speed of column height change per frame
 SIGMA = 5.0          # Spread of the Gaussian envelope
 

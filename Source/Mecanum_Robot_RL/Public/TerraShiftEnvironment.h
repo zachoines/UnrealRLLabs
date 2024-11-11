@@ -39,10 +39,10 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
     int GridSize = 50; // Number of cells along one side of the grid
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int MaxSteps = 1000000; // Maximum steps per episode
+    int MaxSteps = 1024; // Maximum steps per episode
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int NumGoals = 3; // Number of goals for agents
+    int NumGoals = 4; // Number of goals for agents (set between 1 - 4)
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
     float SpawnDelay = 1.0f; // Delay between each GridObject spawn in seconds
@@ -58,23 +58,26 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
 
     // Agent wave parameter ranges
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
-    FVector2D AmplitudeRange = FVector2D(0.5f, 1.0f);
+    FVector2D AmplitudeRange = FVector2D(0.0f, 10.0f); // Amplitude (0 allows for null waves)
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
-    FVector2D WaveOrientationRange = FVector2D(0.0f, 2 * PI);
+    FVector2D WaveOrientationRange = FVector2D(0.0f, 2 * PI); // Orientation angle in radians
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
-    FVector2D WavenumberRange = FVector2D(0.2f, 0.5f);
+    FVector2D WavenumberRange = FVector2D(0.0f, 1.5f); // Wavenumber (0 allows for no oscillations)
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
-    FVector2D PhaseRange = FVector2D(0.0f, 2 * PI);
+    FVector2D PhaseRange = FVector2D(0.0f, 2 * PI); // Initial phase offset in radians
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
-    FVector2D SigmaRange = FVector2D(0.5f, 5.0f);
+    FVector2D SigmaRange = FVector2D(0.01f, 15.0f); // Spread of Gaussian envelope; small values for high localization
 
-    // Agent movement parameter ranges
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
+    FVector2D PhaseVelocityRange = FVector2D(0.0f, 5.0f); // Phase velocity for each agent, affecting frequency
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Movement Parameters")
-    FVector2D VelocityRange = FVector2D(-10.0f, 10.0f); // Adjusted for meters per second
+    FVector2D VelocityRange = FVector2D(-10.0f, 10.0f); // Velocity in meters per second for X and Y directions
+
 };
 
 UCLASS()
@@ -169,9 +172,6 @@ private:
 
     // Function to update column and GridObject colors
     void UpdateColumnGoalObjectColors();
-
-    // Helper function to find the closest column index to a position
-    int32 FindClosestColumnIndex(const FVector& Position, const TArray<FVector>& ColumnCenters) const;
 
     // Override the Tick function
     virtual void Tick(float DeltaTime) override;

@@ -33,7 +33,7 @@ heights = np.zeros((GRID_SIZE, GRID_SIZE))
 
 # Initialize plane wave parameters for each agent
 # For each agent, we have M_WAVES plane waves
-agent_amplitudes = np.random.uniform(1, .0, (N_AGENTS, M_WAVES))
+agent_amplitudes = np.random.uniform(-10, 10, (N_AGENTS, M_WAVES))
 agent_wavenumbers = np.random.uniform(0.05, 0.2, (N_AGENTS, M_WAVES))
 agent_frequencies = np.random.uniform(0.05, 0.2, (N_AGENTS, M_WAVES))
 agent_phases = np.random.uniform(0, 2 * np.pi, (N_AGENTS, M_WAVES))
