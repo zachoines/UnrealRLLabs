@@ -560,20 +560,22 @@ FVector ATerraShiftEnvironment::GenerateRandomGridLocation() const
     int32 X = FMath::RandRange(0, TerraShiftParams->GridSize - 1);
     int32 Y = FMath::RandRange(0, TerraShiftParams->GridSize - 1);
 
-    // Get the column's offsets (X, Y, Z) relative to the grid
-    FVector ColumnOffsets = Grid->GetColumnOffsets(X, Y);
+    // Get the index into GridCenterPoints
+    int32 Index = X * TerraShiftParams->GridSize + Y;
 
-    // Get the grid's relative Z-location from its root component
-    float GridRelativeZ = Grid->GetRootComponent()->GetRelativeLocation().Z;
+    // Get the center point of the grid cell (world coordinates)
+    FVector WorldSpawnLocation = GridCenterPoints[Index];
 
-    // Add the grid's relative Z-location to the column's Z offset
-    float RelativeHeight = GridRelativeZ + ColumnOffsets.Z;
+    // Adjust the Z coordinate to be slightly above the grid
+    float SpawnHeight = Grid->GetActorLocation().Z + TerraShiftParams->ObjectSize.Z * 2.0f;
+    WorldSpawnLocation.Z = SpawnHeight;
 
-    // Calculate the final spawn location with the relative height and X, Y offsets
-    FVector SpawnLocation = Grid->CalculateColumnLocation(X, Y, RelativeHeight);
+    // Convert world coordinates to local coordinates relative to the GridObjectManager or Platform
+    FVector LocalSpawnLocation = Platform->GetActorTransform().InverseTransformPosition(WorldSpawnLocation);
 
-    return SpawnLocation;
+    return LocalSpawnLocation;
 }
+
 
 FVector ATerraShiftEnvironment::GridPositionToWorldPosition(FVector2D GridPosition) const
 {
@@ -610,14 +612,11 @@ void ATerraShiftEnvironment::CheckAndRespawnGridObjects()
         // Get the platform's top Z coordinate
         float PlatformZ = Platform->GetActorLocation().Z;
 
-        // Check if the GridObject has fallen below the platform
-        if ((ObjectExtent.Z + ObjectWorldPosition.Z) < PlatformZ)
-        {
-            // GridObject has fallen off the platform
-            // Respawn the GridObject
-            RespawnGridObject(AgentIndex);
-            // Update RewardBuffer
+        // Check if the bottom of GridObject has fallen below the platform
+        if ((ObjectWorldPosition.Z - (ObjectExtent.Z / 2)) < PlatformZ) {
             RewardBuffer += -1.0f;
+            AgentHasActiveGridObject[AgentIndex] = false;
+            RespawnGridObject(AgentIndex);
             continue;
         }
 
@@ -625,35 +624,21 @@ void ATerraShiftEnvironment::CheckAndRespawnGridObjects()
         int32 GoalIndex = AgentGoalIndices[AgentIndex];
         FVector GoalWorldPosition = GoalPlatforms[GoalIndex]->GetActorLocation();
         float DistanceToGoal = FVector::Dist2D(ObjectWorldPosition, GoalWorldPosition);
-
-        if (DistanceToGoal <= (ObjectExtent.Z / 2.0))
-        {
-            // Reached assigned goal
-            // Remove the GridObject
-            GridObject->SetGridObjectActive(false);
-            GridObjectManager->DeleteGridObject(AgentIndex);
-            AgentHasActiveGridObject[AgentIndex] = false;
-            GridObjectHasReachedGoal[AgentIndex] = true; // Mark as reached goal
-
-            // Update RewardBuffer
+        
+        // Check if the GridObject has reached its goal platform
+        if (DistanceToGoal <= FMath::Max(ObjectExtent.X, ObjectExtent.Y)) {
             RewardBuffer += 1.0f;
-
-            continue; // Skip to next agent
+            AgentHasActiveGridObject[AgentIndex] = false;
+            GridObjectHasReachedGoal[AgentIndex] = true;
+            GridObjectManager->DeleteGridObject(AgentIndex);
+            continue;
         }
     }
 }
 
-void ATerraShiftEnvironment::RespawnGridObject(int32 AgentIndex)
-{
+void ATerraShiftEnvironment::RespawnGridObject(int32 AgentIndex) {
     if (!GridObjectManager) return;
 
-    // Set the agent's GridObject as inactive
-    if (AgentHasActiveGridObject.IsValidIndex(AgentIndex))
-    {
-        AgentHasActiveGridObject[AgentIndex] = false;
-    }
-
-    // Delete the existing GridObject
     GridObjectManager->DeleteGridObject(AgentIndex);
 
     // Generate a new random spawn location
@@ -663,7 +648,7 @@ void ATerraShiftEnvironment::RespawnGridObject(int32 AgentIndex)
     int32 NumGoals = GoalPlatforms.Num();
     AgentGoalIndices[AgentIndex] = FMath::RandRange(0, NumGoals - 1);
 
-    // Spawn a new GridObject at the new location after a delay
+    // Respawn the GridObject after a delay
     GridObjectManager->RespawnGridObjectAtLocation(AgentIndex, NewSpawnLocation, TerraShiftParams->RespawnDelay);
 }
 

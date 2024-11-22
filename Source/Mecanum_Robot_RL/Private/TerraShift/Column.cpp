@@ -88,6 +88,10 @@ void AColumn::SetSimulatePhysics(bool bEnableCollision) {
         ColumnMesh->SetCollisionObjectType(ECollisionChannel::ECC_WorldStatic);
         ColumnMesh->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
     }
+    else {
+        // Disable collision
+        ColumnMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    }
 }
 
 void AColumn::SetColumnColor(FLinearColor Color) {

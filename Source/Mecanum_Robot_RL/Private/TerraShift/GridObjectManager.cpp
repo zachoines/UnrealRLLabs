@@ -1,8 +1,4 @@
 #include "TerraShift/GridObjectManager.h"
-#include "TimerManager.h"
-#include "Engine/World.h"
-#include "TerraShift/GridObject.h"
-#include "Engine/Engine.h" // For logging
 
 // Constructor
 AGridObjectManager::AGridObjectManager() {
@@ -46,8 +42,34 @@ void AGridObjectManager::SpawnGridObjects(const TArray<FVector>& Locations, FVec
     }
 }
 
-// Spawns a GridObject at a specific index and location
-void AGridObjectManager::SpawnGridObjectAtIndex(int32 Index, FVector InLocation) {
+// Spawns or reuses a GridObject at a specific index and location
+void AGridObjectManager::SpawnGridObjectAtIndex(int32 Index, FVector InLocalLocation) {
+    AGridObject* GridObject = nullptr;
+
+    if (GridObjects.IsValidIndex(Index) && GridObjects[Index]) {
+        GridObject = GridObjects[Index];
+    }
+    else {
+        GridObject = CreateNewGridObjectAtIndex(Index);
+    }
+
+    if (GridObject) {
+        // Adjust the GridObject's location to ensure it's above the grid
+        FVector Location = InLocalLocation;
+        FBoxSphereBounds GridObjectBounds = GridObject->MeshComponent->CalcLocalBounds();
+        FVector LocalOffsets = GridObjectBounds.BoxExtent * GridObject->MeshComponent->GetRelativeScale3D();
+        Location.Z += LocalOffsets.Z * 4; // So GridObjects don't spawn "in" each other, but rather fall onto the grid
+
+        // Reset and activate the GridObject
+        GridObject->ResetGridObject(Location);
+
+        // Notify that a GridObject has been spawned
+        OnGridObjectSpawned.Broadcast(Index, GridObject);
+    }
+}
+
+// Helper function to create a new GridObject
+AGridObject* AGridObjectManager::CreateNewGridObjectAtIndex(int32 Index) {
     if (UWorld* World = GetWorld()) {
         AGridObject* NewGridObject = World->SpawnActor<AGridObject>(AGridObject::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
         if (NewGridObject) {
@@ -59,28 +81,17 @@ void AGridObjectManager::SpawnGridObjectAtIndex(int32 Index, FVector InLocation)
                 GridObjects.SetNum(Index + 1);
             }
             GridObjects[Index] = NewGridObject;
-
-            // Adjust location to ensure the GridObject is above the Grid
-            FVector Location = InLocation;
-            FBoxSphereBounds GridObjectBounds = NewGridObject->MeshComponent->CalcLocalBounds();
-            FVector LocalOffsets = GridObjectBounds.BoxExtent * NewGridObject->MeshComponent->GetRelativeScale3D();
-            Location.Z += LocalOffsets.Z * 2; // So GridObjects dont spawn in each other
-
-            NewGridObject->SetActorRelativeLocation(Location);
-            NewGridObject->SetGridObjectActive(true);
-
-            // Notify that a GridObject has been spawned
-            OnGridObjectSpawned.Broadcast(Index, NewGridObject);
+            return NewGridObject;
         }
     }
+    return nullptr;
 }
 
-// Resets all GridObjects
+// Resets all GridObjects by deactivating them
 void AGridObjectManager::ResetGridObjects() {
     for (AGridObject* GridObject : GridObjects) {
         if (GridObject) {
             GridObject->SetGridObjectActive(false);
-            GridObject->SetActorRelativeLocation(FVector::ZeroVector);
         }
     }
 }
@@ -91,17 +102,6 @@ FVector AGridObjectManager::GetGridObjectWorldLocation(int32 Index) const {
         return GridObjects[Index]->GetActorLocation();
     }
     return FVector::ZeroVector;
-}
-
-// Retrieves active grid objects
-TArray<AGridObject*> AGridObjectManager::GetActiveGridObjects() const {
-    TArray<AGridObject*> ActiveObjects;
-    for (AGridObject* GridObject : GridObjects) {
-        if (GridObject && GridObject->IsActive()) {
-            ActiveObjects.Add(GridObject);
-        }
-    }
-    return ActiveObjects;
 }
 
 // Retrieves active columns in proximity to grid objects
@@ -164,44 +164,12 @@ TSet<int32> AGridObjectManager::GetActiveColumnsInProximity(int32 GridSize, cons
     return ActiveColumnIndices;
 }
 
-// Helper function to find the closest column index to the given location
-int32 AGridObjectManager::FindClosestColumnIndex(const FVector& Location, const TArray<FVector>& ColumnCenters) const {
-    int32 ClosestIndex = -1;
-    float MinDistance = FLT_MAX;
-
-    for (int32 i = 0; i < ColumnCenters.Num(); ++i) {
-        float Distance = FVector::Dist2D(Location, ColumnCenters[i]);
-        if (Distance < MinDistance) {
-            MinDistance = Distance;
-            ClosestIndex = i;
-        }
-    }
-
-    return ClosestIndex;
-}
-
-// Helper function to convert 1D index to 2D grid coordinates
-FIntPoint AGridObjectManager::Get2DIndexFrom1D(int32 Index, int32 GridSize) const {
-    return FIntPoint(Index / GridSize, Index % GridSize);
-}
-
 // Deactivates a GridObject at a specific index
-void AGridObjectManager::DeactivateGridObject(int32 Index) {
-    if (GridObjects.IsValidIndex(Index)) {
-        AGridObject* GridObject = GridObjects[Index];
-        if (GridObject) {
-            GridObject->SetGridObjectActive(false);
-        }
-    }
-}
-
-// Deletes a GridObject at a specific index
 void AGridObjectManager::DeleteGridObject(int32 Index) {
     if (GridObjects.IsValidIndex(Index)) {
         AGridObject* GridObject = GridObjects[Index];
         if (GridObject) {
-            GridObject->Destroy();
-            GridObjects[Index] = nullptr;
+            GridObject->SetGridObjectActive(false);
         }
     }
 }

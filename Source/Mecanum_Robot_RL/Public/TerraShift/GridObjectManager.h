@@ -6,6 +6,7 @@
 #include "Engine/World.h"
 #include "TimerManager.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "Engine/Engine.h" // For logging
 #include "GridObjectManager.generated.h"
 
 // Declare a delegate for when a GridObject is spawned
@@ -27,16 +28,10 @@ public:
     // Get the world location of a specified grid object
     FVector GetGridObjectWorldLocation(int32 Index) const;
 
-    // Get active grid objects
-    TArray<AGridObject*> GetActiveGridObjects() const;
-
     // Get active columns in proximity to grid objects
     TSet<int32> GetActiveColumnsInProximity(int32 GridSize, const TArray<FVector>& ColumnCenters, const FVector& PlatformCenter, float PlatformSize, float CellSize) const;
 
     // Deactivate a GridObject at a specific index
-    void DeactivateGridObject(int32 Index);
-
-    // Delete a GridObject at a specific index
     void DeleteGridObject(int32 Index);
 
     // Respawn a GridObject at a specific index and location after a delay
@@ -60,12 +55,9 @@ private:
     // Size of GridObjects to be spawned
     FVector ObjectSize;
 
-    // Spawn a single grid object at the specified index and location
+    // Spawns or reuses a GridObject at the specified index and location
     void SpawnGridObjectAtIndex(int32 Index, FVector InLocation);
 
-    // Helper function to find the closest column index to the given location
-    int32 FindClosestColumnIndex(const FVector& Location, const TArray<FVector>& ColumnCenters) const;
-
-    // Helper function to convert 1D index to 2D grid coordinates
-    FIntPoint Get2DIndexFrom1D(int32 Index, int32 GridSize) const;
+    // Helper function to create a new GridObject
+    AGridObject* CreateNewGridObjectAtIndex(int32 Index);
 };

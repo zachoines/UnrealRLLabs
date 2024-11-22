@@ -7,16 +7,14 @@
 AGridObject::AGridObject() {
     PrimaryActorTick.bCanEverTick = false;
 
-    // Create the root component (non-simulating)
-    GridObjectRoot = CreateDefaultSubobject<USceneComponent>(TEXT("GridObjectRoot"));
-    RootComponent = GridObjectRoot;
-
     // Create the mesh component and attach it to the root
     MeshComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("MeshComponent"));
-    MeshComponent->SetupAttachment(GridObjectRoot);
+    RootComponent = MeshComponent;
 
-    // Disable physics simulation on the root component
-    GridObjectRoot->SetMobility(EComponentMobility::Movable);
+    // Ensure zero relative transforms
+    MeshComponent->SetRelativeLocation(FVector::ZeroVector);
+    MeshComponent->SetRelativeRotation(FRotator::ZeroRotator);
+    MeshComponent->SetRelativeScale3D(FVector::OneVector);
 
     // Set default properties for the mesh component
     MeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -53,14 +51,13 @@ void AGridObject::InitializeGridObject(FVector InObjectSize) {
 
 void AGridObject::SetGridObjectActive(bool bInIsActive) {
     bIsActive = bInIsActive;
+    SetSimulatePhysics(bInIsActive);
     SetActorHiddenInGame(!bIsActive);
-    SetSimulatePhysics(bIsActive);
 }
 
 void AGridObject::SetSimulatePhysics(bool bEnablePhysics) {
     MeshComponent->SetSimulatePhysics(bEnablePhysics);
-    MeshComponent->SetEnableGravity(true);
-    SetGridObjectColor(FLinearColor::Gray);
+    MeshComponent->SetEnableGravity(bEnablePhysics);
 
     if (bEnablePhysics) {
         // Enable collision and physics
@@ -94,24 +91,20 @@ bool AGridObject::IsActive() const {
 }
 
 void AGridObject::ResetGridObject(FVector NewLocation) {
-    
 
     // Reset physics state
     MeshComponent->SetPhysicsLinearVelocity(FVector::ZeroVector, false);
     MeshComponent->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector, false);
 
-    // Access the BodyInstance to clear forces and torques
+    // Clear forces and torques
     if (MeshComponent->BodyInstance.IsValidBodyInstance()) {
         MeshComponent->BodyInstance.ClearForces();
         MeshComponent->BodyInstance.ClearTorques();
     }
 
-    // Deactivate the grid object
-    SetGridObjectActive(false);
-
-    // Reset location
+    // Reset location and activation state
     SetActorRelativeLocation(NewLocation);
+    // MeshComponent->SetRelativeLocation(NewLocation);
 
-    // Reactivate the grid object
     SetGridObjectActive(true);
 }
