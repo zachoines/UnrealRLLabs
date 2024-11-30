@@ -1,17 +1,31 @@
 #include "TerraShift/GridObjectManager.h"
+#include "TerraShift/GridObject.h"
+#include "Engine/World.h"
+#include "TimerManager.h"
+#include "UObject/NameTypes.h" // For FName
 
 // Constructor
 AGridObjectManager::AGridObjectManager() {
     PrimaryActorTick.bCanEverTick = false;
-    RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("GridObjectManagerRoot"));
 
     // Initialize ObjectSize to a default value
     ObjectSize = FVector(0.1f, 0.1f, 0.1f);
+    PlatformActor = nullptr;
 }
 
 // Set the size of GridObjects to be spawned
 void AGridObjectManager::SetObjectSize(FVector InObjectSize) {
     ObjectSize = InObjectSize;
+}
+
+// Set the platform actor reference
+void AGridObjectManager::SetPlatformActor(AActor* InPlatform) {
+    PlatformActor = InPlatform;
+}
+
+// Get the actor's folder path
+FName AGridObjectManager::GetActorFolderPath() const {
+    return GetFolderPath();
 }
 
 // Spawns GridObjects at the given locations with the specified size and delay
@@ -43,7 +57,7 @@ void AGridObjectManager::SpawnGridObjects(const TArray<FVector>& Locations, FVec
 }
 
 // Spawns or reuses a GridObject at a specific index and location
-void AGridObjectManager::SpawnGridObjectAtIndex(int32 Index, FVector InLocalLocation) {
+void AGridObjectManager::SpawnGridObjectAtIndex(int32 Index, FVector InWorldLocation) {
     AGridObject* GridObject = nullptr;
 
     if (GridObjects.IsValidIndex(Index) && GridObjects[Index]) {
@@ -55,13 +69,21 @@ void AGridObjectManager::SpawnGridObjectAtIndex(int32 Index, FVector InLocalLoca
 
     if (GridObject) {
         // Adjust the GridObject's location to ensure it's above the grid
-        FVector Location = InLocalLocation;
+        FVector Location = InWorldLocation;
         FBoxSphereBounds GridObjectBounds = GridObject->MeshComponent->CalcLocalBounds();
         FVector LocalOffsets = GridObjectBounds.BoxExtent * GridObject->MeshComponent->GetRelativeScale3D();
         Location.Z += LocalOffsets.Z * 4; // So GridObjects don't spawn "in" each other, but rather fall onto the grid
 
         // Reset and activate the GridObject
-        GridObject->ResetGridObject(Location);
+        GridObject->ResetGridObject();
+
+        // Set the GridObject's world location
+        GridObject->SetActorLocation(Location);
+
+        // Set the folder path of the GridObject
+        FName GridObjectManagerFolderPath = GetActorFolderPath();
+        FName GridObjectFolderPath(*(GridObjectManagerFolderPath.ToString() + "/GridObjects"));
+        GridObject->SetFolderPath(GridObjectFolderPath);
 
         // Notify that a GridObject has been spawned
         OnGridObjectSpawned.Broadcast(Index, GridObject);
@@ -74,13 +96,20 @@ AGridObject* AGridObjectManager::CreateNewGridObjectAtIndex(int32 Index) {
         AGridObject* NewGridObject = World->SpawnActor<AGridObject>(AGridObject::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
         if (NewGridObject) {
             NewGridObject->InitializeGridObject(ObjectSize);
-            NewGridObject->AttachToComponent(RootComponent, FAttachmentTransformRules::KeepRelativeTransform);
 
-            // Expand if adding new
+            // Do not attach the GridObject to any parent
+
+            // Set the folder path of the GridObject
+            FName GridObjectManagerFolderPath = GetActorFolderPath();
+            FName GridObjectFolderPath(*(GridObjectManagerFolderPath.ToString() + "/GridObjects"));
+            NewGridObject->SetFolderPath(GridObjectFolderPath);
+
+            // Add the GridObject to the array
             if (GridObjects.Num() <= Index) {
                 GridObjects.SetNum(Index + 1);
             }
             GridObjects[Index] = NewGridObject;
+
             return NewGridObject;
         }
     }
@@ -119,7 +148,7 @@ TSet<int32> AGridObjectManager::GetActiveColumnsInProximity(int32 GridSize, cons
         }
 
         // Get the GridObject's location in world space
-        FVector ObjectLocation = GridObject->MeshComponent->GetComponentLocation();
+        FVector ObjectLocation = GridObject->GetObjectLocation();
 
         // Get the GridObject's bounds in world space
         FBoxSphereBounds ObjectBoundsWorld = GridObject->MeshComponent->CalcBounds(

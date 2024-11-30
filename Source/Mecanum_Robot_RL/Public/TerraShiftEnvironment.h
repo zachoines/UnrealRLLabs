@@ -12,6 +12,7 @@
 #include "TimerManager.h"
 
 #include "RLTypes.h"
+#include "TerraShift/MainPlatform.h"
 #include "TerraShift/Grid.h"
 #include "TerraShift/GridObjectManager.h"
 #include "TerraShift/MorletWavelets2D.h"
@@ -94,7 +95,7 @@ public:
 
     // The platform that agents operate on
     UPROPERTY(EditAnywhere)
-    AStaticMeshActor* Platform;
+    AMainPlatform* Platform;
 
     // The Grid
     UPROPERTY(EditAnywhere)
@@ -153,7 +154,7 @@ private:
     void SetupActionAndObservationSpace();
 
     // Function to spawn the platform in the environment
-    AStaticMeshActor* SpawnPlatform(FVector Location);
+    AMainPlatform* SpawnPlatform(FVector Location);                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
 
     // Helper function to generate random positions on the grid for spawning GridObjects
     FVector GenerateRandomGridLocation() const;

@@ -20,7 +20,7 @@ public:
     // Gets the world bounds of the grid object
     FVector GetObjectExtent() const;
 
-    // Gets the world lo0cation of the grid object
+    // Gets the world location of the grid object
     FVector GetObjectLocation() const;
 
     // Checks if the grid object is active
@@ -32,14 +32,10 @@ public:
     // Sets the color of the grid object
     void SetGridObjectColor(FLinearColor Color);
 
-    // Reset the GridObject to a new location
-    void ResetGridObject(FVector NewLocation);
+    // Reset the GridObject
+    void ResetGridObject();
 
-    // Root component (non-simulating)
-    UPROPERTY(VisibleAnywhere, Category = "Components")
-    USceneComponent* GridObjectRoot;
-
-    // Static mesh component for visualization
+    // Static mesh component for visualization (now the root component)
     UPROPERTY(VisibleAnywhere, Category = "Components")
     UStaticMeshComponent* MeshComponent;
 

@@ -7,7 +7,7 @@
 AGridObject::AGridObject() {
     PrimaryActorTick.bCanEverTick = false;
 
-    // Create the mesh component and attach it to the root
+    // Create the mesh component and set it as the root
     MeshComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("MeshComponent"));
     RootComponent = MeshComponent;
 
@@ -44,6 +44,9 @@ void AGridObject::InitializeGridObject(FVector InObjectSize) {
         MeshComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
         MeshComponent->SetSimulatePhysics(false);
         MeshComponent->SetEnableGravity(false);
+
+        // Enable Auto Weld to maintain attachment during physics simulation
+        MeshComponent->BodyInstance.bAutoWeld = true;
     }
 
     SetGridObjectActive(false);
@@ -52,7 +55,7 @@ void AGridObject::InitializeGridObject(FVector InObjectSize) {
 void AGridObject::SetGridObjectActive(bool bInIsActive) {
     bIsActive = bInIsActive;
     SetSimulatePhysics(bInIsActive);
-    SetActorHiddenInGame(!bIsActive);
+    SetActorHiddenInGame(!bInIsActive);
 }
 
 void AGridObject::SetSimulatePhysics(bool bEnablePhysics) {
@@ -90,7 +93,7 @@ bool AGridObject::IsActive() const {
     return bIsActive;
 }
 
-void AGridObject::ResetGridObject(FVector NewLocation) {
+void AGridObject::ResetGridObject() {
 
     // Reset physics state
     MeshComponent->SetPhysicsLinearVelocity(FVector::ZeroVector, false);
@@ -101,10 +104,7 @@ void AGridObject::ResetGridObject(FVector NewLocation) {
         MeshComponent->BodyInstance.ClearForces();
         MeshComponent->BodyInstance.ClearTorques();
     }
-
-    // Reset location and activation state
-    SetActorRelativeLocation(NewLocation);
-    // MeshComponent->SetRelativeLocation(NewLocation);
-
+    
+    // Turn on
     SetGridObjectActive(true);
 }

@@ -1,4 +1,12 @@
 #include "TerraShiftEnvironment.h"
+#include "TerraShift/GridObjectManager.h"
+#include "TerraShift/MainPlatform.h"
+#include "TerraShift/Grid.h"
+#include "TerraShift/GoalPlatform.h"
+#include "Engine/World.h"
+#include "Materials/Material.h"
+#include "Engine/StaticMesh.h"
+#include "UObject/ConstructorHelpers.h"
 
 // Constructor
 ATerraShiftEnvironment::ATerraShiftEnvironment()
@@ -12,7 +20,6 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
     TerraShiftRoot = CreateDefaultSubobject<USceneComponent>(TEXT("TerraShiftRoot"));
     RootComponent = TerraShiftRoot;
 
-    GridObjectManager = CreateDefaultSubobject<AGridObjectManager>(TEXT("GridObjectManager"));
     WaveSimulator = nullptr;
     Grid = nullptr;
     Intialized = false;
@@ -62,6 +69,10 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
     CurrentAgents = 1; // Set to 1 as it will be updated in ResetEnv()
     CurrentStep = 0;
 
+    // Use the actor's name to create a unique folder path
+    FString EnvironmentFolderPath = GetName();
+    SetFolderPath(*EnvironmentFolderPath);
+
     // Set up observation and action space
     SetupActionAndObservationSpace();
 
@@ -75,13 +86,12 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
 
     // Spawn the platform at the specified location
     Platform = SpawnPlatform(TerraShiftParams->Location);
-    Platform->AttachToActor(this, FAttachmentTransformRules::KeepRelativeTransform);
 
     // Scale the platform based on the specified PlatformSize
     Platform->SetActorScale3D(FVector(TerraShiftParams->PlatformSize, TerraShiftParams->PlatformSize, 1.0f));
 
     // Calculate platform dimensions and determine grid cell size
-    PlatformWorldSize = Platform->GetStaticMeshComponent()->GetStaticMesh()->GetBounds().BoxExtent * 2.0f * Platform->GetActorScale3D();
+    PlatformWorldSize = Platform->PlatformMeshComponent->GetStaticMesh()->GetBounds().BoxExtent * 2.0f * Platform->GetActorScale3D();
     PlatformCenter = Platform->GetActorLocation();
     CellSize = PlatformWorldSize.X / static_cast<float>(TerraShiftParams->GridSize);
 
@@ -105,7 +115,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
 
     // Initialize the grid at the center of the platform, slightly elevated
     FVector GridLocation = PlatformCenter;
-    GridLocation.Z += 1.00; // Slightly above the platform
+    GridLocation.Z += 1.00f; // Slightly above the platform
 
     FActorSpawnParameters SpawnParams;
     SpawnParams.Owner = this;
@@ -120,15 +130,21 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
         );
     }
 
-    // Initialize GridObjectManager and attach it to TerraShiftRoot
+    // Initialize GridObjectManager and set its folder path
     GridObjectManager = GetWorld()->SpawnActor<AGridObjectManager>(AGridObjectManager::StaticClass());
     if (GridObjectManager)
     {
-        GridObjectManager->AttachToActor(Platform, FAttachmentTransformRules::KeepRelativeTransform);
         GridObjectManager->SetObjectSize(TerraShiftParams->ObjectSize);
-        
-        // Bind to the GridObjectManager's event, for async/gradual like spawning
+
+        // Set the PlatformActor in GridObjectManager
+        GridObjectManager->SetPlatformActor(Platform);
+
+        // Bind to the GridObjectManager's event
         GridObjectManager->OnGridObjectSpawned.AddDynamic(this, &ATerraShiftEnvironment::OnGridObjectSpawned);
+
+        // Set the folder path for GridObjectManager
+        EnvironmentFolderPath = GetFolderPath().ToString();
+        GridObjectManager->SetFolderPath(FName(*(EnvironmentFolderPath + "/GridObjectManager")));
     }
 
     // Initialize wave simulator
@@ -198,7 +214,7 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
         AgentParam.Amplitude = FMath::FRandRange(TerraShiftParams->AmplitudeRange.X, TerraShiftParams->AmplitudeRange.Y);
         AgentParam.WaveOrientation = FMath::FRandRange(TerraShiftParams->WaveOrientationRange.X, TerraShiftParams->WaveOrientationRange.Y);
         AgentParam.Wavenumber = FMath::FRandRange(TerraShiftParams->WavenumberRange.X, TerraShiftParams->WavenumberRange.Y);
-        AgentParam.PhaseVelocity = FMath::FRandRange(TerraShiftParams->PhaseVelocityRange.X, TerraShiftParams->PhaseVelocityRange.Y); // New line
+        AgentParam.PhaseVelocity = FMath::FRandRange(TerraShiftParams->PhaseVelocityRange.X, TerraShiftParams->PhaseVelocityRange.Y);
         AgentParam.Phase = FMath::FRandRange(TerraShiftParams->PhaseRange.X, TerraShiftParams->PhaseRange.Y);
         AgentParam.Sigma = FMath::FRandRange(TerraShiftParams->SigmaRange.X, TerraShiftParams->SigmaRange.Y);
         AgentParam.Time = 0.0f;
@@ -238,9 +254,14 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
     FVector ObjectWorldPosition = FVector::ZeroVector;
     if (AgentHasActiveGridObject[AgentIndex] && GridObjectManager)
     {
-        ObjectWorldPosition = GridObjectManager->GetGridObjectWorldLocation(AgentIndex);
+        AGridObject* GridObject = GridObjectManager->GetGridObject(AgentIndex);
+        if (GridObject)
+        {
+            ObjectWorldPosition = GridObject->GetObjectLocation();
+        }
     }
 
+    // Transform the world position to be relative to the platform
     FVector ObjectRelativePosition = Platform->GetActorTransform().InverseTransformPosition(ObjectWorldPosition);
 
     // Retrieve Agent Position
@@ -518,7 +539,7 @@ void ATerraShiftEnvironment::SetupActionAndObservationSpace()
     }
 }
 
-AStaticMeshActor* ATerraShiftEnvironment::SpawnPlatform(FVector Location)
+AMainPlatform* ATerraShiftEnvironment::SpawnPlatform(FVector Location)
 {
     if (UWorld* World = GetWorld())
     {
@@ -526,22 +547,15 @@ AStaticMeshActor* ATerraShiftEnvironment::SpawnPlatform(FVector Location)
         if (PlaneMesh)
         {
             FActorSpawnParameters SpawnParams;
-            AStaticMeshActor* NewPlatform = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, FRotator::ZeroRotator, SpawnParams);
+            AMainPlatform* NewPlatform = World->SpawnActor<AMainPlatform>(AMainPlatform::StaticClass(), Location, FRotator::ZeroRotator, SpawnParams);
             if (NewPlatform)
             {
-                // No Physics or collisions. Just Visual.
-                NewPlatform->GetStaticMeshComponent()->SetStaticMesh(PlaneMesh);
-                NewPlatform->SetMobility(EComponentMobility::Movable);
-                NewPlatform->GetStaticMeshComponent()->SetSimulatePhysics(false);
-                NewPlatform->SetActorEnableCollision(false);
-
-                // Load and apply material to the platform
+                // Initialize the platform with mesh and material
                 UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/Material/Platform_Material.Platform_Material'"));
-                if (Material)
-                {
-                    Material->TwoSided = true;
-                    NewPlatform->GetStaticMeshComponent()->SetMaterial(0, Material);
-                }
+                NewPlatform->InitializePlatform(PlaneMesh, Material);
+
+                // Attach the platform to the environment root
+                NewPlatform->AttachToActor(this, FAttachmentTransformRules::KeepRelativeTransform);
             }
             return NewPlatform;
         }
@@ -549,6 +563,7 @@ AStaticMeshActor* ATerraShiftEnvironment::SpawnPlatform(FVector Location)
     return nullptr;
 }
 
+// **Updated GenerateRandomGridLocation Function**
 FVector ATerraShiftEnvironment::GenerateRandomGridLocation() const
 {
     if (!Grid)
@@ -570,12 +585,9 @@ FVector ATerraShiftEnvironment::GenerateRandomGridLocation() const
     float SpawnHeight = Grid->GetActorLocation().Z + TerraShiftParams->ObjectSize.Z * 2.0f;
     WorldSpawnLocation.Z = SpawnHeight;
 
-    // Convert world coordinates to local coordinates relative to the GridObjectManager or Platform
-    FVector LocalSpawnLocation = Platform->GetActorTransform().InverseTransformPosition(WorldSpawnLocation);
-
-    return LocalSpawnLocation;
+    // **Return world location directly**
+    return WorldSpawnLocation;
 }
-
 
 FVector ATerraShiftEnvironment::GridPositionToWorldPosition(FVector2D GridPosition) const
 {
@@ -624,7 +636,7 @@ void ATerraShiftEnvironment::CheckAndRespawnGridObjects()
         int32 GoalIndex = AgentGoalIndices[AgentIndex];
         FVector GoalWorldPosition = GoalPlatforms[GoalIndex]->GetActorLocation();
         float DistanceToGoal = FVector::Dist2D(ObjectWorldPosition, GoalWorldPosition);
-        
+
         // Check if the GridObject has reached its goal platform
         if (DistanceToGoal <= FMath::Max(ObjectExtent.X, ObjectExtent.Y)) {
             RewardBuffer += 1.0f;
@@ -636,7 +648,8 @@ void ATerraShiftEnvironment::CheckAndRespawnGridObjects()
     }
 }
 
-void ATerraShiftEnvironment::RespawnGridObject(int32 AgentIndex) {
+void ATerraShiftEnvironment::RespawnGridObject(int32 AgentIndex)
+{
     if (!GridObjectManager) return;
 
     GridObjectManager->DeleteGridObject(AgentIndex);
