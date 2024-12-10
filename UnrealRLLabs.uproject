@@ -23,7 +23,7 @@
 		},
 		{
 			"Name": "PythonFoundationPackages",
-			"Enabled": false
+			"Enabled": true
 		},
 		{
 			"Name": "CustomShaders",

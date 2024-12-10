@@ -49,8 +49,7 @@ TArray<FVector> AUnrealRLLabsGameModeBase::CreateGridLocations(int32 NumEnvironm
 }
 
 void AUnrealRLLabsGameModeBase::BeginPlay()
-{   
- 
+{
     bool loaded = ReadJsonConfig(
         FPaths::ProjectContentDir() + TEXT("EnvConfigs/TerraShift.json"),
         TrainParams
@@ -61,15 +60,14 @@ void AUnrealRLLabsGameModeBase::BeginPlay()
         TArray<FVector> Locations = CreateGridLocations(TrainParams.NumEnvironments, FVector(100.0f, 100.0f, 100.0f));
     
         if (TrainParams.NumEnvironments != Locations.Num()) {
-            // TODO:: Throw error
+            UE_LOG(LOG_UNREALRLLABS, Error, TEXT("Could not spawn environments"));
         }
 
-        int CurrentAgents = 1; // FMath::RandRange(TrainParams.MinAgents, TrainParams.MaxAgents);
         for (int32 i = 0; i < TrainParams.NumEnvironments; i++)
         {
             FTerraShiftEnvironmentInitParams* Params = new FTerraShiftEnvironmentInitParams();
             Params->Location = Locations[i];
-            Params->NumAgents = CurrentAgents;
+            Params->NumAgents = 1; // Environments will override on reset
             InitParamsArray.Add(StaticCast<FBaseInitParams*>(Params));
         }
 
@@ -78,22 +76,9 @@ void AUnrealRLLabsGameModeBase::BeginPlay()
             InitParamsArray,
             TrainParams
         );
-
-        /*for (int32 i = 0; i < TrainParams.NumEnvironments; i++)
-        {
-            FMultiAgentCubeEnvironmentInitParams* MultiCubeParams = new FMultiAgentCubeEnvironmentInitParams();
-            MultiCubeParams->Location = Locations[i];
-            InitParamsArray.Add(StaticCast<FBaseInitParams*>(MultiCubeParams));
-        }
-
-        Runner->InitRunner(
-            AMultiAgentCubeEnvironment::StaticClass(),
-            InitParamsArray,
-            TrainParams
-        );*/
     }
     else {
-        // TODO:: Throw error
+        UE_LOG(LOG_UNREALRLLABS, Error, TEXT("Could not read JSON config."));
     }
 }
 

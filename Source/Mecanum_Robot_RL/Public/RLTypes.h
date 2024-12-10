@@ -80,17 +80,10 @@ struct UNREALRLLABS_API FBaseInitParams
     GENERATED_USTRUCT_BODY()
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    FVector Location; // spawn location 
+    FVector Location;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
     int NumAgents;
-
-    /*UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int MaxAgents;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int MinAgents;*/
-
 };
 
 

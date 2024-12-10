@@ -7,6 +7,7 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
 
     EnvInfo.EnvID = 3;
     EnvInfo.IsMultiAgent = true;
+    EnvInfo.MaxAgents = 10;
     EnvInfo.ActionSpace = CreateDefaultSubobject<UActionSpace>(TEXT("ActionSpace"));
 
     TerraShiftRoot = CreateDefaultSubobject<USceneComponent>(TEXT("TerraShiftRoot"));

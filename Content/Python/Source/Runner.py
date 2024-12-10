@@ -1,8 +1,8 @@
-from Agents.Agent import Agent
-from Utility import RunningMeanStdNormalizer
-from Environment import EnvCommunicationInterface, EventType
+from Source.Agent import Agent
+from Source.Utility import RunningMeanStdNormalizer
+from Source.Environment import EnvCommunicationInterface, EventType
 import torch
-from torch.utils.tensorboard.writer import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 
 class RLRunner:
     def __init__(self, agent: Agent, agentComm: EnvCommunicationInterface, normalizeStates: bool = False, saveFrequency: int = 10) -> None:

@@ -35,10 +35,11 @@ void ARLRunner::InitRunner(
 TArray<FAction> ARLRunner::GetActions(TArray<FState> States, TArray<float> Dones, TArray<float> Truncs)
 {
     if (AgentComm) {
-        return VectorEnvironment->SampleActions();
-        // return AgentComm->GetActions(States, Dones, Truncs, CurrentAgents);
+        // return VectorEnvironment->SampleActions();
+        return AgentComm->GetActions(States, Dones, Truncs, CurrentAgents);
     }
     else {
+        UE_LOG(LogTemp, Log, TEXT("Could not read JSON config."));
         return VectorEnvironment->SampleActions();
     }
 }

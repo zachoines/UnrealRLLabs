@@ -1,0 +1,83 @@
+environment:
+  type: TerraShift
+  params:
+    PlatformSize: 1.0
+    MaxColumnHeight: 1.0
+    ObjectSize: [0.10, 0.10, 0.10]
+    ObjectMass: 0.2
+    GridSize: 50
+    MaxSteps: 1024
+    NumGoals: 4
+    SpawnDelay: 1.0
+    RespawnDelay: 1.0
+    MaxAgents: 10
+    GoalThreshold: 0.1
+    AmplitudeRange: [0.0, 10.0]
+    WaveOrientationRange: [0.0, 6.28318530718]
+    WavenumberRange: [0.0, 1.5]
+    PhaseRange: [0.0, 6.28318530718]
+    SigmaRange: [0.01, 15.0]
+    PhaseVelocityRange: [0.0, 5.0]
+    VelocityRange: [-10.0, 10.0]
+
+  shape:
+    is_multi_agent: True
+    single_agent_obs_size: 18
+    max_agents: 10
+    action_space:
+      type: continuous
+      size: 2  # Example: 2D continuous action
+
+agent:
+  type: MA_POCA
+  params:
+    learning_rate: 0.0001
+    gamma: 0.99
+    lambda: 0.95
+    hidden_size: 128
+    num_heads: 4
+    normalize_rewards: false
+    value_loss_coeff: 0.5
+    entropy_coeff: 0.01
+    max_grad_norm: 0.5
+
+    networks:
+      critic_network:
+        value_head:
+          in_features: 128
+          hidden_size: 128
+          dropout_rate: 0.0
+        baseline_head:
+          in_features: 128
+          hidden_size: 128
+          dropout_rate: 0.0
+      MultiAgentEmbeddingNetwork:
+        agent_obs_encoder:
+          input_size: 18
+          output_size: 128
+          dropout_rate: 0.0
+          activation: True
+        RSA:
+          embed_size: 128
+          heads: 4
+          dropout_rate: 0.0
+        agent_embedding_encoder:
+          input_size: 128
+          output_size: 128
+          dropout_rate: 0.0
+          activation: True
+        obs_actions_encoder:
+          state_dim: 128
+          action_dim: 2
+          output_size: 128
+          dropout_rate: 0.0
+          activation: True
+
+train:
+  num_environments: 2
+  epochs: 10000
+  mini_batch_size: 128
+  buffer_size: 512
+  batch_size: 128
+  AgentsResetFrequency: 512
+  ActionRepeat: 10
