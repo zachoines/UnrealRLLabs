@@ -39,9 +39,13 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
     int GridSize = 50;
 
+    /** Max abs movement delta of columns per tick. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
+    float MaxDeltaHeight = 0.2f; // example: 1.0f / 5.0f
+
     /** Maximum steps per episode. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int MaxSteps = 1024;
+    int MaxSteps = 512;
 
     /** Number of goals for agents (set between 1 - 4). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
@@ -207,6 +211,9 @@ private:
     /** Flags to track if grid objects have reached their goals. */
     TArray<bool> GridObjectHasReachedGoal;
 
+    /** Flags to track if agents has fallen off grid. */
+    TArray<bool> GridObjectFallenOffGrid;
+
     /** Buffer to accumulate rewards. */
     float RewardBuffer;
 
@@ -218,6 +225,17 @@ private:
 
     /** Colors used for goals. */
     TArray<FLinearColor> GoalColors;
+
+    /** Stores previous velocities for each agent's GridObject for acceleration computation. */
+    TArray<FVector> PreviousObjectVelocities;
+
+    /** Stores the last DeltaTime from the simulation loop. */
+    float LastDeltaTime;
+
+    /**
+     * Stores the previous distances of each agent's GridObject to its assigned goal.
+     */
+    TArray<float> PrevDistances;
 
     /** Initializes properties for action and observation space. */
     void SetupActionAndObservationSpace();
@@ -301,4 +319,11 @@ private:
      * @return The corresponding world position.
      */
     FVector GridPositionToWorldPosition(FVector2D GridPosition) const;
+
+    /**
+     * Updates the RewardBuffer based on the current state of the environment.
+     * This function is responsible for computing and accumulating reward signals
+     * that guide agent learning, separate from UI updates or state changes.
+     */
+    void UpdateRewardBuffer();
 };

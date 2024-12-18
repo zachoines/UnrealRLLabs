@@ -2,8 +2,8 @@
 #include "Math/UnrealMathUtility.h"
 
 // Constructor
-MorletWavelets2D::MorletWavelets2D(int32 InGridSizeX, int32 InGridSizeY)
-    : GridSizeX(InGridSizeX), GridSizeY(InGridSizeY)
+MorletWavelets2D::MorletWavelets2D(int32 InGridSizeX, int32 InGridSizeY, float InMaxDeltaHeight)
+    : GridSizeX(InGridSizeX), GridSizeY(InGridSizeY), MaxDeltaHeight(InMaxDeltaHeight)
 {
     Initialize();
 }

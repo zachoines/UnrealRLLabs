@@ -75,11 +75,11 @@ private:
     TArray<FVector2f> AgentPositions;
 
     // Clamping range for smooth height transitions
-    float MaxDeltaHeight = 0.05f;
+    float MaxDeltaHeight;
 
 public:
     // Constructor
-    MorletWavelets2D(int32 InGridSizeX, int32 InGridSizeY);
+    MorletWavelets2D(int32 InGridSizeX, int32 InGridSizeY, float MaxDeltaHeight);
 
     // Initialize grid coordinates and heights
     void Initialize();

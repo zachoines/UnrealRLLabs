@@ -12,18 +12,16 @@ from Source.Networks import MultiAgentEmbeddingNetwork, SharedCritic, Continuous
 class MAPOCAAgent(Agent):
     """
     MA-POCA Agent for Continuous Actions
-    
-    Following the MA-POCA paper (equations 5-8), we approximate Q^\pi(s,a) with y^(λ) (TD(λ) returns),
-    and train:
-    - The policy (Eq.5) using Adv_i = y^(λ) - b_i(s,a^{-i})
-    - The value function (Eqs.6&7) with MSE(V(s), y^(λ))
-    - The baseline function (Eq.8) with MSE(Q_ψ(...), y^(λ))
 
-    The integrals and exact expectations from equations 1-3 are not directly computed.
-    Instead, we rely on standard RL bootstrapping techniques and TD(λ) returns as stable training targets.
+    Equations 5-8 from MA-POCA:
+    - Policy (Eq.5): L_policy = -E[logπ(a|s)*Adv]
+    - Value (Eq.6,7): L_value = MSE(V(s), y^(λ))
+    - Baseline (Eq.8): L_baseline = MSE(Q_ψ(...), y^(λ))
 
-    We handle multi-agent embeddings via MultiAgentEmbeddingNetwork and RSA attention,
-    and compute TD(λ) returns accounting for terminals and truncated episodes.
+    y^(λ): TD(λ) returns approximating Q^\pi(s,a).
+    Adv_i = y^(λ) - b_i(s,a^{-i})
+
+    We recompute forward passes during mini-batch updates so that gradients can flow.
     """
 
     def __init__(self, config: Dict, device: torch.device):
@@ -83,10 +81,7 @@ class MAPOCAAgent(Agent):
             flat = embeddings.view(NE*NA,H)
             mean, std = self.policy_net(flat)
             dist = torch.distributions.Normal(mean, std)
-            if eval:
-                actions = mean
-            else:
-                actions = dist.sample() # (NE*NA,action_dim)
+            actions = mean if eval else dist.sample() # (NE*NA,action_dim)
             log_probs = dist.log_prob(actions).sum(-1)  # (NE*NA)
             entropy = dist.entropy().sum(-1)  # (NE*NA)
 
@@ -97,19 +92,25 @@ class MAPOCAAgent(Agent):
 
     def update(self, states, next_states, actions, rewards, dones, truncs):
         """
-        states: (NS,NE,NA,obs_dim)
-        next_states: (NS,NE,NA,obs_dim)
+        Perform an update step after collecting trajectories.
+
+        Shapes:
+        states, next_states: (NS,NE,NA,obs_dim)
         actions: (NS,NE,NA,action_dim)
-        rewards: (NS,NE,1)
-        dones,truncs: (NS,NE,1)
+        rewards, dones, truncs: (NS,NE,1)
+        NS = number of steps collected, NE = number of environments, NA = number of agents.
 
         Steps:
-        1) Compute y^(λ) returns as targets.
-        2) Embed states to get values and baselines inputs.
-        3) Compute predicted baselines, values.
-        4) Compute advantages and log_probs.
-        5) Mini-batch update combining policy, value, baseline losses.
+        1) Compute y^(λ) returns as targets (no_grad) using TD(λ)-like method.
+        2) Shuffle the step indices and split into mini-batches of steps.
+        3) For each mini-batch of steps:
+        - Extract states_mb, actions_mb, returns_mb
+        - Run forward passes (with grad enabled) to get values, baselines, log_probs, entropy
+        - Compute advantages: Adv_i = returns - baselines
+        - Compute losses (policy, value, baseline, entropy)
+        - Backprop and update parameters.
         """
+
         NS,NE,NA,obs_dim = states.shape
 
         # Normalize rewards if needed
@@ -117,74 +118,74 @@ class MAPOCAAgent(Agent):
             self.reward_normalizer.update(rewards)
             rewards = self.reward_normalizer.normalize(rewards)
 
-        # Compute embeddings for value bootstrap
+        # Compute embeddings and values for TD(λ) returns calculation:
         with torch.no_grad():
-            states_emb = self.embedding_network(states)         # (NS,NE,NA,H)
+            states_emb = self.embedding_network(states)   # (NS,NE,NA,H)
             next_states_emb = self.embedding_network(next_states)
-            values = self.get_value(states_emb)                 # (NS,NE,1)
+            values = self.get_value(states_emb)           # (NS,NE,1)
             next_values = self.get_value(next_states_emb)
+            returns = self.compute_td_lambda_returns(rewards, values, next_values, dones, truncs) # (NS,NE,1)
 
-        # Compute y^(λ) returns:
-        returns = self.compute_td_lambda_returns(rewards, values, next_values, dones, truncs)
-        # returns: (NS,NE,1)
-
-        with torch.no_grad():
-            # Baseline inputs: exclude agent's own action
-            agent_obs, groupmates_obs, groupmates_actions = self.embedding_network.split_agent_obs_groupmates_obs_actions(states, actions)
-            baseline_inputs = self.get_baseline_inputs(states_emb, groupmates_actions)
-            predicted_baselines = self.shared_critic.baselines(baseline_inputs) # (NS,NE,NA,1)
-
-            log_probs, entropy = self.recompute_log_probs(states_emb, actions)
-
-        # Advantages: Adv_i = y^(λ) - b_i(s,a^{-i})
-        adv = (returns.unsqueeze(2) - predicted_baselines).squeeze(-1) # (NS,NE,NA)
-
-        # For mini-batch updates:
-        NSNE = NS*NE
-        B_total = NSNE*NA
-        indices = np.arange(B_total)
+        indices = np.arange(NS)
         np.random.shuffle(indices)
 
-        # Flatten relevant tensors:
-        log_probs_vec = log_probs.view(B_total)
-        adv_vec = adv.view(B_total)
-        returns_vec = returns.repeat_interleave(NA, dim=2).view(B_total,1)
-        values_vec = values.repeat_interleave(NA, dim=2).view(B_total,1)
-        baseline_vec = predicted_baselines.view(B_total,1)
-        ent_vec = entropy.view(B_total)
+        # Determine the number of mini-batches:
+        num_batches = (NS + self.mini_batch_size - 1) // self.mini_batch_size
 
-        # Equation references as comments inside mini-batch loop:
         total_policy_losses = []
         total_value_losses = []
         total_baseline_losses = []
         total_entropies = []
         total_returns = []
 
-        for start in range(0, B_total, self.mini_batch_size):
-            end = min(start+self.mini_batch_size, B_total)
+        # Mini-batch loop: we pick subsets of steps. Each mini-batch has shape (MB,NE,NA,...)
+        for b in range(num_batches):
+            start = b * self.mini_batch_size
+            end = min((b+1)*self.mini_batch_size, NS)
             mb_idx = indices[start:end]
+            MB = len(mb_idx)
 
-            mb_log_probs = log_probs_vec[mb_idx]
-            mb_adv = adv_vec[mb_idx]
-            mb_returns = returns_vec[mb_idx]
-            mb_values = values_vec[mb_idx]
-            mb_baselines = baseline_vec[mb_idx]
-            mb_ent = ent_vec[mb_idx]
+            # Extract mini-batch steps:
+            states_mb = states[mb_idx]       # (MB,NE,NA,obs_dim)
+            actions_mb = actions[mb_idx]     # (MB,NE,NA,action_dim)
+            returns_mb = returns[mb_idx]     # (MB,NE, 1)
 
-            # Baseline Loss (Eq.8): L_baseline = MSE(Q_ψ(...) - y^(λ))
-            mb_baseline_loss = F.mse_loss(mb_baselines, mb_returns)
+            # Forward passes with grad:
+            # Embeddings
+            embeddings_mb = self.embedding_network(states_mb)  # (MB,NE,NA,H)
 
-            # Value Loss (Eq.6 & 7): L_value = MSE(V(s), y^(λ))
-            mb_value_loss = F.mse_loss(mb_values, mb_returns)
+            # Baseliness
+            baseline_inputs = self.get_baseline_inputs(embeddings_mb, actions_mb)
+            predicted_baselines = self.shared_critic.baselines(baseline_inputs) # (MB,NE,NA,1)
+
+            # Values
+            values_mb = self.get_value(embeddings_mb)  # (MB,NE,1)
+
+            # Policy log_probs and entropy:
+            log_probs_mb, entropy_mb = self.recompute_log_probs(embeddings_mb, actions_mb) # (MB,NE,NA)
+
+            # Compute advantages:
+            # Unsqueeze returns to (MB,NE,1,1) so it broadcasts over NA dimension (where Adv_i = returns_mb - baselines)
+            adv_mb = returns_mb.unsqueeze(2) - predicted_baselines  # (MB,NE,NA,1)
+            adv_mb = adv_mb.squeeze(-1) # (MB,NE,NA)
+
+            # Compute losses:
+            # Baseline Loss (Eq.8): MSE(baseline, returns)
+            mb_baseline_loss = F.mse_loss(
+                predicted_baselines,
+                returns_mb.unsqueeze(2).repeat_interleave(NA, dim=2) # Repeated on the agent dimention
+            )
+
+            # Value Loss (Eq.6 & 7): MSE(V(s), returns)
+            mb_value_loss = F.mse_loss(values_mb, returns_mb)
 
             # Policy Loss (Eq.5): L_policy = -E[logπ(a|s)*Adv]
-            mb_policy_loss = -(mb_log_probs * mb_adv).mean()
+            mb_policy_loss = -(log_probs_mb * adv_mb.detach()).mean()
 
-            mb_ent_mean = mb_ent.mean()
+            # Entropy mean:
+            mb_ent_mean = entropy_mb.mean()
 
-            # Combined Loss:
-            # L = L_policy + value_loss_coeff*L_value + L_baseline - entropy_coeff*Entropy
-            # Entropy is included as negative to promote exploration
+            # Combined weighted losses:
             mb_loss = mb_policy_loss + self.value_loss_coeff*mb_value_loss + mb_baseline_loss - self.entropy_coeff*mb_ent_mean
 
             self.optimizer.zero_grad()
@@ -196,7 +197,7 @@ class MAPOCAAgent(Agent):
             total_value_losses.append(mb_value_loss.detach().cpu())
             total_baseline_losses.append(mb_baseline_loss.detach().cpu())
             total_entropies.append(mb_ent_mean.detach().cpu())
-            total_returns.append(mb_returns.mean().detach().cpu())
+            total_returns.append(returns_mb.mean().detach().cpu())
 
         logs = {
             "Policy Loss": torch.stack(total_policy_losses).mean(),
@@ -212,18 +213,26 @@ class MAPOCAAgent(Agent):
         """
         Compute y^(λ) returns using a TD(λ)-like approach (similar to GAE).
         Handle terminals by zeroing out next_val when episode ends.
+        
+        rewards, values, next_values, dones, truncs: (NS,NE,1)
+        returns: (NS,NE,1)
 
-        Eq.6 & 7 use y^(λ) as target.
+        We'll do a backward pass:
+        gae is (NE,1), updated at each step t:
+            delta_t = r_t + gamma * next_val - v_t
+            gae = delta_t + gamma*lambda*(1 - done_t)*(1 - trunc_t)*gae
+            returns[t] = gae + values[t]
         """
         NS,NE,_ = rewards.shape
-        returns = torch.zeros_like(rewards)
-        gae = torch.zeros_like(rewards)
+        returns = torch.zeros_like(rewards)  # (NS,NE,1)
+        gae = torch.zeros(NE,1, device=rewards.device) # (NE,1)
 
         for t in reversed(range(NS)):
             if t == NS-1:
                 next_val = next_values[t]*(1 - dones[t])*(1 - truncs[t])
             else:
                 next_val = values[t+1]*(1 - dones[t+1])*(1 - truncs[t+1])
+
             delta = rewards[t] + self.gamma*next_val - values[t]
             gae = delta + self.gamma*self.lmbda*(1 - dones[t])*(1 - truncs[t])*gae
             returns[t] = gae + values[t]
@@ -234,14 +243,18 @@ class MAPOCAAgent(Agent):
         # Compute V(s) from embeddings:
         return self.shared_critic.values(embeddings)
 
-    def get_baseline_inputs(self, agent_embeddings, groupmates_actions):
+    def get_baseline_inputs(self, agent_embeddings, actions):
         """
         Construct baseline inputs by excluding agent's own action:
-        Eq.8: Q_ψ(...) approximates baseline from scenario where only groupmates' info is present.
-
         final shape: (NS,NE,NA,NA,H)
+
+        We must implement a similar split as before but watch dimension usage carefully.
+        Note: We must do a similar trick as in update mini-batch step if needed.
         """
-        agent_embeds, groupmates_embeds = self.embedding_network.split_agent_groupmates_obs(agent_embeddings)
+        # NOTE: In the final approach above, we handle baseline input construction in mini-batch loop directly.
+        # Here we keep the same function for consistency. We assume agent_embeddings=(S,E,NA,H) 
+        # and actions=(S,E,NA,action_dim).
+        agent_embeds, groupmates_embeds, groupmates_actions = self.embedding_network.split_agent_obs_groupmates_obs_actions(agent_embeddings, actions)
         groupmates_embeds_with_actions = self.embedding_network.encode_groupmates_obs_actions(groupmates_embeds, groupmates_actions)
         x = torch.cat([agent_embeds, groupmates_embeds_with_actions], dim=3).contiguous()
         return x
@@ -249,13 +262,14 @@ class MAPOCAAgent(Agent):
     def recompute_log_probs(self, embeddings, actions):
         """
         Recompute log_probs and entropy for actions taken:
-        Needed for policy gradient (Eq.5).
+        embeddings: (S,E,NA,H)
+        actions: (S,E,NA,action_dim)
         """
-        NS,NE,NA,H = embeddings.shape
-        flat = embeddings.view(NS*NE*NA,H)
+        S,E,NA,H = embeddings.shape
+        flat = embeddings.view(S*E*NA,H)
         mean, std = self.policy_net(flat)
         dist = torch.distributions.Normal(mean, std)
-        A = actions.view(NS*NE*NA, self.action_dim)
-        log_probs = dist.log_prob(A).sum(-1).view(NS,NE,NA)
-        entropy = dist.entropy().sum(-1).view(NS,NE,NA)
+        A = actions.view(S*E*NA, self.action_dim)
+        log_probs = dist.log_prob(A).sum(-1).view(S,E,NA)
+        entropy = dist.entropy().sum(-1).view(S,E,NA)
         return log_probs, entropy

@@ -6,7 +6,7 @@ environment:
     ObjectSize: [0.10, 0.10, 0.10]
     ObjectMass: 0.2
     GridSize: 50
-    MaxSteps: 1024
+    MaxSteps: 512
     NumGoals: 4
     SpawnDelay: 1.0
     RespawnDelay: 1.0
@@ -22,11 +22,11 @@ environment:
 
   shape:
     is_multi_agent: True
-    single_agent_obs_size: 18
+    single_agent_obs_size: 27
     max_agents: 10
     action_space:
       type: continuous
-      size: 2  # Example: 2D continuous action
+      size: 8
 
 agent:
   type: MA_POCA
@@ -35,10 +35,9 @@ agent:
     gamma: 0.99
     lambda: 0.95
     hidden_size: 128
-    num_heads: 4
     normalize_rewards: false
     value_loss_coeff: 0.5
-    entropy_coeff: 0.01
+    entropy_coeff: 0.001
     max_grad_norm: 0.5
 
     networks:
@@ -53,7 +52,7 @@ agent:
           dropout_rate: 0.0
       MultiAgentEmbeddingNetwork:
         agent_obs_encoder:
-          input_size: 18
+          input_size: 27
           output_size: 128
           dropout_rate: 0.0
           activation: True
@@ -68,16 +67,18 @@ agent:
           activation: True
         obs_actions_encoder:
           state_dim: 128
-          action_dim: 2
+          action_dim: 8
           output_size: 128
           dropout_rate: 0.0
           activation: True
 
 train:
-  num_environments: 2
-  epochs: 10000
-  mini_batch_size: 128
+  normalize_states: True
+  num_environments: 8
+  epochs: 10
+  mini_batch_size: 16
   buffer_size: 512
   batch_size: 128
   AgentsResetFrequency: 512
   ActionRepeat: 10
+  saveFrequency: 10
