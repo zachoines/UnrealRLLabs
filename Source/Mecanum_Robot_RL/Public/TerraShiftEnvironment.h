@@ -41,11 +41,11 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
 
     /** Max abs movement delta of columns per tick. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float MaxDeltaHeight = 0.2f; // example: 1.0f / 5.0f
+    float MaxDeltaHeight = 0.1; // 1 unit traveled in 10 steps
 
     /** Maximum steps per episode. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int MaxSteps = 512;
+    int MaxSteps = 1024;
 
     /** Number of goals for agents (set between 1 - 4). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
@@ -65,7 +65,7 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
 
     /** Threshold distance to consider a goal reached. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float GoalThreshold = 0.1f;
+    float GoalThreshold = 0.2f;
 
     // Agent wave parameter ranges
 
@@ -97,7 +97,7 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
 
     /** Velocity in meters per second for X and Y directions. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Movement Parameters")
-    FVector2D VelocityRange = FVector2D(-10.0f, 10.0f);
+    FVector2D VelocityRange = FVector2D(-2.0f, 2.0f);
 };
 
 /**
@@ -127,6 +127,12 @@ public:
 
     /** Called after each transition to update the environment. */
     virtual void PostTransition() override;
+
+    /** Called before each step to update internal counters or state. */
+    virtual void PreStep() override;
+
+    /** Called before each transition to update the environment. */
+    virtual void PreTransition() override;
 
     /** Called after each step to update internal counters or state. */
     virtual void PostStep() override;
@@ -162,6 +168,9 @@ public:
     UPROPERTY(EditAnywhere)
     AGridObjectManager* GridObjectManager;
 
+    UPROPERTY()
+    UMorletWavelets2D* WaveSimulator;
+
 private:
     /** Initialization parameters specific to TerraShift. */
     FTerraShiftEnvironmentInitParams* TerraShiftParams = nullptr;
@@ -187,9 +196,6 @@ private:
     /** Center points of grid cells. */
     TArray<FVector> GridCenterPoints;
 
-    /** Parameters for each agent's wave. */
-    TArray<AgentParameters> AgentParametersArray;
-
     /** Size of the platform in world units. */
     FVector PlatformWorldSize;
 
@@ -201,9 +207,6 @@ private:
 
     /** Set of active columns with physics enabled. */
     TSet<int32> ActiveColumns;
-
-    /** Simulator for Morlet wavelets. */
-    MorletWavelets2D* WaveSimulator;
 
     /** Flags to track if agents have active grid objects. */
     TArray<bool> AgentHasActiveGridObject;
@@ -220,22 +223,25 @@ private:
     /** Array of goal platforms. */
     TArray<AGoalPlatform*> GoalPlatforms;
 
-    /** Locations of goal platforms relative to the platform. */
-    TArray<FVector> GoalPlatformLocations;
-
     /** Colors used for goals. */
     TArray<FLinearColor> GoalColors;
 
     /** Stores previous velocities for each agent's GridObject for acceleration computation. */
     TArray<FVector> PreviousObjectVelocities;
 
+    /** Stores previous accelerations for each agent's GridObject for acceleration computation. */
+    TArray<FVector> PreviousObjectAcceleration;
+
+    /** Stores the previous distances of each agent's GridObject to its assigned goal. */
+    TArray<float> PreviousDistances;
+
+    /** Stores the previous positions of each agent's GridObject to its assigned goal. */
+    TArray<FVector> PreviousPositions;
+
     /** Stores the last DeltaTime from the simulation loop. */
     float LastDeltaTime;
 
-    /**
-     * Stores the previous distances of each agent's GridObject to its assigned goal.
-     */
-    TArray<float> PrevDistances;
+   
 
     /** Initializes properties for action and observation space. */
     void SetupActionAndObservationSpace();
@@ -285,6 +291,9 @@ private:
 
     /** Checks for grid objects that need to be respawned. */
     void CheckAndRespawnGridObjects();
+
+    /** Update information like relative acceleration */
+    void UpdateObjectStats();
 
     /**
      * Respawns a grid object for a specific agent.

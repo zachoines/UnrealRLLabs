@@ -35,6 +35,12 @@ public:
     // Optional convenience function. Called after Transition() in VectorEnvironment.
     virtual void PostTransition();
 
+    // Optional convenience function. Called before Step() in VectorEnvironment.
+    virtual void PreStep();
+
+    // Optional convenience function. Called before Transition() in VectorEnvironment.
+    virtual void PreTransition();
+
     // Returns the public view of the state. Called after Update 
     virtual FState State();
 

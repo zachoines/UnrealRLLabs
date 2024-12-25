@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Engine/World.h"
+#include "Engine/Engine.h"
 #include "TerraShift/Column.h"
 #include "TerraShift/Matrix2D.h"
 #include "Grid.generated.h"
@@ -18,7 +19,7 @@ public:
     void InitializeGrid(int32 InGridSize, float InPlatformSize, FVector Location);
 
     // Update the heights of the columns based on a 2D matrix of heights
-    void UpdateColumnHeights(const Matrix2D& HeightMap);
+    void UpdateColumnHeights(const FMatrix2D& HeightMap);
 
     // Enable or disable physics for specified columns based on proximity data
     void TogglePhysicsForColumns(const TArray<int32>& ColumnIndices, const TArray<bool>& EnablePhysics);

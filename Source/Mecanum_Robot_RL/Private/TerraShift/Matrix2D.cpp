@@ -1,47 +1,56 @@
 #include "TerraShift/Matrix2D.h"
 
 // Constructors
-
-Matrix2D::Matrix2D()
-    : Rows(0), Columns(0)
+FMatrix2D::FMatrix2D()
+    : Rows(0)
+    , Columns(0)
 {
 }
 
-Matrix2D::Matrix2D(int32 InRows, int32 InColumns)
-    : Rows(InRows), Columns(InColumns)
+FMatrix2D::FMatrix2D(int32 InRows, int32 InColumns)
+    : Rows(InRows)
+    , Columns(InColumns)
 {
-    Data.SetNum(Rows);
-    for (int32 i = 0; i < Rows; ++i)
+    Data.SetNum(Rows * Columns);
+}
+
+FMatrix2D::FMatrix2D(int32 InRows, int32 InColumns, float InitialValue)
+    : Rows(InRows)
+    , Columns(InColumns)
+{
+    Data.SetNum(Rows * Columns);
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        Data[i].SetNumZeroed(Columns);
+        Data[i] = InitialValue;
     }
 }
 
-Matrix2D::Matrix2D(int32 InRows, int32 InColumns, float InitialValue)
-    : Rows(InRows), Columns(InColumns)
-{
-    Data.SetNum(Rows);
-    for (int32 i = 0; i < Rows; ++i)
-    {
-        Data[i].Init(InitialValue, Columns);
-    }
-}
-
-Matrix2D::Matrix2D(const TArray<TArray<float>>& InData)
+FMatrix2D::FMatrix2D(const TArray<TArray<float>>& InData)
 {
     Rows = InData.Num();
-    Columns = Rows > 0 ? InData[0].Num() : 0;
-    Data = InData;
+    Columns = (Rows > 0) ? InData[0].Num() : 0;
+    Data.SetNum(Rows * Columns);
+
+    for (int32 r = 0; r < Rows; ++r)
+    {
+        check(InData[r].Num() == Columns);  // ensure rectangular
+        for (int32 c = 0; c < Columns; ++c)
+        {
+            Data[LinearIndex(r, c)] = InData[r][c];
+        }
+    }
 }
 
 // Copy constructor
-Matrix2D::Matrix2D(const Matrix2D& Other)
-    : Rows(Other.Rows), Columns(Other.Columns), Data(Other.Data)
+FMatrix2D::FMatrix2D(const FMatrix2D& Other)
+    : Rows(Other.Rows)
+    , Columns(Other.Columns)
+    , Data(Other.Data)
 {
 }
 
 // Assignment operator
-Matrix2D& Matrix2D::operator=(const Matrix2D& Other)
+FMatrix2D& FMatrix2D::operator=(const FMatrix2D& Other)
 {
     if (this != &Other)
     {
@@ -53,302 +62,256 @@ Matrix2D& Matrix2D::operator=(const Matrix2D& Other)
 }
 
 // Element-wise operators
-
-Matrix2D Matrix2D::operator+(const Matrix2D& Other) const
+FMatrix2D FMatrix2D::operator+(const FMatrix2D& Other) const
 {
     check(Rows == Other.Rows && Columns == Other.Columns);
 
-    Matrix2D Result(Rows, Columns);
-    for (int32 i = 0; i < Rows; ++i)
+    FMatrix2D Result(Rows, Columns);
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Result.Data[i][j] = Data[i][j] + Other.Data[i][j];
-        }
+        Result.Data[i] = Data[i] + Other.Data[i];
     }
     return Result;
 }
 
-Matrix2D& Matrix2D::operator+=(const Matrix2D& Other)
+FMatrix2D& FMatrix2D::operator+=(const FMatrix2D& Other)
 {
     check(Rows == Other.Rows && Columns == Other.Columns);
 
-    for (int32 i = 0; i < Rows; ++i)
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Data[i][j] += Other.Data[i][j];
-        }
+        Data[i] += Other.Data[i];
     }
     return *this;
 }
 
-Matrix2D Matrix2D::operator-(const Matrix2D& Other) const
+FMatrix2D FMatrix2D::operator-(const FMatrix2D& Other) const
 {
     check(Rows == Other.Rows && Columns == Other.Columns);
 
-    Matrix2D Result(Rows, Columns);
-    for (int32 i = 0; i < Rows; ++i)
+    FMatrix2D Result(Rows, Columns);
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Result.Data[i][j] = Data[i][j] - Other.Data[i][j];
-        }
+        Result.Data[i] = Data[i] - Other.Data[i];
     }
     return Result;
 }
 
-Matrix2D& Matrix2D::operator-=(const Matrix2D& Other)
+FMatrix2D& FMatrix2D::operator-=(const FMatrix2D& Other)
 {
     check(Rows == Other.Rows && Columns == Other.Columns);
 
-    for (int32 i = 0; i < Rows; ++i)
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Data[i][j] -= Other.Data[i][j];
-        }
+        Data[i] -= Other.Data[i];
     }
     return *this;
 }
 
-Matrix2D Matrix2D::operator*(const Matrix2D& Other) const
+FMatrix2D FMatrix2D::operator*(const FMatrix2D& Other) const
 {
     check(Rows == Other.Rows && Columns == Other.Columns);
 
-    Matrix2D Result(Rows, Columns);
-    for (int32 i = 0; i < Rows; ++i)
+    FMatrix2D Result(Rows, Columns);
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Result.Data[i][j] = Data[i][j] * Other.Data[i][j];
-        }
+        Result.Data[i] = Data[i] * Other.Data[i];
     }
     return Result;
 }
 
-Matrix2D& Matrix2D::operator*=(const Matrix2D& Other)
+FMatrix2D& FMatrix2D::operator*=(const FMatrix2D& Other)
 {
     check(Rows == Other.Rows && Columns == Other.Columns);
 
-    for (int32 i = 0; i < Rows; ++i)
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Data[i][j] *= Other.Data[i][j];
-        }
+        Data[i] *= Other.Data[i];
     }
     return *this;
 }
 
-Matrix2D Matrix2D::operator/(const Matrix2D& Other) const
+FMatrix2D FMatrix2D::operator/(const FMatrix2D& Other) const
 {
     check(Rows == Other.Rows && Columns == Other.Columns);
 
-    Matrix2D Result(Rows, Columns);
-    for (int32 i = 0; i < Rows; ++i)
+    FMatrix2D Result(Rows, Columns);
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            check(Other.Data[i][j] != 0.0f);
-            Result.Data[i][j] = Data[i][j] / Other.Data[i][j];
-        }
+        check(Other.Data[i] != 0.0f);
+        Result.Data[i] = Data[i] / Other.Data[i];
     }
     return Result;
 }
 
-Matrix2D& Matrix2D::operator/=(const Matrix2D& Other)
+FMatrix2D& FMatrix2D::operator/=(const FMatrix2D& Other)
 {
     check(Rows == Other.Rows && Columns == Other.Columns);
 
-    for (int32 i = 0; i < Rows; ++i)
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            check(Other.Data[i][j] != 0.0f);
-            Data[i][j] /= Other.Data[i][j];
-        }
+        check(Other.Data[i] != 0.0f);
+        Data[i] /= Other.Data[i];
     }
     return *this;
 }
 
 // Scalar operations
-
-Matrix2D Matrix2D::operator+(float Scalar) const
+FMatrix2D FMatrix2D::operator+(float Scalar) const
 {
-    Matrix2D Result(Rows, Columns);
-    for (int32 i = 0; i < Rows; ++i)
+    FMatrix2D Result(Rows, Columns);
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Result.Data[i][j] = Data[i][j] + Scalar;
-        }
+        Result.Data[i] = Data[i] + Scalar;
     }
     return Result;
 }
 
-Matrix2D& Matrix2D::operator+=(float Scalar)
+FMatrix2D& FMatrix2D::operator+=(float Scalar)
 {
-    for (int32 i = 0; i < Rows; ++i)
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Data[i][j] += Scalar;
-        }
+        Data[i] += Scalar;
     }
     return *this;
 }
 
-Matrix2D Matrix2D::operator-(float Scalar) const
+FMatrix2D FMatrix2D::operator-(float Scalar) const
 {
-    Matrix2D Result(Rows, Columns);
-    for (int32 i = 0; i < Rows; ++i)
+    FMatrix2D Result(Rows, Columns);
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Result.Data[i][j] = Data[i][j] - Scalar;
-        }
+        Result.Data[i] = Data[i] - Scalar;
     }
     return Result;
 }
 
-Matrix2D& Matrix2D::operator-=(float Scalar)
+FMatrix2D& FMatrix2D::operator-=(float Scalar)
 {
-    for (int32 i = 0; i < Rows; ++i)
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Data[i][j] -= Scalar;
-        }
+        Data[i] -= Scalar;
     }
     return *this;
 }
 
-Matrix2D Matrix2D::operator*(float Scalar) const
+FMatrix2D FMatrix2D::operator*(float Scalar) const
 {
-    Matrix2D Result(Rows, Columns);
-    for (int32 i = 0; i < Rows; ++i)
+    FMatrix2D Result(Rows, Columns);
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Result.Data[i][j] = Data[i][j] * Scalar;
-        }
+        Result.Data[i] = Data[i] * Scalar;
     }
     return Result;
 }
 
-Matrix2D& Matrix2D::operator*=(float Scalar)
+FMatrix2D& FMatrix2D::operator*=(float Scalar)
 {
-    for (int32 i = 0; i < Rows; ++i)
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Data[i][j] *= Scalar;
-        }
+        Data[i] *= Scalar;
     }
     return *this;
 }
 
-Matrix2D Matrix2D::operator/(float Scalar) const
+FMatrix2D FMatrix2D::operator/(float Scalar) const
 {
     check(Scalar != 0.0f);
-    Matrix2D Result(Rows, Columns);
+    FMatrix2D Result(Rows, Columns);
     float InvScalar = 1.0f / Scalar;
-    for (int32 i = 0; i < Rows; ++i)
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Result.Data[i][j] = Data[i][j] * InvScalar;
-        }
+        Result.Data[i] = Data[i] * InvScalar;
     }
     return Result;
 }
 
-Matrix2D& Matrix2D::operator/=(float Scalar)
+FMatrix2D& FMatrix2D::operator/=(float Scalar)
 {
     check(Scalar != 0.0f);
     float InvScalar = 1.0f / Scalar;
-    for (int32 i = 0; i < Rows; ++i)
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Data[i][j] *= InvScalar;
-        }
+        Data[i] *= InvScalar;
     }
     return *this;
 }
 
 // Scalar operations with scalar on the left
-Matrix2D operator+(float Scalar, const Matrix2D& Matrix)
+FMatrix2D operator+(float Scalar, const FMatrix2D& Matrix)
 {
     return Matrix + Scalar;
 }
 
-Matrix2D operator-(float Scalar, const Matrix2D& Matrix)
+FMatrix2D operator-(float Scalar, const FMatrix2D& Matrix)
 {
-    Matrix2D Result(Matrix.Rows, Matrix.Columns);
-    for (int32 i = 0; i < Matrix.Rows; ++i)
+    FMatrix2D Result(Matrix.Rows, Matrix.Columns);
+    for (int32 i = 0; i < Matrix.Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Matrix.Columns; ++j)
-        {
-            Result[i][j] = Scalar - Matrix.Data[i][j];
-        }
+        Result.Data[i] = Scalar - Matrix.Data[i];
     }
     return Result;
 }
 
-Matrix2D operator*(float Scalar, const Matrix2D& Matrix)
+FMatrix2D operator*(float Scalar, const FMatrix2D& Matrix)
 {
     return Matrix * Scalar;
 }
 
-Matrix2D operator/(float Scalar, const Matrix2D& Matrix)
+FMatrix2D operator/(float Scalar, const FMatrix2D& Matrix)
 {
-    Matrix2D Result(Matrix.Rows, Matrix.Columns);
-    for (int32 i = 0; i < Matrix.Rows; ++i)
+    FMatrix2D Result(Matrix.Rows, Matrix.Columns);
+    for (int32 i = 0; i < Matrix.Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Matrix.Columns; ++j)
-        {
-            check(Matrix.Data[i][j] != 0.0f);
-            Result[i][j] = Scalar / Matrix.Data[i][j];
-        }
+        check(Matrix.Data[i] != 0.0f);
+        Result.Data[i] = Scalar / Matrix.Data[i];
     }
     return Result;
 }
 
-// Element access
-
-TArray<float>& Matrix2D::operator[](int32 RowIndex)
+// Row indexing: returns a proxy object so user can do M[row][col].
+FFMatrix2DRowProxy FMatrix2D::operator[](int32 RowIndex)
 {
-    // Support negative indexing
+    // Negative index support
     if (RowIndex < 0)
     {
         RowIndex = Rows + RowIndex;
     }
     check(RowIndex >= 0 && RowIndex < Rows);
-    return Data[RowIndex];
+
+    FFMatrix2DRowProxy Proxy;
+    Proxy.RowData = &Data[RowIndex * Columns];
+    Proxy.NumCols = Columns;
+    return Proxy;
 }
 
-const TArray<float>& Matrix2D::operator[](int32 RowIndex) const
+const FFMatrix2DRowProxy FMatrix2D::operator[](int32 RowIndex) const
 {
-    // Support negative indexing
+    // Negative index support
     if (RowIndex < 0)
     {
         RowIndex = Rows + RowIndex;
     }
     check(RowIndex >= 0 && RowIndex < Rows);
-    return Data[RowIndex];
+
+    FFMatrix2DRowProxy Proxy;
+    // We need const-unsafe cast or separate approach,
+    // but for simplicity we do this (const float*) -> (float*)
+    // There's no direct built-in const TArray cast, so we do a hack:
+    float* RowPtr = const_cast<float*>(&Data[RowIndex * Columns]);
+    Proxy.RowData = RowPtr;
+    Proxy.NumCols = Columns;
+    return Proxy;
 }
 
 // Sub-matrix extraction
-
-Matrix2D Matrix2D::Sub(int32 RowStart, int32 RowEnd, int32 ColStart, int32 ColEnd) const
+FMatrix2D FMatrix2D::Sub(int32 RowStart, int32 RowEnd, int32 ColStart, int32 ColEnd) const
 {
     // Adjust indices if negative
     if (RowStart < 0) RowStart = Rows + RowStart;
-    if (RowEnd < 0) RowEnd = Rows + RowEnd;
+    if (RowEnd < 0)   RowEnd = Rows + RowEnd;
     if (ColStart < 0) ColStart = Columns + ColStart;
-    if (ColEnd < 0) ColEnd = Columns + ColEnd;
+    if (ColEnd < 0)   ColEnd = Columns + ColEnd;
 
     check(RowStart >= 0 && RowStart < Rows);
     check(RowEnd >= 0 && RowEnd < Rows);
@@ -359,186 +322,181 @@ Matrix2D Matrix2D::Sub(int32 RowStart, int32 RowEnd, int32 ColStart, int32 ColEn
     int32 NewRows = RowEnd - RowStart + 1;
     int32 NewCols = ColEnd - ColStart + 1;
 
-    Matrix2D Result(NewRows, NewCols);
-    for (int32 i = 0; i < NewRows; ++i)
+    FMatrix2D Result(NewRows, NewCols);
+    for (int32 r = 0; r < NewRows; ++r)
     {
-        for (int32 j = 0; j < NewCols; ++j)
+        for (int32 c = 0; c < NewCols; ++c)
         {
-            Result.Data[i][j] = Data[RowStart + i][ColStart + j];
+            int32 OldIndex = (RowStart + r) * Columns + (ColStart + c);
+            Result.Data[r * NewCols + c] = Data[OldIndex];
         }
     }
     return Result;
 }
 
-// Mathematical functions
-
-Matrix2D Matrix2D::Exp() const
+// Math functions
+FMatrix2D FMatrix2D::Exp() const
 {
-    Matrix2D Result(Rows, Columns);
-    for (int32 i = 0; i < Rows; ++i)
+    FMatrix2D Result(Rows, Columns);
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        Result.Data[i].SetNumUninitialized(Columns);
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Result.Data[i][j] = FMath::Exp(Data[i][j]);
-        }
+        Result.Data[i] = FMath::Exp(Data[i]);
     }
     return Result;
 }
 
-Matrix2D Matrix2D::Cos() const
+FMatrix2D FMatrix2D::Cos() const
 {
-    Matrix2D Result(Rows, Columns);
-    for (int32 i = 0; i < Rows; ++i)
+    FMatrix2D Result(Rows, Columns);
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        Result.Data[i].SetNumUninitialized(Columns);
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Result.Data[i][j] = FMath::Cos(Data[i][j]);
-        }
+        Result.Data[i] = FMath::Cos(Data[i]);
     }
     return Result;
 }
 
-Matrix2D Matrix2D::Sin() const
+FMatrix2D FMatrix2D::Sin() const
 {
-    Matrix2D Result(Rows, Columns);
-    for (int32 i = 0; i < Rows; ++i)
+    FMatrix2D Result(Rows, Columns);
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        Result.Data[i].SetNumUninitialized(Columns);
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Result.Data[i][j] = FMath::Sin(Data[i][j]);
-        }
+        Result.Data[i] = FMath::Sin(Data[i]);
     }
     return Result;
 }
 
-Matrix2D Matrix2D::Tanh() const
+FMatrix2D FMatrix2D::Tanh() const
 {
-    Matrix2D Result(Rows, Columns);
-    for (int32 i = 0; i < Rows; ++i)
+    FMatrix2D Result(Rows, Columns);
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        Result.Data[i].SetNumUninitialized(Columns);
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Result.Data[i][j] = FMath::Tanh(Data[i][j]);
-        }
+        Result.Data[i] = FMath::Tanh(Data[i]);
     }
     return Result;
 }
 
 // Matrix functions
-
-float Matrix2D::Dot(const Matrix2D& Other) const
+float FMatrix2D::Dot(const FMatrix2D& Other) const
 {
     check(Rows == Other.Rows && Columns == Other.Columns);
 
     float Sum = 0.0f;
-    for (int32 i = 0; i < Rows; ++i)
+    for (int32 i = 0; i < Data.Num(); ++i)
     {
-        for (int32 j = 0; j < Columns; ++j)
-        {
-            Sum += Data[i][j] * Other.Data[i][j];
-        }
+        Sum += Data[i] * Other.Data[i];
     }
     return Sum;
 }
 
-float Matrix2D::Norm() const
+float FMatrix2D::Norm() const
 {
     float SumSquares = 0.0f;
-    for (const auto& Row : Data)
+    for (float Value : Data)
     {
-        for (float Value : Row)
-        {
-            SumSquares += Value * Value;
-        }
+        SumSquares += Value * Value;
     }
     return FMath::Sqrt(SumSquares);
 }
 
-void Matrix2D::Clip(float MinValue, float MaxValue)
+void FMatrix2D::Clip(float MinValue, float MaxValue)
 {
-    for (auto& Row : Data)
+    for (float& Val : Data)
     {
-        for (float& Value : Row)
+        Val = FMath::Clamp(Val, MinValue, MaxValue);
+    }
+}
+
+void FMatrix2D::Init(float Value)
+{
+    for (float& Val : Data)
+    {
+        Val = Value;
+    }
+}
+
+// Utility
+FString FMatrix2D::ToString() const
+{
+    FString Out;
+    for (int32 r = 0; r < Rows; ++r)
+    {
+        for (int32 c = 0; c < Columns; ++c)
         {
-            Value = FMath::Clamp(Value, MinValue, MaxValue);
+            float Val = Data[r * Columns + c];
+            Out += FString::Printf(TEXT("%6.2f "), Val);
         }
+        Out += TEXT("\n");
     }
+    return Out;
 }
 
-void Matrix2D::Init(float Value)
-{
-    for (auto& Row : Data)
-    {
-        Row.Init(Value, Columns);
-    }
-}
-
-// Utility functions
-
-FString Matrix2D::ToString() const
-{
-    FString Result;
-    for (const auto& Row : Data)
-    {
-        for (float Value : Row)
-        {
-            Result += FString::Printf(TEXT("%6.2f "), Value);
-        }
-        Result += TEXT("\n");
-    }
-    return Result;
-}
-
-// Get dimensions
-
-int32 Matrix2D::GetNumRows() const
+// Dimensions
+int32 FMatrix2D::GetNumRows() const
 {
     return Rows;
 }
 
-int32 Matrix2D::GetNumColumns() const
+int32 FMatrix2D::GetNumColumns() const
 {
     return Columns;
 }
 
-// Get the minimum value in the matrix
-float Matrix2D::Min() const
+// Min/Max
+float FMatrix2D::Min() const
 {
-    check(Rows > 0 && Columns > 0);
+    check(Data.Num() > 0);
 
-    float MinValue = Data[0][0];
-    for (int32 i = 0; i < Rows; ++i)
+    float CurrentMin = Data[0];
+    for (float Val : Data)
     {
-        for (int32 j = 0; j < Columns; ++j)
+        if (Val < CurrentMin)
         {
-            if (Data[i][j] < MinValue)
-            {
-                MinValue = Data[i][j];
-            }
+            CurrentMin = Val;
         }
     }
-    return MinValue;
+    return CurrentMin;
 }
 
-// Get the maximum value in the matrix
-float Matrix2D::Max() const
+float FMatrix2D::Max() const
 {
-    check(Rows > 0 && Columns > 0);
+    check(Data.Num() > 0);
 
-    float MaxValue = Data[0][0];
-    for (int32 i = 0; i < Rows; ++i)
+    float CurrentMax = Data[0];
+    for (float Val : Data)
     {
-        for (int32 j = 0; j < Columns; ++j)
+        if (Val > CurrentMax)
         {
-            if (Data[i][j] > MaxValue)
-            {
-                MaxValue = Data[i][j];
-            }
+            CurrentMax = Val;
         }
     }
-    return MaxValue;
+    return CurrentMax;
+}
+
+FMatrix2D FMatrix2D::Abs() const
+{
+    FMatrix2D Result(Rows, Columns);
+    for (int32 i = 0; i < Data.Num(); ++i)
+    {
+        Result.Data[i] = FMath::Abs(Data[i]);
+    }
+    return Result;
+}
+
+float FMatrix2D::Sum() const
+{
+    float sum = 0.0f;
+    for (float Val : Data)
+    {
+        sum += Val;
+    }
+    return sum;
+}
+
+float FMatrix2D::Mean() const
+{
+    if (Rows == 0 || Columns == 0)
+    {
+        return 0.0f;
+    }
+    return Sum() / static_cast<float>(Rows * Columns);
 }

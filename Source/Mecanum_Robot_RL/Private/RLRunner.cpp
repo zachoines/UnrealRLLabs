@@ -47,9 +47,11 @@ TArray<FAction> ARLRunner::GetActions(TArray<FState> States, TArray<float> Dones
 void ARLRunner::Tick(float DeltaTime)
 {
     // Record last transition if ActionRepeatCounter is zero
-    if (ActionRepeatCounter == 0) {
+    if (ActionRepeatCounter == 0) 
+    {
         auto [Dones, Truncs, Rewards, LastActions, States, NextStates] = VectorEnvironment->Transition();
-        if (CurrentStep > 1) {
+        if (CurrentStep > 1) 
+        {
             TArray<FExperienceBatch> EnvironmentTrajectories;
             FExperienceBatch Batch;
             for (int32 i = 0; i < States.Num(); i++)
@@ -73,11 +75,11 @@ void ARLRunner::Tick(float DeltaTime)
                 TArray<FExperienceBatch> Transitions = ARLRunner::SampleExperiences(TrainerParams.BatchSize);
                 AgentComm->Update(Transitions, CurrentAgents);
 
-                if (VectorEnvironment->SingleEnvInfo.IsMultiAgent && (CurrentUpdate % TrainerParams.AgentsResetFrequency == 0)) {
+                /*if (VectorEnvironment->SingleEnvInfo.IsMultiAgent && (CurrentUpdate % TrainerParams.AgentsResetFrequency == 0)) {
                     CurrentAgents = FMath::RandRange(TrainerParams.MinAgents, TrainerParams.MaxAgents);
                     VectorEnvironment->ResetEnv(CurrentAgents);
                     CurrentStep = 0;
-                }
+                }*/
             }
         }
 
@@ -86,7 +88,7 @@ void ARLRunner::Tick(float DeltaTime)
 
     VectorEnvironment->Step(Actions);
     CurrentStep += 1;
-    ActionRepeatCounter = (ActionRepeatCounter + 1) % TrainerParams.ActionRepeat;
+    ActionRepeatCounter = TrainerParams.ActionRepeat > 0.0 ? (ActionRepeatCounter + 1) % TrainerParams.ActionRepeat : 0.0;
 }
 
 void ARLRunner::AddExperiences(const TArray<FExperienceBatch>& AllExperiences)

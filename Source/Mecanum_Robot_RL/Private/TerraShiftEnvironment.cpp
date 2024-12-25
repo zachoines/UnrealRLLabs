@@ -3,7 +3,7 @@
 ATerraShiftEnvironment::ATerraShiftEnvironment()
 {
     PrimaryActorTick.bCanEverTick = true;
-    PrimaryActorTick.TickGroup = TG_PostPhysics;
+    PrimaryActorTick.TickGroup = TG_PostUpdateWork;
     MaxAgents = 10;
     EnvInfo.EnvID = 3;
     EnvInfo.IsMultiAgent = true;
@@ -13,7 +13,7 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
     TerraShiftRoot = CreateDefaultSubobject<USceneComponent>(TEXT("TerraShiftRoot"));
     RootComponent = TerraShiftRoot;
 
-    WaveSimulator = nullptr;
+    WaveSimulator = CreateDefaultSubobject<UMorletWavelets2D>(TEXT("WaveSimulator"));
     Grid = nullptr;
     Initialized = false;
 
@@ -33,17 +33,14 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
 
 ATerraShiftEnvironment::~ATerraShiftEnvironment()
 {
-    if (WaveSimulator)
-    {
-        delete WaveSimulator;
-        WaveSimulator = nullptr;
-    }
+ 
 }
 
 void ATerraShiftEnvironment::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
 
+    // This tick is done post update of RLRunner. And this updates environment in time for call to "Transition."
     if (Initialized)
     {
         // Update active columns after physics simulation
@@ -54,6 +51,9 @@ void ATerraShiftEnvironment::Tick(float DeltaTime)
 
         // Check and respawn GridObjects if necessary
         CheckAndRespawnGridObjects();
+
+        // Select reward
+        UpdateRewardBuffer(); 
     }
 }
 
@@ -74,7 +74,6 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
     SetupActionAndObservationSpace();
 
     // Initialize agent-related arrays
-    AgentParametersArray.SetNum(CurrentAgents);
     AgentGoalIndices.SetNum(CurrentAgents);
     AgentHasActiveGridObject.SetNum(CurrentAgents);
     GridObjectFallenOffGrid.SetNum(CurrentAgents);
@@ -152,11 +151,26 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
     {
         UE_LOG(LogTemp, Error, TEXT("Failed to spawn GridObjectManager"));
     }
-
-    // Initialize wave simulator
-    WaveSimulator = new MorletWavelets2D(TerraShiftParams->GridSize, TerraShiftParams->GridSize, TerraShiftParams->MaxDeltaHeight);
+ 
     check(WaveSimulator != nullptr);
-    WaveSimulator->Initialize();
+
+    // Build wave parameter ranges from TerraShiftParams
+    FWaveParameterRanges Ranges;
+    Ranges.AmplitudeRange = TerraShiftParams->AmplitudeRange;
+    Ranges.WaveOrientationRange = TerraShiftParams->WaveOrientationRange;
+    Ranges.WavenumberRange = TerraShiftParams->WavenumberRange;
+    Ranges.PhaseVelocityRange = TerraShiftParams->PhaseVelocityRange;
+    Ranges.PhaseRange = TerraShiftParams->PhaseRange;
+    Ranges.SigmaRange = TerraShiftParams->SigmaRange;
+    Ranges.VelocityRange = TerraShiftParams->VelocityRange;
+
+    // Now call the new Initialize function
+    WaveSimulator->Initialize(
+        TerraShiftParams->GridSize,
+        TerraShiftParams->GridSize,
+        Ranges,
+        0.1f
+    );
 
     LastDeltaTime = GetWorld()->GetDeltaSeconds();
     Initialized = true;
@@ -164,22 +178,23 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
 
 FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
 {
-    // Reset tracked variabled
+    // Reset tracked variables
     CurrentStep = 0;
     CurrentAgents = NumAgents;
     LastDeltaTime = GetWorld()->GetDeltaSeconds();
     RewardBuffer = 0.0f;
 
-    // Reset agent-related arrays to match CurrentAgents
-    AgentParametersArray.SetNum(CurrentAgents, false);
+    // Resize agent-related arrays
     AgentGoalIndices.Init(-1, CurrentAgents);
     AgentHasActiveGridObject.Init(false, CurrentAgents);
     GridObjectFallenOffGrid.Init(false, CurrentAgents);
     GridObjectHasReachedGoal.Init(false, CurrentAgents);
     PreviousObjectVelocities.Init(FVector::ZeroVector, CurrentAgents);
-    PrevDistances.Init(-1.0f, CurrentAgents);
+    PreviousObjectAcceleration.Init(FVector::ZeroVector, CurrentAgents);
+    PreviousDistances.Init(-1.0f, CurrentAgents);
+    PreviousPositions.Init(FVector::One() * -1.0, CurrentAgents);
 
-    // Reset Columns and Grid Objects
+    // Reset columns and grid objects
     GridObjectManager->ResetGridObjects();
     Grid->ResetGrid();
 
@@ -188,9 +203,7 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
     {
         GoalPlatform->Destroy();
     }
-
     GoalPlatforms.Empty();
-    GoalPlatformLocations.Empty();
 
     // Randomly determine number of current goals between 1 and 4
     int32 NumGoals = FMath::RandRange(1, 4);
@@ -205,18 +218,6 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
     // Reinitialize agent parameters
     for (int32 i = 0; i < CurrentAgents; ++i)
     {
-        AgentParameters AgentParam;
-        AgentParam.Velocity = FVector2f::ZeroVector;
-        AgentParam.Amplitude = FMath::FRandRange(TerraShiftParams->AmplitudeRange.X, TerraShiftParams->AmplitudeRange.Y);
-        AgentParam.WaveOrientation = FMath::FRandRange(TerraShiftParams->WaveOrientationRange.X, TerraShiftParams->WaveOrientationRange.Y);
-        AgentParam.Wavenumber = FMath::FRandRange(TerraShiftParams->WavenumberRange.X, TerraShiftParams->WavenumberRange.Y);
-        AgentParam.PhaseVelocity = FMath::FRandRange(TerraShiftParams->PhaseVelocityRange.X, TerraShiftParams->PhaseVelocityRange.Y);
-        AgentParam.Phase = FMath::FRandRange(TerraShiftParams->PhaseRange.X, TerraShiftParams->PhaseRange.Y);
-        AgentParam.Sigma = FMath::FRandRange(TerraShiftParams->SigmaRange.X, TerraShiftParams->SigmaRange.Y);
-        AgentParam.Time = 0.0f;
-
-        AgentParametersArray[i] = AgentParam;
-
         // Assign goal indices for each agent
         AgentGoalIndices[i] = FMath::RandRange(0, NumGoals - 1);
     }
@@ -234,14 +235,16 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
 {
     TArray<float> State;
 
-    const AgentParameters& Agent = AgentParametersArray[AgentIndex];
+    // 1) Retrieve wave state from the simulator
+    FAgentWaveState WaveState = WaveSimulator->GetAgentWaveState(AgentIndex);
 
-    // Determine if this agent currently has an active GridObject
+    // 2) Check if the agent currently has an active GridObject
     bool bHasActiveObject = AgentHasActiveGridObject[AgentIndex];
 
-    // Retrieve object world position and velocity
+    // 3) Retrieve object world position and velocity if active
     FVector ObjectWorldPosition = FVector::ZeroVector;
     FVector ObjectWorldVelocity = FVector::ZeroVector;
+    FVector ObjectWorldAcceleration = FVector::ZeroVector;
     if (bHasActiveObject && GridObjectManager)
     {
         AGridObject* GridObject = GridObjectManager->GetGridObject(AgentIndex);
@@ -249,32 +252,24 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
         ObjectWorldVelocity = GridObject->MeshComponent->GetPhysicsLinearVelocity();
     }
 
-    // Transform to relative coordinates
+    // 4) Get object position/velocity/accel in relative coords
     FVector ObjectRelativePosition = Platform->GetActorTransform().InverseTransformPosition(ObjectWorldPosition);
     FVector ObjectRelativeVelocity = Platform->GetActorTransform().InverseTransformVector(ObjectWorldVelocity);
+    FVector ObjectRelativeAcceleration = ObjectRelativeVelocity - PreviousObjectVelocities[AgentIndex];
 
-    // Compute acceleration using previous velocities
-    FVector ObjectRelativeAcceleration = FVector::ZeroVector;
-    if (bHasActiveObject && !FMath::IsNearlyZero(LastDeltaTime))
-    {
-        FVector PreviousRelativeVel = Platform->GetActorTransform().InverseTransformVector(PreviousObjectVelocities[AgentIndex]);
-        ObjectRelativeAcceleration = (ObjectRelativeVelocity - PreviousRelativeVel) / LastDeltaTime;
-    }
-
-    // Retrieve agent position from wave simulator
+    // 5) Retrieve agent’s grid position from wave simulator
     FVector2f AgentGridPosition = WaveSimulator->GetAgentPosition(AgentIndex);
-    FVector AgentWorldPosition = GridPositionToWorldPosition(FVector2D(AgentGridPosition));
-    FVector AgentRelativePosition = Platform->GetActorTransform().InverseTransformPosition(AgentWorldPosition);
+    FVector   AgentWorldPosition = GridPositionToWorldPosition(FVector2D(AgentGridPosition));
+    FVector   AgentRelativePosition = Platform->GetActorTransform().InverseTransformPosition(AgentWorldPosition);
 
-    // Retrieve goal positions
+    // 6) Retrieve goal position
     int32 AgentGoalIndex = AgentGoalIndices[AgentIndex];
-    FVector GoalRelativePosition = GoalPlatformLocations[AgentGoalIndex];
+    FVector GoalRelativePosition = GoalPlatforms[AgentGoalIndex]->GetRelativeLocation();
 
-    // Determine column height at the agent's position
+    // 7) Determine column height at the agent’s position
     float ColumnHeightAtAgent = 0.0f;
     int32 GridX = FMath::Clamp(FMath::FloorToInt(AgentGridPosition.X), 0, TerraShiftParams->GridSize - 1);
     int32 GridY = FMath::Clamp(FMath::FloorToInt(AgentGridPosition.Y), 0, TerraShiftParams->GridSize - 1);
-
     int32 ColumnIndex = GridX * TerraShiftParams->GridSize + GridY;
     if (ColumnIndex >= 0 && ColumnIndex < Grid->GetTotalColumns())
     {
@@ -285,30 +280,29 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
         UE_LOG(LogTemp, Warning, TEXT("AgentGetState: Computed column index out of range for agent %d"), AgentIndex);
     }
 
-    // Compute distance to the assigned goal
+    // 8) Compute distance to the assigned goal (if object is active)
     float DistanceToGoal = -1.0f;
     if (bHasActiveObject)
     {
         AGoalPlatform* AssignedGoal = GoalPlatforms[AgentGoalIndex];
         if (AssignedGoal)
         {
-            FVector GoalWorldPos = AssignedGoal->GetActorLocation();
-            DistanceToGoal = FVector::Dist(ObjectWorldPosition, GoalWorldPos);
+            DistanceToGoal = FVector::Dist(ObjectRelativePosition, GoalRelativePosition);
         }
     }
 
-    // Add wave parameters
-    State.Add(Agent.Velocity.X);
-    State.Add(Agent.Velocity.Y);
-    State.Add(Agent.Amplitude);
-    State.Add(Agent.WaveOrientation);
-    State.Add(Agent.Wavenumber);
-    State.Add(Agent.PhaseVelocity);
-    State.Add(Agent.Phase);
-    State.Add(Agent.Sigma);
-    State.Add(Agent.Time);
+    // 9) Now add wave parameters from the wave state
+    State.Add(WaveState.Velocity.X);
+    State.Add(WaveState.Velocity.Y);
+    State.Add(WaveState.Amplitude);
+    State.Add(WaveState.WaveOrientation);
+    State.Add(WaveState.Wavenumber);
+    State.Add(WaveState.PhaseVelocity);
+    State.Add(WaveState.Phase);
+    State.Add(WaveState.Sigma);
+    State.Add(WaveState.Time);
 
-    // Add positions (agent, object, goal)
+    // 10) Add positions (agent, object, goal)
     State.Add(AgentRelativePosition.X);
     State.Add(AgentRelativePosition.Y);
     State.Add(ObjectRelativePosition.X);
@@ -318,23 +312,44 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
     State.Add(GoalRelativePosition.Y);
     State.Add(GoalRelativePosition.Z);
 
-    // Add object velocity (X, Y, Z)
+    // 11) Add object velocity (X, Y, Z)
     State.Add(ObjectRelativeVelocity.X);
     State.Add(ObjectRelativeVelocity.Y);
     State.Add(ObjectRelativeVelocity.Z);
 
-    // Add object's relative acceleration (X, Y, Z)
+    // 12) Add object’s relative acceleration (X, Y, Z)
     State.Add(ObjectRelativeAcceleration.X);
     State.Add(ObjectRelativeAcceleration.Y);
     State.Add(ObjectRelativeAcceleration.Z);
 
-    // Add column height at the agent's position
+    // Now add previous measures
+    // 13.) Add previous object velocity (X, Y, Z)
+    State.Add(PreviousObjectVelocities[AgentIndex].X);
+    State.Add(PreviousObjectVelocities[AgentIndex].Y);
+    State.Add(PreviousObjectVelocities[AgentIndex].Z);
+
+    // 14.) Add previous object acceleration (X, Y, Z)
+    State.Add(PreviousObjectAcceleration[AgentIndex].X);
+    State.Add(PreviousObjectAcceleration[AgentIndex].Y);
+    State.Add(PreviousObjectAcceleration[AgentIndex].Z);
+
+    // 15.)  Add previous object distance
+    State.Add(PreviousDistances[AgentIndex]);
+
+    // 16.) Add previous object position
+    State.Add(PreviousPositions[AgentIndex].X);
+    State.Add(PreviousPositions[AgentIndex].Y);
+    State.Add(PreviousPositions[AgentIndex].Z);
+
+    // Add remaining misc properties
+
+    // 17) Add column height at the agent’s position
     State.Add(ColumnHeightAtAgent);
 
-    // Add a flag indicating if the GridObject is active
+    // 18) Add a flag indicating if the GridObject is active
     State.Add(bHasActiveObject ? 1.0f : 0.0f);
 
-    // Add the goal index offset (AgentGoalIndex + 1) and distance to goal
+    // 19) Add the goal index offset (AgentGoalIndex + 1) and distance to goal
     State.Add(bHasActiveObject ? static_cast<float>(AgentGoalIndex + 1) : 0.0f);
     State.Add(DistanceToGoal);
 
@@ -361,43 +376,40 @@ void ATerraShiftEnvironment::Act(FAction Action)
     const int NumAgentActions = EnvInfo.ActionSpace->ContinuousActions.Num();
     if (Action.Values.Num() != CurrentAgents * NumAgentActions)
     {
-        UE_LOG(LogTemp, Error, TEXT("Action array size mismatch. Expected %d, got %d"), CurrentAgents * NumAgentActions, Action.Values.Num());
+        UE_LOG(LogTemp, Error, TEXT("Action array size mismatch. Expected %d, got %d"),
+            CurrentAgents * NumAgentActions, Action.Values.Num());
         return;
     }
 
     float DeltaTime = GetWorld()->GetDeltaSeconds();
-    TArray<AgentParameters> AgentParametersArrayCopy;
 
-    // Process agent actions and update agent parameters
+    // 1) Create an array of FAgentDeltaParameters to pass to the wave simulator
+    TArray<FAgentDeltaParameters> DeltaParamsArray;
+    DeltaParamsArray.SetNum(CurrentAgents);
+
+    // 2) Fill in the deltas in [-1..1] for each agent
     for (int32 i = 0; i < CurrentAgents; ++i)
     {
-        int32 ActionIndex = i * NumAgentActions;
+        int32 BaseIndex = i * NumAgentActions;
 
-        // Map action values to parameter ranges
-        float VelocityX = Map(Action.Values[ActionIndex], -1.0f, 1.0f, TerraShiftParams->VelocityRange.X, TerraShiftParams->VelocityRange.Y);
-        float VelocityY = Map(Action.Values[ActionIndex + 1], -1.0f, 1.0f, TerraShiftParams->VelocityRange.X, TerraShiftParams->VelocityRange.Y);
-        float Amplitude = Map(Action.Values[ActionIndex + 2], -1.0f, 1.0f, TerraShiftParams->AmplitudeRange.X, TerraShiftParams->AmplitudeRange.Y);
-        float WaveOrientation = Map(Action.Values[ActionIndex + 3], -1.0f, 1.0f, TerraShiftParams->WaveOrientationRange.X, TerraShiftParams->WaveOrientationRange.Y);
-        float Wavenumber = Map(Action.Values[ActionIndex + 4], -1.0f, 1.0f, TerraShiftParams->WavenumberRange.X, TerraShiftParams->WavenumberRange.Y);
-        float PhaseVelocity = Map(Action.Values[ActionIndex + 5], -1.0f, 1.0f, TerraShiftParams->PhaseVelocityRange.X, TerraShiftParams->PhaseVelocityRange.Y);
-        float Phase = Map(Action.Values[ActionIndex + 6], -1.0f, 1.0f, TerraShiftParams->PhaseRange.X, TerraShiftParams->PhaseRange.Y);
-        float Sigma = Map(Action.Values[ActionIndex + 7], -1.0f, 1.0f, TerraShiftParams->SigmaRange.X, TerraShiftParams->SigmaRange.Y);
+        // Use tanh() and clamp to ensure each delta is in [-1..1]
+        DeltaParamsArray[i].Velocity.X = FMath::Clamp(tanh(Action.Values[BaseIndex + 0]), -1.0f, 1.0f);
+        DeltaParamsArray[i].Velocity.Y = FMath::Clamp(tanh(Action.Values[BaseIndex + 1]), -1.0f, 1.0f);
+        DeltaParamsArray[i].Amplitude = FMath::Clamp(tanh(Action.Values[BaseIndex + 2]), -1.0f, 1.0f);
+        DeltaParamsArray[i].WaveOrientation = FMath::Clamp(tanh(Action.Values[BaseIndex + 3]), -1.0f, 1.0f);
+        DeltaParamsArray[i].Wavenumber = FMath::Clamp(tanh(Action.Values[BaseIndex + 4]), -1.0f, 1.0f);
+        DeltaParamsArray[i].PhaseVelocity = FMath::Clamp(tanh(Action.Values[BaseIndex + 5]), -1.0f, 1.0f);
+        DeltaParamsArray[i].Phase = FMath::Clamp(tanh(Action.Values[BaseIndex + 6]), -1.0f, 1.0f);
+        DeltaParamsArray[i].Sigma = FMath::Clamp(tanh(Action.Values[BaseIndex + 7]), -1.0f, 1.0f);
 
-        AgentParameters& AgentParam = AgentParametersArray[i];
-        AgentParam.Velocity = FVector2f(VelocityX, VelocityY);
-        AgentParam.Amplitude = Amplitude;
-        AgentParam.WaveOrientation = WaveOrientation;
-        AgentParam.Wavenumber = Wavenumber;
-        AgentParam.PhaseVelocity = PhaseVelocity;
-        AgentParam.Phase = Phase;
-        AgentParam.Sigma = Sigma;
-        AgentParam.Time += DeltaTime;
-
-        AgentParametersArrayCopy.Add(AgentParam);
+        // 3) Accumulate time as usual
+        DeltaParamsArray[i].Time = DeltaTime;
     }
 
-    // Update wave heights using the current agent parameters
-    const Matrix2D& HeightMap = WaveSimulator->Update(AgentParametersArrayCopy);
+    // 4) Let the wave simulator interpret these deltas and generate the new height map
+    const FMatrix2D& HeightMap = WaveSimulator->Update(DeltaParamsArray);
+
+    // 5) Update the actual columns
     Grid->UpdateColumnHeights(HeightMap);
 }
 
@@ -514,36 +526,22 @@ FState ATerraShiftEnvironment::State()
 
 void ATerraShiftEnvironment::PostTransition()
 {
-    // Add any logic needed after transitions
+    UpdateObjectStats();
 }
 
 void ATerraShiftEnvironment::PostStep()
 {
-    // Update CurrentStep
     CurrentStep += 1;
+}
 
-    // Update Previous Velocities
-    if (GridObjectManager)
-    {
-        for (int32 i = 0; i < CurrentAgents; ++i)
-        {
-            if (AgentHasActiveGridObject[i])
-            {
-                AGridObject* GridObject = GridObjectManager->GetGridObject(i);
-                FVector CurrentVel = GridObject->MeshComponent->GetPhysicsLinearVelocity();
-                PreviousObjectVelocities[i] = CurrentVel;
-                
-            }
-            else
-            {
-                PreviousObjectVelocities[i] = FVector::ZeroVector;
-            }
-        }
-    }
+void ATerraShiftEnvironment::PreTransition() 
+{
 
-    LastDeltaTime = GetWorld()->GetDeltaSeconds();
+}
 
-    UpdateRewardBuffer();
+void ATerraShiftEnvironment::PreStep()
+{
+    
 }
 
 bool ATerraShiftEnvironment::Done()
@@ -564,28 +562,13 @@ bool ATerraShiftEnvironment::Trunc()
 float ATerraShiftEnvironment::Reward()
 {
     float rewardTmp = RewardBuffer; 
-    RewardBuffer = 0.0f; // because we are collection rewards between n action repeats
+    RewardBuffer = 0.0f; // Because we are collecting rewards between "n" action repeats, after which "Reward" is finally called.
     return rewardTmp;
 }
 
 void ATerraShiftEnvironment::SetupActionAndObservationSpace()
 {
-    // Updated state composition:
-    // 1. Wave parameters (9): VelocityX, VelocityY, Amplitude, WaveOrientation,
-    //    Wavenumber, PhaseVelocity, Phase, Sigma, Time
-    // 2. Agent position (2): AgentRelativePosition.X, AgentRelativePosition.Y
-    // 3. Object position (3): ObjectRelativePosition.X, Y, Z
-    // 4. Goal position (3): GoalRelativePosition.X, Y, Z
-    // 5. Object velocity (3): ObjectRelativeVelocity.X, Y, Z
-    // 6. Column height at agent position (1)
-    // 7. Active flag (1)
-    // 8. Object acceleration (3)
-    // 9. Goal index offset (1)
-    // 10. Distance to the assigned goal (1)
-    //
-    // Total = 9 + 2 + 3 + 3 + 3 + 1 + 1 + 3 + 1 + 1 = 27 floats per agent.
-
-    const int NumAgentObs = 27; // Updated observation size per agent
+    const int NumAgentObs = 37;
     EnvInfo.SingleAgentObsSize = NumAgentObs;
     EnvInfo.StateSize = MaxAgents * EnvInfo.SingleAgentObsSize;
 
@@ -727,11 +710,13 @@ void ATerraShiftEnvironment::CheckAndRespawnGridObjects()
             }
 
             // Check if the bottom of GridObject has fallen below the platform
-            if ((ObjectWorldPosition.Z - (ObjectExtent.Z / 2)) < PlatformZ)
-            {
-                AgentHasActiveGridObject[AgentIndex] = false;
-                GridObjectFallenOffGrid[AgentIndex] = true;
-                ShouldRespawnGridObject = true;
+            if (!GridObjectFallenOffGrid[AgentIndex]) {
+                if ((ObjectWorldPosition.Z - (ObjectExtent.Z / 2)) < PlatformZ)
+                {
+                    AgentHasActiveGridObject[AgentIndex] = false;
+                    GridObjectFallenOffGrid[AgentIndex] = true;
+                    ShouldRespawnGridObject = true;
+                }
             }
 
             // Respawn if fallen off the grid or reached goal
@@ -741,6 +726,47 @@ void ATerraShiftEnvironment::CheckAndRespawnGridObjects()
             }
         }
     }
+}
+
+void ATerraShiftEnvironment::UpdateObjectStats() {
+    if (GridObjectManager)
+    {
+        for (int32 i = 0; i < CurrentAgents; ++i)
+        {
+            if (AgentHasActiveGridObject[i])
+            {
+
+                // Get world relative attributes
+                AGoalPlatform* AssignedGoal = GoalPlatforms[AgentGoalIndices[i]];
+                AGridObject* GridObject = GridObjectManager->GetGridObject(i);
+                FVector ObjectWorldVelocity = GridObject->MeshComponent->GetPhysicsLinearVelocity();
+                FVector ObjectWorldPosition = GridObject->GetObjectLocation();
+                FVector GoalWorldPosition = AssignedGoal->GetActorLocation();
+               
+                // Convert to relative values
+                FVector GoalRelativePosition = Platform->GetActorTransform().InverseTransformPosition(GoalWorldPosition);
+                FVector ObjectRelativePosition = Platform->GetActorTransform().InverseTransformPosition(ObjectWorldPosition);
+                FVector ObjectRelativeVelocity = Platform->GetActorTransform().InverseTransformVector(ObjectWorldVelocity);
+                FVector ObjectRelativeVelocityPrevious = PreviousObjectVelocities[i];
+                FVector ObjectRelativeAcceleration = !FMath::IsNearlyZero(LastDeltaTime) ? (ObjectRelativeVelocity - ObjectRelativeVelocityPrevious) / LastDeltaTime : FVector::Zero();
+             
+                // Store for later use
+                PreviousObjectVelocities[i] = ObjectRelativeVelocity;
+                PreviousObjectAcceleration[i] = ObjectRelativeAcceleration;
+                PreviousDistances[i] = FVector::Dist(ObjectRelativePosition, GoalRelativePosition);
+                PreviousPositions[i] = ObjectRelativePosition;
+            }
+            else
+            {
+                PreviousObjectVelocities[i] = FVector::ZeroVector;
+                PreviousObjectAcceleration[i] = FVector::ZeroVector;
+                PreviousDistances[i] = -1;
+                PreviousPositions[i] = -1 * FVector::One();
+            }
+        }
+    }
+
+    LastDeltaTime = GetWorld()->GetDeltaSeconds();
 }
 
 void ATerraShiftEnvironment::RespawnGridObject(int32 AgentIndex)
@@ -812,8 +838,6 @@ void ATerraShiftEnvironment::UpdateGoal(int32 GoalIndex)
     {
         NewGoalPlatform->InitializeGoalPlatform(GoalLocation, GoalPlatformScale, GoalColor, Platform);
         GoalPlatforms.Add(NewGoalPlatform);
-        // Store the local location relative to the main platform
-        GoalPlatformLocations.Add(GoalLocation);
     }
 }
 
@@ -826,39 +850,53 @@ void ATerraShiftEnvironment::UpdateRewardBuffer()
         bool bActive = AgentHasActiveGridObject[AgentIndex];
         bool bReachedGoal = GridObjectHasReachedGoal[AgentIndex];
         bool bHasFallen = GridObjectFallenOffGrid[AgentIndex];
-        float CurrentDistance = -1.0f;
 
-        // If goal reached
-        if (bReachedGoal)
-        {
-            StepReward += 1.0f;
-        }
-
-        // If fallen off
+        // Punish falling off
         if (bHasFallen)
         {
-            StepReward += -1.0f;
+            StepReward -= 2.0f;
         }
-
-        // If active, but yet to reach goal
-        if (!bReachedGoal && bActive)
+        // Reward reaching goal
+        else if (bReachedGoal)
         {
+            StepReward += 5.0f;
+        }
+        // If the agent is still active (and hasn't reached goal or fallen)
+        else if (bActive)
+        {
+            // Retrieve the GridObject and velocity
+            int32 GoalIndex = AgentGoalIndices[AgentIndex];
             AGridObject* GridObject = GridObjectManager->GetGridObject(AgentIndex);
-            FVector ObjectWorldPos = GridObject->GetObjectLocation();
-            AGoalPlatform* AssignedGoal = GoalPlatforms[AgentGoalIndices[AgentIndex]];
-            FVector GoalWorldPos = AssignedGoal->GetActorLocation();
-            CurrentDistance = FVector::Dist2D(ObjectWorldPos, GoalWorldPos);
+            AGoalPlatform* AssignedGoal = GoalPlatforms[GoalIndex];
+            FVector CurrentObjectRelativePosition = Platform->GetActorTransform().InverseTransformPosition(GridObject->GetObjectLocation());
+            FVector CurrentObjectRelativeVelocity = Platform->GetActorTransform().InverseTransformVector(GridObject->MeshComponent->GetPhysicsLinearVelocity());
+            FVector CurrentObjectGoalRelativePosition = Platform->GetActorTransform().InverseTransformVector(AssignedGoal->GetActorLocation());
+            FVector CurrentObjectGoalRelativeDirection = CurrentObjectGoalRelativePosition - CurrentObjectRelativePosition;
 
-            float PrevDist = PrevDistances[AgentIndex];
-            if (CurrentDistance >= 0.0f && PrevDist >= 0.0f)
+            // Punish positive Z velocity (bouncing; being launched)
+            float UpwardVel = CurrentObjectRelativeVelocity.Z;
+            if (UpwardVel > 10.0f) // Avoid punishing jitters or slow vertical diplacements
             {
-                float Improvement = PrevDist - CurrentDistance;
-                StepReward += Improvement >= 0.0f ? 0.0 : -0.001;
+                StepReward -= 0.001f * (UpwardVel - 10.0f);
             }
+
+            // Reward velocity toward the goal, and punish velocity away
+            CurrentObjectGoalRelativeDirection.Normalize(KINDA_SMALL_NUMBER);
+            float DotToGoal = FVector::DotProduct(
+                CurrentObjectRelativeVelocity,
+                CurrentObjectGoalRelativeDirection
+            );
+
+            StepReward += 0.001f * DotToGoal; // Dot product: positive if velocity is in direction of goal
+      
+
+            // Distance improvement reward
+            float CurrentDistance = FVector::Distance(CurrentObjectGoalRelativePosition, CurrentObjectRelativePosition);
+            float DeltaImprovement = PreviousDistances[AgentIndex] - CurrentDistance;
+            StepReward += (0.001f * DeltaImprovement) - 0.01f; // Minus a small constant to avoid doing nothing.
         }
 
-        // Update variables for next step
-        PrevDistances[AgentIndex] = CurrentDistance;
+        // Clear or reset flags so they are valid next step
         GridObjectFallenOffGrid[AgentIndex] = false;
         GridObjectHasReachedGoal[AgentIndex] = false;
     }

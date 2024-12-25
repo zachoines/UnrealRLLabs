@@ -26,7 +26,6 @@ class LinearNetwork(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-
 class StatesEncoder(nn.Module):
     """
     Encodes per-agent observations into embeddings.
@@ -41,7 +40,6 @@ class StatesEncoder(nn.Module):
     def forward(self, x):
         # fc is applied to the last dimension (Obs_dim -> H)
         return self.fc(x)
-
 
 class StatesActionsEncoder(nn.Module):
     """
@@ -61,7 +59,6 @@ class StatesActionsEncoder(nn.Module):
         # Last dim: H + Action_dim -> fc
         x = torch.cat([observation, action], dim=-1)
         return self.fc(x)
-
 
 class ValueNetwork(nn.Module):
     """
@@ -83,7 +80,6 @@ class ValueNetwork(nn.Module):
 
     def forward(self, x):
         return self.value_net(x)
-
 
 class RSA(nn.Module):
     """
@@ -118,7 +114,6 @@ class RSA(nn.Module):
         output, _ = self.multihead_attn(q, k, v)
         output = x + output  # residual connection
         return self.output_norm(output)
-
 
 class MultiAgentEmbeddingNetwork(nn.Module):
     """
@@ -198,7 +193,6 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         # groupmates_actions: (S,E,A,(A-1),Action_dim)
         return self.obs_action_encoder(groupmates_embeddings, groupmates_actions)
 
-
 class SharedCritic(nn.Module):
     """
     SharedCritic with two heads:
@@ -233,34 +227,45 @@ class SharedCritic(nn.Module):
         baseline_vals = self.baseline_head(flat).view(S,E,A,1)
         return baseline_vals
 
-
 class ContinuousPolicyNetwork(nn.Module):
     """
-    Continuous policy: outputs mean and std for actions.
-    Input: (Batch,H)
-    Output: mean:(Batch,action_dim), std:(Batch,action_dim)
+    Continuous policy network that outputs raw (unbounded) mean and clamped log_std.
     """
-    def __init__(self, in_features: int, out_features: int, hidden_size: int):
+    def __init__(self, in_features: int, out_features: int, hidden_size: int, 
+                 log_std_min: float, log_std_max: float):
         super(ContinuousPolicyNetwork, self).__init__()
+        self.log_std_min = log_std_min
+        self.log_std_max = log_std_max
+
         self.shared = nn.Sequential(
             nn.Linear(in_features, hidden_size),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_size, hidden_size),
             nn.LeakyReLU()
         )
         self.mean = nn.Linear(hidden_size, out_features)
-        self.log_std = nn.Parameter(torch.zeros(out_features))
+        self.log_std_layer = nn.Linear(hidden_size, out_features)
 
+        # Weight init
         for layer in self.shared:
             if isinstance(layer, nn.Linear):
                 init.xavier_normal_(layer.weight)
+                nn.init.constant_(layer.bias, 0.0)
+
         init.xavier_normal_(self.mean.weight)
+        nn.init.constant_(self.mean.bias, 0.0)
+
+        init.xavier_normal_(self.log_std_layer.weight)
+        nn.init.constant_(self.log_std_layer.bias, 0.0)
 
     def forward(self, x):
         features = self.shared(x)
-        mean = torch.tanh(self.mean(features))  # actions in (-1,1)
-        log_std = self.log_std.unsqueeze(0).expand_as(mean)
+        mean = self.mean(features)
+        log_std = self.log_std_layer(features)
+        log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
         std = torch.exp(log_std)
-        return mean, std
 
+        return mean, std
 
 class QNetwork(nn.Module):
     """

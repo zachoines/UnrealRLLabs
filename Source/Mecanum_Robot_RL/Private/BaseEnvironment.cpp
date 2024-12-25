@@ -27,12 +27,18 @@ void ABaseEnvironment::Act(FAction Action)
 
 void ABaseEnvironment::PostStep()
 {
-    // Update internal state...
 }
 
 void ABaseEnvironment::PostTransition()
 {
-    // Update internal state...
+}
+
+void ABaseEnvironment::PreStep()
+{
+}
+
+void ABaseEnvironment::PreTransition()
+{
 }
 
 FState ABaseEnvironment::State()

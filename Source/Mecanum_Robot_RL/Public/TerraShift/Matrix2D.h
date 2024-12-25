@@ -1,60 +1,100 @@
 #pragma once
-#include "Math/UnrealMathUtility.h"
-#include "CoreMinimal.h"
 
-class UNREALRLLABS_API Matrix2D
+#include "CoreMinimal.h"
+#include "Math/UnrealMathUtility.h"
+#include "Matrix2D.generated.h"
+
+/**
+ * A "row proxy" that allows user-friendly [row][col] access while
+ * internally referencing a single TArray<float> storage.
+ */
+struct FFMatrix2DRowProxy
 {
+    // Pointer to the parent FMatrix2D's data
+    float* RowData;
+    // Number of columns in the matrix
+    int32 NumCols;
+
+    // Indexing operator gives element reference at col
+    float& operator[](int32 ColIndex)
+    {
+        check(ColIndex >= 0 && ColIndex < NumCols);
+        return RowData[ColIndex];
+    }
+
+    const float& operator[](int32 ColIndex) const
+    {
+        check(ColIndex >= 0 && ColIndex < NumCols);
+        return RowData[ColIndex];
+    }
+};
+
+/**
+ * A simple 2D matrix struct for storing and operating on float data,
+ * implemented via a single TArray<float> to avoid nested TArray issues.
+ */
+USTRUCT(BlueprintType)
+struct UNREALRLLABS_API FMatrix2D
+{
+    GENERATED_BODY()
+
 private:
-    TArray<TArray<float>> Data;
+    // Single TArray of size (Rows * Columns) for data
+    UPROPERTY()
+    TArray<float> Data;
+
+    UPROPERTY()
     int32 Rows;
+
+    UPROPERTY()
     int32 Columns;
 
 public:
     // Constructors
-    Matrix2D();
-    Matrix2D(int32 InRows, int32 InColumns);
-    Matrix2D(int32 InRows, int32 InColumns, float InitialValue);
-    Matrix2D(const TArray<TArray<float>>& InData);
+    FMatrix2D();
+    FMatrix2D(int32 InRows, int32 InColumns);
+    FMatrix2D(int32 InRows, int32 InColumns, float InitialValue);
+    FMatrix2D(const TArray<TArray<float>>& InData);
 
     // Copy constructor and assignment operator
-    Matrix2D(const Matrix2D& Other);
-    Matrix2D& operator=(const Matrix2D& Other);
+    FMatrix2D(const FMatrix2D& Other);
+    FMatrix2D& operator=(const FMatrix2D& Other);
 
     // Element-wise operators
-    Matrix2D operator+(const Matrix2D& Other) const;
-    Matrix2D& operator+=(const Matrix2D& Other);
-    Matrix2D operator-(const Matrix2D& Other) const;
-    Matrix2D& operator-=(const Matrix2D& Other);
-    Matrix2D operator*(const Matrix2D& Other) const;
-    Matrix2D& operator*=(const Matrix2D& Other);
-    Matrix2D operator/(const Matrix2D& Other) const;
-    Matrix2D& operator/=(const Matrix2D& Other);
+    FMatrix2D operator+(const FMatrix2D& Other) const;
+    FMatrix2D& operator+=(const FMatrix2D& Other);
+    FMatrix2D operator-(const FMatrix2D& Other) const;
+    FMatrix2D& operator-=(const FMatrix2D& Other);
+    FMatrix2D operator*(const FMatrix2D& Other) const;
+    FMatrix2D& operator*=(const FMatrix2D& Other);
+    FMatrix2D operator/(const FMatrix2D& Other) const;
+    FMatrix2D& operator/=(const FMatrix2D& Other);
 
     // Scalar operations
-    Matrix2D operator+(float Scalar) const;
-    Matrix2D& operator+=(float Scalar);
-    Matrix2D operator-(float Scalar) const;
-    Matrix2D& operator-=(float Scalar);
-    Matrix2D operator*(float Scalar) const;
-    Matrix2D& operator*=(float Scalar);
-    Matrix2D operator/(float Scalar) const;
-    Matrix2D& operator/=(float Scalar);
+    FMatrix2D operator+(float Scalar) const;
+    FMatrix2D& operator+=(float Scalar);
+    FMatrix2D operator-(float Scalar) const;
+    FMatrix2D& operator-=(float Scalar);
+    FMatrix2D operator*(float Scalar) const;
+    FMatrix2D& operator*=(float Scalar);
+    FMatrix2D operator/(float Scalar) const;
+    FMatrix2D& operator/=(float Scalar);
 
-    // Element access
-    TArray<float>& operator[](int32 RowIndex);
-    const TArray<float>& operator[](int32 RowIndex) const;
+    // **Row indexing**: returns a proxy object so user can do matrix[row][col].
+    FFMatrix2DRowProxy operator[](int32 RowIndex);
+    const FFMatrix2DRowProxy operator[](int32 RowIndex) const;
 
     // Sub-matrix extraction
-    Matrix2D Sub(int32 RowStart, int32 RowEnd, int32 ColStart, int32 ColEnd) const;
+    FMatrix2D Sub(int32 RowStart, int32 RowEnd, int32 ColStart, int32 ColEnd) const;
 
     // Mathematical functions
-    Matrix2D Exp() const;
-    Matrix2D Cos() const;
-    Matrix2D Sin() const;
-    Matrix2D Tanh() const;
+    FMatrix2D Exp() const;
+    FMatrix2D Cos() const;
+    FMatrix2D Sin() const;
+    FMatrix2D Tanh() const;
 
     // Matrix functions
-    float Dot(const Matrix2D& Other) const;
+    float Dot(const FMatrix2D& Other) const;
     float Norm() const;
     void Clip(float MinValue, float MaxValue);
     void Init(float Value);
@@ -67,11 +107,32 @@ public:
     int32 GetNumColumns() const;
 
     // Additional operators for scalar operations
-    friend Matrix2D operator+(float Scalar, const Matrix2D& Matrix);
-    friend Matrix2D operator-(float Scalar, const Matrix2D& Matrix);
-    friend Matrix2D operator*(float Scalar, const Matrix2D& Matrix);
-    friend Matrix2D operator/(float Scalar, const Matrix2D& Matrix);
-    
+    friend FMatrix2D operator+(float Scalar, const FMatrix2D& Matrix);
+    friend FMatrix2D operator-(float Scalar, const FMatrix2D& Matrix);
+    friend FMatrix2D operator*(float Scalar, const FMatrix2D& Matrix);
+    friend FMatrix2D operator/(float Scalar, const FMatrix2D& Matrix);
+
+    // Min/Max
     float Min() const;
     float Max() const;
+
+    // New Helper Methods
+
+    /** Returns a FMatrix2D whose elements are the absolute values of this matrix. */
+    FMatrix2D Abs() const;
+
+    /** Returns the sum of all elements in this matrix. */
+    float Sum() const;
+
+    /** Returns the arithmetic mean of all elements in this matrix. */
+    float Mean() const;
+
+private:
+    /** Helper to get the index in the single array for (row,col). */
+    FORCEINLINE int32 LinearIndex(int32 RowIndex, int32 ColIndex) const
+    {
+        return (RowIndex * Columns) + ColIndex;
+    }
 };
+
+// For convenience, we keep "FMatrix2D" as the final name. No separate typedef is needed now.

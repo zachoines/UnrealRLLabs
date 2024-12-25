@@ -1,6 +1,4 @@
 #include "TerraShift/Grid.h"
-#include "Engine/World.h"
-#include "Engine/Engine.h" // For logging
 
 AGrid::AGrid() {
     PrimaryActorTick.bCanEverTick = false;
@@ -31,7 +29,7 @@ void AGrid::InitializeGrid(int32 InGridSize, float InPlatformSize, FVector Locat
     SetActorLocation(Location);
 }
 
-void AGrid::UpdateColumnHeights(const Matrix2D& HeightMap) {
+void AGrid::UpdateColumnHeights(const FMatrix2D& HeightMap) {
     for (int32 X = 0; X < GridSize; ++X) {
         for (int32 Y = 0; Y < GridSize; ++Y) {
             int32 Index = X * GridSize + Y;

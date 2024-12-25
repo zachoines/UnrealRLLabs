@@ -46,6 +46,8 @@ TTuple<TArray<float>, TArray<float>, TArray<float>, TArray<FAction>, TArray<FSta
 
     for (int32 i = 0; i < Environments.Num(); i++)
     {
+        Environments[i]->PreTransition();
+
         Dones.Add(static_cast<float>(Environments[i]->Done()));
         Truncs.Add(static_cast<float>(Environments[i]->Trunc()));
         Rewards.Add(Environments[i]->Reward());
@@ -56,6 +58,8 @@ TTuple<TArray<float>, TArray<float>, TArray<float>, TArray<FAction>, TArray<FSta
         else {
             States.Add(Environments[i]->State());
         }
+
+        Environments[i]->PostTransition();
     }
 
     CurrentStates = States;
@@ -81,19 +85,16 @@ TArray<FState> AVectorEnvironment::GetStates()
 
 void AVectorEnvironment::Step(TArray<FAction> Actions)
 {
-    for (int32 i = 0; i < Environments.Num(); i++)
-    {
-        if (!CurrentDones[i] && !CurrentTruncs[i]) {
-            Environments[i]->Act(Actions[i]);
-        }
-    }
 
     for (int32 i = 0; i < Environments.Num(); i++)
     {
         if (!CurrentDones[i] && !CurrentTruncs[i]) {
+            Environments[i]->PreStep();
+            Environments[i]->Act(Actions[i]);
             Environments[i]->PostStep();
         }
     }
+
     LastActions = Actions;
 }
 
