@@ -26,19 +26,96 @@ class LinearNetwork(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+# -----------------------------------------------------------------------
+# AgentIDPosEnc: learnable embeddings for agent-index using sinusoidal features
+# -----------------------------------------------------------------------
+class AgentIDPosEnc(nn.Module):
+    """
+    For each integer agent index i, produce a learned embedding vector of size id_embed_dim,
+    via a sinusoidal feature extraction + linear projection.
+    """
+
+    def __init__(self, num_freqs: int = 8, id_embed_dim: int = 32):
+        """
+        :param num_freqs: how many sinusoidal frequencies to use
+        :param id_embed_dim: dimension of the final ID embedding
+        """
+        super().__init__()
+        self.num_freqs = num_freqs
+        self.id_embed_dim = id_embed_dim
+
+        # The linear layer that maps 2*num_freqs features -> id_embed_dim
+        self.linear = nn.Linear(2 * self.num_freqs, self.id_embed_dim)
+        init.kaiming_normal_(self.linear.weight)
+        nn.init.constant_(self.linear.bias, 0.0)
+
+    def sinusoidal_features(self, agent_ids: torch.Tensor) -> torch.Tensor:
+        """
+        agent_ids: (NS, NE, NA), integer agent indices
+        returns: (NS, NE, NA, 2 * num_freqs) float features from sin/cos expansions
+        """
+        # Convert agent IDs to float
+        # shape => (NS, NE, NA)
+        agent_ids_f = agent_ids.to(dtype=torch.float32)
+
+        # We'll define some frequency scales, e.g. 2^0..2^(num_freqs-1)
+        freq_exponents = torch.arange(self.num_freqs, device=agent_ids.device, dtype=torch.float32)
+        scales = torch.pow(2.0, freq_exponents)  # shape => (num_freqs,)
+
+        # Expand agent_ids_f and scales to broadcast for sin/cos
+        # agent_ids_f => (NS, NE, NA) => unsqueeze => (NS, NE, NA, 1)
+        agent_ids_f = agent_ids_f.unsqueeze(-1)  # shape => (NS, NE, NA, 1)
+        # scales => (num_freqs,) => (1, num_freqs) for broadcast
+        scales = scales.view(1, self.num_freqs)  # shape => (1, num_freqs)
+
+        # We want a final shape => (NS, NE, NA, num_freqs)
+        # We'll do agent_ids_f * scales => broadcast along last dimension
+        # First, flatten out the (NS,NE,NA)->(X) dimension if needed
+        # but we can also do a simpler method: repeat_interleave or expand:
+        # Let's do a quick trick with outer product style broadcasting:
+
+        # We'll produce sin/cos in a single step:
+        multiplied = agent_ids_f * scales  # shape => (NS, NE, NA, num_freqs)
+        sines = torch.sin(multiplied)
+        cosines = torch.cos(multiplied)
+
+        # Concatenate along last dimension => shape => (NS, NE, NA, 2*num_freqs)
+        feats = torch.cat([sines, cosines], dim=-1)
+        return feats
+
+    def forward(self, agent_ids: torch.Tensor) -> torch.Tensor:
+        """
+        agent_ids: (NS, NE, NA) integer indices
+        returns: (NS, NE, NA, id_embed_dim)
+        """
+        # 1) Compute raw sinusoidal features => (NS, NE, NA, 2*num_freqs)
+        raw_feat = self.sinusoidal_features(agent_ids)  # shape => (..., 2*num_freqs)
+
+        # 2) Flatten to pass through linear
+        # shape => (NS,NE,NA, 2*num_freqs) => (NS*NE*NA, 2*num_freqs)
+        NS, NE, NA, F = raw_feat.shape
+        flattened = raw_feat.view(NS * NE * NA, F)
+
+        # 3) linear => shape => (NS*NE*NA, id_embed_dim)
+        embed = self.linear(flattened)
+
+        # 4) reshape => (NS, NE, NA, id_embed_dim)
+        embed = embed.view(NS, NE, NA, self.id_embed_dim)
+        return embed
+
+# -----------------------------------------------------------------------
+
 class StatesEncoder(nn.Module):
     """
     Encodes per-agent observations into embeddings.
     Input: (Steps,Env,Agents,Obs_dim)
     Output: (Steps,Env,Agents,H)
-    Applies a simple MLP (LinearNetwork) along the last dimension.
     """
     def __init__(self, input_size, output_size, dropout_rate=0.0, activation=True):
         super(StatesEncoder, self).__init__()
         self.fc = LinearNetwork(input_size, output_size, dropout_rate, activation)
 
     def forward(self, x):
-        # fc is applied to the last dimension (Obs_dim -> H)
         return self.fc(x)
 
 class StatesActionsEncoder(nn.Module):
@@ -49,14 +126,12 @@ class StatesActionsEncoder(nn.Module):
       - action: (S,E,A,(A-1),Action_dim)
     Output:
       (S,E,A,(A-1),H') where H' = output_size
-    Concatenate obs+action along last dim, then LinearNetwork.
     """
     def __init__(self, state_dim, action_dim, output_size, dropout_rate=0.0, activation=True):
         super(StatesActionsEncoder, self).__init__()
         self.fc = LinearNetwork(state_dim + action_dim, output_size, dropout_rate, activation)
 
     def forward(self, observation, action):
-        # Last dim: H + Action_dim -> fc
         x = torch.cat([observation, action], dim=-1)
         return self.fc(x)
 
@@ -70,7 +145,6 @@ class ValueNetwork(nn.Module):
         super(ValueNetwork, self).__init__()
         self.value_net = nn.Sequential(
             nn.Linear(in_features, hidden_size),
-            nn.Dropout(p=dropout_rate),
             nn.LeakyReLU(),
             nn.Linear(hidden_size, 1)
         )
@@ -115,42 +189,77 @@ class RSA(nn.Module):
         output = x + output  # residual connection
         return self.output_norm(output)
 
+# -----------------------------------------------------------------------
+# MultiAgentEmbeddingNetwork with agent-ID positional enc
+# -----------------------------------------------------------------------
 class MultiAgentEmbeddingNetwork(nn.Module):
     """
     MultiAgentEmbeddingNetwork:
     - Encodes per-agent obs with StatesEncoder (g()).
+    - Adds Agent ID positional enc, fusing ID embedding with obs embedding
     - Applies RSA to produce relational embeddings.
-    - Provides methods to split agent from groupmates and encode groupmates obs+actions.
-
-    Steps:
-    1) obs -> agent_obs_encoder -> (S,E,A,H)
-    2) RSA over agents -> (S,E,A,H)
+    - Provides methods to isolate agent-groupmates obs for baseline networks.
     """
-    def __init__(self, config):
+    def __init__(self, net_cfg):
         super(MultiAgentEmbeddingNetwork, self).__init__()
-        net_cfg = config['agent']['params']['networks']['MultiAgentEmbeddingNetwork']
 
+        # Normal obs enc
         self.agent_obs_encoder = StatesEncoder(**net_cfg['agent_obs_encoder'])
+
+        # Extra aggregator if needed
         self.agent_embedding_encoder = StatesEncoder(**net_cfg['agent_embedding_encoder'])
+
+        # For groupmates obs+action encoding
         self.obs_action_encoder = StatesActionsEncoder(**net_cfg['obs_actions_encoder'])
 
-        rsa_cfg = net_cfg['RSA']
-        self.rsa = RSA(**rsa_cfg)
+        # RSA for attending to multi-agents
+        self.rsa = RSA(**net_cfg['RSA'])
+
+        # Id_encoder for agent IDs
+        self.id_encoder = AgentIDPosEnc(**net_cfg['agent_id_enc'])
+
+        H = net_cfg['agent_obs_encoder']['output_size']
+        id_emb_dim = net_cfg['agent_id_enc']['id_embed_dim']
+
+        self.fuse = nn.Linear(H + id_emb_dim, H)
+        init.kaiming_normal_(self.fuse.weight)
+        nn.init.constant_(self.fuse.bias, 0.0)
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def forward(self, obs: torch.Tensor):
-        # obs: (S,E,A,obs_dim)
-        # Encode per-agent obs:
-        emb = self.agent_obs_encoder(obs) # (S,E,A,H)
-        S,E,A,H = emb.shape
-        flat = emb.view(S*E,A,H)
-        attended = self.rsa(flat) # (S*E,A,H)
-        return attended.view(S,E,A,H)
+        """
+        obs: (S,E,A,obs_dim)
+        Steps:
+          1) Build agent_ids => (S,E,A)
+          2) ID embed => (S,E,A,id_embed_dim)
+          3) obs embed => (S,E,A,H)
+          4) cat => fuse => RSA => final
+        """
+        S, E, A, obs_dim = obs.shape
+        obs_device = obs.device
+
+        # 1) Build agent_ids
+        agent_ids = torch.arange(A, device=obs_device).view(1,1,A)
+        # shape => (S,E,A), broadcast
+        agent_ids = agent_ids.expand(S, E, A)
+
+        # 2) ID embed => (S,E,A,id_embed_dim)
+        id_emb = self.id_encoder(agent_ids)
+
+        # 3) obs embed => (S,E,A,H)
+        obs_emb = self.agent_obs_encoder(obs)
+
+        # 4) fuse
+        combined = torch.cat([obs_emb, id_emb], dim=-1)  # => (S,E,A, H+id_embed_dim)
+        fused = self.fuse(combined)                      # => (S,E,A,H)
+
+        # 5) apply RSA
+        flat = fused.view(S*E, A, -1)                    # (S*E, A, H)
+        attended = self.rsa(flat)                        # => (S*E, A, H)
+        return attended.view(S, E, A, -1)
 
     def split_agent_obs_groupmates_obs_actions(self, obs: torch.Tensor, actions: torch.Tensor):
-        # Similar logic as before:
-        # obs: (S,E,A,obs_dim), actions: (S,E,A,action_dim)
         S,E,A,obs_dim = obs.shape
         _,_,_,act_dim = actions.shape
         agent_obs_list = []
@@ -165,15 +274,11 @@ class MultiAgentEmbeddingNetwork(nn.Module):
             groupmates_actions_list.append(g_acts)
 
         agent_obs = torch.cat(agent_obs_list, dim=2).unsqueeze(3).contiguous() 
-        # (S,E,A,1,obs_dim)
         groupmates_obs = torch.cat(groupmates_obs_list, dim=2).contiguous()
-        # (S,E,A,(A-1),obs_dim)
         groupmates_actions = torch.cat(groupmates_actions_list, dim=2).contiguous()
-        # (S,E,A,(A-1),action_dim)
         return agent_obs, groupmates_obs, groupmates_actions
 
     def split_agent_groupmates_obs(self, agent_embeddings: torch.Tensor):
-        # agent_embeddings: (S,E,A,H)
         S,E,A,H = agent_embeddings.shape
         agent_emb_list = []
         groupmates_emb_list = []
@@ -183,14 +288,10 @@ class MultiAgentEmbeddingNetwork(nn.Module):
             groupmates_emb_list.append(g_emb)
 
         agent_embeds = torch.cat(agent_emb_list, dim=2).unsqueeze(3).contiguous()
-        # (S,E,A,1,H)
         groupmates_embeds = torch.cat(groupmates_emb_list, dim=2).contiguous()
-        # (S,E,A,(A-1),H)
         return agent_embeds, groupmates_embeds
 
     def encode_groupmates_obs_actions(self, groupmates_embeddings: torch.Tensor, groupmates_actions: torch.Tensor):
-        # groupmates_embeddings: (S,E,A,(A-1),H)
-        # groupmates_actions: (S,E,A,(A-1),Action_dim)
         return self.obs_action_encoder(groupmates_embeddings, groupmates_actions)
 
 class SharedCritic(nn.Module):
@@ -198,9 +299,6 @@ class SharedCritic(nn.Module):
     SharedCritic with two heads:
     - value_head: V(s)
     - baseline_head: per-agent baseline Q_ψ for counterfactual baseline
-
-    value(s): average embeddings over agents -> (S,E,H) -> value_head -> (S,E,1)
-    baselines(x): x=(S,E,A,NA,H), average over NA dimension -> (S,E,A,H) -> baseline_head -> (S,E,A,1)
     """
     def __init__(self, config):
         super(SharedCritic, self).__init__()
@@ -219,13 +317,69 @@ class SharedCritic(nn.Module):
 
     def baselines(self, x: torch.Tensor) -> torch.Tensor:
         # x: (S,E,A,A,H)
-        # average over the "groupmates" dimension: (S,E,A,H)
         S,E,A,A2,H = x.shape
         assert A == A2
         mean_x = x.mean(dim=3) # (S,E,A,H)
         flat = mean_x.view(S*E*A,H)
         baseline_vals = self.baseline_head(flat).view(S,E,A,1)
         return baseline_vals
+    
+class DiscretePolicyNetwork(nn.Module):
+    """
+    A policy network for discrete action spaces.
+    If out_features is an int => single-categorical
+    If out_features is a list => multi-discrete
+    """
+    def __init__(self, in_features: int, out_features, hidden_size: int):
+        super().__init__()
+        self.in_features = in_features
+        self.hidden_size = hidden_size
+
+        self.shared = nn.Sequential(
+            nn.Linear(in_features, hidden_size),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(),
+        )
+
+        # differentiate single vs multi
+        if isinstance(out_features, int):
+            # single categorical => one head
+            self.head = nn.Linear(hidden_size, out_features)
+        else:
+            # multi-discrete => separate heads for each branch
+            self.branch_heads = nn.ModuleList([
+                nn.Linear(hidden_size, branch_size)
+                for branch_size in out_features
+            ])
+            self.out_is_multi = True
+
+        # init weights
+        for layer in self.shared:
+            if isinstance(layer, nn.Linear):
+                init.xavier_normal_(layer.weight)
+                nn.init.constant_(layer.bias, 0.0)
+        if hasattr(self, 'head'):
+            init.xavier_normal_(self.head.weight)
+            nn.init.constant_(self.head.bias, 0.0)
+        else:
+            for lin in self.branch_heads:
+                init.xavier_normal_(lin.weight)
+                nn.init.constant_(lin.bias, 0.0)
+
+    def forward(self, x: torch.Tensor):
+        """
+        x => (B, in_features)
+        returns => either (B, out_features) if single cat
+                or list of (B, branch_size) if multi-discrete
+        """
+        feats = self.shared(x)
+        if hasattr(self, 'head'):
+            # single cat
+            return self.head(feats)   # shape => (B, out_features)
+        else:
+            # multi-discrete
+            return [branch(feats) for branch in self.branch_heads]
 
 class ContinuousPolicyNetwork(nn.Module):
     """
@@ -246,7 +400,6 @@ class ContinuousPolicyNetwork(nn.Module):
         self.mean = nn.Linear(hidden_size, out_features)
         self.log_std_layer = nn.Linear(hidden_size, out_features)
 
-        # Weight init
         for layer in self.shared:
             if isinstance(layer, nn.Linear):
                 init.xavier_normal_(layer.weight)
@@ -264,7 +417,6 @@ class ContinuousPolicyNetwork(nn.Module):
         log_std = self.log_std_layer(features)
         log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
         std = torch.exp(log_std)
-
         return mean, std
 
 class QNetwork(nn.Module):

@@ -20,14 +20,11 @@ class UNREALRLLABS_API AGridObjectManager : public AActor {
 public:
     AGridObjectManager();
 
-    // Set the size of GridObjects to be spawned
-    void SetObjectSize(FVector InObjectSize);
-
     // Set the platform actor reference
     void SetPlatformActor(AActor* InPlatform);
 
     // Spawn grid objects at specified locations with a spawn delay
-    void SpawnGridObjects(const TArray<FVector>& Locations, FVector ObjectSize, float SpawnDelay);
+    void SpawnGridObjects(const TArray<FVector>& Locations, FVector InObjectSize, float InObjectMass, float SpawnDelay);
 
     // Reset all grid objects to their inactive states
     void ResetGridObjects();
@@ -39,14 +36,14 @@ public:
     TSet<int32> GetActiveColumnsInProximity(int32 GridSize, const TArray<FVector>& ColumnCenters, const FVector& PlatformCenter, float PlatformSize, float CellSize) const;
 
     // Deactivate a GridObject at a specific index
-    void DeleteGridObject(int32 Index);
-
-    // Respawn a GridObject at a specific index and location after a delay
-    void RespawnGridObjectAtLocation(int32 Index, FVector InLocation, float SpawnDelay);
+    void DisableGridObject(int32 Index);
 
     // Get a GridObject by index
     AGridObject* GetGridObject(int32 Index) const;
 
+    // Spawns or reuses a GridObject at the specified index and location
+    void SpawnGridObjectAtIndex(int32 Index, FVector InWorldLocation, FVector InObjectSize, float InObjectMass);
+    
     // Event triggered when a GridObject is spawned
     UPROPERTY(BlueprintAssignable, Category = "Events")
     FOnGridObjectSpawned OnGridObjectSpawned;
@@ -63,12 +60,12 @@ private:
     // Size of GridObjects to be spawned
     FVector ObjectSize;
 
+    // Mass of GridObjects to be spawned
+    float ObjectMass;
+
     // The platform actor reference
     AActor* PlatformActor;
 
-    // Spawns or reuses a GridObject at the specified index and location
-    void SpawnGridObjectAtIndex(int32 Index, FVector InWorldLocation);
-
     // Helper function to create a new GridObject
-    AGridObject* CreateNewGridObjectAtIndex(int32 Index);
+    AGridObject* CreateNewGridObjectAtIndex(int32 Index, FVector InObjectSize, float InObjectMass);
 };

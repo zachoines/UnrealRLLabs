@@ -25,12 +25,13 @@ AGridObject::AGridObject() {
     DynMaterial = nullptr;
 }
 
-void AGridObject::InitializeGridObject(FVector InObjectSize) {
+void AGridObject::InitializeGridObject(FVector InObjectSize, float InObjectMass) {
     // Set the default mesh (a sphere)
     UStaticMesh* DefaultMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
     if (DefaultMesh) {
         MeshComponent->SetStaticMesh(DefaultMesh);
         MeshComponent->SetWorldScale3D(InObjectSize);
+        MeshComponent->GetBodyInstance()->SetMassScale(InObjectMass);
         MeshComponent->SetRelativeLocation(FVector::ZeroVector);
 
         // Load and set the dynamic material

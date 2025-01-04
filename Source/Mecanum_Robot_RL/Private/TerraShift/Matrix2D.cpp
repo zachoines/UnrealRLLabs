@@ -500,3 +500,50 @@ float FMatrix2D::Mean() const
     }
     return Sum() / static_cast<float>(Rows * Columns);
 }
+
+FMatrix2D FMatrix2D::T() const
+{
+    // Create a new matrix with swapped dimensions
+    FMatrix2D Result(Columns, Rows);
+
+    // We loop over the original (r, c). 
+    // In the transposed matrix, that goes to (c, r).
+    for (int32 r = 0; r < Rows; ++r)
+    {
+        for (int32 c = 0; c < Columns; ++c)
+        {
+            Result[c][r] = Data[LinearIndex(r, c)];
+        }
+    }
+    return Result;
+}
+
+FMatrix2D FMatrix2D::MatMul(const FMatrix2D& Other) const
+{
+    // Standard dimension check: (A.Rows x A.Cols) * (B.Rows x B.Cols)
+    check(Columns == Other.Rows);
+
+    FMatrix2D Result(Rows, Other.Columns);
+
+    // For each row in A
+    for (int32 i = 0; i < Rows; ++i)
+    {
+        // For each column in B
+        for (int32 j = 0; j < Other.Columns; ++j)
+        {
+            float Sum = 0.0f;
+
+            // Dot product of row i of A with column j of B
+            for (int32 k = 0; k < Columns; ++k)
+            {
+                // A(i,k) = Data[i*Columns + k]
+                // B(k,j) = Other.Data[k*Other.Columns + j]
+                Sum += (*this)[i][k] * Other[k][j];
+            }
+
+            Result[i][j] = Sum;
+        }
+    }
+
+    return Result;
+}

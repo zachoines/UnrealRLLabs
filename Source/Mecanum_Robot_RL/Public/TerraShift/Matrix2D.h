@@ -127,6 +127,12 @@ public:
     /** Returns the arithmetic mean of all elements in this matrix. */
     float Mean() const;
 
+    // Transpose the matrix
+    FMatrix2D T() const;
+
+    // Standard matrix multiplication
+    FMatrix2D MatMul(const FMatrix2D& Other) const;
+
 private:
     /** Helper to get the index in the single array for (row,col). */
     FORCEINLINE int32 LinearIndex(int32 RowIndex, int32 ColIndex) const
@@ -134,5 +140,3 @@ private:
         return (RowIndex * Columns) + ColIndex;
     }
 };
-
-// For convenience, we keep "FMatrix2D" as the final name. No separate typedef is needed now.

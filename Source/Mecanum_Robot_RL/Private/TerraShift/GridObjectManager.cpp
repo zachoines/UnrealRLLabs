@@ -10,12 +10,8 @@ AGridObjectManager::AGridObjectManager() {
 
     // Initialize ObjectSize to a default value
     ObjectSize = FVector(0.1f, 0.1f, 0.1f);
+    ObjectMass = 0.1f;
     PlatformActor = nullptr;
-}
-
-// Set the size of GridObjects to be spawned
-void AGridObjectManager::SetObjectSize(FVector InObjectSize) {
-    ObjectSize = InObjectSize;
 }
 
 // Set the platform actor reference
@@ -29,15 +25,16 @@ FName AGridObjectManager::GetActorFolderPath() const {
 }
 
 // Spawns GridObjects at the given locations with the specified size and delay
-void AGridObjectManager::SpawnGridObjects(const TArray<FVector>& Locations, FVector InObjectSize, float SpawnDelay) {
+void AGridObjectManager::SpawnGridObjects(const TArray<FVector>& Locations, FVector InObjectSize, float InObjectMass, float SpawnDelay) {
     // Set the object size
     ObjectSize = InObjectSize;
+    ObjectMass = InObjectMass;
 
     for (int i = 0; i < Locations.Num(); i++) {
         float TotalSpawnDelay = SpawnDelay * static_cast<float>(i);
 
         if (TotalSpawnDelay == 0) {
-            SpawnGridObjectAtIndex(i, Locations[i]); // Spawn the first right away
+            SpawnGridObjectAtIndex(i, Locations[i], InObjectSize, InObjectMass); // Spawn the first right away
         }
         else {
             // Schedule the spawn with a delay
@@ -45,8 +42,8 @@ void AGridObjectManager::SpawnGridObjects(const TArray<FVector>& Locations, FVec
                 FTimerHandle TimerHandle;
                 World->GetTimerManager().SetTimer(
                     TimerHandle,
-                    [this, i, Location = Locations[i]]() {
-                        SpawnGridObjectAtIndex(i, Location);
+                    [this, i, Location = Locations[i], InObjectSize, InObjectMass]() {
+                        SpawnGridObjectAtIndex(i, Location, InObjectSize, InObjectMass);
                     },
                     TotalSpawnDelay,
                     false
@@ -57,14 +54,15 @@ void AGridObjectManager::SpawnGridObjects(const TArray<FVector>& Locations, FVec
 }
 
 // Spawns or reuses a GridObject at a specific index and location
-void AGridObjectManager::SpawnGridObjectAtIndex(int32 Index, FVector InWorldLocation) {
+void AGridObjectManager::SpawnGridObjectAtIndex(int32 Index, FVector InWorldLocation, FVector InObjectSize, float InObjectMass) 
+{
     AGridObject* GridObject = nullptr;
 
     if (GridObjects.IsValidIndex(Index) && GridObjects[Index]) {
         GridObject = GridObjects[Index];
     }
     else {
-        GridObject = CreateNewGridObjectAtIndex(Index);
+        GridObject = CreateNewGridObjectAtIndex(Index, InObjectSize, InObjectMass);
     }
 
     if (GridObject) {
@@ -84,20 +82,15 @@ void AGridObjectManager::SpawnGridObjectAtIndex(int32 Index, FVector InWorldLoca
         FName GridObjectManagerFolderPath = GetActorFolderPath();
         FName GridObjectFolderPath(*(GridObjectManagerFolderPath.ToString() + "/GridObjects"));
         GridObject->SetFolderPath(GridObjectFolderPath);
-
-        // Notify that a GridObject has been spawned
-        OnGridObjectSpawned.Broadcast(Index, GridObject);
     }
 }
 
 // Helper function to create a new GridObject
-AGridObject* AGridObjectManager::CreateNewGridObjectAtIndex(int32 Index) {
+AGridObject* AGridObjectManager::CreateNewGridObjectAtIndex(int32 Index, FVector InObjectSize, float InObjectMass) {
     if (UWorld* World = GetWorld()) {
         AGridObject* NewGridObject = World->SpawnActor<AGridObject>(AGridObject::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
         if (NewGridObject) {
-            NewGridObject->InitializeGridObject(ObjectSize);
-
-            // Do not attach the GridObject to any parent
+            NewGridObject->InitializeGridObject(InObjectSize, InObjectMass);
 
             // Set the folder path of the GridObject
             FName GridObjectManagerFolderPath = GetActorFolderPath();
@@ -194,27 +187,12 @@ TSet<int32> AGridObjectManager::GetActiveColumnsInProximity(int32 GridSize, cons
 }
 
 // Deactivates a GridObject at a specific index
-void AGridObjectManager::DeleteGridObject(int32 Index) {
+void AGridObjectManager::DisableGridObject(int32 Index) {
     if (GridObjects.IsValidIndex(Index)) {
         AGridObject* GridObject = GridObjects[Index];
         if (GridObject) {
             GridObject->SetGridObjectActive(false);
         }
-    }
-}
-
-// Respawns a GridObject at a specific index and location after a delay
-void AGridObjectManager::RespawnGridObjectAtLocation(int32 Index, FVector InLocation, float SpawnDelay) {
-    if (UWorld* World = GetWorld()) {
-        FTimerHandle TimerHandle;
-        World->GetTimerManager().SetTimer(
-            TimerHandle,
-            [this, Index, InLocation]() {
-                SpawnGridObjectAtIndex(Index, InLocation);
-            },
-            SpawnDelay,
-            false
-        );
     }
 }
 

@@ -7,7 +7,7 @@
 #include "TerraShift/MainPlatform.h"
 #include "TerraShift/Grid.h"
 #include "TerraShift/GridObjectManager.h"
-#include "TerraShift/MorletWavelets2D.h"
+#include "TerraShift/DiscreteFourier2D.h"
 #include "TerraShift/GoalPlatform.h"
 
 #include "TerraShiftEnvironment.generated.h"
@@ -16,7 +16,8 @@
  * Environment initialization parameters for TerraShift.
  */
 USTRUCT(BlueprintType)
-struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParams {
+struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParams
+{
     GENERATED_USTRUCT_BODY();
 
     /** Size of the platform in meters. */
@@ -33,7 +34,7 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
 
     /** Mass of the grid objects in kilograms. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float ObjectMass = 0.2f;
+    float ObjectMass = 1.0f;
 
     /** Number of cells along one side of the grid. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
@@ -41,11 +42,11 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
 
     /** Max abs movement delta of columns per tick. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float MaxDeltaHeight = 0.1; // 1 unit traveled in 10 steps
+    float MaxDeltaHeight = 0.1f; // 1 unit traveled in ~10 steps
 
     /** Maximum steps per episode. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int MaxSteps = 1024;
+    int MaxSteps = 512;
 
     /** Number of goals for agents (set between 1 - 4). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
@@ -53,11 +54,7 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
 
     /** Delay between each GridObject spawn in seconds. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float SpawnDelay = 1.0f;
-
-    /** Delay before respawning a GridObject. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float RespawnDelay = 1.0f;
+    float SpawnDelay = 0.5f;
 
     /** Maximum number of agents. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
@@ -67,44 +64,40 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
     float GoalThreshold = 0.2f;
 
-    // Agent wave parameter ranges
+    // ------------------------------------------------------------------------
+    // Discrete 2D Fourier parameters
+    // ------------------------------------------------------------------------
 
-    /** Amplitude range (0 allows for null waves). */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
-    FVector2D AmplitudeRange = FVector2D(0.0f, 10.0f);
+    /** Range for phase increments in X dimension, e.g. [-0.1, 0.1]. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fourier Params")
+    FVector2D PhaseXDeltaRange = FVector2D(-0.1f, 0.1f);
 
-    /** Orientation angle in radians. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
-    FVector2D WaveOrientationRange = FVector2D(0.0f, 2 * PI);
+    /** Range for phase increments in Y dimension. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fourier Params")
+    FVector2D PhaseYDeltaRange = FVector2D(-0.1f, 0.1f);
 
-    /** Wavenumber (0 allows for no oscillations). */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
-    FVector2D WavenumberRange = FVector2D(0.0f, 1.5f);
+    /** Range for frequency scale increments, e.g. [-0.01, 0.01]. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fourier Params")
+    FVector2D FreqScaleDeltaRange = FVector2D(-0.01f, 0.01f);
 
-    /** Initial phase offset in radians. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
-    FVector2D PhaseRange = FVector2D(0.0f, 2 * PI);
+    /**
+     * Range for partial updates to the agent's A matrix entries, e.g. [-0.05, 0.05].
+     * If an agent picks a certain row/col in A to increment, we clamp to this range.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fourier Params")
+    FVector2D MatrixDeltaRange = FVector2D(-0.05f, 0.05f);
 
-    /** Spread of Gaussian envelope; small values for high localization. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
-    FVector2D SigmaRange = FVector2D(0.01f, 15.0f);
-
-    /** Phase velocity for each agent, affecting frequency. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Wave Parameters")
-    FVector2D PhaseVelocityRange = FVector2D(0.0f, 5.0f);
-
-    // Agent movement parameters
-
-    /** Velocity in meters per second for X and Y directions. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Agent Movement Parameters")
-    FVector2D VelocityRange = FVector2D(-2.0f, 2.0f);
+    /** Number of fundamental frequency modes for Discrete Fourier. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fourier Params")
+    int K = 8;
 };
 
 /**
  * The TerraShift environment class managing the simulation.
  */
 UCLASS()
-class UNREALRLLABS_API ATerraShiftEnvironment : public ABaseEnvironment {
+class UNREALRLLABS_API ATerraShiftEnvironment : public ABaseEnvironment
+{
     GENERATED_BODY()
 
 public:
@@ -168,8 +161,12 @@ public:
     UPROPERTY(EditAnywhere)
     AGridObjectManager* GridObjectManager;
 
+    /**
+     * Discrete Fourier simulator that replaces the old MorletWavelets2D simulator.
+     * This manages each agent's (phaseX, phaseY, freqScale, and A matrix).
+     */
     UPROPERTY()
-    UMorletWavelets2D* WaveSimulator;
+    UDiscreteFourier2D* WaveSimulator;
 
 private:
     /** Initialization parameters specific to TerraShift. */
@@ -214,11 +211,17 @@ private:
     /** Flags to track if grid objects have reached their goals. */
     TArray<bool> GridObjectHasReachedGoal;
 
-    /** Flags to track if agents has fallen off grid. */
+    /** Flags to track if grid objects have fallen off grid. */
     TArray<bool> GridObjectFallenOffGrid;
 
-    /** Buffer to accumulate rewards. */
-    float RewardBuffer;
+    /** Flags to track if grid objects should be respawned. */
+    TArray<bool> GridObjectShouldRespawn;
+
+    /** Tracks elapsed time til respawn. */
+    TArray<float> GridObjectRespawnTimer;
+
+    /** Time delays for respawn */
+    TArray<float> GridObjectRespawnDelays;
 
     /** Array of goal platforms. */
     TArray<AGoalPlatform*> GoalPlatforms;
@@ -240,8 +243,6 @@ private:
 
     /** Stores the last DeltaTime from the simulation loop. */
     float LastDeltaTime;
-
-   
 
     /** Initializes properties for action and observation space. */
     void SetupActionAndObservationSpace();
@@ -267,12 +268,6 @@ private:
     TArray<float> AgentGetState(int AgentIndex);
 
     /**
-     * Activates grid objects for the specified number of agents.
-     * @param NumAgents Number of agents to activate grid objects for.
-     */
-    void SetActiveGridObjects(int NumAgents);
-
-    /**
      * Maps a value from one range to another.
      * @param x The value to map.
      * @param in_min Input range minimum.
@@ -290,24 +285,13 @@ private:
     void UpdateColumnGoalObjectColors();
 
     /** Checks for grid objects that need to be respawned. */
-    void CheckAndRespawnGridObjects();
+    void UpdateGridObjectFlags();
 
     /** Update information like relative acceleration */
     void UpdateObjectStats();
 
-    /**
-     * Respawns a grid object for a specific agent.
-     * @param AgentIndex Index of the agent whose grid object needs to be respawned.
-     */
-    void RespawnGridObject(int32 AgentIndex);
-
-    /**
-     * Called when a grid object is spawned.
-     * @param Index Index of the grid object.
-     * @param NewGridObject Pointer to the newly spawned grid object.
-     */
-    UFUNCTION()
-    void OnGridObjectSpawned(int32 Index, AGridObject* NewGridObject);
+    /** Respawns Grid Objects based on respawn flag*/
+    void RespawnGridObjects();
 
     /**
      * Calculates the location of a goal platform based on the edge index.
@@ -328,11 +312,4 @@ private:
      * @return The corresponding world position.
      */
     FVector GridPositionToWorldPosition(FVector2D GridPosition) const;
-
-    /**
-     * Updates the RewardBuffer based on the current state of the environment.
-     * This function is responsible for computing and accumulating reward signals
-     * that guide agent learning, separate from UI updates or state changes.
-     */
-    void UpdateRewardBuffer();
 };

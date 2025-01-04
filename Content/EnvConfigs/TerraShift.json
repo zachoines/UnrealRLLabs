@@ -3,12 +3,12 @@
       "AgentType": "MA-POCA"
     },
     "TrainInfo": {
-      "BufferSize": 512,
-      "BatchSize": 512,
-      "NumEnvironments": 16,
-      "MaxAgents" : 7,
+      "BufferSize": 1024,
+      "BatchSize": 1024,
+      "NumEnvironments": 8,
+      "MaxAgents" : 5,
       "MinAgents" : 5,
-      "AgentsResetFrequency": 1024,
-      "ActionRepeat": 3
+      "AgentsResetFrequency": 0,
+      "ActionRepeat": 0
     }
   }

@@ -12,7 +12,7 @@ public:
     AGridObject();
 
     // Initializes the grid object with the specified size
-    void InitializeGridObject(FVector InObjectSize);
+    void InitializeGridObject(FVector InObjectSize, float InObjectMass);
 
     // Sets the grid object to be active or inactive
     void SetGridObjectActive(bool bIsActive);

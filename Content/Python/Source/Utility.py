@@ -77,4 +77,3 @@ class RunningMeanStdNormalizer:
     def normalize(self, x: torch.Tensor):
         normalized_x = (x - self.mean) / torch.sqrt(self.var + 1e-8)
         return normalized_x
-
