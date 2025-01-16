@@ -79,6 +79,7 @@ void ARLRunner::Tick(float DeltaTime)
                     CurrentAgents = FMath::RandRange(TrainerParams.MinAgents, TrainerParams.MaxAgents);
                     VectorEnvironment->ResetEnv(CurrentAgents);
                     CurrentStep = 0;
+                    return;
                 }*/
             }
         }

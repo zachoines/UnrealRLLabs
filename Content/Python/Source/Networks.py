@@ -26,9 +26,6 @@ class LinearNetwork(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-# -----------------------------------------------------------------------
-# AgentIDPosEnc: learnable embeddings for agent-index using sinusoidal features
-# -----------------------------------------------------------------------
 class AgentIDPosEnc(nn.Module):
     """
     For each integer agent index i, produce a learned embedding vector of size id_embed_dim,
@@ -103,17 +100,15 @@ class AgentIDPosEnc(nn.Module):
         embed = embed.view(NS, NE, NA, self.id_embed_dim)
         return embed
 
-# -----------------------------------------------------------------------
-
 class StatesEncoder(nn.Module):
     """
     Encodes per-agent observations into embeddings.
     Input: (Steps,Env,Agents,Obs_dim)
     Output: (Steps,Env,Agents,H)
     """
-    def __init__(self, input_size, output_size, dropout_rate=0.0, activation=True):
+    def __init__(self, state_dim, output_size, dropout_rate=0.0, activation=True):
         super(StatesEncoder, self).__init__()
-        self.fc = LinearNetwork(input_size, output_size, dropout_rate, activation)
+        self.fc = LinearNetwork(state_dim, output_size, dropout_rate, activation)
 
     def forward(self, x):
         return self.fc(x)
@@ -189,110 +184,190 @@ class RSA(nn.Module):
         output = x + output  # residual connection
         return self.output_norm(output)
 
-# -----------------------------------------------------------------------
-# MultiAgentEmbeddingNetwork with agent-ID positional enc
-# -----------------------------------------------------------------------
 class MultiAgentEmbeddingNetwork(nn.Module):
     """
     MultiAgentEmbeddingNetwork:
-    - Encodes per-agent obs with StatesEncoder (g()).
-    - Adds Agent ID positional enc, fusing ID embedding with obs embedding
-    - Applies RSA to produce relational embeddings.
-    - Provides methods to isolate agent-groupmates obs for baseline networks.
+      - g() => Encodes per-agent obs (Eqn 6 or the policy eqn).
+      - f() => Encodes (obs_j, action_j) for groupmates in baseline eqn (Eqn 8).
+      - RSA => a relational self-attention block for multi-agent embeddings.
+      - AgentIDPosEnc => optional agent ID embeddings for uniqueness.
+
+    We provide distinct methods for:
+      1) embed_obs_for_value(...)   -> feed into V( RSA(g(o^i)) )
+      2) embed_obs_for_policy(...)  -> feed into pi( RSA(g(o^i)) )
+      3) embed_obs_actions_for_baseline(...) -> feed into Q( RSA([g(o^i), f(o^j,a^j)]_{j != i}) )
+
+    Important note on agent ID usage:
+      - We append ID embeddings *before* we do splits or state encodings,
+        so each agent's ID remains properly aligned with its partial obs.
     """
+
     def __init__(self, net_cfg):
         super(MultiAgentEmbeddingNetwork, self).__init__()
 
-        # Normal obs enc
-        self.agent_obs_encoder = StatesEncoder(**net_cfg['agent_obs_encoder'])
+        # 1) read user configs
+        obs_enc_cfg   = net_cfg["agent_obs_encoder"]
+        acts_enc_cfg  = net_cfg["obs_actions_encoder"]
+        id_enc_cfg    = net_cfg["agent_id_enc"]
+        rsa_cfg       = net_cfg["RSA"]
+        pre_obs_cfg   = net_cfg["pre_obs_encoder"]
+        id_emb_dim    = id_enc_cfg["id_embed_dim"]
 
-        # Extra aggregator if needed
-        self.agent_embedding_encoder = StatesEncoder(**net_cfg['agent_embedding_encoder'])
+        # 2) auto-correct input size for g():
+        old_g_in = obs_enc_cfg["state_dim"]
+        new_g_in = old_g_in + id_emb_dim
+        obs_enc_cfg["state_dim"] = new_g_in
 
-        # For groupmates obs+action encoding
-        self.obs_action_encoder = StatesActionsEncoder(**net_cfg['obs_actions_encoder'])
+        # 3) auto-correct input size for f():
+        old_f_in = acts_enc_cfg["state_dim"]
+        new_f_in = old_f_in + id_emb_dim
+        acts_enc_cfg["state_dim"] = new_f_in
 
-        # RSA for attending to multi-agents
-        self.rsa = RSA(**net_cfg['RSA'])
+        # 4) Now create the submodules with updated sizes
+        self.g = StatesEncoder(**obs_enc_cfg)
+        self.f = StatesActionsEncoder(**acts_enc_cfg)
+        self.rsa = RSA(**rsa_cfg)
+        self.id_encoder = AgentIDPosEnc(**id_enc_cfg)
+        self.pre_obs_transform = LinearNetwork(**pre_obs_cfg)
 
-        # Id_encoder for agent IDs
-        self.id_encoder = AgentIDPosEnc(**net_cfg['agent_id_enc'])
-
-        H = net_cfg['agent_obs_encoder']['output_size']
-        id_emb_dim = net_cfg['agent_id_enc']['id_embed_dim']
-
-        self.fuse = nn.Linear(H + id_emb_dim, H)
-        init.kaiming_normal_(self.fuse.weight)
-        nn.init.constant_(self.fuse.bias, 0.0)
-
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    def forward(self, obs: torch.Tensor):
+    def embed_obs_for_policy(self, obs: torch.Tensor) -> torch.Tensor:
         """
-        obs: (S,E,A,obs_dim)
+        eqn(Policy):  π( RSA(g(o^i)) )
+        1) Run pre_obs_transform on obs
+        2) Add agent IDs into the obs (before g).
+        3) pass obs->g->RSA
+        => shape (S,E,A,H)
+        """
+        return self._obs_with_id_and_rsa(obs)
+
+    def embed_obs_for_value(self, obs: torch.Tensor) -> torch.Tensor:
+        """
+        eqn(6):  V( RSA(g(o^i)) )
+        Identical pipeline if the environment doesn't differentiate 
+        between how policy and value embed states.
+        => shape (S,E,A,H)
+        """
+        return self._obs_with_id_and_rsa(obs)
+
+    def embed_obs_actions_for_baseline(self, obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        """
+        eqn(8):  Q_ψ( RSA( [g(o^i), f(o^j,a^j)]_{ j != i }) )
+        We want shape => (S,E,A,A,H).
+
         Steps:
-          1) Build agent_ids => (S,E,A)
-          2) ID embed => (S,E,A,id_embed_dim)
-          3) obs embed => (S,E,A,H)
-          4) cat => fuse => RSA => final
+         1) pre_obs_transform + agent IDs
+         2) split => agent_obs_i, groupmates_obs_j, groupmates_actions_j
+         3) g(agent_obs_i), f(groupmates_obs_j, groupmates_actions_j)
+         4) cat => (S,E,A,A,H)
+         5) RSA => (S,E,A,A,H)
+        """
+        # 1) Pre-transform + ID
+        obs_with_id = self._add_id_emb(obs)
+
+        # 2) split => agent_obs, groupmates_obs, groupmates_actions
+        agent_obs, groupmates_obs, groupmates_actions = \
+            self.split_agent_obs_groupmates_obs_actions(obs_with_id, actions)
+
+        # 3) g(...) => agent_obs => (S,E,A,1,H)
+        agent_obs_emb = self.g(agent_obs)
+
+        # 4) f(...) => groupmates_obs_actions => (S,E,A,(A-1),H)
+        groupmates_emb = self.f(groupmates_obs, groupmates_actions)
+
+        # => cat => (S,E,A,A,H)
+        combined = torch.cat([agent_obs_emb, groupmates_emb], dim=3)
+
+        # Flatten (S,E,A) => batch dimension, and A => the agent dimension
+        S, E, A, A2, H = combined.shape
+        combined_reshaped = combined.view(S*E*A, A2, H)
+
+        attended = self.rsa(combined_reshaped)
+        attended = attended.view(S, E, A, A2, H)
+        return attended
+
+    def _add_id_emb(self, obs: torch.Tensor) -> torch.Tensor:
+        """
+        1) pre_obs_transform on obs
+        2) agent_ids => (S,E,A)
+        3) pass through self.id_encoder => (S,E,A,id_emb_dim)
+        4) cat => shape => (S,E,A, obs_dim + id_emb_dim)
         """
         S, E, A, obs_dim = obs.shape
-        obs_device = obs.device
+        device = obs.device
 
-        # 1) Build agent_ids
-        agent_ids = torch.arange(A, device=obs_device).view(1,1,A)
-        # shape => (S,E,A), broadcast
-        agent_ids = agent_ids.expand(S, E, A)
+        # 1) Flatten + apply pre_obs_transform
+        flat_obs = obs.view(S*E*A, obs_dim)
+        flat_trans = self.pre_obs_transform(flat_obs)  # => shape (S*E*A, ???)
+        # re-reshape
+        new_obs = flat_trans.view(S,E,A,-1)
 
-        # 2) ID embed => (S,E,A,id_embed_dim)
+        # 2) build agent_ids => shape => (S,E,A)
+        agent_ids = torch.arange(A, device=device).view(1,1,A).expand(S,E,A)
+        # 3) embed => (S,E,A, id_emb_dim)
         id_emb = self.id_encoder(agent_ids)
 
-        # 3) obs embed => (S,E,A,H)
-        obs_emb = self.agent_obs_encoder(obs)
+        # 4) cat => shape => (S,E,A, new_obs_dim + id_emb_dim)
+        obs_with_id = torch.cat([new_obs, id_emb], dim=-1)
+        return obs_with_id
 
-        # 4) fuse
-        combined = torch.cat([obs_emb, id_emb], dim=-1)  # => (S,E,A, H+id_embed_dim)
-        fused = self.fuse(combined)                      # => (S,E,A,H)
+    def _obs_with_id_and_rsa(self, obs: torch.Tensor) -> torch.Tensor:
+        """
+        Common code path for [policy / value].
+        1)  pre_obs_transform on obs
+        2)  add agent ID => shape => (S,E,A, ??? + id_emb_dim)
+        3)  pass that into g => (S,E,A,H)
+        4)  flatten => RSA => final => (S,E,A,H)
+        """
+        # 1) => new obs with ID appended
+        obs_with_id = self._add_id_emb(obs)
 
-        # 5) apply RSA
-        flat = fused.view(S*E, A, -1)                    # (S*E, A, H)
-        attended = self.rsa(flat)                        # => (S*E, A, H)
-        return attended.view(S, E, A, -1)
+        # 2) pass to g => (S,E,A,H)
+        obs_emb = self.g(obs_with_id)
 
+        # 3) flatten => RSA => (S,E,A,H)
+        S, E, A, hdim = obs_emb.shape
+        flat = obs_emb.view(S*E, A, hdim)
+        att  = self.rsa(flat)
+        return att.view(S,E,A,-1)
+
+    # ---------------------------------------------------------------------
+    #            SPLIT: agent obs vs. groupmates obs+actions
+    # ---------------------------------------------------------------------
     def split_agent_obs_groupmates_obs_actions(self, obs: torch.Tensor, actions: torch.Tensor):
-        S,E,A,obs_dim = obs.shape
-        _,_,_,act_dim = actions.shape
+        """
+        Splits the (S,E,A,...) array into:
+          - agent_obs => (S,E,A,1, ???)
+          - groupmates_obs => (S,E,A,(A-1), ???)
+          - groupmates_actions => (S,E,A,(A-1), act_dim)
+        """
+        S,E,A,aug_dim = obs.shape
+        act_dim = actions.shape[-1]
+
         agent_obs_list = []
         groupmates_obs_list = []
         groupmates_actions_list = []
 
         for i in range(A):
-            agent_obs_list.append(obs[:, :, i, :].unsqueeze(2))
-            g_obs = torch.cat([obs[:, :, :i, :], obs[:, :, i+1:, :]], dim=2).unsqueeze(2)
-            g_acts = torch.cat([actions[:, :, :i, :], actions[:, :, i+1:, :]], dim=2).unsqueeze(2)
-            groupmates_obs_list.append(g_obs)
-            groupmates_actions_list.append(g_acts)
+            # agent i's obs => (S,E,1,aug_dim)
+            agent_i = obs[..., i, :].unsqueeze(2)
+            agent_obs_list.append(agent_i)
 
-        agent_obs = torch.cat(agent_obs_list, dim=2).unsqueeze(3).contiguous() 
+            # groupmates => exclude i => (S,E,(A-1),aug_dim)
+            g_obs = torch.cat([obs[..., :i, :], obs[..., i+1:, :]], dim=2).unsqueeze(2)
+            g_act = torch.cat([actions[..., :i, :], actions[..., i+1:, :]], dim=2).unsqueeze(2)
+
+            groupmates_obs_list.append(g_obs)
+            groupmates_actions_list.append(g_act)
+
+        agent_obs = torch.cat(agent_obs_list, dim=2).unsqueeze(3).contiguous()
+        # => (S,E,A,1,aug_dim)
         groupmates_obs = torch.cat(groupmates_obs_list, dim=2).contiguous()
+        # => (S,E,A,(A-1),aug_dim)
         groupmates_actions = torch.cat(groupmates_actions_list, dim=2).contiguous()
+        # => (S,E,A,(A-1), act_dim)
+
         return agent_obs, groupmates_obs, groupmates_actions
 
-    def split_agent_groupmates_obs(self, agent_embeddings: torch.Tensor):
-        S,E,A,H = agent_embeddings.shape
-        agent_emb_list = []
-        groupmates_emb_list = []
-        for i in range(A):
-            agent_emb_list.append(agent_embeddings[:, :, i, :].unsqueeze(2))
-            g_emb = torch.cat([agent_embeddings[:, :, :i, :], agent_embeddings[:, :, i+1:, :]], dim=2).unsqueeze(2)
-            groupmates_emb_list.append(g_emb)
-
-        agent_embeds = torch.cat(agent_emb_list, dim=2).unsqueeze(3).contiguous()
-        groupmates_embeds = torch.cat(groupmates_emb_list, dim=2).contiguous()
-        return agent_embeds, groupmates_embeds
-
-    def encode_groupmates_obs_actions(self, groupmates_embeddings: torch.Tensor, groupmates_actions: torch.Tensor):
-        return self.obs_action_encoder(groupmates_embeddings, groupmates_actions)
 
 class SharedCritic(nn.Module):
     """

@@ -8,7 +8,6 @@ AGrid::AGrid() {
 void AGrid::InitializeGrid(int32 InGridSize, float InPlatformSize, FVector Location) {
     GridSize = InGridSize;
     PlatformSize = InPlatformSize;
-    SetColumnMovementBounds(-1.0f, 1.0f);
     CellSize = PlatformSize / static_cast<float>(GridSize);
 
     if (UWorld* World = GetWorld()) {
@@ -19,7 +18,7 @@ void AGrid::InitializeGrid(int32 InGridSize, float InPlatformSize, FVector Locat
                 if (NewColumn) {
                     // Attach column to the Grid's root component
                     NewColumn->AttachToComponent(RootComponent, FAttachmentTransformRules::KeepRelativeTransform);
-                    NewColumn->InitColumn(FVector::One() / GridSize, ColumnLocation);
+                    NewColumn->InitColumn(FVector(1.0 / GridSize, 1.0 / GridSize, 2.0 / GridSize), ColumnLocation);
                     Columns.Add(NewColumn);
                 }
             }

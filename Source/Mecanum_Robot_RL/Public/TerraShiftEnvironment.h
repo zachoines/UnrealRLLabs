@@ -26,7 +26,7 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
 
     /** Maximum height of the columns in meters. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float MaxColumnHeight = 1.0f;
+    float MaxColumnHeight = 3.0f;
 
     /** Size of the grid objects in meters. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
@@ -39,10 +39,6 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
     /** Number of cells along one side of the grid. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
     int GridSize = 50;
-
-    /** Max abs movement delta of columns per tick. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float MaxDeltaHeight = 0.1f; // 1 unit traveled in ~10 steps
 
     /** Maximum steps per episode. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
@@ -68,26 +64,14 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
     // Discrete 2D Fourier parameters
     // ------------------------------------------------------------------------
 
-    /** Range for phase increments in X dimension, e.g. [-0.1, 0.1]. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fourier Params")
-    FVector2D PhaseXDeltaRange = FVector2D(-0.1f, 0.1f);
-
-    /** Range for phase increments in Y dimension. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fourier Params")
-    FVector2D PhaseYDeltaRange = FVector2D(-0.1f, 0.1f);
-
-    /** Range for frequency scale increments, e.g. [-0.01, 0.01]. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fourier Params")
-    FVector2D FreqScaleDeltaRange = FVector2D(-0.01f, 0.01f);
-
     /**
      * Range for partial updates to the agent's A matrix entries, e.g. [-0.05, 0.05].
-     * If an agent picks a certain row/col in A to increment, we clamp to this range.
+     * If an agent picks a certain cell in A to increment, we clamp to this range.
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fourier Params")
-    FVector2D MatrixDeltaRange = FVector2D(-0.05f, 0.05f);
+    FVector2D MatrixDeltaRange = FVector2D(-1.25f, 1.25f);
 
-    /** Number of fundamental frequency modes for Discrete Fourier. */
+    /** Number of fundamental frequency modes for Discrete Fourier. (2K x 2K) per agent. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fourier Params")
     int K = 8;
 };

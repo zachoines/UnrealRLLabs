@@ -3,49 +3,37 @@ environment:
   params:
     # Core environment params
     PlatformSize: 1.0
-    MaxColumnHeight: 1.0
+    MaxColumnHeight: 2.0
     ObjectSize: [0.10, 0.10, 0.10]
-    ObjectMass: 0.2
+    ObjectMass: 1.0
     GridSize: 50
-    MaxSteps: 1024
+    MaxSteps: 512
     NumGoals: 4
     SpawnDelay: 1.0
     RespawnDelay: 1.0
     MaxAgents: 10
     GoalThreshold: 0.2
 
-    # Discrete 2D Fourier parameters
-    PhaseXDeltaRange: [-0.1, 0.1]
-    PhaseYDeltaRange: [-0.1, 0.1]
-    FreqScaleDeltaRange: [-0.01, 0.01]
-    MatrixDeltaRange: [-0.05, 0.05]
-    K: 8  # number of fundamental modes
+    # Discrete 2D Fourier parameter(s)
+    # Only MatrixDeltaRange remains
+    MatrixDeltaRange: [-1.5, 1.5]
+    K: 8  # number of fundamental modes => (2K x 2K) matrix per agent
 
   shape:
     is_multi_agent: True
-    # single_agent_obs_size:
-    #   = 3 + (2*K x 2*K) from Fourier
-    #   + 25 from environment data
-    # If K=8 => single_agent_obs_size = (3 + 16*16) + 25 = 284
+    # single_agent_obs_size = 2 + (2*K x 2*K) + 26
+    # If K=8 => (2 + 16*16) + 26 = 284
     single_agent_obs_size: 284
     max_agents: 10
 
     action_space:
       type: discrete
-      # Each agent has 6 discrete actions
-      # 0 -> dPhaseX (3 choices)
-      # 1 -> dPhaseY (3 choices)
-      # 2 -> dFreqScale (3 choices)
-      # 3 -> rowIndex  (16 choices if K=8 => 2K=16)
-      # 4 -> colIndex  (16 choices)
-      # 5 -> deltaVal  (3 choices)
+      # Each agent has 2 discrete actions:
+      # 0 -> direction (Up=0, Down=1, Left=2, Right=3) => 4 choices
+      # 1 -> partial update (Inc=0, Dec=1, Zero=2, None=3) => 4 choices
       agent_actions:
-        - num_choices: 3
-        - num_choices: 3
-        - num_choices: 3
-        - num_choices: 16
-        - num_choices: 16
-        - num_choices: 3
+        - num_choices: 4
+        - num_choices: 4
 
 agent:
   type: MA_POCA
@@ -54,23 +42,24 @@ agent:
     gamma: 0.99
     lambda: 0.95
     hidden_size: 256
-    normalize_rewards: false
-    value_loss_coeff: 0.9
-    baseline_loss_coeff: 0.9
-    max_grad_norm: 1.0
+    normalize_rewards: True
+    normalize_advantages: True
+    value_loss_coeff: 0.1
+    baseline_loss_coeff: 0.1
+    max_grad_norm: 0.1
     ppo_clip_range: 0.1
 
     adaptive_entropy: false
     target_entropy: -8.0
     entropy_lambda_lr: 0.0003
     entropy_lambda_initial: 0.0
-    entropy_coeff: 0.05
+    entropy_coeff: 0.01
 
     schedulers:
       lr:
         start_factor: 1.0
-        end_factor: 0.0001
-        total_iters: 100000
+        end_factor: 0.001
+        total_iters: 1000000
 
     networks:
       policy_network:
@@ -86,29 +75,11 @@ agent:
           in_features: 256
           hidden_size: 256
           dropout_rate: 0.0
-
+          
       MultiAgentEmbeddingNetwork:
-        agent_obs_encoder:
-          input_size: 284
-          output_size: 256
-          dropout_rate: 0.0
-          activation: True
-
-        RSA:
-          embed_size: 256
-          heads: 8
-          dropout_rate: 0.0
-
-        agent_embedding_encoder:
-          input_size: 256
-          output_size: 256
-          dropout_rate: 0.0
-          activation: True
-
-        obs_actions_encoder:
-          state_dim: 256
-          action_dim: 6
-          output_size: 256
+        pre_obs_encoder:
+          in_features: 284 # Agent obs size
+          out_features: 256
           dropout_rate: 0.0
           activation: True
 
@@ -116,13 +87,30 @@ agent:
           num_freqs: 64
           id_embed_dim: 256
 
+        RSA:
+          embed_size: 256
+          heads: 8
+          dropout_rate: 0.0
+
+        agent_obs_encoder:
+          state_dim: 256
+          output_size: 256
+          dropout_rate: 0.0
+          activation: True
+
+        obs_actions_encoder:
+          state_dim: 256
+          action_dim: 2
+          output_size: 256
+          dropout_rate: 0.0
+          activation: True
 train:
   normalize_states: True
-  num_environments: 8
-  epochs: 1
-  mini_batch_size: 32
-  buffer_size: 1024
-  batch_size: 1024
+  num_environments: 32
+  epochs: 3
+  mini_batch_size: 4
+  buffer_size: 64
+  batch_size: 64
   AgentsResetFrequency: 0
   ActionRepeat: 0
   saveFrequency: 20

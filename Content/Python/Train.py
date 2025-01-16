@@ -1,8 +1,6 @@
 import argparse
 import yaml
-import sys
 from Source.Factory import AgentEnvFactory
-from Source.Runner import RLRunner
 
 def main():
     parser = argparse.ArgumentParser(description='Train MA-POCA Agent')
