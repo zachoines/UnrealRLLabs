@@ -26,6 +26,153 @@ class LinearNetwork(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+class SpatialNetwork2D(nn.Module):
+    """
+    Simple network that treats each batch entry as a flattened NxM 2D matrix.
+    """
+    def __init__(self, h, w, in_channels=1, out_channels=8, kernel_size=3, stride=1, padding=1):
+        super().__init__()
+        # We'll store h,w for reshaping
+        self.h = h
+        self.w = w
+        self.out_channels = out_channels
+        
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding),
+            nn.LeakyReLU(),
+            nn.Conv2d(out_channels, out_channels, kernel_size, stride, padding),
+            nn.LeakyReLU(),
+        )
+
+        for layer in self.conv:
+            if isinstance(layer, nn.Conv2d):
+                init.kaiming_normal_(layer.weight)
+
+    def forward(self, x):
+        """
+        x: (batch, in_features) => interpret as (batch,1,h,w)
+        => conv => flatten => (batch, out_channels*h*w)
+        """
+        b, n = x.shape
+        # reshape to (b, 1, h, w)
+        x_4d = x.view(b, 1, self.h, self.w)
+        y = self.conv(x_4d)  # => (b, out_channels, h, w)
+        return y.view(b, -1) # (b, out_channels*h*w)
+    
+class GeneralObsEncoder(nn.Module):
+    """
+    GeneralObsEncoder:
+      - input_size: total dimension of the incoming obs vector
+      - output_size: final aggregator FC's out_features
+      - sub_encoders: a list of sub-encoder configs:
+           {
+             "name": str,
+             "network": "LinearNetwork" or "SpatialNetwork2D" or ...
+             "params": dict,
+             "slice": [start,end],  # inclusive
+             "out_features": int
+           }
+    """
+    def __init__(self, config: dict):
+        super().__init__()
+
+        self.input_size  = config["input_size"]     # total incoming obs dim
+        self.output_size = config["output_size"]    # final aggregator out dim
+        self.sub_enc_cfgs = config["sub_encoders"]  # list of sub-encoder dicts
+
+        # 1) Validate & sort slices
+        self._check_slices_and_coverage()
+
+        # 2) Build sub-encoders
+        self.sub_encoders = nn.ModuleList()
+        total_out = 0
+        for sub_cfg in self.sub_enc_cfgs:
+            name        = sub_cfg["name"]
+            net_class   = sub_cfg["network"]
+            params      = sub_cfg["params"]
+            slc         = sub_cfg["slice"]
+            out_dim     = sub_cfg["out_features"]
+            start_idx, end_idx = slc
+            slice_len   = (end_idx - start_idx + 1)
+
+            # Instantiate
+            sub_enc = self._build_sub_encoder(net_class, params)
+            self.sub_encoders.append(sub_enc)
+
+            total_out += out_dim
+
+        # final aggregator: (total_out -> self.output_size)
+        self.final_fc = nn.Linear(total_out, self.output_size)
+        init.kaiming_normal_(self.final_fc.weight)
+        nn.init.constant_(self.final_fc.bias, 0.0)
+
+
+    def _check_slices_and_coverage(self):
+        """
+        Ensures sub_encoders' slices exactly cover [0..self.input_size-1] 
+        with no gap or overlap, in ascending order.
+        """
+        # gather slices
+        slices = []
+        for sub_cfg in self.sub_enc_cfgs:
+            sl = sub_cfg["slice"]
+            if len(sl) != 2:
+                raise ValueError(f"Invalid slice for sub-encoder {sub_cfg['name']}: {sl}")
+            start, end = sl
+            if not (0 <= start <= end < self.input_size):
+                raise ValueError(f"Slice {sl} out of range for input_size={self.input_size}")
+            slices.append((start, end))
+
+        # sort by start
+        slices.sort(key=lambda x: x[0])
+        prev_end = -1
+        for (st, en) in slices:
+            if st != prev_end + 1 and prev_end != -1:
+                raise ValueError(f"Gap/overlap in slices. Some sub-encoder starts at {st}, "
+                                 f"previous ended at {prev_end}.")
+            prev_end = en
+        # final check: last sub-encoder must end at (input_size -1)
+        if slices[-1][1] != self.input_size -1:
+            raise ValueError(f"Coverage incomplete. Last slice ends at {slices[-1][1]}, "
+                             f"but input_size-1= {self.input_size-1}.")
+
+
+    def _build_sub_encoder(self, net_class_name: str, params: dict) -> nn.Module:
+        """
+        A small helper that instantiates the requested sub-encoder by name.
+        We place them in the same file for simplicity.
+        """
+        # local import
+        factory = {
+            "LinearNetwork": LinearNetwork,
+            "SpatialNetwork2D": SpatialNetwork2D,
+        }
+        if net_class_name not in factory:
+            raise ValueError(f"Unknown sub-encoder class: {net_class_name}")
+        cls = factory[net_class_name]
+        return cls(**params)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x => (batch, input_size)
+        1) For each sub-encoder: slice => pass => shape => (batch, out_features)
+        2) cat => final_fc => (batch, output_size)
+        """
+        b, dim = x.shape
+        if dim != self.input_size:
+            raise ValueError(f"GeneralObsEncoder expects input dim={self.input_size}, got {dim}")
+
+        outs = []
+        # each sub-encoder's slice => pass
+        for sub_cfg, sub_enc in zip(self.sub_enc_cfgs, self.sub_encoders):
+            start, end = sub_cfg["slice"]
+            sub_x = x[:, start:end+1]  # inclusive
+            out_i = sub_enc(sub_x)     # => (b, sub_cfg["out_features"])
+            outs.append(out_i)
+
+        cat_out = torch.cat(outs, dim=-1)  # => (b, sum_of_subencoder_out)
+        return self.final_fc(cat_out)      # => (b, output_size)
+
 class AgentIDPosEnc(nn.Module):
     """
     For each integer agent index i, produce a learned embedding vector of size id_embed_dim,
@@ -141,6 +288,8 @@ class ValueNetwork(nn.Module):
         self.value_net = nn.Sequential(
             nn.Linear(in_features, hidden_size),
             nn.LeakyReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(),
             nn.Linear(hidden_size, 1)
         )
         for layer in self.value_net:
@@ -210,7 +359,7 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         acts_enc_cfg  = net_cfg["obs_actions_encoder"]
         id_enc_cfg    = net_cfg["agent_id_enc"]
         rsa_cfg       = net_cfg["RSA"]
-        pre_obs_cfg   = net_cfg["pre_obs_encoder"]
+        gen_obs_cfg   = net_cfg["general_obs_encoder"]
         id_emb_dim    = id_enc_cfg["id_embed_dim"]
 
         # 2) auto-correct input size for g():
@@ -228,12 +377,13 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         self.f = StatesActionsEncoder(**acts_enc_cfg)
         self.rsa = RSA(**rsa_cfg)
         self.id_encoder = AgentIDPosEnc(**id_enc_cfg)
-        self.pre_obs_transform = LinearNetwork(**pre_obs_cfg)
+        
+        self.general_obs_encoder = GeneralObsEncoder(gen_obs_cfg)
 
     def embed_obs_for_policy(self, obs: torch.Tensor) -> torch.Tensor:
         """
         eqn(Policy):  π( RSA(g(o^i)) )
-        1) Run pre_obs_transform on obs
+        1) Pass obs -> general_obs_encoder
         2) Add agent IDs into the obs (before g).
         3) pass obs->g->RSA
         => shape (S,E,A,H)
@@ -243,7 +393,7 @@ class MultiAgentEmbeddingNetwork(nn.Module):
     def embed_obs_for_value(self, obs: torch.Tensor) -> torch.Tensor:
         """
         eqn(6):  V( RSA(g(o^i)) )
-        Identical pipeline if the environment doesn't differentiate 
+        Identical pipeline if the environment doesn't differentiate
         between how policy and value embed states.
         => shape (S,E,A,H)
         """
@@ -255,13 +405,13 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         We want shape => (S,E,A,A,H).
 
         Steps:
-         1) pre_obs_transform + agent IDs
+         1) general_obs_encoder + agent IDs
          2) split => agent_obs_i, groupmates_obs_j, groupmates_actions_j
          3) g(agent_obs_i), f(groupmates_obs_j, groupmates_actions_j)
          4) cat => (S,E,A,A,H)
          5) RSA => (S,E,A,A,H)
         """
-        # 1) Pre-transform + ID
+        # 1) general_obs_encoder + ID
         obs_with_id = self._add_id_emb(obs)
 
         # 2) split => agent_obs, groupmates_obs, groupmates_actions
@@ -287,19 +437,19 @@ class MultiAgentEmbeddingNetwork(nn.Module):
 
     def _add_id_emb(self, obs: torch.Tensor) -> torch.Tensor:
         """
-        1) pre_obs_transform on obs
+        1) Flatten + pass obs -> general_obs_encoder
         2) agent_ids => (S,E,A)
         3) pass through self.id_encoder => (S,E,A,id_emb_dim)
-        4) cat => shape => (S,E,A, obs_dim + id_emb_dim)
+        4) cat => shape => (S,E,A, new_obs_dim + id_emb_dim)
         """
         S, E, A, obs_dim = obs.shape
         device = obs.device
 
-        # 1) Flatten + apply pre_obs_transform
+        # 1) Flatten + apply general_obs_encoder
         flat_obs = obs.view(S*E*A, obs_dim)
-        flat_trans = self.pre_obs_transform(flat_obs)  # => shape (S*E*A, ???)
+        flat_trans = self.general_obs_encoder(flat_obs)  # => shape (S*E*A, ???)
         # re-reshape
-        new_obs = flat_trans.view(S,E,A,-1)
+        new_obs = flat_trans.view(S, E, A, -1)
 
         # 2) build agent_ids => shape => (S,E,A)
         agent_ids = torch.arange(A, device=device).view(1,1,A).expand(S,E,A)
@@ -313,7 +463,7 @@ class MultiAgentEmbeddingNetwork(nn.Module):
     def _obs_with_id_and_rsa(self, obs: torch.Tensor) -> torch.Tensor:
         """
         Common code path for [policy / value].
-        1)  pre_obs_transform on obs
+        1)  flatten + pass obs -> general_obs_encoder
         2)  add agent ID => shape => (S,E,A, ??? + id_emb_dim)
         3)  pass that into g => (S,E,A,H)
         4)  flatten => RSA => final => (S,E,A,H)
@@ -360,14 +510,10 @@ class MultiAgentEmbeddingNetwork(nn.Module):
             groupmates_actions_list.append(g_act)
 
         agent_obs = torch.cat(agent_obs_list, dim=2).unsqueeze(3).contiguous()
-        # => (S,E,A,1,aug_dim)
         groupmates_obs = torch.cat(groupmates_obs_list, dim=2).contiguous()
-        # => (S,E,A,(A-1),aug_dim)
         groupmates_actions = torch.cat(groupmates_actions_list, dim=2).contiguous()
-        # => (S,E,A,(A-1), act_dim)
 
         return agent_obs, groupmates_obs, groupmates_actions
-
 
 class SharedCritic(nn.Module):
     """

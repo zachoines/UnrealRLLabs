@@ -7,7 +7,7 @@ from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import LinearLR
 
 from Source.Agent import Agent
-from Source.Utility import RunningMeanStdNormalizer
+from Source.Utility import RunningMeanStdNormalizer, LinearValueScheduler
 from Source.Networks import (
     MultiAgentEmbeddingNetwork,
     SharedCritic,
@@ -41,17 +41,11 @@ class MAPOCAAgent(Agent):
         self.value_loss_coeff     = agent_cfg.get('value_loss_coeff', 0.5)
         self.baseline_loss_coeff  = agent_cfg.get('baseline_loss_coeff', 0.5)
         self.entropy_coeff        = agent_cfg.get('entropy_coeff', 0.01)
+        self.base_entropy_coeff   = agent_cfg.get('entropy_coeff', 0.01)
         self.max_grad_norm        = agent_cfg.get('max_grad_norm', 0.5)
         self.normalize_rewards    = agent_cfg.get('normalize_rewards', False)
         self.normalize_advantages = agent_cfg.get('normalize_advantages', False)
         self.ppo_clip_range       = agent_cfg.get('ppo_clip_range', 0.1)
-
-        # -- (Optional) primal-dual for entropy
-        self.adaptive_entropy = agent_cfg.get('adaptive_entropy', False)
-        if self.adaptive_entropy:
-            self.target_entropy   = agent_cfg.get('target_entropy', -1.0)
-            self.entropy_lambda_lr = agent_cfg.get('entropy_lambda_lr', 3e-4)
-            self.entropy_lambda  = agent_cfg.get('entropy_lambda_initial', 0.0)
 
         # -- Training config
         self.epochs          = train_cfg.get('epochs', 4)
@@ -93,11 +87,24 @@ class MAPOCAAgent(Agent):
             ).to(device)
 
         # -- Optimizer & LR schedule
+        
         self.optimizer = optim.AdamW(self.parameters(), lr=self.lr)
-        self.lr_scheduler = LinearLR(
-            self.optimizer,
-            **agent_cfg['schedulers']['lr']
-        )
+
+        
+        lr_sched_cfg = agent_cfg['schedulers'].get('lr', None)
+        self.lr_scheduler = None
+        if lr_sched_cfg:
+            self.lr_scheduler = LinearLR(
+                self.optimizer,
+                **agent_cfg['schedulers']['lr']
+            )
+
+        ent_sched_cfg = agent_cfg['schedulers'].get('entropy_coeff', None)
+        self.entropy_scheduler = None
+        if ent_sched_cfg:
+            self.entropy_scheduler = LinearValueScheduler(
+                **agent_cfg['schedulers']['entropy_coeff']
+            )
 
         # -- Optional reward normalization
         if self.normalize_rewards:
@@ -291,20 +298,15 @@ class MAPOCAAgent(Agent):
                 mb_ent_mean      = entropy_mb.mean()
 
                 # combine
-                if self.adaptive_entropy:
-                    total_loss = (
-                        mb_policy_loss +
-                        self.value_loss_coeff * mb_value_loss +
-                        self.baseline_loss_coeff * mb_baseline_loss +
-                        self.entropy_lambda * (mb_ent_mean - self.target_entropy)
-                    )
-                else:
-                    total_loss = (
-                        mb_policy_loss +
-                        (self.value_loss_coeff * mb_value_loss +
-                        self.baseline_loss_coeff * mb_baseline_loss) -
-                        self.entropy_coeff * mb_ent_mean
-                    )
+                if self.entropy_scheduler is not None:
+                    self.entropy_coeff = self.entropy_scheduler.step()
+
+                total_loss = (
+                    mb_policy_loss +
+                    (self.value_loss_coeff * mb_value_loss +
+                    self.baseline_loss_coeff * mb_baseline_loss) -
+                    self.entropy_coeff * mb_ent_mean
+                )
 
                 self.optimizer.zero_grad()
                 total_loss.backward()
@@ -320,17 +322,12 @@ class MAPOCAAgent(Agent):
                 total_returns.append(returns_mb.mean().detach().cpu())
                 total_lrs.append(self.get_average_lr(self.optimizer).detach().cpu())
 
-                # update lambda if adaptive
-                if self.adaptive_entropy:
-                    with torch.no_grad():
-                        ent_error = (mb_ent_mean.detach().item() - self.target_entropy)
-                        self.entropy_lambda = max(0.0, self.entropy_lambda + self.entropy_lambda_lr*ent_error)
-
         return {
             "Policy Loss":    torch.stack(total_policy_losses).mean(),
             "Value Loss":     torch.stack(total_value_losses).mean(),
             "Baseline Loss":  torch.stack(total_baseline_losses).mean(),
             "Entropy":        torch.stack(total_entropies).mean(),
+            "Entropy coeff" : torch.tensor(self.entropy_coeff),
             "Average Returns":torch.stack(total_returns).mean(),
             "Learning Rate":  torch.stack(total_lrs).mean(),
             "Average Rewards":rewards_average

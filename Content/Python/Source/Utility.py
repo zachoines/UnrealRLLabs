@@ -44,6 +44,55 @@ class ModifiedOneCycleLR(torch.optim.lr_scheduler.OneCycleLR):
         else:
             super().step(epoch)
 
+class LinearValueScheduler:
+    """
+    A scheduler that linearly transitions a scalar value from `start_value`
+    to `end_value` over `total_iters` steps.
+
+    Example:
+      scheduler = LinearValueScheduler(
+          start_value=0.01,
+          end_value=0.0,
+          total_iters=100000
+      )
+      ...
+      # each update step:
+      current_entropy_coeff = scheduler.step()
+      # use current_entropy_coeff in your loss calculation
+      ...
+    """
+
+    def __init__(self, start_value: float, end_value: float, total_iters: int):
+        self.start_value = start_value
+        self.end_value   = end_value
+        self.total_iters = max(1, total_iters)  # avoid zero division
+        self.counter     = 0
+
+    def step(self) -> float:
+        """
+        Moves the scheduler forward by 1 step and returns
+        the newly computed value (linearly interpolated).
+
+        If we exceed total_iters, it remains at end_value.
+        """
+        # fraction in [0..1]
+        fraction = min(self.counter / float(self.total_iters), 1.0)
+        new_value = (1.0 - fraction)*self.start_value + fraction*self.end_value
+
+        # increment counter
+        if self.counter < self.total_iters:
+            self.counter += 1
+
+        return new_value
+
+    def current_value(self) -> float:
+        """
+        Returns the scheduler's current value without incrementing.
+        Useful if you need to peek at it before stepping.
+        """
+        fraction = min(self.counter / float(self.total_iters), 1.0)
+        return (1.0 - fraction)*self.start_value + fraction*self.end_value
+
 class RunningMeanStdNormalizer:
     def __init__(self, epsilon: float = 1e-4, device: torch.device = torch.device("cpu")):
         self.mean = None

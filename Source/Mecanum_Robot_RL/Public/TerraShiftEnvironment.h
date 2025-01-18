@@ -50,7 +50,7 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
 
     /** Delay between each GridObject spawn in seconds. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float SpawnDelay = 0.5f;
+    float SpawnDelay = .5f;
 
     /** Maximum number of agents. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
@@ -69,7 +69,7 @@ struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParam
      * If an agent picks a certain cell in A to increment, we clamp to this range.
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fourier Params")
-    FVector2D MatrixDeltaRange = FVector2D(-1.25f, 1.25f);
+    FVector2D MatrixDeltaRange = FVector2D(-1.5f, 1.5f);
 
     /** Number of fundamental frequency modes for Discrete Fourier. (2K x 2K) per agent. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fourier Params")
@@ -197,6 +197,9 @@ private:
 
     /** Flags to track if grid objects have fallen off grid. */
     TArray<bool> GridObjectFallenOffGrid;
+
+    /** Flags to track rewards granted for reaching goal and falling of grid events. */
+    TArray<bool> GridObjectShouldCollectEventReward;
 
     /** Flags to track if grid objects should be respawned. */
     TArray<bool> GridObjectShouldRespawn;

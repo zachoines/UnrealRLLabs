@@ -38,29 +38,31 @@ environment:
 agent:
   type: MA_POCA
   params:
-    learning_rate: 0.0003
+    learning_rate: 0.0002
     gamma: 0.99
     lambda: 0.95
     hidden_size: 256
-    normalize_rewards: True
-    normalize_advantages: True
-    value_loss_coeff: 0.1
-    baseline_loss_coeff: 0.1
-    max_grad_norm: 0.1
+    normalize_rewards: False
+    normalize_advantages: False
+    value_loss_coeff: 1.0
+    baseline_loss_coeff: 1.0
+    max_grad_norm: 1.0
     ppo_clip_range: 0.1
 
-    adaptive_entropy: false
     target_entropy: -8.0
     entropy_lambda_lr: 0.0003
     entropy_lambda_initial: 0.0
-    entropy_coeff: 0.01
+    entropy_coeff: 0.1
 
     schedulers:
       lr:
         start_factor: 1.0
         end_factor: 0.001
-        total_iters: 1000000
-
+        total_iters: 50000
+      entropy_coeff:
+        start_value: 0.1
+        end_value: 0.0001
+        total_iters: 50000
     networks:
       policy_network:
         in_features: 256
@@ -77,11 +79,33 @@ agent:
           dropout_rate: 0.0
           
       MultiAgentEmbeddingNetwork:
-        pre_obs_encoder:
-          in_features: 284 # Agent obs size
-          out_features: 256
-          dropout_rate: 0.0
-          activation: True
+        general_obs_encoder:
+          input_size: 284       # total dimension of the agent's observation
+          output_size: 256      # final dimension after concatenating sub-encoders & feeding aggregator FC
+
+          sub_encoders:
+            - name: "SpatialPart"
+              network: "SpatialNetwork2D"
+              params:
+                h: 16
+                w: 16
+                in_channels: 1
+                out_channels: 8
+                kernel_size: 3
+                stride: 1
+                padding: 1
+              slice: [0, 255]    # covers 256 elements of the obs
+              out_features: 2048 # since 8 x 16 x 16 = 2048 after flattening
+
+            - name: "LinearPart"
+              network: "LinearNetwork"
+              params:
+                in_features: 28     # for slice [256..283] => 28 elements
+                out_features: 128
+                dropout_rate: 0.0
+                activation: True
+              slice: [256, 283]     # covers the last 28 elements
+              out_features: 128
 
         agent_id_enc:
           num_freqs: 64
@@ -106,11 +130,11 @@ agent:
           activation: True
 train:
   normalize_states: True
-  num_environments: 32
+  num_environments: 1
   epochs: 3
-  mini_batch_size: 4
-  buffer_size: 64
-  batch_size: 64
+  mini_batch_size: 8
+  buffer_size: 128
+  batch_size: 128
   AgentsResetFrequency: 0
   ActionRepeat: 0
   saveFrequency: 20
