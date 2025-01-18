@@ -36,6 +36,10 @@
 		{
 			"Name": "Niagara",
 			"Enabled": true
+		},
+		{
+			"Name": "DebugpyPythonPackage",
+			"Enabled": false
 		}
 	]
 }

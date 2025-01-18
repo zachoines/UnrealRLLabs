@@ -514,7 +514,7 @@ void ATerraShiftEnvironment::PreStep()
 
 bool ATerraShiftEnvironment::Done()
 {
-    // If there are no more GridObjects left to handle, then the environment is done
+    // If there are no more GridObjects left to handle, then the environment is donex
     if (CurrentStep > 0 && (!AgentHasActiveGridObject.Contains(true) && !GridObjectShouldRespawn.Contains(true))) {
         return true;
     }
@@ -538,10 +538,6 @@ float ATerraShiftEnvironment::Reward()
 
     for (int32 AgentIndex = 0; AgentIndex < CurrentAgents; ++AgentIndex)
     {
-        bool bReachedGoal = ;
-        bool bHasFallen = ;
-        bool bRewardCollected = ;
-
         // (A) Punish falling off platform
         if (GridObjectShouldCollectEventReward[AgentIndex] && GridObjectFallenOffGrid[AgentIndex])
         {
