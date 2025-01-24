@@ -1,11 +1,15 @@
 #include "UnrealRLLabsGameModeBase.h"
+#include "EnvironmentConfig.h"
+#include "Misc/Paths.h"
 
+// Constructor
 AUnrealRLLabsGameModeBase::AUnrealRLLabsGameModeBase()
 {
-    // Enable ticking
+    // Disable ticking by default
     PrimaryActorTick.bCanEverTick = false;
 }
 
+// Helper to create environment spawn locations in a grid arrangement
 TArray<FVector> AUnrealRLLabsGameModeBase::CreateGridLocations(int32 NumEnvironments, FVector Offset)
 {
     TArray<FVector> Locations;
@@ -17,7 +21,7 @@ TArray<FVector> AUnrealRLLabsGameModeBase::CreateGridLocations(int32 NumEnvironm
     int32 yCount = initialEstimate;
     int32 zCount = initialEstimate;
 
-    // Adjust counts to get as close as possible to the desired number of environments
+    // Grow xCount/yCount/zCount until we can fit all environments
     while (xCount * yCount * zCount < NumEnvironments)
     {
         if (xCount <= yCount && xCount <= zCount)
@@ -28,9 +32,14 @@ TArray<FVector> AUnrealRLLabsGameModeBase::CreateGridLocations(int32 NumEnvironm
             zCount++;
     }
 
-    // Calculate the starting point to ensure the environments are centered around the world's origin
-    FVector StartLocation = FVector(-Offset.X * (xCount - 1) * 0.5f, -Offset.Y * (yCount - 1) * 0.5f, -Offset.Z * (zCount - 1) * 0.5f);
+    // Center them around the origin
+    FVector StartLocation = FVector(
+        -Offset.X * (xCount - 1) * 0.5f,
+        -Offset.Y * (yCount - 1) * 0.5f,
+        -Offset.Z * (zCount - 1) * 0.5f
+    );
 
+    // Populate
     int32 envsCreated = 0;
     for (int32 i = 0; i < xCount && envsCreated < NumEnvironments; i++)
     {
@@ -50,82 +59,71 @@ TArray<FVector> AUnrealRLLabsGameModeBase::CreateGridLocations(int32 NumEnvironm
 
 void AUnrealRLLabsGameModeBase::BeginPlay()
 {
-    bool loaded = ReadJsonConfig(
-        FPaths::ProjectContentDir() + TEXT("EnvConfigs/TerraShift.json"),
-        TrainParams
+    Super::BeginPlay();
+
+    // 1) Load config from "Configs/TerraShift.json"
+    EnvConfig = NewObject<UEnvironmentConfig>(this, UEnvironmentConfig::StaticClass());
+    if (!EnvConfig || !EnvConfig->LoadFromFile(FPaths::ProjectContentDir() + TEXT("Python/Configs/TerraShift.json")))
+    {
+        UE_LOG(LogTemp, Error, TEXT("Could not load TerraShift.json config!"));
+        return;
+    }
+
+    // 2) Retrieve the number of environments from the config
+    //    e.g. "train/num_environments" => int
+    int32 NumEnvironments = EnvConfig
+        ->Get(TEXT("train/num_environments"))
+        ->AsInt();
+
+    // 3) Spawn the RLRunner actor
+    Runner = GetWorld()->SpawnActor<ARLRunner>(ARLRunner::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
+    if (!Runner)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to spawn RLRunner!"));
+        return;
+    }
+
+    // 4) Generate environment spawn locations
+    TArray<FVector> Locations = CreateGridLocations(NumEnvironments, FVector(100.f, 100.f, 100.f));
+    if (Locations.Num() != NumEnvironments)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Could not spawn environments - mismatch in location count."));
+    }
+
+    // 5) Build our environment init-params array
+    for (int32 i = 0; i < NumEnvironments; i++)
+    {
+        // For TerraShift environment, we might have a derived struct: FTerraShiftEnvironmentInitParams
+        FTerraShiftEnvironmentInitParams* TerraParams = new FTerraShiftEnvironmentInitParams();
+        TerraParams->Location = Locations[i];
+        TerraParams->EnvConfig = EnvConfig;
+
+        // Add to our array
+        InitParamsArray.Add(StaticCast<FBaseInitParams*>(TerraParams));
+    }
+
+    // 6) Initialize runner with the environment type + init params + config
+    Runner->InitRunner(
+        ATerraShiftEnvironment::StaticClass(),
+        InitParamsArray,
+        EnvConfig
     );
-
-    if (loaded) {
-        Runner = GetWorld()->SpawnActor<ARLRunner>(ARLRunner::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
-        TArray<FVector> Locations = CreateGridLocations(TrainParams.NumEnvironments, FVector(100.0f, 100.0f, 100.0f));
-    
-        if (TrainParams.NumEnvironments != Locations.Num()) {
-            UE_LOG(LOG_UNREALRLLABS, Error, TEXT("Could not spawn environments"));
-        }
-
-        for (int32 i = 0; i < TrainParams.NumEnvironments; i++)
-        {
-            FTerraShiftEnvironmentInitParams* Params = new FTerraShiftEnvironmentInitParams();
-            Params->Location = Locations[i];
-            Params->NumAgents = 1; // Environments will override on reset
-            InitParamsArray.Add(StaticCast<FBaseInitParams*>(Params));
-        }
-
-        Runner->InitRunner(
-            ATerraShiftEnvironment::StaticClass(),
-            InitParamsArray,
-            TrainParams
-        );
-    }
-    else {
-        UE_LOG(LOG_UNREALRLLABS, Error, TEXT("Could not read JSON config."));
-    }
-}
-
-bool AUnrealRLLabsGameModeBase::ReadJsonConfig(const FString& FilePath, FTrainParams& OutTrainParams)
-{
-    FString JsonString;
-    if (!FFileHelper::LoadFileToString(JsonString, *FilePath))
-    {
-       return false;
-    }
-
-    TSharedPtr<FJsonObject> JsonObject;
-    TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
-
-    if (!FJsonSerializer::Deserialize(Reader, JsonObject) || !JsonObject.IsValid())
-    {
-        return false;
-    }
-
-    // General Train Params
-    TSharedPtr<FJsonObject> TrainParamsJson = JsonObject->GetObjectField(TEXT("TrainInfo"));
-    OutTrainParams.BufferSize = TrainParamsJson->GetIntegerField(TEXT("BufferSize"));
-    OutTrainParams.BatchSize = TrainParamsJson->GetIntegerField(TEXT("BatchSize"));
-    OutTrainParams.NumEnvironments = TrainParamsJson->GetIntegerField(TEXT("NumEnvironments"));
-    OutTrainParams.ActionRepeat = TrainParamsJson->GetIntegerField(TEXT("ActionRepeat"));
-
-    // Multi-Agent Params
-    OutTrainParams.MaxAgents = TrainParamsJson->GetIntegerField(TEXT("MaxAgents"));
-    OutTrainParams.MinAgents = TrainParamsJson->GetIntegerField(TEXT("MinAgents"));
-    OutTrainParams.AgentsResetFrequency = TrainParamsJson->GetIntegerField(TEXT("AgentsResetFrequency"));
-
-    return true;
 }
 
 void AUnrealRLLabsGameModeBase::BeginDestroy()
 {
     Super::BeginDestroy();
 
-    // Delete all the FCubeEnvironmentInitParams instances
+    // Clean up any allocated FBaseInitParams
     for (FBaseInitParams* Params : InitParamsArray)
     {
         delete Params;
     }
+    InitParamsArray.Empty();
 }
 
 void AUnrealRLLabsGameModeBase::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
 {
     Super::InitGame(MapName, Options, ErrorMessage);
-    UE_LOG(LOG_UNREALRLLABS, Log, TEXT("RL session has started: % %"), *MapName, *Options);
+    UE_LOG(LogTemp, Log, TEXT("RL session has started: %s %s"), *MapName, *Options);
 }

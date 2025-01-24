@@ -39,10 +39,6 @@ struct UNREALRLLABS_API FMatrix2D
     GENERATED_BODY()
 
 private:
-    // Single TArray of size (Rows * Columns) for data
-    UPROPERTY()
-    TArray<float> Data;
-
     UPROPERTY()
     int32 Rows;
 
@@ -132,6 +128,10 @@ public:
 
     // Standard matrix multiplication
     FMatrix2D MatMul(const FMatrix2D& Other) const;
+
+    // Single TArray of size (Rows * Columns) for data
+    UPROPERTY()
+    TArray<float> Data;
 
 private:
     /** Helper to get the index in the single array for (row,col). */

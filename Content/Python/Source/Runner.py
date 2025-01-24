@@ -1,5 +1,5 @@
 from Source.Agent import Agent
-from Source.Utility import RunningMeanStdNormalizer
+from Source.Utility import RunningMeanStdNormalizer, RunningMinMaxNormalizer
 from Source.Environment import EnvCommunicationInterface, EventType
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -14,7 +14,7 @@ class RLRunner:
         self.stateNormalizer = None
         self.normalizeStates = normalizeStates
         if self.normalizeStates:
-            self.stateNormalizer = RunningMeanStdNormalizer(
+            self.stateNormalizer = RunningMinMaxNormalizer(
                 device=agentComm.device
             )
 
@@ -35,7 +35,7 @@ class RLRunner:
                     states = self.stateNormalizer.normalize(states)
                     next_states = self.stateNormalizer.normalize(next_states) 
                 logs = self.agent.update(
-                    states, 
+                    states,
                     next_states, 
                     actions, 
                     rewards, 

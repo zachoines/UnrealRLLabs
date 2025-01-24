@@ -1,31 +1,27 @@
 #pragma once
+
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
 
-// JSON parsing 
+// JSON / File utilities
+#include "Misc/FileHelper.h"
+#include "Dom/JsonValue.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
-#include "Misc/FileHelper.h"
 
 // Local classes
-#include "Public/BaseEnvironment.h"
-#include "Public/RLRunner.h"
-#include "UnrealRLLabs.h"
-#include "MultiAgentCubeEnvironment.h"
-#include "TerraShiftEnvironment.h"
+#include "BaseEnvironment.h"
 #include "RLRunner.h"
-#include "Public/SharedMemoryAgentCommunicator.h"
-#include "Public/RLTypes.h"
+#include "TerraShiftEnvironment.h"
+#include "SharedMemoryAgentCommunicator.h"
+#include "EnvironmentConfig.h"
 
 #include "Engine/TextureRenderTarget2D.h"
-
 #include "UnrealRLLabsGameModeBase.generated.h"
 
-
-
 UCLASS()
-class AUnrealRLLabsGameModeBase : public AGameModeBase
+class UNREALRLLABS_API AUnrealRLLabsGameModeBase : public AGameModeBase
 {
     GENERATED_BODY()
 
@@ -36,13 +32,26 @@ public:
     virtual void BeginPlay() override;
     virtual void InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage) override;
 
+    /**
+     * Helper to create a set of environment spawn locations arranged in a 3D grid pattern.
+     */
     TArray<FVector> CreateGridLocations(int32 NumEnvironments, FVector Offset);
 
 private:
-
+    /**
+     * A pointer to our RL runner responsible for stepping/training.
+     */
+    UPROPERTY()
     ARLRunner* Runner;
-    TArray<FBaseInitParams*> InitParamsArray;
-    FTrainParams TrainParams;
 
-    bool ReadJsonConfig(const FString& FilePath, FTrainParams& OutTrainParams);
+    /**
+     * Array of init-params for each environment instance we will spawn.
+     */
+    TArray<FBaseInitParams*> InitParamsArray;
+
+    /**
+     * Our loaded JSON config, wrapped by UEnvironmentConfig.
+     */
+    UPROPERTY()
+    UEnvironmentConfig* EnvConfig;
 };

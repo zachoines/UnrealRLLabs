@@ -126,3 +126,51 @@ class RunningMeanStdNormalizer:
     def normalize(self, x: torch.Tensor):
         normalized_x = (x - self.mean) / torch.sqrt(self.var + 1e-8)
         return normalized_x
+
+class RunningMinMaxNormalizer:
+    def __init__(self, epsilon: float = 1e-4, device: torch.device = torch.device("cpu")):
+        """
+        A normalizer that tracks the min and max across the last dimension of incoming data.
+        - epsilon is used to avoid division by zero in normalization.
+        - device is the PyTorch device for storing min/max tensors.
+        """
+        self.min = None
+        self.max = None
+        self.epsilon = epsilon
+        self.device = device
+
+    def update(self, x: torch.Tensor):
+        """
+        Update running min and max with a new batch of data x, which is
+        assumed to have shape [num_steps, num_envs, num_agents, obs_size] or
+        any shape where the last dimension is obs_size.
+        """
+        # Flatten the batch dimensions so we only track min/max over the obs dimension
+        # e.g., shape [N, obs_size], where N = num_steps * num_envs * num_agents
+        flat_x = x.view(-1, x.shape[-1])
+
+        batch_min = torch.min(flat_x, dim=0).values
+        batch_max = torch.max(flat_x, dim=0).values
+
+        
+
+        # Initialize min and max if not set
+        if self.min is None or self.max is None:
+            self.min = batch_min.to(self.device)
+            self.max = batch_max.to(self.device)
+        else:
+            # Update running min/max
+            bm = self.min.tolist()
+            bM = self.max.tolist()
+            self.min = torch.min(self.min, batch_min.to(self.device))
+            self.max = torch.max(self.max, batch_max.to(self.device))
+
+    def normalize(self, x: torch.Tensor):
+        """
+        Normalize x using the tracked running min and max:
+            normalized_x = (x - min) / (max - min + epsilon)
+        """
+        if self.min is None or self.max is None:
+            # If we've never updated, just return x (or optionally return zeros)
+            return x
+        return (x - self.min) / (self.max - self.min + self.epsilon)

@@ -15,9 +15,6 @@ public:
     // Sets default values for this actor's properties
     ABaseEnvironment();
 
-    UPROPERTY(BlueprintReadOnly, Category = "EnvInfo")
-    FEnvInfo EnvInfo;
-
     // Initialize the environment using the FBaseInitParams struct
     virtual void InitEnv(FBaseInitParams* Params);
 

@@ -19,61 +19,6 @@ USTRUCT(BlueprintType)
 struct UNREALRLLABS_API FTerraShiftEnvironmentInitParams : public FBaseInitParams
 {
     GENERATED_USTRUCT_BODY();
-
-    /** Size of the platform in meters. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float PlatformSize = 1.0f;
-
-    /** Maximum height of the columns in meters. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float MaxColumnHeight = 3.0f;
-
-    /** Size of the grid objects in meters. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    FVector ObjectSize = FVector(0.10f, 0.10f, 0.10f);
-
-    /** Mass of the grid objects in kilograms. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float ObjectMass = 1.0f;
-
-    /** Number of cells along one side of the grid. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int GridSize = 50;
-
-    /** Maximum steps per episode. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int MaxSteps = 512;
-
-    /** Number of goals for agents (set between 1 - 4). */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int NumGoals = 4;
-
-    /** Delay between each GridObject spawn in seconds. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float SpawnDelay = .5f;
-
-    /** Maximum number of agents. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    int MaxAgents = 10;
-
-    /** Threshold distance to consider a goal reached. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
-    float GoalThreshold = 0.2f;
-
-    // ------------------------------------------------------------------------
-    // Discrete 2D Fourier parameters
-    // ------------------------------------------------------------------------
-
-    /**
-     * Range for partial updates to the agent's A matrix entries, e.g. [-0.05, 0.05].
-     * If an agent picks a certain cell in A to increment, we clamp to this range.
-     */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fourier Params")
-    FVector2D MatrixDeltaRange = FVector2D(-1.5f, 1.5f);
-
-    /** Number of fundamental frequency modes for Discrete Fourier. (2K x 2K) per agent. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fourier Params")
-    int K = 8;
 };
 
 /**
@@ -156,9 +101,6 @@ private:
     /** Initialization parameters specific to TerraShift. */
     FTerraShiftEnvironmentInitParams* TerraShiftParams = nullptr;
 
-    /** Maximum number of agents allowed. */
-    int MaxAgents;
-
     /** Current simulation step. */
     int CurrentStep;
 
@@ -170,6 +112,45 @@ private:
 
     /** Flag to check if the environment is initialized. */
     bool Initialized;
+
+    /** Size of the platform in meters. */
+    float PlatformSize;
+
+    /** Maximum height of the columns in meters. */
+    float MaxColumnHeight;
+
+    /** Size of the grid objects in meters. */
+    FVector ObjectSize;
+
+    /** Mass of the grid objects in kilograms. */
+    float ObjectMass;
+
+    /** Number of cells along one side of the grid. */
+    int GridSize;
+
+    /** Maximum steps per episode. */
+    int MaxSteps;
+
+    /** Number of goals for agents (set between 1 - 4). */
+    int NumGoals;
+
+    /** Delay between each GridObject spawn in seconds. */
+    float SpawnDelay;
+
+    /** Maximum number of agents. */
+    int MaxAgents;
+
+    /** Threshold distance to consider a goal reached. */
+    float GoalThreshold;
+
+    /**
+     * Range for partial updates to the agent's A matrix entries, e.g. [-0.05, 0.05].
+     * If an agent picks a certain cell in A to increment, we clamp to this range.
+     */
+    FVector2D MatrixDeltaRange = FVector2D(-2.0f, 2.0f);
+
+    /** Number of fundamental frequency modes for Discrete Fourier. (2K x 2K) per agent. */
+    int K = 8;
 
     /** Indices of goals assigned to agents. */
     TArray<int32> AgentGoalIndices;
@@ -230,9 +211,6 @@ private:
 
     /** Stores the last DeltaTime from the simulation loop. */
     float LastDeltaTime;
-
-    /** Initializes properties for action and observation space. */
-    void SetupActionAndObservationSpace();
 
     /**
      * Spawns the main platform in the environment.

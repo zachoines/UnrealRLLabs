@@ -7,7 +7,7 @@ from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import LinearLR
 
 from Source.Agent import Agent
-from Source.Utility import RunningMeanStdNormalizer, LinearValueScheduler
+from Source.Utility import RunningMeanStdNormalizer, RunningMinMaxNormalizer, LinearValueScheduler
 from Source.Networks import (
     MultiAgentEmbeddingNetwork,
     SharedCritic,
@@ -310,7 +310,7 @@ class MAPOCAAgent(Agent):
 
                 self.optimizer.zero_grad()
                 total_loss.backward()
-                clip_grad_norm_(self.parameters(), self.max_grad_norm)
+                # clip_grad_norm_(self.parameters(), self.max_grad_norm)
                 self.optimizer.step()
                 self.lr_scheduler.step()
 
