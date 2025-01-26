@@ -1,16 +1,16 @@
 import argparse
-import yaml
+import json
 from Source.Factory import AgentEnvFactory
 
 def main():
     parser = argparse.ArgumentParser(description='Train MA-POCA Agent')
-    parser.add_argument('--config', type=str, default='Configs/TerraShift.yaml',
-                        help='Path to config file.')
+    parser.add_argument('--config', type=str, default='Configs/TerraShift.json',
+                        help='Path to JSON config file.')
     args = parser.parse_args()
 
-    # Load config from YAML
+    # Load config from JSON (instead of YAML)
     with open(args.config, 'r') as f:
-        config = yaml.safe_load(f)
+        config = json.load(f)
 
     # Create agent, environment interface, etc.
     factory = AgentEnvFactory(config)
@@ -24,6 +24,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# tensorboard --logdir runs --host localhost --port 8888

@@ -164,8 +164,8 @@ TArray<FAction> ARLRunner::GetActions(TArray<FState> States, TArray<float> Dones
         return VectorEnvironment->SampleActions();
     }
 
-    return VectorEnvironment->SampleActions();
-    // return AgentComm->GetActions(States, Dones, Truncs, CurrentAgents);
+    // return VectorEnvironment->SampleActions();
+    return AgentComm->GetActions(States, Dones, Truncs, CurrentAgents);
 }
 
 void ARLRunner::AddExperiences(const TArray<FExperienceBatch>& EnvironmentTrajectories)

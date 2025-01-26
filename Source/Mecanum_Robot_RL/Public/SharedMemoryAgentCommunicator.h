@@ -1,19 +1,20 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "UObject/NoExportTypes.h"
+
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include "Windows.h"
 #include "Windows/HideWindowsPlatformTypes.h"
 
 #include "BaseEnvironment.h"
 #include "ExperienceBuffer.h"
+#include "RLTypes.h"
 #include "EnvironmentConfig.h"
 #include "SharedMemoryAgentCommunicator.generated.h"
 
 /**
- * SharedMemoryAgentCommunicator:
- * - Allocates & manages shared memory for exchanging data with a Python RL process
- * - Sends config info, obtains actions, sends experiences, etc.
+ * Communicates with a Python-based RL process via shared memory.
  */
 UCLASS(BlueprintType)
 class UNREALRLLABS_API USharedMemoryAgentCommunicator : public UObject
@@ -24,87 +25,90 @@ public:
     USharedMemoryAgentCommunicator();
 
     /**
-     * Initialize the communicator by:
-     *   1) Parsing relevant data from EnvConfig (NumEnvironments, ActionSpace, etc.)
-     *   2) Creating shared memory segments / events / mutexes
-     *   3) Writing config (in JSON form) to shared memory
+     * Initialize the communicator:
+     *  1) Reads relevant sizes from EnvConfig
+     *  2) Allocates shared memory (actions/states/update)
+     *  3) Sets up sync objects (mutexes/events)
+     *  4) Stores NumEnvironments so we can reuse later
      */
     UFUNCTION(BlueprintCallable, Category = "SharedMemory")
     void Init(UEnvironmentConfig* EnvConfig);
 
     /**
-     * Called each step to get actions from the Python side.
-     * (We copy states, dones, truncs into shared memory, signal python, block until python sets actions)
+     * Request actions from the Python side:
+     *   - Writes states/dones/truncs to shared memory
+     *   - Waits for the Python process to compute actions
+     *   - Reads actions back from shared memory
      */
     UFUNCTION(BlueprintCallable, Category = "SharedMemory")
     TArray<FAction> GetActions(TArray<FState> States, TArray<float> Dones, TArray<float> Truncs, int NumAgents);
 
     /**
-     * Update the python side with newly collected experiences
+     * Send a batch of experiences for training updates:
+     *   - Writes transitions to shared memory
+     *   - Signals the Python side
+     *   - Waits for confirmation
      */
     UFUNCTION(BlueprintCallable, Category = "SharedMemory")
     void Update(const TArray<FExperienceBatch>& experiences, int NumAgents);
 
-    /**
-     * Debug: print the matrix of actions to log
-     */
-    UFUNCTION(BlueprintCallable, Category = "SharedMemory")
-    void PrintActionsAsMatrix(const TArray<FAction>& Actions);
-
     virtual ~USharedMemoryAgentCommunicator();
 
 private:
-    /** The JSON representation of the config that we share with python. */
-    TArray<char> ConfigJSON;
+    // ------------------- SHARED MEMORY HANDLES -------------------
+    void* StatesSharedMemoryHandle;
+    void* ActionsSharedMemoryHandle;
+    void* UpdateSharedMemoryHandle;
 
-    /** Shared memory + mapped pointers for actions, states, updates, config. */
-    void* StatesSharedMemoryHandle = nullptr;
-    void* ActionsSharedMemoryHandle = nullptr;
-    void* UpdateSharedMemoryHandle = nullptr;
-    void* ConfigSharedMemoryHandle = nullptr;
+    // ------------------- MAPPED POINTERS -------------------------
+    float* MappedStatesSharedData;
+    float* MappedActionsSharedData;
+    float* MappedUpdateSharedData;
 
-    float* MappedStatesSharedData = nullptr;
-    float* MappedActionsSharedData = nullptr;
-    float* MappedUpdateSharedData = nullptr;
-    int32* MappedConfigSharedData = nullptr;
+    // ------------------- SYNCHRONIZATION -------------------------
+    void* ActionsMutexHandle;
+    void* UpdateMutexHandle;
+    void* StatesMutexHandle;
 
-    /** Mutexes and events for synchronization. */
-    void* ActionsMutexHandle = nullptr;
-    void* UpdateMutexHandle = nullptr;
-    void* StatesMutexHandle = nullptr;
-    void* ConfigMutexHandle = nullptr;
+    void* ActionReadyEventHandle;
+    void* ActionReceivedEventHandle;
+    void* UpdateReadyEventHandle;
+    void* UpdateReceivedEventHandle;
 
-    void* ActionReadyEventHandle = nullptr;
-    void* ActionReceivedEventHandle = nullptr;
-    void* UpdateReadyEventHandle = nullptr;
-    void* UpdateReceivedEventHandle = nullptr;
-    void* ConfigReadyEventHandle = nullptr;
+    // ------------------- CONFIG / SIZING -------------------------
+    UPROPERTY()
+    UEnvironmentConfig* LocalEnvConfig;
 
-private:
-    /** Creates the shared memory mapping + events. */
-    void CreateSharedMemoryAndEvents(
-        int32 ActionSizeBytes,
-        int32 StatesSizeBytes,
-        int32 UpdateSizeBytes,
-        int32 ConfigSizeBytes
-    );
-
-    /** Write the config data (ConfigJSON) into the config shared memory segment. */
-    void WriteConfigToSharedMemory();
+    int32 NumEnvironments;       // from "train/num_environments"
+    int32 BufferSize;            // from "train/buffer_size"
+    int32 BatchSize;             // from "train/batch_size"
 
     /**
-     * Creates a JSON object from the environment config, summarizing:
-     *   - Env ID
-     *   - IsMultiAgent, MaxAgents
-     *   - ActionSpace (discrete + continuous)
-     *   - Observations (approx. size)
-     *   - Training info: num_envs, buffer_size, batch_size, etc.
+     * Maximum single-env state size (for the max # agents if multi-agent).
+     * Used for sizing the memory blocks.
      */
-    TArray<char> WriteConfigInfoToJson(UEnvironmentConfig* EnvConfig);
+    int32 SingleEnvStateSize;
 
-    /** Helper to compute total #actions for 1 agent from the discrete/continuous specs. */
-    int32 ComputeSingleAgentNumActions(UEnvironmentConfig* EnvConfig) const;
+    /**
+     * Maximum single-env action size (for the max # agents if multi-agent).
+     */
+    int32 TotalActionCount;
 
-    /** Helper to guess the single-agent obs size or total state size. (You can refine this.) */
-    int32 ComputeSingleAgentObsSize(UEnvironmentConfig* EnvConfig) const;
+    // Alloc sizes in bytes
+    int32 ActionMAXSize;
+    int32 StatesMAXSize;
+    int32 UpdateMAXSize;
+
+private:
+    // Helper: check if config has "environment/shape/state/agent"
+    bool IsMultiAgent() const;
+
+    // Helper: check if config has "environment/shape/state/central"
+    bool HasCentralState() const;
+
+    // Helper: sum central + agent obs_size for a given agent count
+    int32 ComputeSingleEnvStateSize(int32 NumAgents) const;
+
+    // Helper: read discrete + continuous action arrays from config, sum them up
+    int32 ComputeSingleEnvActionSize(int32 NumAgents) const;
 };

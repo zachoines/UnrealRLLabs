@@ -206,7 +206,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
     WaveSimulator->Initialize(
         GridSize,
         GridSize,
-        MaxAgents,    // the "max" agents param
+        MaxAgents,
         K,
         MatrixDeltaRange
     );

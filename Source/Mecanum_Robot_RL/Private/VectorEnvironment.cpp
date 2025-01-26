@@ -183,9 +183,6 @@ void AVectorEnvironment::ParseActionSpaceFromConfig()
     {
         // We need to parse an array of objects, e.g.  [ { "num_choices": 4 }, { "num_choices": 4 } ]
         UEnvironmentConfig* DiscreteNode = EnvConfig->Get(TEXT("environment/shape/action/agent/discrete"));
-
-        // Suppose we wrote a method AsArrayOfConfigs() to get an array of sub-configs
-        // We'll pseudo-code that. Or you could parse AsArrayOfNumbers if it was only numbers.
         TArray<UEnvironmentConfig*> DiscreteArray = DiscreteNode->AsArrayOfConfigs(); // This is a hypothetical method you must define
 
         for (UEnvironmentConfig* Item : DiscreteArray)
