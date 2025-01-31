@@ -130,9 +130,11 @@ void ARLRunner::Tick(float DeltaTime)
             {
                 CurrentUpdate++;
                 TArray<FExperienceBatch> Transitions = SampleExperiences(BatchSize);
+                /*AgentComm->WriteTransitionsToFile(
+                    Transitions, 
+                    "C:\\Users\\zachoines\\Documents\\Unreal\\UnrealRLLabs\\Content\\Python\\TEST\\UnrealTransitions.csv"
+                );*/
                 AgentComm->Update(Transitions, CurrentAgents);
-
-                // You could do agent reset logic here if desired
             }
         }
 
@@ -164,7 +166,6 @@ TArray<FAction> ARLRunner::GetActions(TArray<FState> States, TArray<float> Dones
         return VectorEnvironment->SampleActions();
     }
 
-    // return VectorEnvironment->SampleActions();
     return AgentComm->GetActions(States, Dones, Truncs, CurrentAgents);
 }
 

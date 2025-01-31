@@ -54,6 +54,8 @@ public:
 
     virtual ~USharedMemoryAgentCommunicator();
 
+    void WriteTransitionsToFile(const TArray<FExperienceBatch>& experiences, const FString& FilePath);
+
 private:
     // ------------------- SHARED MEMORY HANDLES -------------------
     void* StatesSharedMemoryHandle;

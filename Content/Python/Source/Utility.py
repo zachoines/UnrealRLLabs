@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+from typing import Union, Dict
 
 class OneCycleCosineScheduler:
     def __init__(self, max_value, total_steps, pct_start=0.3, div_factor=25., final_div_factor=1e4):
@@ -94,38 +95,121 @@ class LinearValueScheduler:
         return (1.0 - fraction)*self.start_value + fraction*self.end_value
 
 class RunningMeanStdNormalizer:
+    """
+    Dictionary-capable normalizer that tracks running mean/variance for each key's
+    last-dimension 'features'. Also works on a single Tensor.
+
+    - If you pass a single Tensor x => shape (..., features), it stores stats under "__single__".
+    - If you pass a dictionary of Tensors => each value shape (..., features),
+      it tracks each dictionary key separately.
+
+    Each update() call does a standard running mean/variance calculation on the *flattened*
+    data except for the last dimension. So for shape (B,T,..., features), we gather
+    B*T*... samples across each feature dimension.
+    """
+
     def __init__(self, epsilon: float = 1e-4, device: torch.device = torch.device("cpu")):
-        self.mean = None
-        self.var = None
-        self.count = epsilon
+        """
+        :param epsilon: initial count to avoid divide-by-zero
+        :param device: store mean/var on this device
+        """
         self.device = device
+        self.epsilon = epsilon
 
-    def update(self, x: torch.Tensor):
-        if self.mean is None or self.var is None:
-            self.mean = torch.zeros(x.shape[-1]).to(self.device)
-            self.var = torch.ones(x.shape[-1]).to(self.device)
+        # stats[key] = (mean: Tensor, var: Tensor, count: float)
+        # single Tensors store under key="__single__"
+        self.stats = {}
 
-        # Flatten the batch dimensions
-        flat_x = x.view(-1, x.shape[-1])
-        batch_mean = torch.mean(flat_x, dim=0)
-        batch_var = torch.var(flat_x, dim=0)
-        batch_count = flat_x.size(0)
+    def update(self, x: Union[torch.Tensor, Dict[str, torch.Tensor]]):
+        """
+        Incorporate new data into the running mean+var.
+        Usually, you'd pass single states from get_states() (which might be shape (1,NumEnv,features) or so).
+        
+        If 'x' is a dict => we handle each key's last dimension separately.
+        If 'x' is a single Tensor => store in self.stats["__single__"].
+        """
+        if isinstance(x, torch.Tensor):
+            self._update_single(x, key="__single__")
+        elif isinstance(x, dict):
+            for k, v in x.items():
+                self._update_single(v, key=k)
+        else:
+            raise ValueError("Unsupported type for update: must be Tensor or dict of Tensors.")
 
-        delta = batch_mean - self.mean
-        tot_count = self.count + batch_count
+    def normalize(self, x: Union[torch.Tensor, Dict[str, torch.Tensor]]
+                 ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        Returns a normalized version of 'x' using the stored stats for each key.
+        - If 'x' is single => use stats["__single__"] if it exists.
+        - If 'x' is dict => for each k => stats[k].
+        We flatten all but last dim, subtract mean, divide sqrt(var+1e-8).
+        """
+        if isinstance(x, torch.Tensor):
+            return self._normalize_single(x, key="__single__")
+        elif isinstance(x, dict):
+            out = {}
+            for k,v in x.items():
+                out[k] = self._normalize_single(v, key=k)
+            return out
+        else:
+            raise ValueError("Unsupported type for normalize: must be Tensor or dict of Tensors.")
 
-        new_mean = self.mean + delta * batch_count / tot_count
-        m_a = self.var * self.count
+    # ---------------------------------------------------------------------
+    #                          Internal Methods
+    # ---------------------------------------------------------------------
+
+    def _update_single(self, tensor: torch.Tensor, key: str):
+        """
+        Flatten all but last dimension => shape(N, features).
+        Update running mean & var for this 'key'.
+        """
+        tensor = tensor.to(self.device)
+
+        # create empty stats if not found
+        if key not in self.stats:
+            fdim = tensor.shape[-1]
+            mean_ = torch.zeros(fdim, device=self.device)
+            var_  = torch.ones(fdim, device=self.device)
+            count_= self.epsilon
+            self.stats[key] = (mean_, var_, count_)
+
+        mean, var, cnt = self.stats[key]
+
+        # Flatten => shape(N, features)
+        flat = tensor.view(-1, tensor.shape[-1])
+        batch_mean = flat.mean(dim=0)
+        batch_var  = flat.var(dim=0, unbiased=True)
+        batch_count= flat.size(0)
+
+        delta = batch_mean - mean
+        new_count = cnt + batch_count
+
+        # standard formula
+        new_mean = mean + delta * (batch_count / new_count)
+        m_a = var * cnt
         m_b = batch_var * batch_count
-        M2 = m_a + m_b + delta**2 * self.count * batch_count / tot_count
+        M2  = m_a + m_b + delta**2 * cnt * batch_count / new_count
+        new_var = M2 / new_count
 
-        self.mean = new_mean
-        self.var = M2 / tot_count
-        self.count = tot_count
+        self.stats[key] = (new_mean, new_var, new_count)
 
-    def normalize(self, x: torch.Tensor):
-        normalized_x = (x - self.mean) / torch.sqrt(self.var + 1e-8)
-        return normalized_x
+    def _normalize_single(self, tensor: torch.Tensor, key: str) -> torch.Tensor:
+        """
+        Normalizes 'tensor' (shape => (..., features)) using self.stats[key].
+        If stats not exist for 'key', returns tensor as is.
+        """
+        if key not in self.stats:
+            # no stats => return unmodified
+            return tensor
+
+        mean, var, cnt = self.stats[key]
+        # shape => (features,). broadcast to tensor's last dimension
+        bshape = [1]*(tensor.dim()-1) + [tensor.shape[-1]]
+        mean_ = mean.view(*bshape)
+        var_  = var.view(*bshape)
+
+        # (x - mean)/ sqrt(var + 1e-8)
+        return (tensor.to(self.device) - mean_) / torch.sqrt(var_ + 1e-8)
 
 class RunningMinMaxNormalizer:
     def __init__(self, epsilon: float = 1e-4, device: torch.device = torch.device("cpu")):

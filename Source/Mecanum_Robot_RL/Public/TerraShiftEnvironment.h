@@ -7,7 +7,7 @@
 #include "TerraShift/MainPlatform.h"
 #include "TerraShift/Grid.h"
 #include "TerraShift/GridObjectManager.h"
-#include "TerraShift/DiscreteFourier2D.h"
+#include "TerraShift/DiscreteHeightMap2D.h"
 #include "TerraShift/GoalPlatform.h"
 
 #include "TerraShiftEnvironment.generated.h"
@@ -90,12 +90,8 @@ public:
     UPROPERTY(EditAnywhere)
     AGridObjectManager* GridObjectManager;
 
-    /**
-     * Discrete Fourier simulator that replaces the old MorletWavelets2D simulator.
-     * This manages each agent's (phaseX, phaseY, freqScale, and A matrix).
-     */
     UPROPERTY()
-    UDiscreteFourier2D* WaveSimulator;
+    UDiscreteHeightMap2D* WaveSimulator;
 
 private:
     /** Initialization parameters specific to TerraShift. */
@@ -148,9 +144,6 @@ private:
      * If an agent picks a certain cell in A to increment, we clamp to this range.
      */
     FVector2D MatrixDeltaRange = FVector2D(-2.0f, 2.0f);
-
-    /** Number of fundamental frequency modes for Discrete Fourier. (2K x 2K) per agent. */
-    int K = 8;
 
     /** Indices of goals assigned to agents. */
     TArray<int32> AgentGoalIndices;

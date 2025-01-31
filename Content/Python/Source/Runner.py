@@ -1,5 +1,5 @@
 from Source.Agent import Agent
-from Source.Utility import RunningMeanStdNormalizer, RunningMinMaxNormalizer
+from Source.Utility import RunningMeanStdNormalizer
 from Source.Environment import EnvCommunicationInterface, EventType
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -14,7 +14,7 @@ class RLRunner:
         self.stateNormalizer = None
         self.normalizeStates = normalizeStates
         if self.normalizeStates:
-            self.stateNormalizer = RunningMinMaxNormalizer(
+            self.stateNormalizer = RunningMeanStdNormalizer(
                 device=agentComm.device
             )
 
@@ -31,6 +31,10 @@ class RLRunner:
             elif event == EventType.UPDATE:
                 self.currentUpdate += 1
                 states, next_states, actions, rewards, dones, truncs = self.agentComm.get_experiences()
+                # self.agentComm.write_experiences_to_file(
+                #     states, next_states, actions, rewards, dones, truncs,
+                #     "C:\\Users\\zachoines\\Documents\\Unreal\\UnrealRLLabs\\Content\\Python\\TEST\\PythonTransitions.csv"
+                # )
                 if self.normalizeStates:
                     states = self.stateNormalizer.normalize(states)
                     next_states = self.stateNormalizer.normalize(next_states) 
@@ -42,6 +46,7 @@ class RLRunner:
                     dones, 
                     truncs
                 )
+            
                 self.log_step(logs)
                 if self.currentUpdate % self.saveFrequency == 0:
                     torch.save(self.agent.state_dict(), 'model_state.pth')

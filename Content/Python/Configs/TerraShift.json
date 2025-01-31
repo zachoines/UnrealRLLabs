@@ -1,0 +1,143 @@
+{
+  "environment": {
+    "name": "TerraShift",
+    "id": "3",
+    "params": {
+      "PlatformSize": 1.0,
+      "MaxColumnHeight": 4.0,
+      "ObjectSize": [0.10, 0.10, 0.10],
+      "ObjectMass": 1.0,
+      "GridSize": 50,
+      "MaxSteps": 512,
+      "NumGoals": 4,
+      "SpawnDelay": 0.5,
+      "MaxAgents": 10,
+      "GoalThreshold": 0.2,
+      "MatrixDeltaRange": [-0.2, -0.2],
+    },
+    "shape": {
+      "state": {
+        "central": {
+          "obs_size": 2500
+        },
+        "agent": {
+          "obs_size": 29,
+          "min": 10,
+          "max": 10
+        }
+      },
+      "action": {
+        "agent": {
+          "discrete": [
+            { "num_choices": 4 },
+            { "num_choices": 4 }
+          ]
+        }
+      }
+    }
+  },
+  "agent": {
+    "type": "MA_POCA",
+    "params": {
+      "learning_rate": 0.00015,
+      "gamma": 0.99,
+      "lambda": 0.95,
+      "normalize_rewards": true,
+      "normalize_advantages": true,
+      "value_loss_coeff": 0.1,
+      "baseline_loss_coeff": 0.01,
+      "max_grad_norm": 1.0,
+      "ppo_clip_range": 0.2,
+      "entropy_coeff": 0.1,
+      "schedulers": {
+        "lr": {
+          "start_factor": 1.0,
+          "end_factor": 0.001,
+          "total_iters": 30000
+        }
+      },
+      "networks": {
+        "policy_network": {
+          "in_features": 512,
+          "hidden_size": 256
+        },
+        "critic_network": {
+          "value_head": {
+            "in_features": 512,
+            "hidden_size": 256,
+            "dropout_rate": 0.0
+          },
+          "baseline_head": {
+            "in_features": 512,
+            "hidden_size": 256,
+            "dropout_rate": 0.0
+          }
+        },
+        "MultiAgentEmbeddingNetwork": {
+          "general_obs_encoder": {
+            "encoders": [
+              {
+                "key": "central",
+                "network": "SpatialNetwork2D",
+                "params": {
+                  "h": 50,
+                  "w": 50,
+                  "in_channels": 1,
+                  "conv1_out": 8,
+                  "conv2_out": 16,
+                  "kernel_size": 3,
+                  "stride": 1,
+                  "padding": 1
+                }
+              },
+              {
+                "key": "agent",
+                "network": "LinearNetwork",
+                "params": {
+                  "in_features": 29,
+                  "out_features": 512,
+                  "dropout_rate": 0.0,
+                  "activation": true
+                }
+              }
+            ],
+            "aggregator_output_size": 512,
+            "agent_id_enc": {
+              "num_freqs": 64,
+              "id_embed_dim": 256
+            }
+          },
+          "RSA": {
+            "embed_size": 512,
+            "heads": 8,
+            "dropout_rate": 0.0
+          },
+          "agent_obs_encoder": {
+            "state_dim": 512,
+            "output_size": 512,
+            "dropout_rate": 0.0,
+            "activation": true
+          },
+          "obs_actions_encoder": {
+            "state_dim": 512,
+            "action_dim": 2,
+            "output_size": 512,
+            "dropout_rate": 0.0,
+            "activation": true
+          }
+        }
+      }
+    }
+  },
+  "train": {
+    "normalize_states": true,
+    "num_environments": 16,
+    "epochs": 3,
+    "mini_batch_size": 32,
+    "buffer_size": 512,
+    "batch_size": 512,
+    "AgentsResetFrequency": 0,
+    "ActionRepeat": 0,
+    "saveFrequency": 20
+  }
+}

@@ -8,8 +8,7 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
     TerraShiftRoot = CreateDefaultSubobject<USceneComponent>(TEXT("TerraShiftRoot"));
     RootComponent = TerraShiftRoot;
 
-    // Replaced UMorletWavelets2D with UDiscreteFourier2D
-    WaveSimulator = CreateDefaultSubobject<UDiscreteFourier2D>(TEXT("WaveSimulator"));
+    WaveSimulator = CreateDefaultSubobject<UDiscreteHeightMap2D>(TEXT("WaveSimulator"));
     Grid = nullptr;
     Initialized = false;
 
@@ -133,11 +132,6 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
         }
     }
 
-    if (EnvConfig->HasPath(TEXT("environment/params/K")))
-    {
-        K = EnvConfig->Get(TEXT("environment/params/K"))->AsInt();
-    }
-
     // 6) Place environment at given location
     TerraShiftRoot->SetWorldLocation(TerraShiftParams->Location);
 
@@ -207,8 +201,8 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
         GridSize,
         GridSize,
         MaxAgents,
-        K,
-        MatrixDeltaRange
+        MatrixDeltaRange,
+        MaxColumnHeight
     );
 
     // 13) Mark as initialized
@@ -276,11 +270,6 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
 TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
 {
     TArray<float> State;
-
-    //// 1) Retrieve discrete Fourier info (row, col, flattened A)
-    //TArray<float> FourierState = WaveSimulator->GetAgentFourierState(AgentIndex);
-    //State.Append(FourierState);
-
     FVector ObjectWorldPosition = FVector::ZeroVector;
     FVector ObjectWorldVelocity = FVector::ZeroVector;
     FVector ObjectRelativePosition = FVector::ZeroVector;
@@ -366,6 +355,8 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
     State.Add(DistanceToGoal);
     State.Add(LastDeltaTime);
 
+    // 14) Agent FourierState: Current row, column, and parameter value at location
+    State.Append(WaveSimulator->GetAgentState(AgentIndex));
     return State;
 }
 
@@ -384,9 +375,8 @@ void ATerraShiftEnvironment::Act(FAction Action)
         return;
     }
 
-    // Prepare an array of FAgentFourierDelta (one per agent)
-    TArray<FAgentFourierDelta> FourierDeltas;
-    FourierDeltas.SetNum(CurrentAgents);
+    TArray<FAgentHeightDelta> HeightDeltas;
+    HeightDeltas.SetNum(CurrentAgents);
 
     for (int32 i = 0; i < CurrentAgents; ++i)
     {
@@ -394,7 +384,7 @@ void ATerraShiftEnvironment::Act(FAction Action)
 
         // (A) Interpret direction (0..3)
         int32 DirChoice = FMath::FloorToInt(Action.Values[BaseIndex + 0]);
-        EAgentDirection EDir = EAgentDirection::None;
+        EAgentDirection EDir;
         switch (DirChoice)
         {
             case 0: EDir = EAgentDirection::Up;    break;
@@ -406,7 +396,7 @@ void ATerraShiftEnvironment::Act(FAction Action)
 
         // (B) Interpret partial update (0..3)
         int32 UpdChoice = FMath::FloorToInt(Action.Values[BaseIndex + 1]);
-        EAgentMatrixUpdate EUpd = EAgentMatrixUpdate::None;
+        EAgentMatrixUpdate EUpd;
         switch (UpdChoice)
         {
             case 0: EUpd = EAgentMatrixUpdate::Inc;   break;
@@ -416,14 +406,13 @@ void ATerraShiftEnvironment::Act(FAction Action)
             default:                                  break;
         }
 
-        // Fill out the agent's delta
-        FAgentFourierDelta& FD = FourierDeltas[i];
-        FD.Direction = EDir;
-        FD.MatrixUpdate = EUpd;
+        HeightDeltas[i].Direction = EDir;
+        HeightDeltas[i].MatrixUpdate = EUpd;
     }
 
-    // Now pass these deltas to the discrete Fourier simulator
-    const FMatrix2D& HeightMap = WaveSimulator->Update(FourierDeltas);
+    // Now pass these deltas to the simulator
+    WaveSimulator->Update(HeightDeltas);
+    const FMatrix2D& HeightMap = WaveSimulator->GetHeights();
 
     // Finally, update the actual grid columns
     Grid->UpdateColumnHeights(HeightMap);
@@ -569,13 +558,11 @@ void ATerraShiftEnvironment::PreStep()
 bool ATerraShiftEnvironment::Done()
 {
     // Grid object has fallen off grid
-    /*
     if (GridObjectFallenOffGrid.Contains(true)) {
         return true;
     }
-    */
 
-    // If there are no more GridObjects left to handle, then the environment is donex
+    // If there are no more GridObjects left to handle, then the environment is done
     if (CurrentStep > 0 && (!AgentHasActiveGridObject.Contains(true) && !GridObjectShouldRespawn.Contains(true))) {
         return true;
     }
@@ -587,7 +574,6 @@ bool ATerraShiftEnvironment::Trunc()
 {
     if (CurrentStep >= MaxSteps)
     {
-         CurrentStep = 0;
         return true;
     }
     return false;
@@ -615,9 +601,7 @@ float ATerraShiftEnvironment::Reward()
         
         // (C) If still in play
         else if (AgentHasActiveGridObject[AgentIndex])
-        {
-            // StepReward -= 0.001;
-            
+        {   
             AGridObject* GridObject = GridObjectManager->GetGridObject(AgentIndex);
             AGoalPlatform* AssignedGoal = GoalPlatforms[AgentGoalIndices[AgentIndex]];
             FVector ObjLocalPos = Platform->GetActorTransform().InverseTransformPosition(
