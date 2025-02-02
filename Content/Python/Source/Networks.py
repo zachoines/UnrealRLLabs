@@ -1,14 +1,13 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
 from typing import Dict, Any
 
-
 # ------------------------------------------------------------------------
 #  Basic Building Blocks
 # ------------------------------------------------------------------------
-
 class LinearNetwork(nn.Module):
     """
     A simple utility MLP block: Linear + optional activation + dropout.
@@ -71,75 +70,6 @@ class RSA(nn.Module):
         out, _ = self.multihead_attn(q, k, v)
         out = x + out  # residual
         return self.output_norm(out)
-
-
-# ------------------------------------------------------------------------
-#  Specialized Networks: SpatialNetwork2D, AgentIDPosEnc, etc.
-# ------------------------------------------------------------------------
-
-class SpatialNetwork2D(nn.Module):
-    """
-    A CNN-based encoder for 2D spatial data of shape (h*w).
-    Example usage in config:
-       { "network": "SpatialNetwork2D",
-         "params": {
-           "h": 50,
-           "w": 50,
-           "in_channels": 1,
-           "conv1_out": 8,
-           "conv2_out": 16,
-           ...
-         }
-       }
-    """
-    def __init__(
-        self,
-        h: int,
-        w: int,
-        in_channels: int = 1,
-        conv1_out: int = 8,
-        conv2_out: int = 16,
-        kernel_size: int = 3,
-        stride: int = 1,
-        padding: int = 1
-    ):
-        super().__init__()
-        self.h = h
-        self.w = w
-        # small conv stack
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_channels, conv1_out, kernel_size, stride, padding),
-            nn.LeakyReLU(),
-            nn.MaxPool2d(kernel_size=2),  # => (h//2, w//2)
-            nn.Conv2d(conv1_out, conv2_out, kernel_size, stride, padding),
-            nn.LeakyReLU(),
-            nn.MaxPool2d(kernel_size=2)   # => (h//4, w//4)
-        )
-
-        # initialize weights
-        for layer in self.conv:
-            if isinstance(layer, nn.Conv2d):
-                init.kaiming_normal_(layer.weight)
-
-        final_h = h // 4
-        final_w = w // 4
-        self.out_features = conv2_out * final_h * final_w
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x => shape (batch, h*w)
-        1) reshape => (batch,1,h,w)
-        2) pass conv => => (batch, conv2_out, h//4, w//4)
-        3) flatten => => (batch, self.out_features)
-        """
-        b, n = x.shape
-        if n != self.h*self.w:
-            raise ValueError(f"SpatialNetwork2D expects {self.h*self.w}, got {n}.")
-
-        x_4d = x.contiguous().view(b, 1, self.h, self.w)
-        y = self.conv(x_4d)
-        return y.contiguous().view(b, -1)  # => (b, out_features)
-
 
 class AgentIDPosEnc(nn.Module):
     """
@@ -215,7 +145,6 @@ class GeneralObsEncoder(nn.Module):
                 out_dim = sub_enc.out_features
             elif net_class == "LinearNetwork":
                 sub_enc = LinearNetwork(**params)
-                # e.g. in_features=26, out_features=128
                 out_dim = params["out_features"]
             else:
                 raise ValueError(f"Unknown sub-encoder: {net_class}")
@@ -365,8 +294,8 @@ class ValueNetwork(nn.Module):
         self.value_net = nn.Sequential(
             nn.Linear(in_features, hidden_size),
             nn.LeakyReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.LeakyReLU(),
+            # nn.Linear(hidden_size, hidden_size),
+            # nn.LeakyReLU(),
             nn.Linear(hidden_size, 1)
         )
         for layer in self.value_net:
@@ -562,15 +491,9 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         acts_enc_cfg["state_dim"] = aggregator_dim
         self.f = StatesActionsEncoder(**acts_enc_cfg)
 
-        # 3) Distinct RSA for policy, value, baseline
-        # (or you can share them if you prefer fewer params)
-        policy_rsa_cfg   = net_cfg.get("policy_rsa",   net_cfg["RSA"])
-        value_rsa_cfg    = net_cfg.get("value_rsa",    net_cfg["RSA"])
-        baseline_rsa_cfg = net_cfg.get("baseline_rsa", net_cfg["RSA"])
-
-        self.policy_rsa   = RSA(**policy_rsa_cfg)
-        self.value_rsa    = RSA(**value_rsa_cfg)
-        self.baseline_rsa = RSA(**baseline_rsa_cfg)
+        # 3) common RSA for policy, value, baseline
+        common_rsa_cfg = net_cfg.get("baseline_rsa", net_cfg["RSA"])
+        self.common_rsa = RSA(**common_rsa_cfg)
 
     # --------------------------------------------------------------------
     #  Step 1: Produce "common embedding" from raw dictionary
@@ -582,29 +505,6 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         """
         return self.general_obs_encoder(obs_dict)
 
-    # --------------------------------------------------------------------
-    #  Step 2a: embed_for_policy
-    # --------------------------------------------------------------------
-    def embed_for_policy(self, common_emb: torch.Tensor) -> torch.Tensor:
-        """
-        1) flatten => pass policy_rsa => => shape (S,E,NA,H)
-        """
-        S,E,NA,H = common_emb.shape
-        flat = common_emb.view(S*E, NA, H)
-        att  = self.policy_rsa(flat)
-        return att.view(S,E,NA,H)
-
-    # --------------------------------------------------------------------
-    #  Step 2b: embed_for_value
-    # --------------------------------------------------------------------
-    def embed_for_value(self, common_emb: torch.Tensor) -> torch.Tensor:
-        """
-        1) flatten => pass value_rsa => => shape (S,E,NA,H)
-        """
-        S,E,NA,H = common_emb.shape
-        flat = common_emb.view(S*E, NA, H)
-        att  = self.value_rsa(flat)
-        return att.view(S,E,NA,H)
 
     # --------------------------------------------------------------------
     #  Step 2c: embed_for_baseline
@@ -629,13 +529,22 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         groupmates_emb= self.f(groupmates_obs, groupmates_actions)
 
         # cat => => (S,E,A,A,H2)
-        combined = torch.cat([agent_obs_emb, groupmates_emb], dim=3)
-
-        # flatten => baseline_rsa => unflatten => shape => (S,E,A,A,H2)
-        S,E,A,A2,H2 = combined.shape
-        combined_2d = combined.view(S*E*A, A2, H2)
-        att = self.baseline_rsa(combined_2d)
-        return att.view(S,E,A,A2,H2)
+        return torch.cat([agent_obs_emb, groupmates_emb], dim=3)
+    
+    def apply_attention(self, embeddings):
+        # Unpack all but the last two dimensions into batch_dims:
+        *batch_dims, NA, H = embeddings.shape
+        
+        # Flatten everything except the 'NA' and 'H' dimensions:
+        embeddings_flat = embeddings.view(math.prod(batch_dims), NA, H)
+        
+        # Apply your attention (or RSA) module:
+        attended_flat = self.common_rsa(embeddings_flat)
+        
+        # Reshape the output back to the original dimensions:
+        attended = attended_flat.view(*batch_dims, NA, H)
+        
+        return attended
 
     # --------------------------------------------------------------------
     #  Helper: _split_agent_and_groupmates
@@ -679,3 +588,167 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         group_act = torch.cat(group_act_list, dim=2)               # => (S,E,A,A-1,act_dim)
 
         return agent_obs.contiguous(), group_obs.contiguous(), group_act.contiguous()
+
+import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.nn.init as init
+
+
+class LN2d(nn.Module):
+    """
+    Applies LayerNorm across the channel dimension only.
+    Shape: (B, C, H, W) -> LN -> same shape.
+    """
+    def __init__(self, num_channels):
+        super().__init__()
+        # We normalize over 'num_channels' only, ignoring H and W.
+        self.ln = nn.LayerNorm(num_channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x => (B, C, H, W)
+        # 1) permute => (B, H, W, C)
+        x = x.permute(0, 2, 3, 1)  # (B, H, W, C)
+        # 2) apply LN over the last dimension (channels)
+        x = self.ln(x)
+        # 3) permute back => (B, C, H, W)
+        x = x.permute(0, 3, 1, 2)
+        return x
+
+
+class ResidualBlock(nn.Module):
+    """
+    Same as before; a simple residual block with LN2d (channel-only LN).
+    """
+    def __init__(self, channels, kernel_size=3, padding=1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size, padding=padding)
+        self.ln1   = LN2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size, padding=padding)
+        self.ln2   = LN2d(channels)
+
+        init.kaiming_normal_(self.conv1.weight)
+        nn.init.constant_(self.conv1.bias, 0.0)
+        init.kaiming_normal_(self.conv2.weight)
+        nn.init.constant_(self.conv2.bias, 0.0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        out = self.conv1(x)
+        out = self.ln1(out)
+        out = F.relu(out)
+
+        out = self.conv2(out)
+        out = self.ln2(out)
+
+        out += residual
+        out = F.relu(out)
+        return out
+
+
+class SpatialNetwork2D(nn.Module):
+    """
+    Updated network incorporating:
+      - Coordinate channels
+      - Residual blocks w/ LN2d (channel-only layer norm)
+      - A final linear to choose output size
+      - Reasonable defaults for 50x50 inputs
+
+    Now LN2d won't mismatch shapes.
+    """
+    def __init__(
+        self,
+        h: int = 50,
+        w: int = 50,
+        in_channels: int = 1,
+        base_channels: int = 16,
+        num_blocks: int = 4,
+        out_features: int = 128
+    ):
+        super().__init__()
+        self.h = h
+        self.w = w
+        self.out_dim = out_features
+
+        # +2 for the (row, col) coordinate channels
+        self.initial_in_channels = in_channels + 2
+
+        # Entry conv
+        self.entry_conv = nn.Conv2d(self.initial_in_channels, base_channels, kernel_size=3, padding=1)
+        init.kaiming_normal_(self.entry_conv.weight)
+        nn.init.constant_(self.entry_conv.bias, 0.0)
+
+        self.entry_ln = LN2d(base_channels)
+
+        # Residual blocks (with occasional pooling)
+        blocks = []
+        current_channels = base_channels
+        for i in range(num_blocks):
+            blocks.append(ResidualBlock(current_channels, kernel_size=3, padding=1))
+            # Pool every 2 blocks
+            if (i + 1) % 2 == 0:
+                blocks.append(nn.MaxPool2d(kernel_size=2))
+
+        self.res_blocks = nn.Sequential(*blocks)
+
+        # Calculate final spatial size after pooling
+        pool_count = num_blocks // 2
+        final_h = h // (2 ** pool_count)
+        final_w = w // (2 ** pool_count)
+
+        # Final linear layer
+        self.final_fc = nn.Linear(current_channels * final_h * final_w, out_features)
+        init.kaiming_normal_(self.final_fc.weight)
+        nn.init.constant_(self.final_fc.bias, 0.0)
+
+        self.out_features = out_features
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x => (B, 2500) for a 50x50 map
+        1) reshape => (B,1,h,w)
+        2) add coordinate channels => (B,3,h,w)
+        3) entry conv + LN + ReLU
+        4) pass residual blocks
+        5) flatten + final FC => (B, out_features)
+        """
+        B, N = x.shape
+        if N != self.h * self.w:
+            raise ValueError(f"Expect input size {self.h*self.w}, got {N}.")
+
+        # 1) reshape
+        x_img = x.view(B, 1, self.h, self.w)
+
+        # 2) coordinate channels
+        device = x.device
+        rows = torch.linspace(0, 1, self.h, device=device).view(1, 1, self.h, 1)
+        cols = torch.linspace(0, 1, self.w, device=device).view(1, 1, 1, self.w)
+
+        row_channel = rows.expand(B, 1, self.h, self.w)
+        col_channel = cols.expand(B, 1, self.h, self.w)
+
+        x_coord = torch.cat([x_img, row_channel, col_channel], dim=1).contiguous()  # => (B,3,h,w)
+
+        # 3) entry conv => LN => ReLU
+        out = self.entry_conv(x_coord)
+        out = self.entry_ln(out)
+        out = F.relu(out)
+
+        # 4) residual blocks
+        out = self.res_blocks(out)
+
+        # 5) flatten => final fc
+        B2, C2, H2, W2 = out.shape
+        out_flat = out.contiguous().view(B2, C2 * H2 * W2)
+        emb = self.final_fc(out_flat)
+
+        return emb
+
+
+# Example usage:
+if __name__ == "__main__":
+    model = SpatialNetwork2D()
+    inp = torch.randn(64, 2500)  # (batch_size=64, flattened=2500)
+    out = model(inp)  # => shape (64, 128)
+    print(out.shape)  # torch.Size([64, 128])

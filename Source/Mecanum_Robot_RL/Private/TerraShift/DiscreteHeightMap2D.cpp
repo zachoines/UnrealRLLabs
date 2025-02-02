@@ -1,6 +1,5 @@
 #include "TerraShift/DiscreteHeightMap2D.h"
 
-
 UDiscreteHeightMap2D::UDiscreteHeightMap2D()
     : GridSizeX(0)
     , GridSizeY(0)
@@ -22,6 +21,9 @@ void UDiscreteHeightMap2D::Initialize(
     NumAgents = InNumAgents;
     MatrixDeltaRange = InMatrixDeltaRange;
     MaxAbsMatrixHeight = InMaxAbsMatrixHeight;
+
+    // Construct an FMatrix2D of dimension (GridSizeY x GridSizeX)
+    // Initialize all values to 0.0
     HeightMap = FMatrix2D(GridSizeY, GridSizeX, 0.0f);
 
     // Place or randomize agent positions
@@ -53,28 +55,35 @@ void UDiscreteHeightMap2D::Update(const TArray<FAgentHeightDelta>& Deltas)
     for (int32 i = 0; i < NumAgents; i++)
     {
         const FAgentHeightDelta& Delta = Deltas[i];
-        // Move agent
         FIntPoint& Pos = AgentPositions[i];
 
+        // 1) Move agent with wrap-around
         switch (Delta.Direction)
         {
         case EAgentDirection::Up:
-            Pos.Y = FMath::Clamp(Pos.Y - 1, 0, GridSizeY - 1);
+            Pos.Y -= 1;
+            Pos.Y = WrapY(Pos.Y);
             break;
         case EAgentDirection::Down:
-            Pos.Y = FMath::Clamp(Pos.Y + 1, 0, GridSizeY - 1);
+            Pos.Y += 1;
+            Pos.Y = WrapY(Pos.Y);
             break;
         case EAgentDirection::Left:
-            Pos.X = FMath::Clamp(Pos.X - 1, 0, GridSizeX - 1);
+            Pos.X -= 1;
+            Pos.X = WrapX(Pos.X);
             break;
         case EAgentDirection::Right:
-            Pos.X = FMath::Clamp(Pos.X + 1, 0, GridSizeX - 1);
+            Pos.X += 1;
+            Pos.X = WrapX(Pos.X);
+            break;
+        case EAgentDirection::None:
             break;
         default:
+            // No movement
             break;
         }
 
-        // Adjust height. 
+        // 2) Adjust height in the cell. 
         // We'll interpret: Rows => Y, Cols => X
         float& CellRef = HeightMap[Pos.Y][Pos.X];
         float NewVal = CellRef;
@@ -82,21 +91,19 @@ void UDiscreteHeightMap2D::Update(const TArray<FAgentHeightDelta>& Deltas)
         switch (Delta.MatrixUpdate)
         {
         case EAgentMatrixUpdate::Inc:
-            NewVal += MatrixDeltaRange.Y;
+            NewVal += MatrixDeltaRange.Y;  // Increase by 'Y' portion
             break;
         case EAgentMatrixUpdate::Dec:
-            NewVal += MatrixDeltaRange.X;
-            break;
-        case EAgentMatrixUpdate::Zero:
-            NewVal = 0.0f;
+            NewVal += MatrixDeltaRange.X;  // Decrease by 'X' portion
             break;
         case EAgentMatrixUpdate::None:
+            break;
         default:
             // do nothing
             break;
         }
 
-        // clamp
+        // 3) clamp final value to +/- MaxAbsMatrixHeight
         CellRef = FMath::Clamp(NewVal, -MaxAbsMatrixHeight, MaxAbsMatrixHeight);
     }
 }
@@ -111,11 +118,15 @@ TArray<float> UDiscreteHeightMap2D::GetAgentState(int32 AgentIndex) const
     TArray<float> Result;
     if (AgentIndex < 0 || AgentIndex >= NumAgents)
     {
+        // Return empty if invalid
         return Result;
     }
 
     FIntPoint Pos = AgentPositions[AgentIndex];
-    const float H = HeightMap[Pos.Y][Pos.X];
+    // read the height from the cell
+    float H = HeightMap[Pos.Y][Pos.X];
+
+    // x, y, height
     Result.Add((float)Pos.X);
     Result.Add((float)Pos.Y);
     Result.Add(H);
@@ -133,4 +144,21 @@ void UDiscreteHeightMap2D::PlaceAgents()
         int32 RandY = FMath::RandRange(0, GridSizeY - 1);
         AgentPositions[i] = FIntPoint(RandX, RandY);
     }
+}
+
+int32 UDiscreteHeightMap2D::WrapX(int32 X) const
+{
+    // If X < 0 => wrap around to GridSizeX-1
+    // If X >= GridSizeX => wrap to 0
+    // A quick approach is to do modular arithmetic
+    // but also handle negative in a standard way:
+    //   ( (X % GridSizeX) + GridSizeX ) % GridSizeX
+    const int32 modX = ((X % GridSizeX) + GridSizeX) % GridSizeX;
+    return modX;
+}
+
+int32 UDiscreteHeightMap2D::WrapY(int32 Y) const
+{
+    const int32 modY = ((Y % GridSizeY) + GridSizeY) % GridSizeY;
+    return modY;
 }

@@ -12,19 +12,18 @@ enum class EAgentDirection : uint8
     Up    UMETA(DisplayName = "Up"),
     Down  UMETA(DisplayName = "Down"),
     Left  UMETA(DisplayName = "Left"),
-    Right UMETA(DisplayName = "Right")
+    Right UMETA(DisplayName = "Right"),
+    None  UMETA(DisplayName = "None"),
 };
 
-
 /**
-* Simple enum for partial matrix update choice at current (row,col).
-*/
+ * Simple enum for partial matrix update choice at current (row,col).
+ */
 UENUM(BlueprintType)
 enum class EAgentMatrixUpdate : uint8
 {
-    Inc UMETA(DisplayName = "Inc"),
-    Dec UMETA(DisplayName = "Dec"),
-    Zero UMETA(DisplayName = "Zero"),
+    Inc  UMETA(DisplayName = "Inc"),
+    Dec  UMETA(DisplayName = "Dec"),
     None UMETA(DisplayName = "None"),
 };
 
@@ -45,7 +44,8 @@ struct UNREALRLLABS_API FAgentHeightDelta
 
 /**
  * A simple discrete heightmap class that manages grid-based heights for each cell,
- * and tracks agent positions in the grid. Agents can move in discrete directions.
+ * and tracks agent positions in the grid. Agents can move in discrete directions
+ * (with wrap-around). They can also apply partial updates to the current cell.
  */
 UCLASS(BlueprintType)
 class UNREALRLLABS_API UDiscreteHeightMap2D : public UObject
@@ -107,4 +107,10 @@ private:
 
     /** Helper to place agents randomly or at default positions. */
     void PlaceAgents();
+
+    /** Wrap an X coordinate into the valid [0..GridSizeX-1] range. */
+    int32 WrapX(int32 X) const;
+
+    /** Wrap a Y coordinate into the valid [0..GridSizeY-1] range. */
+    int32 WrapY(int32 Y) const;
 };

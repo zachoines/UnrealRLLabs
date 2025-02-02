@@ -391,6 +391,7 @@ void ATerraShiftEnvironment::Act(FAction Action)
             case 1: EDir = EAgentDirection::Down;  break;
             case 2: EDir = EAgentDirection::Left;  break;
             case 3: EDir = EAgentDirection::Right; break;
+            case 4: EDir = EAgentDirection::None;  break;
             default:                               break;
         }
 
@@ -401,8 +402,7 @@ void ATerraShiftEnvironment::Act(FAction Action)
         {
             case 0: EUpd = EAgentMatrixUpdate::Inc;   break;
             case 1: EUpd = EAgentMatrixUpdate::Dec;   break;
-            case 2: EUpd = EAgentMatrixUpdate::Zero;  break;
-            case 3: EUpd = EAgentMatrixUpdate::None;  break;
+            case 2: EUpd = EAgentMatrixUpdate::None;  break;
             default:                                  break;
         }
 
@@ -558,14 +558,14 @@ void ATerraShiftEnvironment::PreStep()
 bool ATerraShiftEnvironment::Done()
 {
     // Grid object has fallen off grid
-    if (GridObjectFallenOffGrid.Contains(true)) {
+    /*if (GridObjectFallenOffGrid.Contains(true)) {
         return true;
-    }
+    }*/
 
     // If there are no more GridObjects left to handle, then the environment is done
-    if (CurrentStep > 0 && (!AgentHasActiveGridObject.Contains(true) && !GridObjectShouldRespawn.Contains(true))) {
+    /*if (CurrentStep > 0 && (!AgentHasActiveGridObject.Contains(true) && !GridObjectShouldRespawn.Contains(true))) {
         return true;
-    }
+    }*/
 
     return false;
 }
@@ -582,7 +582,8 @@ bool ATerraShiftEnvironment::Trunc()
 float ATerraShiftEnvironment::Reward()
 {
     float StepReward = 0.0f;
-
+    float TotalDistanceImprovements = 0.0;
+    float NumActive = 0;
     for (int32 AgentIndex = 0; AgentIndex < CurrentAgents; ++AgentIndex)
     {
         // (A) Punish falling off platform
@@ -595,13 +596,14 @@ float ATerraShiftEnvironment::Reward()
         // (B) Reward reaching goal
         else if (GridObjectShouldCollectEventReward[AgentIndex] && GridObjectHasReachedGoal[AgentIndex])
         {
-            StepReward += 2.0f;
+            StepReward += 1.0f;
             GridObjectShouldCollectEventReward[AgentIndex] = false;
         }
         
         // (C) If still in play
         else if (AgentHasActiveGridObject[AgentIndex])
         {   
+            NumActive += 1;
             AGridObject* GridObject = GridObjectManager->GetGridObject(AgentIndex);
             AGoalPlatform* AssignedGoal = GoalPlatforms[AgentGoalIndices[AgentIndex]];
             FVector ObjLocalPos = Platform->GetActorTransform().InverseTransformPosition(
@@ -610,22 +612,20 @@ float ATerraShiftEnvironment::Reward()
             FVector GoalLocalPos = Platform->GetActorTransform().InverseTransformPosition(
                 AssignedGoal->GetActorLocation()
             );
-            
 
             // 1) DISTANCE IMPROVEMENT
-            /*
-            if (PreviousDistances[AgentIndex] > 0.0f)
+            /*if (PreviousDistances[AgentIndex] > 0.0f)
             {
                 float newDist = FVector::Distance(
                     ObjLocalPos,
                     GoalLocalPos
                 );
 
-                float improvementScalingFactor = 1;
+                float improvementScalingFactor = 10.0;
                 float improvementFraction = improvementScalingFactor * (PreviousDistances[AgentIndex] - newDist) / (PlatformWorldSize.X);
+                
                 StepReward += FMath::Clamp(improvementFraction, -1.0, 1.0);
-            }
-            */
+            }*/
 
             // 2) VELOCITY TOWARD GOAL
             {
@@ -642,15 +642,9 @@ float ATerraShiftEnvironment::Reward()
 
                 // Dot product => + if going toward, - if away
                 float dotToGoal = FVector::DotProduct(ObjectLocalVel, toGoal);
-                float velocity_direction_scale = 0.01f;
+                float velocity_direction_scale = 0.001f;
                 StepReward += FMath::Clamp(dotToGoal * velocity_direction_scale, -1.0, 1.0);
             }
-
-            // 3) total distance punishment
-            /*StepReward -= 0.001 * FVector::Distance(
-                ObjLocalPos,
-                GoalLocalPos
-            ) / PlatformWorldSize.X;*/
         }
     }
 
@@ -766,7 +760,7 @@ void ATerraShiftEnvironment::UpdateGridObjectFlags()
                     AgentHasActiveGridObject[AgentIndex] = false;
                     GridObjectHasReachedGoal[AgentIndex] = true;
                     GridObjectShouldCollectEventReward[AgentIndex] = true;
-                    ShouldRespawnGridObject = false;
+                    ShouldRespawnGridObject = true;
                     GridObjectManager->DisableGridObject(AgentIndex);
                 }
             }
@@ -781,7 +775,7 @@ void ATerraShiftEnvironment::UpdateGridObjectFlags()
                     AgentHasActiveGridObject[AgentIndex] = false;
                     GridObjectFallenOffGrid[AgentIndex] = true;
                     GridObjectShouldCollectEventReward[AgentIndex] = true;
-                    ShouldRespawnGridObject = false;
+                    ShouldRespawnGridObject = true;
                     GridObjectManager->DisableGridObject(AgentIndex);
                 }    
 
@@ -793,7 +787,7 @@ void ATerraShiftEnvironment::UpdateGridObjectFlags()
                 {
                     AgentHasActiveGridObject[AgentIndex] = false;
                     GridObjectFallenOffGrid[AgentIndex] = true;
-                    ShouldRespawnGridObject = false;
+                    ShouldRespawnGridObject = true;
                     GridObjectManager->DisableGridObject(AgentIndex);
                 }
             }

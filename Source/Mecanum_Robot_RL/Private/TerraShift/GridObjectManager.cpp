@@ -149,7 +149,7 @@ TSet<int32> AGridObjectManager::GetActiveColumnsInProximity(int32 GridSize, cons
         );
 
         // Calculate the effective radius in world units
-        float EffectiveRadius = ObjectBoundsWorld.SphereRadius;
+        float EffectiveRadius = ObjectBoundsWorld.SphereRadius * 1.5;
 
         // Calculate the min and max world coordinates
         float MinX = ObjectLocation.X - EffectiveRadius;

@@ -157,14 +157,9 @@ class MAPOCAAgent(Agent):
         """
         with torch.no_grad():
             # Single pass => produce a "common_emb"
-            common_emb = self.embedding_network.get_common_embedding(states)
-
-            # Then pass to policy RSA
-            policy_emb = self.embedding_network.embed_for_policy(common_emb)
-            S, E, NA, H = policy_emb.shape
-
-            # Flatten => pass policy_net => sample
-            flat_emb = policy_emb.reshape(S*E*NA, H)
+            common_emb = self.embedding_network.apply_attention(self.embedding_network.get_common_embedding(states))
+            S, E, NA, H = common_emb.shape
+            flat_emb = common_emb.contiguous().reshape(S*E*NA, H)
 
             if self.action_space_type == "continuous":
                 mean, std = self.policy_net(flat_emb)
@@ -259,23 +254,20 @@ class MAPOCAAgent(Agent):
         #   1) Collect old log_probs, old value, old baseline
         # ---------------
         with torch.no_grad():
-            # For states
-            common_emb       = self.embedding_network.get_common_embedding(states)
-            value_emb        = self.embedding_network.embed_for_value(common_emb)
-            old_vals         = self.get_value(value_emb)
+            # For states => values
+            common_emb       = self.embedding_network.apply_attention(self.embedding_network.get_common_embedding(states))
+            old_vals         = self.get_value(common_emb)
 
             # for next_states => next_value
-            next_common_emb  = self.embedding_network.get_common_embedding(next_states)
-            next_value_emb   = self.embedding_network.embed_for_value(next_common_emb)
-            next_vals        = self.get_value(next_value_emb)
+            next_common_emb  = self.embedding_network.apply_attention(self.embedding_network.get_common_embedding(next_states))
+            next_vals        = self.get_value(next_common_emb)
 
             # old log_probs => from policy
-            policy_emb       = self.embedding_network.embed_for_policy(common_emb)
-            old_log_probs, _ = self.recompute_log_probs(policy_emb, actions)
+            old_log_probs, _ = self.recompute_log_probs(common_emb, actions)
 
             # old baseline => embed_for_baseline
-            baseline_emb     = self.embedding_network.embed_for_baseline(common_emb, actions)
-            old_baselines    = self.shared_critic.baselines(baseline_emb)
+            # baseline_emb     = self.embedding_network.embed_for_baseline(common_emb, actions)
+            # old_baselines    = self.shared_critic.baselines(baseline_emb)
 
             # compute returns => GAE
             returns = self.compute_td_lambda_returns(
@@ -306,19 +298,17 @@ class MAPOCAAgent(Agent):
                 actions_mb   = actions[mb_idx]
                 rets_mb      = returns[mb_idx]
                 old_lp_mb    = old_log_probs[mb_idx]
-                old_bases_mb = old_baselines[mb_idx]
+                # old_bases_mb = old_baselines[mb_idx]
 
                 # 2.1) build new embeddings
-                common_mb        = self.embedding_network.get_common_embedding(states_mb)
-                value_mb_emb     = self.embedding_network.embed_for_value(common_mb)
-                policy_mb_emb    = self.embedding_network.embed_for_policy(common_mb)
+                common_mb        = self.embedding_network.apply_attention(self.embedding_network.get_common_embedding(states_mb))
                 baseline_mb_emb  = self.embedding_network.embed_for_baseline(common_mb, actions_mb)
 
                 # 2.2) new log_probs
-                new_log_probs_mb, ent_mb = self.recompute_log_probs(policy_mb_emb, actions_mb)
+                new_log_probs_mb, ent_mb = self.recompute_log_probs(common_mb, actions_mb)
 
                 # new value & baseline
-                new_vals_mb      = self.get_value(value_mb_emb)
+                new_vals_mb      = self.get_value(common_mb)
                 new_baselines_mb = self.shared_critic.baselines(baseline_mb_emb)
 
                 # advantage => returns - baseline
