@@ -35,7 +35,7 @@ void UDiscreteHeightMap2D::Reset(int32 NewNumAgents)
     NumAgents = NewNumAgents;
 
     // Re-init the heightmap to zero
-    HeightMap.Init(0.0f);
+    HeightMap = HeightMap.Random(-MaxAbsMatrixHeight, MaxAbsMatrixHeight);
 
     // Re-place agents 
     AgentPositions.SetNum(NumAgents);
@@ -57,7 +57,24 @@ void UDiscreteHeightMap2D::Update(const TArray<FAgentHeightDelta>& Deltas)
         const FAgentHeightDelta& Delta = Deltas[i];
         FIntPoint& Pos = AgentPositions[i];
 
-        // 1) Move agent with wrap-around
+        // 1) Reflect current position
+        int tmp;
+        switch (Delta.Reflect)
+        {
+        case EAgentReflection::Reflect:
+            tmp = Pos.Y;
+            Pos.Y = Pos.X;
+            Pos.X = tmp;
+            break;
+        case EAgentReflection::None:
+            break;
+        default:
+            // No movement
+            break;
+        }
+
+
+        // 2) Increment position with wrap-around
         switch (Delta.Direction)
         {
         case EAgentDirection::Up:
@@ -83,8 +100,7 @@ void UDiscreteHeightMap2D::Update(const TArray<FAgentHeightDelta>& Deltas)
             break;
         }
 
-        // 2) Adjust height in the cell. 
-        // We'll interpret: Rows => Y, Cols => X
+        // 3) Adjust height in the cell. 
         float& CellRef = HeightMap[Pos.Y][Pos.X];
         float NewVal = CellRef;
 

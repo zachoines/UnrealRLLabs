@@ -102,7 +102,8 @@ class MAPOCAAgent(Agent):
         # policy net: discrete or continuous
         if self.action_space_type == "continuous":
             self.policy_net = ContinuousPolicyNetwork(
-                **agent_cfg["networks"]["policy_network"]
+                **agent_cfg["networks"]["policy_network"],
+                out_features=self.action_dim
             ).to(device)
         else:
             self.policy_net = DiscretePolicyNetwork(
@@ -113,7 +114,7 @@ class MAPOCAAgent(Agent):
         # --------------------
         #   Optim & schedulers
         # --------------------
-        self.optimizer = optim.AdamW(self.parameters(), lr=self.lr)
+        self.optimizer = optim.Adam(self.parameters(), lr=self.lr)
 
         lr_sched_cfg = agent_cfg["schedulers"].get("lr", None)
         self.lr_scheduler = None
@@ -156,8 +157,11 @@ class MAPOCAAgent(Agent):
         Return => (actions, (log_probs, entropies)) => shapes => (S,E,NA,...)
         """
         with torch.no_grad():
-            # Single pass => produce a "common_emb"
-            common_emb = self.embedding_network.apply_attention(self.embedding_network.get_common_embedding(states))
+            common_emb = self.embedding_network.attend_for_common(
+                self.embedding_network.g(
+                    self.embedding_network.get_base_embedding(states)
+                )
+            )
             S, E, NA, H = common_emb.shape
             flat_emb = common_emb.contiguous().reshape(S*E*NA, H)
 
@@ -251,28 +255,23 @@ class MAPOCAAgent(Agent):
             rewards = self.reward_normalizer.normalize(rewards)
 
         # ---------------
-        #   1) Collect old log_probs, old value, old baseline
+        #   1) Collect log_probs, values, and baselines
         # ---------------
         with torch.no_grad():
-            # For states => values
-            common_emb       = self.embedding_network.apply_attention(self.embedding_network.get_common_embedding(states))
-            old_vals         = self.get_value(common_emb)
+            states_base_embeddings           = self.embedding_network.get_base_embedding(states)
+            states_common_embeddings, _      = self.embedding_network.get_common_and_baseline_embeddings(states_base_embeddings)
 
-            # for next_states => next_value
-            next_common_emb  = self.embedding_network.apply_attention(self.embedding_network.get_common_embedding(next_states))
-            next_vals        = self.get_value(next_common_emb)
+            next_states_base_embeddings      = self.embedding_network.get_base_embedding(next_states)
+            next_states_common_embeddings, _ = self.embedding_network.get_common_and_baseline_embeddings(next_states_base_embeddings)
 
-            # old log_probs => from policy
-            old_log_probs, _ = self.recompute_log_probs(common_emb, actions)
+            common_embeddings_attended       = self.embedding_network.attend_for_common(states_common_embeddings)
+            next_common_embeddings_attended  = self.embedding_network.attend_for_common(next_states_common_embeddings)
+                
+            values                           = self.get_value(common_embeddings_attended)
+            next_values                      = self.get_value(next_common_embeddings_attended)
+            old_log_probs, _                 = self.recompute_log_probs(common_embeddings_attended, actions)
 
-            # old baseline => embed_for_baseline
-            # baseline_emb     = self.embedding_network.embed_for_baseline(common_emb, actions)
-            # old_baselines    = self.shared_critic.baselines(baseline_emb)
-
-            # compute returns => GAE
-            returns = self.compute_td_lambda_returns(
-                rewards, old_vals, next_vals, dones, truncs
-            )
+            returns                          = self.compute_td_lambda_returns(rewards, values, next_values, dones, truncs)
 
         # ---------------
         #   2) Mini-batch loop
@@ -283,7 +282,7 @@ class MAPOCAAgent(Agent):
             num_batches = (NS + self.mini_batch_size - 1) // self.mini_batch_size
 
             policy_losses, value_losses, baseline_losses = [], [], []
-            entropies, returns_list, lrs_list = [], [], []
+            entropies, returns_list, lrs_list, advantages_list, grad_norm_list = [], [], [], [], []
 
             for b in range(num_batches):
                 self.optimizer.zero_grad()
@@ -298,38 +297,40 @@ class MAPOCAAgent(Agent):
                 actions_mb   = actions[mb_idx]
                 rets_mb      = returns[mb_idx]
                 old_lp_mb    = old_log_probs[mb_idx]
-                # old_bases_mb = old_baselines[mb_idx]
 
-                # 2.1) build new embeddings
-                common_mb        = self.embedding_network.apply_attention(self.embedding_network.get_common_embedding(states_mb))
-                baseline_mb_emb  = self.embedding_network.embed_for_baseline(common_mb, actions_mb)
+                # build common embeddings
+                base_emb_mb                    = self.embedding_network.get_base_embedding(states_mb)
+                common_emb_mb, baseline_emb_mb = self.embedding_network.get_common_and_baseline_embeddings(base_emb_mb, actions_mb)
 
-                # 2.2) new log_probs
-                new_log_probs_mb, ent_mb = self.recompute_log_probs(common_mb, actions_mb)
+                # Perform multi-agent attention on embeddings
+                common_emb_att_mb              = self.embedding_network.attend_for_common(common_emb_mb)
+                baseline_emb_att_mb            = self.embedding_network.attend_for_baselines(baseline_emb_mb)
+
+                # new log_probs
+                new_log_probs_mb, ent_mb       = self.recompute_log_probs(common_emb_att_mb, actions_mb)
 
                 # new value & baseline
-                new_vals_mb      = self.get_value(common_mb)
-                new_baselines_mb = self.shared_critic.baselines(baseline_mb_emb)
+                new_vals_mb                    = self.shared_critic.values(common_emb_att_mb)
+                new_baselines_mb               = self.shared_critic.baselines(baseline_emb_att_mb)
 
                 # advantage => returns - baseline
-                # shape => (MB,NE,NA,1)
-                rets_mb_xpd = rets_mb.unsqueeze(2).expand(MB, NE, NA, 1)
-                adv_mb = (rets_mb_xpd - new_baselines_mb).squeeze(-1)
+                rets_mb_xpd                    = rets_mb.unsqueeze(2).expand(MB, NE, NA, 1)
+                adv_mb                         = (rets_mb_xpd - new_baselines_mb).squeeze(-1)
 
                 if self.normalize_advantages:
                     adv_mean = adv_mb.mean()
                     adv_std  = adv_mb.std() + 1e-8
                     adv_mb   = (adv_mb - adv_mean)/adv_std
 
-                # 2.3) compute losses
+                # compute losses
                 pol_loss = self.policy_loss(
                     new_log_probs_mb,
                     old_lp_mb,
                     adv_mb,
                     self.ppo_clip_range
                 )
-                val_loss = F.mse_loss(new_vals_mb, rets_mb)
-                base_loss= F.mse_loss(new_baselines_mb, rets_mb_xpd)
+                val_loss = F.smooth_l1_loss(new_vals_mb, rets_mb)
+                base_loss= F.smooth_l1_loss(new_baselines_mb, rets_mb_xpd)
                 ent_mean = ent_mb.mean()
 
                 if self.entropy_scheduler is not None:
@@ -341,19 +342,21 @@ class MAPOCAAgent(Agent):
                            - self.entropy_coeff * ent_mean
 
                 total_loss.backward()
-                clip_grad_norm_(self.parameters(), self.max_grad_norm)
+                grad_norm = clip_grad_norm_(self.parameters(), self.max_grad_norm)
                 self.optimizer.step()
 
                 if self.lr_scheduler:
                     self.lr_scheduler.step()
 
                 # stats
+                advantages_list.append(adv_mb.mean().detach().cpu())
                 policy_losses.append(pol_loss.detach().cpu())
                 value_losses.append(val_loss.detach().cpu())
                 baseline_losses.append(base_loss.detach().cpu())
                 entropies.append(ent_mean.detach().cpu())
                 returns_list.append(rets_mb.mean().detach().cpu())
                 lrs_list.append(self.get_average_lr(self.optimizer).detach().cpu())
+                grad_norm_list.append(grad_norm.mean())
 
         return {
             "Policy Loss":    torch.stack(policy_losses).mean(),
@@ -361,9 +364,11 @@ class MAPOCAAgent(Agent):
             "Baseline Loss":  torch.stack(baseline_losses).mean(),
             "Entropy":        torch.stack(entropies).mean(),
             "Entropy coeff" : torch.tensor(self.entropy_coeff),
-            "Average Returns":torch.stack(returns_list).mean(),
+            "Avg. Returns":   torch.stack(returns_list).mean(),
+            "Avg. Advantage": torch.stack(advantages_list).mean(),
+            "Avg. Rewards":   rewards_mean,
             "Learning Rate":  torch.stack(lrs_list).mean(),
-            "Average Rewards":rewards_mean
+            "Avg. Grad Norm": torch.stack(grad_norm_list).mean(),
         }
 
     # ------------------------------------------------------------

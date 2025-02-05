@@ -48,7 +48,7 @@ void AColumn::InitColumn(FVector Scale, FVector Location) {
         ColumnMesh->SetEnableGravity(false);
         ColumnMesh->SetMobility(EComponentMobility::Movable);
 
-        ResetColumn();
+        ResetColumn(0.0);
     }
 }
 
@@ -61,8 +61,8 @@ bool AColumn::SetColumnHeight(float NewHeight) {
     return false;
 }
 
-void AColumn::ResetColumn() {
-    SetColumnHeight(0.0f);
+void AColumn::ResetColumn(float height) {
+    SetColumnHeight(height);
     SetSimulatePhysics(false);
     SetColumnColor(FLinearColor::White);
 }

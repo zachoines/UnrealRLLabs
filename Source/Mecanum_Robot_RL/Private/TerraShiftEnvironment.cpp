@@ -175,8 +175,8 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
     if (Grid)
     {
         Grid->AttachToActor(Platform, FAttachmentTransformRules::KeepRelativeTransform);
-        Grid->InitializeGrid(GridSize, PlatformWorldSize.X, GridLocation);
         Grid->SetColumnMovementBounds(-MaxColumnHeight, MaxColumnHeight);
+        Grid->InitializeGrid(GridSize, PlatformWorldSize.X, GridLocation);
     }
     else
     {
@@ -234,7 +234,7 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
 
     // Reset columns and grid objects
     GridObjectManager->ResetGridObjects();
-    Grid->ResetGrid();
+    // Grid->ResetGrid();
 
     // Clear existing goal platforms
     for (AGoalPlatform* GoalPlatform : GoalPlatforms)
@@ -362,10 +362,11 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
 
 void ATerraShiftEnvironment::Act(FAction Action)
 {
-    // We now have 2 discrete actions per agent:
-    //   [0] = direction => 4 choices: 0=Up, 1=Down, 2=Left, 3=Right
-    //   [1] = matrix update => 4 choices: 0=Inc, 1=Dec, 2=Zero, 3=None
-    const int NumAgentActions = 2;
+    // We now have 3 discrete actions per agent:
+    //   [0] = direction => 5 choices: 0=Up, 1=Down, 2=Left, 3=Right, 4=None
+    //   [1] = matrix update => 3 choices: 0=Inc, 1=Dec, 2=Zero
+    //   [2] = refelect => 2 choices: 0=Reflect, 1=None
+    const int NumAgentActions = 3;
 
     // Verify correct number of inputs
     if (Action.Values.Num() != CurrentAgents * NumAgentActions)
@@ -406,8 +407,19 @@ void ATerraShiftEnvironment::Act(FAction Action)
             default:                                  break;
         }
 
+        // (B) Interpret partial update (0..3)
+        int32 Reflection = FMath::FloorToInt(Action.Values[BaseIndex + 2]);
+        EAgentReflection EReflect;
+        switch (Reflection)
+        {
+            case 0: EReflect = EAgentReflection::Reflect; break;
+            case 1: EReflect = EAgentReflection::None;    break;
+            default:                                      break;
+        }
+
         HeightDeltas[i].Direction = EDir;
         HeightDeltas[i].MatrixUpdate = EUpd;
+        HeightDeltas[i].Reflect = EReflect;
     }
 
     // Now pass these deltas to the simulator
@@ -496,10 +508,10 @@ void ATerraShiftEnvironment::UpdateColumnGoalObjectColors()
     }
 
     // Set active columns (physics enabled) to black
-    for (int32 ColumnIndex : ActiveColumns)
+    /*for (int32 ColumnIndex : ActiveColumns)
     {
         Grid->SetColumnColor(ColumnIndex, FLinearColor::Black);
-    }
+    }*/
 
     // Set other columns' colors based on their height
     float MinHeight = Grid->GetMinHeight();
@@ -583,7 +595,6 @@ float ATerraShiftEnvironment::Reward()
 {
     float StepReward = 0.0f;
     float TotalDistanceImprovements = 0.0;
-    float NumActive = 0;
     for (int32 AgentIndex = 0; AgentIndex < CurrentAgents; ++AgentIndex)
     {
         // (A) Punish falling off platform
@@ -603,7 +614,6 @@ float ATerraShiftEnvironment::Reward()
         // (C) If still in play
         else if (AgentHasActiveGridObject[AgentIndex])
         {   
-            NumActive += 1;
             AGridObject* GridObject = GridObjectManager->GetGridObject(AgentIndex);
             AGoalPlatform* AssignedGoal = GoalPlatforms[AgentGoalIndices[AgentIndex]];
             FVector ObjLocalPos = Platform->GetActorTransform().InverseTransformPosition(
@@ -621,10 +631,8 @@ float ATerraShiftEnvironment::Reward()
                     GoalLocalPos
                 );
 
-                float improvementScalingFactor = 10.0;
-                float improvementFraction = improvementScalingFactor * (PreviousDistances[AgentIndex] - newDist) / (PlatformWorldSize.X);
-                
-                StepReward += FMath::Clamp(improvementFraction, -1.0, 1.0);
+                float improvementFraction = (PreviousDistances[AgentIndex] - newDist) / (PlatformWorldSize.X);
+                StepReward += FMath::Abs(improvementFraction) > KINDA_SMALL_NUMBER ? improvementFraction : 0;
             }*/
 
             // 2) VELOCITY TOWARD GOAL
@@ -635,20 +643,19 @@ float ATerraShiftEnvironment::Reward()
 
                 FVector toGoal = (GoalLocalPos - ObjLocalPos);
                 float distGoal = toGoal.Size();
-                if (distGoal > KINDA_SMALL_NUMBER)
+                if (distGoal > SMALL_NUMBER)
                 {
                     toGoal /= distGoal;
                 }
 
                 // Dot product => + if going toward, - if away
-                float dotToGoal = FVector::DotProduct(ObjectLocalVel, toGoal);
-                float velocity_direction_scale = 0.001f;
-                StepReward += FMath::Clamp(dotToGoal * velocity_direction_scale, -1.0, 1.0);
+                float dotToGoal = FVector::DotProduct(ObjectLocalVel, toGoal) / PlatformWorldSize.X;
+                StepReward += FMath::Abs(dotToGoal) > KINDA_SMALL_NUMBER ? dotToGoal : 0;
             }
         }
     }
 
-    return StepReward;
+    return StepReward / 10.0;
 }
 
 AMainPlatform* ATerraShiftEnvironment::SpawnPlatform(FVector Location)
@@ -755,7 +762,7 @@ void ATerraShiftEnvironment::UpdateGridObjectFlags()
                 FVector GoalWorldPosition = GoalPlatforms[GoalIndex]->GetActorLocation();
                 float DistanceToGoal = FVector::Dist(ObjectWorldPosition, GoalWorldPosition);
 
-                if (DistanceToGoal <= ObjectExtent.GetMax())
+                if (DistanceToGoal <= (ObjectExtent.GetAbsMax() * GoalThreshold))
                 {
                     AgentHasActiveGridObject[AgentIndex] = false;
                     GridObjectHasReachedGoal[AgentIndex] = true;

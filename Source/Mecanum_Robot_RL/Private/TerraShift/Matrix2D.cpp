@@ -335,6 +335,17 @@ FMatrix2D FMatrix2D::Sub(int32 RowStart, int32 RowEnd, int32 ColStart, int32 Col
 }
 
 // Math functions
+FMatrix2D FMatrix2D::Random(float Min, float Max) const
+{
+    FMatrix2D Result(Rows, Columns);
+    for (int32 i = 0; i < Data.Num(); ++i)
+    {
+        Result.Data[i] = FMath::RandRange(Min, Max);
+    }
+    return Result;
+}
+
+// Math functions
 FMatrix2D FMatrix2D::Exp() const
 {
     FMatrix2D Result(Rows, Columns);

@@ -16,9 +16,6 @@ enum class EAgentDirection : uint8
     None  UMETA(DisplayName = "None"),
 };
 
-/**
- * Simple enum for partial matrix update choice at current (row,col).
- */
 UENUM(BlueprintType)
 enum class EAgentMatrixUpdate : uint8
 {
@@ -27,9 +24,15 @@ enum class EAgentMatrixUpdate : uint8
     None UMETA(DisplayName = "None"),
 };
 
-/**
- * Bundles up direction and matrix update info for each agent.
- */
+
+UENUM(BlueprintType)
+enum class EAgentReflection : uint8
+{
+    Reflect  UMETA(DisplayName = "Reflect"),
+    None UMETA(DisplayName = "None"),
+};
+
+
 USTRUCT(BlueprintType)
 struct UNREALRLLABS_API FAgentHeightDelta
 {
@@ -40,6 +43,9 @@ struct UNREALRLLABS_API FAgentHeightDelta
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     EAgentMatrixUpdate MatrixUpdate;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    EAgentReflection Reflect;
 };
 
 /**

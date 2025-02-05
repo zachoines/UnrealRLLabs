@@ -26,6 +26,7 @@ void AGrid::InitializeGrid(int32 InGridSize, float InPlatformSize, FVector Locat
     }
 
     SetActorLocation(Location);
+    ResetGrid();
 }
 
 void AGrid::UpdateColumnHeights(const FMatrix2D& HeightMap) {
@@ -56,7 +57,7 @@ void AGrid::TogglePhysicsForColumns(const TArray<int32>& ColumnIndices, const TA
 void AGrid::ResetGrid() {
     for (AColumn* Column : Columns) {
         if (Column) {
-            Column->ResetColumn();
+            Column->ResetColumn(0.0);
         }
     }
 }

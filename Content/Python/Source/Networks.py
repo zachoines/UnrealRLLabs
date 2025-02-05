@@ -294,8 +294,8 @@ class ValueNetwork(nn.Module):
         self.value_net = nn.Sequential(
             nn.Linear(in_features, hidden_size),
             nn.LeakyReLU(),
-            # nn.Linear(hidden_size, hidden_size),
-            # nn.LeakyReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(),
             nn.Linear(hidden_size, 1)
         )
         for layer in self.value_net:
@@ -396,7 +396,6 @@ class DiscretePolicyNetwork(nn.Module):
             # multi-discrete
             return [bh(feats) for bh in self.branch_heads]
 
-
 class ContinuousPolicyNetwork(nn.Module):
     """
     Outputs unbounded mean + clamped log_std => Normal dist
@@ -436,7 +435,6 @@ class ContinuousPolicyNetwork(nn.Module):
         std     = torch.exp(log_std)
         return mean, std
 
-
 class QNetwork(nn.Module):
     """
     Optional Q-network for Q^\pi(s,a). Not actively used in MAPOCA code, but provided.
@@ -460,45 +458,24 @@ class QNetwork(nn.Module):
 # ------------------------------------------------------------------------
 
 class MultiAgentEmbeddingNetwork(nn.Module):
-    """
-    Single-Pass Approach:
-      1) get_common_embedding(obs_dict) => shape (S,E,NA, aggregator_out_dim)
-         (No "g()" here. Just the dictionary-based aggregator.)
-      2) embed_for_policy(common_emb)   => apply a "policy_rsa" => shape (S,E,NA,H)
-      3) embed_for_value(common_emb)    => apply a "value_rsa"  => shape (S,E,NA,H)
-      4) embed_for_baseline(common_emb, actions) => do groupmates => f(...) => baseline_rsa => shape (S,E,NA,NA,H)
-    """
     def __init__(self, net_cfg: Dict[str, Any]):
         super(MultiAgentEmbeddingNetwork, self).__init__()
 
-        # net_cfg might have:
-        # {
-        #   "general_obs_encoder": {...},
-        #   "policy_rsa": {...},
-        #   "value_rsa": {...},
-        #   "baseline_rsa": {...},
-        #   "obs_actions_encoder": {...}  # for groupmates
-        # }
+        # 1) The dictionary based obs embedder with final aggregation at end
+        self.general_obs_encoder = GeneralObsEncoder(net_cfg["general_obs_encoder"])
 
-        # 1) The dictionary aggregator
-        gen_obs_cfg = net_cfg["general_obs_encoder"]
-        self.general_obs_encoder = GeneralObsEncoder(gen_obs_cfg)
-        aggregator_dim = gen_obs_cfg["aggregator_output_size"]
-
-        # 2) For groupmates obs+actions => "f(...)"
-        acts_enc_cfg = net_cfg["obs_actions_encoder"]
-        # e.g. { "state_dim": aggregator_dim, "action_dim":2, "output_size":256, ...}
-        acts_enc_cfg["state_dim"] = aggregator_dim
-        self.f = StatesActionsEncoder(**acts_enc_cfg)
+        # 2) For obs and obs+actions encoding
+        self.f = StatesActionsEncoder(**net_cfg["obs_actions_encoder"])
+        self.g = StatesEncoder(**net_cfg["obs_encoder"])
 
         # 3) common RSA for policy, value, baseline
-        common_rsa_cfg = net_cfg.get("baseline_rsa", net_cfg["RSA"])
-        self.common_rsa = RSA(**common_rsa_cfg)
+        self.common_rsa = RSA(**net_cfg.get("common_rsa", net_cfg["RSA"]))
+        self.baseline_rsa = RSA(**net_cfg.get("baseline_rsa", net_cfg["RSA"]))
 
     # --------------------------------------------------------------------
-    #  Step 1: Produce "common embedding" from raw dictionary
+    #  Produce "base embedding" from raw dictionary of observarion
     # --------------------------------------------------------------------
-    def get_common_embedding(self, obs_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def get_base_embedding(self, obs_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
         obs_dict => { "central":(S,E,cDim), "agent":(S,E,NA,aDim) }
         => shape => (S,E,NA, aggregator_out_dim)
@@ -509,37 +486,38 @@ class MultiAgentEmbeddingNetwork(nn.Module):
     # --------------------------------------------------------------------
     #  Step 2c: embed_for_baseline
     # --------------------------------------------------------------------
-    def embed_for_baseline(self,
+    def get_common_and_baseline_embeddings(self,
                            common_emb: torch.Tensor,
-                           actions: torch.Tensor) -> torch.Tensor:
-        """
-        eqn(8):  Q_ψ( RSA( [common_emb_i, f(common_emb_j, actions_j)]_{j != i}) )
-        Steps:
-         1) split => agent vs groupmates
-         2) pass groupmates => f
-         3) cat => flatten => baseline_rsa => => shape (S,E,NA,NA,H)
-        """
-        agent_obs, groupmates_obs, groupmates_actions = \
-            self._split_agent_and_groupmates(common_emb, actions)
+                           actions: torch.Tensor=None) -> torch.Tensor:
+        if actions != None:
+            groupmates_emb, groupmates_actions = \
+                self._split_agent_and_groupmates(common_emb, actions)
 
-        # agent_obs => shape (S,E,A,1,H)
-        # groupmates_obs => (S,E,A,(A-1),H)
-        # pass f => => groupmates_emb => (S,E,A,(A-1),H2)
-        agent_obs_emb = agent_obs  # we don't do an extra MLP for "g" here if you are skipping it
-        groupmates_emb= self.f(groupmates_obs, groupmates_actions)
 
-        # cat => => (S,E,A,A,H2)
-        return torch.cat([agent_obs_emb, groupmates_emb], dim=3)
+            agent_obs_emb = self.g(common_emb) # => shape (S,E,A,1,H)
+            groupmates_obs_emb= self.f(groupmates_emb, groupmates_actions) # => (S,E,A,(A-1),H)
+            
+            # (S,E,A,H) and (S,E,A,A,H2)
+            return agent_obs_emb, torch.cat([agent_obs_emb.unsqueeze(dim=3), groupmates_obs_emb], dim=3)
+        else:
+            agent_obs_emb = self.g(common_emb)
+            return agent_obs_emb, None
     
-    def apply_attention(self, embeddings):
+    def attend_for_baselines(self, embeddings):
+        return self._apply_attention(self.baseline_rsa, embeddings)
+    
+    def attend_for_common(self, embeddings):
+        return self._apply_attention(self.common_rsa, embeddings)
+    
+    def _apply_attention(self, RSA, embeddings):
         # Unpack all but the last two dimensions into batch_dims:
         *batch_dims, NA, H = embeddings.shape
         
         # Flatten everything except the 'NA' and 'H' dimensions:
         embeddings_flat = embeddings.view(math.prod(batch_dims), NA, H)
         
-        # Apply your attention (or RSA) module:
-        attended_flat = self.common_rsa(embeddings_flat)
+        # Apply  RSA module:
+        attended_flat = RSA(embeddings_flat)
         
         # Reshape the output back to the original dimensions:
         attended = attended_flat.view(*batch_dims, NA, H)
@@ -564,16 +542,11 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         S,E,A,H = obs_4d.shape
         act_dim = actions.shape[-1]
 
-        agent_obs_list = []
         group_obs_list = []
         group_act_list = []
 
         for i in range(A):
-            # (S,E,1,H)
-            agent_i = obs_4d[..., i, :].unsqueeze(2)
-            agent_obs_list.append(agent_i)
-
-            # groupmates => everything but i
+            # groupmates => everything but agent i
             gm_obs = torch.cat([obs_4d[..., :i, :],
                                 obs_4d[..., i+1:, :]], dim=2).unsqueeze(2)
             gm_act = torch.cat([actions[..., :i, :],
@@ -583,18 +556,10 @@ class MultiAgentEmbeddingNetwork(nn.Module):
             group_act_list.append(gm_act)
 
         # combine
-        agent_obs = torch.cat(agent_obs_list, dim=2).unsqueeze(3)  # => (S,E,A,1,H)
         group_obs = torch.cat(group_obs_list, dim=2)               # => (S,E,A,A-1,H)
         group_act = torch.cat(group_act_list, dim=2)               # => (S,E,A,A-1,act_dim)
 
-        return agent_obs.contiguous(), group_obs.contiguous(), group_act.contiguous()
-
-import math
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.nn.init as init
-
+        return group_obs.contiguous(), group_act.contiguous()
 
 class LN2d(nn.Module):
     """
@@ -615,7 +580,6 @@ class LN2d(nn.Module):
         # 3) permute back => (B, C, H, W)
         x = x.permute(0, 3, 1, 2)
         return x
-
 
 class ResidualBlock(nn.Module):
     """
@@ -645,7 +609,6 @@ class ResidualBlock(nn.Module):
         out += residual
         out = F.relu(out)
         return out
-
 
 class SpatialNetwork2D(nn.Module):
     """

@@ -88,7 +88,7 @@ public:
     FMatrix2D Cos() const;
     FMatrix2D Sin() const;
     FMatrix2D Tanh() const;
-
+    
     // Matrix functions
     float Dot(const FMatrix2D& Other) const;
     float Norm() const;
@@ -97,6 +97,7 @@ public:
 
     // Utility functions
     FString ToString() const;
+    FMatrix2D Random(float Min, float Max) const;
 
     // Get dimensions
     int32 GetNumRows() const;

@@ -20,7 +20,7 @@ public:
     bool SetColumnHeight(float NewHeight);
 
     // Resets the column to its initial state
-    void ResetColumn();
+    void ResetColumn(float height);
 
     // Retrieves the current height of the column
     float GetColumnHeight() const;
