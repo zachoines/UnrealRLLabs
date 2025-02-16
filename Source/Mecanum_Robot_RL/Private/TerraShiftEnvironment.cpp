@@ -8,7 +8,7 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
     TerraShiftRoot = CreateDefaultSubobject<USceneComponent>(TEXT("TerraShiftRoot"));
     RootComponent = TerraShiftRoot;
 
-    WaveSimulator = CreateDefaultSubobject<UDiscreteHeightMap2D>(TEXT("WaveSimulator"));
+    WaveSimulator = CreateDefaultSubobject<UMultiAgentFractalWave3D>(TEXT("WaveSimulator"));
     Grid = nullptr;
     Initialized = false;
 
@@ -56,7 +56,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
     EnvironmentFolderPath = GetName();
     SetFolderPath(*EnvironmentFolderPath);
 
-    // 4) Initialize arrays for a single agent (will expand if multi-agent is possible)
+    // 4) Initialize arrays for tracking multi-agent states
     AgentGoalIndices.SetNum(CurrentAgents);
     AgentHasActiveGridObject.SetNum(CurrentAgents);
     GridObjectFallenOffGrid.SetNum(CurrentAgents);
@@ -123,23 +123,11 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
         GoalThreshold = EnvConfig->Get(TEXT("environment/params/GoalThreshold"))->AsNumber();
     }
 
-    if (EnvConfig->HasPath(TEXT("environment/params/MatrixDeltaRange")))
-    {
-        TArray<float> RangeArr = EnvConfig->Get(TEXT("environment/params/MatrixDeltaRange"))->AsArrayOfNumbers();
-        if (RangeArr.Num() == 2)
-        {
-            MatrixDeltaRange = FVector2D(RangeArr[0], RangeArr[1]);
-        }
-    }
-
     // 6) Place environment at given location
     TerraShiftRoot->SetWorldLocation(TerraShiftParams->Location);
 
-    // 7) Spawn platform
+    // 7) Spawn platform at location with scale
     Platform = SpawnPlatform(TerraShiftParams->Location);
-    check(Platform != nullptr);
-
-    // Scale the platform
     Platform->SetActorScale3D(FVector(PlatformSize));
 
     // 8) Calculate platform dimensions & cell size
@@ -166,8 +154,8 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
         }
     }
 
-    // 10) Spawn the Grid
-    FVector GridLocation = PlatformCenter + FVector(0.f, 0.f, MaxColumnHeight);
+    // 10) Spawn the Grid slighly above platform (leaves room for column movements)
+    FVector GridLocation = PlatformCenter + FVector(0.f, 0.f, MaxColumnHeight); 
 
     FActorSpawnParameters SpawnParams;
     SpawnParams.Owner = this;
@@ -196,14 +184,8 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* BaseParams)
     }
 
     // 12) Initialize Wave Simulator
-    check(WaveSimulator != nullptr);
-    WaveSimulator->Initialize(
-        GridSize,
-        GridSize,
-        MaxAgents,
-        MatrixDeltaRange,
-        MaxColumnHeight
-    );
+    UEnvironmentConfig* MWConfig = EnvConfig->Get("environment/params/MultiAgentFractalWave");
+    WaveSimulator->InitializeFromConfig(MWConfig);
 
     // 13) Mark as initialized
     LastDeltaTime = GetWorld()->GetDeltaSeconds();
@@ -234,7 +216,7 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
 
     // Reset columns and grid objects
     GridObjectManager->ResetGridObjects();
-    // Grid->ResetGrid();
+    Grid->ResetGrid();
 
     // Clear existing goal platforms
     for (AGoalPlatform* GoalPlatform : GoalPlatforms)
@@ -355,79 +337,74 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
     State.Add(DistanceToGoal);
     State.Add(LastDeltaTime);
 
-    // 14) Agent FourierState: Current row, column, and parameter value at location
-    State.Append(WaveSimulator->GetAgentState(AgentIndex));
+    // 14) Agent Wave State
+    State.Append(WaveSimulator->GetAgentStateVariables(AgentIndex));
+    // State.Append(WaveSimulator->GetAgentFractalImage(AgentIndex));
     return State;
 }
 
 void ATerraShiftEnvironment::Act(FAction Action)
 {
-    // We now have 3 discrete actions per agent:
-    //   [0] = direction => 5 choices: 0=Up, 1=Down, 2=Left, 3=Right, 4=None
-    //   [1] = matrix update => 3 choices: 0=Inc, 1=Dec, 2=Zero
-    //   [2] = refelect => 2 choices: 0=Reflect, 1=None
-    const int NumAgentActions = 3;
+    // We'll define 9 floats per agent in the range [-1..1]:
+    //   [0..2] => dPos.X, dPos.Y, dPos.Z
+    //   [3] => dPitch
+    //   [4] => dYaw
+    //   [5] => dBaseFreq
+    //   [6] => dLacunarity
+    //   [7] => dGain
+    //   [8] => dBlendWeight
+    const int32 ValuesPerAgent = 9;
 
-    // Verify correct number of inputs
-    if (Action.Values.Num() != CurrentAgents * NumAgentActions)
+    if (Action.Values.Num() != CurrentAgents * ValuesPerAgent)
     {
-        UE_LOG(LogTemp, Error, TEXT("Action array size mismatch. Expected %d, got %d"),
-            CurrentAgents * NumAgentActions, Action.Values.Num());
+        UE_LOG(LogTemp, Error, TEXT("Act: mismatch (#values=%d, expected=%d)"),
+            Action.Values.Num(), CurrentAgents * ValuesPerAgent);
         return;
     }
 
-    TArray<FAgentHeightDelta> HeightDeltas;
-    HeightDeltas.SetNum(CurrentAgents);
+    TArray<FFractalAgentAction> FractalActions;
+    FractalActions.SetNum(CurrentAgents);
 
-    for (int32 i = 0; i < CurrentAgents; ++i)
+    // parse
+    for (int32 i = 0; i < CurrentAgents; i++)
     {
-        int32 BaseIndex = i * NumAgentActions;
+        const int32 BaseIndex = i * ValuesPerAgent;
 
-        // (A) Interpret direction (0..3)
-        int32 DirChoice = FMath::FloorToInt(Action.Values[BaseIndex + 0]);
-        EAgentDirection EDir;
-        switch (DirChoice)
-        {
-            case 0: EDir = EAgentDirection::Up;    break;
-            case 1: EDir = EAgentDirection::Down;  break;
-            case 2: EDir = EAgentDirection::Left;  break;
-            case 3: EDir = EAgentDirection::Right; break;
-            case 4: EDir = EAgentDirection::None;  break;
-            default:                               break;
-        }
+        // Each input is in [-1..1].
+        float dx = Action.Values[BaseIndex + 0];
+        float dy = Action.Values[BaseIndex + 1];
+        float dz = Action.Values[BaseIndex + 2];
 
-        // (B) Interpret partial update (0..3)
-        int32 UpdChoice = FMath::FloorToInt(Action.Values[BaseIndex + 1]);
-        EAgentMatrixUpdate EUpd;
-        switch (UpdChoice)
-        {
-            case 0: EUpd = EAgentMatrixUpdate::Inc;   break;
-            case 1: EUpd = EAgentMatrixUpdate::Dec;   break;
-            case 2: EUpd = EAgentMatrixUpdate::None;  break;
-            default:                                  break;
-        }
+        float dPitch = Action.Values[BaseIndex + 3];
+        float dYaw = Action.Values[BaseIndex + 4];
+        float dBaseFreq = Action.Values[BaseIndex + 5];
+        float dLacunarity = Action.Values[BaseIndex + 6];
+        float dGain = Action.Values[BaseIndex + 7];
+        float dBlendWeight = Action.Values[BaseIndex + 8];
 
-        // (B) Interpret partial update (0..3)
-        int32 Reflection = FMath::FloorToInt(Action.Values[BaseIndex + 2]);
-        EAgentReflection EReflect;
-        switch (Reflection)
-        {
-            case 0: EReflect = EAgentReflection::Reflect; break;
-            case 1: EReflect = EAgentReflection::None;    break;
-            default:                                      break;
-        }
-
-        HeightDeltas[i].Direction = EDir;
-        HeightDeltas[i].MatrixUpdate = EUpd;
-        HeightDeltas[i].Reflect = EReflect;
+        FFractalAgentAction& FA = FractalActions[i];
+        FA.dPos = FVector(dx, dy, dz);
+        FA.dPitch = dPitch;
+        FA.dYaw = dYaw;
+        FA.dBaseFreq = dBaseFreq;
+        FA.dLacunarity = dLacunarity;
+        FA.dGain = dGain;
+        FA.dBlendWeight = dBlendWeight;
     }
 
-    // Now pass these deltas to the simulator
-    WaveSimulator->Update(HeightDeltas);
-    const FMatrix2D& HeightMap = WaveSimulator->GetHeights();
+    // Step fractal wave environment
+    if (!WaveSimulator)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Act: WaveSimulator is null."));
+        return;
+    }
 
-    // Finally, update the actual grid columns
-    Grid->UpdateColumnHeights(HeightMap);
+    WaveSimulator->Step(FractalActions, 0.1f);
+
+    // final wave => NxN in [-1..1]
+    const FMatrix2D& WaveMap = WaveSimulator->GetWave();
+    // apply to columns
+    Grid->UpdateColumnHeights(WaveMap);
 }
 
 void ATerraShiftEnvironment::UpdateActiveColumns()
@@ -534,7 +511,7 @@ void ATerraShiftEnvironment::UpdateColumnGoalObjectColors()
 FState ATerraShiftEnvironment::State()
 {
     FState CurrentState;
-    CurrentState.Values.Append(WaveSimulator->GetHeights().Data);
+    CurrentState.Values.Append(WaveSimulator->GetWave().Data);
     for (int32 i = 0; i < CurrentAgents; ++i)
     {
         CurrentState.Values.Append(AgentGetState(i));
@@ -570,9 +547,9 @@ void ATerraShiftEnvironment::PreStep()
 bool ATerraShiftEnvironment::Done()
 {
     // Grid object has fallen off grid
-    /*if (GridObjectFallenOffGrid.Contains(true)) {
+    if (GridObjectFallenOffGrid.Contains(true)) {
         return true;
-    }*/
+    }
 
     // If there are no more GridObjects left to handle, then the environment is done
     /*if (CurrentStep > 0 && (!AgentHasActiveGridObject.Contains(true) && !GridObjectShouldRespawn.Contains(true))) {
@@ -600,14 +577,14 @@ float ATerraShiftEnvironment::Reward()
         // (A) Punish falling off platform
         if (GridObjectShouldCollectEventReward[AgentIndex] && GridObjectFallenOffGrid[AgentIndex])
         {
-            StepReward -= 1.0f;
+            StepReward -= 10.0f;
             GridObjectShouldCollectEventReward[AgentIndex] = false;
         } 
 
         // (B) Reward reaching goal
         else if (GridObjectShouldCollectEventReward[AgentIndex] && GridObjectHasReachedGoal[AgentIndex])
         {
-            StepReward += 1.0f;
+            StepReward += 10.0f;
             GridObjectShouldCollectEventReward[AgentIndex] = false;
         }
         
@@ -624,38 +601,39 @@ float ATerraShiftEnvironment::Reward()
             );
 
             // 1) DISTANCE IMPROVEMENT
-            /*if (PreviousDistances[AgentIndex] > 0.0f)
+            if (PreviousDistances[AgentIndex] > 0.0f)
             {
                 float newDist = FVector::Distance(
                     ObjLocalPos,
                     GoalLocalPos
                 );
 
-                float improvementFraction = (PreviousDistances[AgentIndex] - newDist) / (PlatformWorldSize.X);
-                StepReward += FMath::Abs(improvementFraction) > KINDA_SMALL_NUMBER ? improvementFraction : 0;
-            }*/
+                float improvementFraction = (PreviousDistances[AgentIndex] - newDist);
+                StepReward += 10.0 * FMath::Abs(improvementFraction) > 1e-2 ? improvementFraction: -0.0001;
+            }
 
             // 2) VELOCITY TOWARD GOAL
-            {
-                FVector ObjectLocalVel = Platform->GetActorTransform().InverseTransformVector(
-                    GridObject->MeshComponent->GetPhysicsLinearVelocity()
-                );
+            //{
+            //    FVector ObjectLocalVel = Platform->GetActorTransform().InverseTransformVector(
+            //        GridObject->MeshComponent->GetPhysicsLinearVelocity()
+            //    );
 
-                FVector toGoal = (GoalLocalPos - ObjLocalPos);
-                float distGoal = toGoal.Size();
-                if (distGoal > SMALL_NUMBER)
-                {
-                    toGoal /= distGoal;
-                }
-
-                // Dot product => + if going toward, - if away
-                float dotToGoal = FVector::DotProduct(ObjectLocalVel, toGoal) / PlatformWorldSize.X;
-                StepReward += FMath::Abs(dotToGoal) > KINDA_SMALL_NUMBER ? dotToGoal : 0;
-            }
+            //    FVector toGoal = (GoalLocalPos - ObjLocalPos);
+            //    float distGoal = toGoal.Size();
+            //    if (distGoal > SMALL_NUMBER)
+            //    {
+            //        // Dot product => + if going toward, - if away
+            //        float dotToGoal = FVector::DotProduct(ObjectLocalVel, toGoal);
+            //        if (FMath::Abs(dotToGoal) > MaxDot) {
+            //            MaxDot = FMath::Abs(dotToGoal);
+            //        }
+            //        StepReward += FMath::Abs(dotToGoal) > 1e-2 ? dotToGoal : -0.0001;
+            //    }
+            //}
         }
     }
 
-    return StepReward / 10.0;
+    return StepReward;
 }
 
 AMainPlatform* ATerraShiftEnvironment::SpawnPlatform(FVector Location)

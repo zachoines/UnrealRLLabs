@@ -282,7 +282,7 @@ class MAPOCAAgent(Agent):
             num_batches = (NS + self.mini_batch_size - 1) // self.mini_batch_size
 
             policy_losses, value_losses, baseline_losses = [], [], []
-            entropies, returns_list, lrs_list, advantages_list, grad_norm_list = [], [], [], [], []
+            entropies, returns_list, lrs_list, advantages_list, advantages_mean_list, advantages_std_list, grad_norm_list = [], [], [], [], [], [], []
 
             for b in range(num_batches):
                 self.optimizer.zero_grad()
@@ -317,10 +317,12 @@ class MAPOCAAgent(Agent):
                 rets_mb_xpd                    = rets_mb.unsqueeze(2).expand(MB, NE, NA, 1)
                 adv_mb                         = (rets_mb_xpd - new_baselines_mb).squeeze(-1)
 
+                adv_mean = adv_mb.mean()
+                adv_std = adv_mb.std() + 1e-8
+                advantages_mean_list.append(adv_mean)
+                advantages_std_list.append(adv_std)
                 if self.normalize_advantages:
-                    adv_mean = adv_mb.mean()
-                    adv_std  = adv_mb.std() + 1e-8
-                    adv_mb   = (adv_mb - adv_mean)/adv_std
+                    adv_mb = (adv_mb - adv_mean)/adv_std
 
                 # compute losses
                 pol_loss = self.policy_loss(
@@ -329,8 +331,8 @@ class MAPOCAAgent(Agent):
                     adv_mb,
                     self.ppo_clip_range
                 )
-                val_loss = F.smooth_l1_loss(new_vals_mb, rets_mb)
-                base_loss= F.smooth_l1_loss(new_baselines_mb, rets_mb_xpd)
+                val_loss = F.mse_loss(new_vals_mb, rets_mb)
+                base_loss= F.mse_loss(new_baselines_mb, rets_mb_xpd)
                 ent_mean = ent_mb.mean()
 
                 if self.entropy_scheduler is not None:
@@ -342,33 +344,35 @@ class MAPOCAAgent(Agent):
                            - self.entropy_coeff * ent_mean
 
                 total_loss.backward()
-                grad_norm = clip_grad_norm_(self.parameters(), self.max_grad_norm)
+                # grad_norm = clip_grad_norm_(self.parameters(), self.max_grad_norm)
                 self.optimizer.step()
 
                 if self.lr_scheduler:
                     self.lr_scheduler.step()
 
                 # stats
-                advantages_list.append(adv_mb.mean().detach().cpu())
+                advantages_list.append(adv_mb.detach().cpu())
                 policy_losses.append(pol_loss.detach().cpu())
                 value_losses.append(val_loss.detach().cpu())
                 baseline_losses.append(base_loss.detach().cpu())
                 entropies.append(ent_mean.detach().cpu())
                 returns_list.append(rets_mb.mean().detach().cpu())
                 lrs_list.append(self.get_average_lr(self.optimizer).detach().cpu())
-                grad_norm_list.append(grad_norm.mean())
+                grad_norm_list.append(self.total_grad_norm(self.parameters()))
 
         return {
             "Policy Loss":    torch.stack(policy_losses).mean(),
             "Value Loss":     torch.stack(value_losses).mean(),
             "Baseline Loss":  torch.stack(baseline_losses).mean(),
             "Entropy":        torch.stack(entropies).mean(),
-            "Entropy coeff" : torch.tensor(self.entropy_coeff),
+            "Entropy coeff":  torch.tensor(self.entropy_coeff),
+            "Avg. Adv":       torch.stack(advantages_list).mean(),
+            "Avg. Adv Mean":  torch.stack(advantages_mean_list).mean(),
+            "Avg. Adv Std":   torch.stack(advantages_std_list).mean(),
             "Avg. Returns":   torch.stack(returns_list).mean(),
-            "Avg. Advantage": torch.stack(advantages_list).mean(),
             "Avg. Rewards":   rewards_mean,
-            "Learning Rate":  torch.stack(lrs_list).mean(),
             "Avg. Grad Norm": torch.stack(grad_norm_list).mean(),
+            "Learning Rate":  torch.stack(lrs_list).mean(),
         }
 
     # ------------------------------------------------------------

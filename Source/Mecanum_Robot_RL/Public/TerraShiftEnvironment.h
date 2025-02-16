@@ -7,7 +7,7 @@
 #include "TerraShift/MainPlatform.h"
 #include "TerraShift/Grid.h"
 #include "TerraShift/GridObjectManager.h"
-#include "TerraShift/DiscreteHeightMap2D.h"
+#include "TerraShift/MultiAgentFractalWave3D.h"
 #include "TerraShift/GoalPlatform.h"
 
 #include "TerraShiftEnvironment.generated.h"
@@ -90,8 +90,9 @@ public:
     UPROPERTY(EditAnywhere)
     AGridObjectManager* GridObjectManager;
 
+    /** Manages the generate of waves for grid. */
     UPROPERTY()
-    UDiscreteHeightMap2D* WaveSimulator;
+    UMultiAgentFractalWave3D* WaveSimulator;
 
 private:
     /** Initialization parameters specific to TerraShift. */
@@ -138,12 +139,6 @@ private:
 
     /** Threshold distance to consider a goal reached. */
     float GoalThreshold;
-
-    /**
-     * Range for partial updates to the agent's A matrix entries, e.g. [-0.05, 0.05].
-     * If an agent picks a certain cell in A to increment, we clamp to this range.
-     */
-    FVector2D MatrixDeltaRange = FVector2D(-2.0f, 2.0f);
 
     /** Indices of goals assigned to agents. */
     TArray<int32> AgentGoalIndices;

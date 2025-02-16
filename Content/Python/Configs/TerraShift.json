@@ -4,16 +4,35 @@
     "id": "3",
     "params": {
       "PlatformSize": 1.0,
-      "MaxColumnHeight": 3.0,
+      "MaxColumnHeight": 2.0,
       "ObjectSize": [0.10, 0.10, 0.10],
       "ObjectMass": 1.0,
       "GridSize": 50,
-      "MaxSteps": 2048,
+      "MaxSteps": 1024,
       "NumGoals": 4,
       "SpawnDelay": 0.5,
-      "MaxAgents": 10,
+      "MaxAgents": 20,
       "GoalThreshold": 1.5,
-      "MatrixDeltaRange": [-1.0, -1.0]
+      "MultiAgentFractalWave": {
+        "num_agents": 3,
+        "image_size": 50,
+        "agent_init": {
+          "pos_range": [-5.0, 5.0],
+          "pitch_range": [-0.3, 0.3],
+          "yaw_range": [0.0, 6.283185],
+          "fov_deg": 60.0,
+          "sample_dist": 10.0
+        },
+        "fractal_init": {
+          "base_freq_range": [0.1, 0.2],
+          "octaves_range": [3, 6],
+          "lacunarity_range": [1.5, 3.0],
+          "gain_range": [0.3, 0.8],
+          "blend_weight_range": [0.5, 1.5]
+        },
+        "pitch_limit": 1.5708,
+        "yaw_wrap": true
+      }
     },
     "shape": {
       "state": {
@@ -21,17 +40,23 @@
           "obs_size": 2500
         },
         "agent": {
-          "obs_size": 29,
-          "min": 5,
-          "max": 5
+          "obs_size": 38,
+          "min": 10,
+          "max": 10
         }
       },
       "action": {
         "agent": {
-          "discrete": [
-            { "num_choices": 5 },
-            { "num_choices": 3 },
-            { "num_choices": 2 }
+          "continuous": [
+            {"min": -1.0, "max": 1.0},
+            {"min": -1.0, "max": 1.0},
+            {"min": -1.0, "max": 1.0},
+            {"min": -1.0, "max": 1.0},
+            {"min": -1.0, "max": 1.0},
+            {"min": -1.0, "max": 1.0},
+            {"min": -1.0, "max": 1.0},
+            {"min": -1.0, "max": 1.0},
+            {"min": -1.0, "max": 1.0}
           ]
         }
       }
@@ -40,14 +65,14 @@
   "agent": {
     "type": "MA_POCA",
     "params": {
-      "learning_rate": 0.00003,
+      "learning_rate": 0.0001,
       "gamma": 0.99,
       "lambda": 0.95,
       "normalize_rewards": false,
       "normalize_advantages": true,
-      "value_loss_coeff": 1.0,
-      "baseline_loss_coeff": 1.0,
-      "max_grad_norm": 5.0,
+      "value_loss_coeff": 0.2,
+      "baseline_loss_coeff": 0.1,
+      "max_grad_norm": 20,
       "ppo_clip_range": 0.1,
       "entropy_coeff": 0.01,
       "schedulers": {
@@ -57,28 +82,12 @@
           "total_iters": 50000
         },
         "entropy_coeff": {
-          "start_value": 0.01,
-          "end_value": 0.0001,
+          "start_value": 0.1,
+          "end_value": 0.001,
           "total_iters": 50000
         }
       },
       "networks": {
-        "policy_network": {
-          "in_features": 128,
-          "hidden_size": 128
-        },
-        "critic_network": {
-          "value_head": {
-            "in_features": 128,
-            "hidden_size": 128,
-            "dropout_rate": 0.0
-          },
-          "baseline_head": {
-            "in_features": 128,
-            "hidden_size": 128,
-            "dropout_rate": 0.0
-          }
-        },
         "MultiAgentEmbeddingNetwork": {
           "general_obs_encoder": {
             "encoders": [
@@ -91,43 +100,59 @@
                   "in_channels": 1,
                   "base_channels": 16,
                   "num_blocks": 4,
-                  "out_features": 128
+                  "out_features": 256
                 }
               },
               {
                 "key": "agent",
                 "network": "LinearNetwork",
                 "params": {
-                  "in_features": 29,
-                  "out_features": 64,
+                  "in_features": 38,
+                  "out_features": 128,
                   "dropout_rate": 0.0,
                   "activation": true
                 }
               }
             ],
-            "aggregator_output_size": 256,
+            "aggregator_output_size": 512,
             "agent_id_enc": {
-              "num_freqs": 16,
-              "id_embed_dim": 32
+              "num_freqs": 32,
+              "id_embed_dim": 64
             }
           },
-          "RSA": {
-            "embed_size": 128,
-            "heads": 4,
-            "dropout_rate": 0.0
-          },
           "obs_encoder": {
-            "state_dim": 256,
-            "output_size": 128,
+            "state_dim": 512,
+            "output_size": 256,
             "dropout_rate": 0.0,
             "activation": true
           },
           "obs_actions_encoder": {
-            "state_dim": 256,
-            "action_dim": 3,
-            "output_size": 128,
+            "state_dim": 512,
+            "action_dim": 9,
+            "output_size": 256,
             "dropout_rate": 0.0,
             "activation": true
+          },
+          "RSA": {
+            "embed_size": 256,
+            "heads": 8,
+            "dropout_rate": 0.0
+          }
+        },
+        "policy_network": {
+          "in_features": 256,
+          "hidden_size": 256
+        },
+        "critic_network": {
+          "value_head": {
+            "in_features": 256,
+            "hidden_size": 256,
+            "dropout_rate": 0.0
+          },
+          "baseline_head": {
+            "in_features": 256,
+            "hidden_size": 256,
+            "dropout_rate": 0.0
           }
         }
       }
@@ -137,7 +162,7 @@
     "normalize_states": true,
     "num_environments": 32,
     "epochs": 3,
-    "mini_batch_size": 32,
+    "mini_batch_size": 64,
     "buffer_size": 512,
     "batch_size": 512,
     "AgentsResetFrequency": 0,

@@ -707,11 +707,3 @@ class SpatialNetwork2D(nn.Module):
         emb = self.final_fc(out_flat)
 
         return emb
-
-
-# Example usage:
-if __name__ == "__main__":
-    model = SpatialNetwork2D()
-    inp = torch.randn(64, 2500)  # (batch_size=64, flattened=2500)
-    out = model(inp)  # => shape (64, 128)
-    print(out.shape)  # torch.Size([64, 128])

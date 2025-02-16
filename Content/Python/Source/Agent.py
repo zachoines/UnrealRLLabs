@@ -33,3 +33,12 @@ class Agent(nn.Module):
         lr_tensor = torch.tensor(lr_list, dtype=torch.float32)
         # Return the mean as a 0-dimensional Tensor
         return torch.mean(lr_tensor)
+    
+    def total_grad_norm(self, params):
+        # compute the global L2 norm across all param grads
+        total = 0.0
+        for p in params:
+            if p.grad is not None:
+                param_norm = p.grad.data.norm(2)
+                total += param_norm.item() ** 2
+        return torch.tensor(total**0.5)

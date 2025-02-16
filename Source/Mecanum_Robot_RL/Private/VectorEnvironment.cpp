@@ -202,20 +202,14 @@ void AVectorEnvironment::ParseActionSpaceFromConfig()
 
         for (UEnvironmentConfig* RangeItem : ContinuousArray)
         {
-            // For each sub-array like [-1.0, 1.0], parse as array of numbers
-            TArray<float> RangeValues = RangeItem->AsArrayOfNumbers();
-            if (RangeValues.Num() == 2)
-            {
-                ContinuousActionRanges.Add(FVector2D(RangeValues[0], RangeValues[1]));
-            }
-            else
-            {
-                UE_LOG(LogTemp, Error, TEXT("Continuous action range must have exactly 2 floats."));
-            }
+            ContinuousActionRanges.Add(
+                {
+                    RangeItem->Get(TEXT("min"))->AsNumber(),
+                    RangeItem->Get(TEXT("max"))->AsNumber()
+                }
+            );
         }
     }
-
-    // Now DiscreteActionSizes and ContinuousActionRanges are ready for use in EnvSample().
 }
 
 FAction AVectorEnvironment::EnvSample()
