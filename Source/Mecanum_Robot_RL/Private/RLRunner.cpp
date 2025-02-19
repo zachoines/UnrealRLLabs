@@ -134,7 +134,7 @@ void ARLRunner::Tick(float DeltaTime)
                     Transitions, 
                     "C:\\Users\\zachoines\\Documents\\Unreal\\UnrealRLLabs\\Content\\Python\\TEST\\UnrealTransitions.csv"
                 );*/
-                // AgentComm->Update(Transitions, CurrentAgents);
+                AgentComm->Update(Transitions, CurrentAgents);
             }
         }
 
@@ -159,7 +159,7 @@ void ARLRunner::Tick(float DeltaTime)
 
 TArray<FAction> ARLRunner::GetActions(TArray<FState> States, TArray<float> Dones, TArray<float> Truncs)
 {
-    if (true) // !AgentComm)
+    if (!AgentComm)
     {
         // fallback: sample random actions
         UE_LOG(LogTemp, Warning, TEXT("RLRunner::GetActions - AgentComm is null. Using random actions."));

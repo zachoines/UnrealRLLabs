@@ -3,33 +3,342 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
-from typing import Dict, Any
+from typing import Dict, Union, List, Any
+from torch.distributions import Normal
+from abc import ABC, abstractmethod
 
-# ------------------------------------------------------------------------
-#  Basic Building Blocks
-# ------------------------------------------------------------------------
-class LinearNetwork(nn.Module):
+class BasePolicyNetwork(nn.Module, ABC):
     """
-    A simple utility MLP block: Linear + optional activation + dropout.
-    Used by state encoders, action encoders, etc.
+    Abstract base class for policy networks, either continuous or discrete.
+    Defines the standard interface:
+      - get_actions(emb, eval=False) => (actions, log_probs, entropies)
+      - recompute_log_probs(emb, actions) => (log_probs, entropies)
     """
-    def __init__(self, in_features: int, out_features: int,
-                 dropout_rate=0.0, activation=True):
-        super(LinearNetwork, self).__init__()
-        layers = [nn.Linear(in_features, out_features)]
-        if dropout_rate > 0.0:
-            layers.append(nn.Dropout(dropout_rate))
-        if activation:
-            layers.append(nn.LeakyReLU())
-        self.model = nn.Sequential(*layers)
 
-        for layer in self.model:
+    def __init__(self):
+        super().__init__()
+
+    @abstractmethod
+    def get_actions(self, emb: torch.Tensor, eval: bool = False):
+        """
+        emb => (Batch, Features).
+        Return => (actions, log_probs, entropies) => each => shape (Batch,...)
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def recompute_log_probs(self, emb: torch.Tensor, actions: torch.Tensor):
+        """
+        emb => (Batch, Features).
+        actions => shape (Batch, #action_dims).
+        Return => (log_probs, entropies) => each => shape (Batch,).
+        """
+        raise NotImplementedError
+
+
+class TanhContinuousPolicyNetwork(BasePolicyNetwork):
+    """
+    A Tanh-squashed Normal distribution. Typical usage:
+      1) 'forward(x)' => produce unbounded mean + clamped log_std in [log_std_min, log_std_max].
+      2) 'get_actions(emb)' => 
+         - sample raw_action ~ Normal(mean, std)
+         - a = tanh(raw_action)
+         - compute log_probs (with tanh correction) and approximate entropies
+      3) 'recompute_log_probs(emb, actions)':
+         - invert actions => raw_action = atanh(actions)
+         - re-calc log_probs & entropies with factorized Normal + correction
+      4) For entropies, we support:
+         - 'analytic' => single-sample correction
+         - 'mc' => sample-based approach for more accurate integral
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        hidden_size: int,
+        log_std_min: float,
+        log_std_max: float,
+        entropy_method: str = "analytic",
+        n_entropy_samples: int = 5
+    ):
+        super().__init__()
+        self.log_std_min = log_std_min
+        self.log_std_max = log_std_max
+        self.entropy_method = entropy_method
+        self.n_entropy_samples = n_entropy_samples
+
+        # Shared MLP trunk
+        self.shared = nn.Sequential(
+            nn.Linear(in_features, hidden_size),
+            nn.LeakyReLU(),
+            nn.LayerNorm(hidden_size),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(),
+            nn.LayerNorm(hidden_size)
+        )
+
+        self.mean_head = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(),
+            nn.LayerNorm(hidden_size),
+            nn.Linear(hidden_size, out_features),
+        )
+
+        self.log_std_head = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(),
+            nn.LayerNorm(hidden_size),
+            nn.Linear(hidden_size, out_features),
+        )
+
+        # Properly init all linear modules
+        def init_linear(layer):
+            nn.init.xavier_normal_(layer.weight)
+            nn.init.constant_(layer.bias, 0.0)
+
+        for mod in (self.shared, self.mean_head, self.log_std_head):
+            for sublayer in mod:
+                if isinstance(sublayer, nn.Linear):
+                    init_linear(sublayer)
+
+    def forward(self, x):
+        feats = self.shared(x)
+        mean  = self.mean_head(feats)
+        raw_log_std = self.log_std_head(feats)
+        # clamp log_std => [log_std_min, log_std_max]
+        clamped_log_std = self.log_std_min + 0.5 * (self.log_std_max - self.log_std_min) * (
+            torch.tanh(raw_log_std) + 1.0
+        )
+        return mean, clamped_log_std
+
+    def get_actions(self, emb: torch.Tensor, eval: bool=False):
+        """
+        1) sample or return mean from Normal(mean, std)
+        2) tanh-squash => a
+        3) compute log_probs & approximate entropies
+        Return => (actions, log_probs, entropies) => shape => (B, outDim), (B,), (B,)
+        """
+        mean, log_std = self.forward(emb)
+        std = torch.exp(log_std)
+        dist = Normal(mean, std)
+
+        if eval:
+            raw_action = mean
+        else:
+            raw_action = dist.rsample()  # reparameterized sample
+
+        actions = torch.tanh(raw_action)
+
+        # log_probs with tanh correction
+        logp_raw = dist.log_prob(raw_action).sum(dim=-1)
+        eps = 1e-6
+        correction = torch.sum(torch.log(1 - actions.pow(2) + eps), dim=-1)
+        log_probs = logp_raw - correction
+
+        # approximate ent
+        entropies = self._approx_entropy(dist, actions, raw_action)
+        return actions, log_probs, entropies
+
+    def recompute_log_probs(self, emb: torch.Tensor, actions: torch.Tensor):
+        """
+        For already-squashed 'actions' in [-1,1], invert => raw_action=atanh(a_clamped),
+        then compute log_probs & ent. Return => (log_probs, entropies) => shape => (B,).
+        """
+
+        # 1) Forward pass => (mean, log_std) => dist=Normal(mean, std)
+        mean, log_std = self.forward(emb)
+        std = torch.exp(log_std)
+        dist = Normal(mean, std)
+
+        # 2) clamp final actions inside safe [-1..1]
+        eps = 1e-8
+        a_clamped = torch.clamp(actions, -1+eps, 1-eps)
+
+        # 3) stable atanh => raw_action = 0.5 * log( (1+a)/(1-a) )
+        # clamp ratio => max
+        ratio = (1 + a_clamped).clamp_min(eps) / (1 - a_clamped).clamp_min(eps)
+        raw_action = 0.5 * torch.log(ratio)
+
+        # 4) Normal log-prob => sum across action dims
+        logp_raw = dist.log_prob(raw_action).sum(dim=-1)
+
+        # 5) Tanh correction => sum(log(1 - a^2 + eps)) across dims
+        correction = torch.sum(torch.log(1 - a_clamped.pow(2) + eps), dim=-1)
+        log_probs = logp_raw - correction
+
+        # 6) approximate ent => same as in get_actions
+        entropies = self._approx_entropy(dist, a_clamped, raw_action)
+        return log_probs, entropies
+
+
+    def _approx_entropy(self, dist: Normal, actions: torch.Tensor, raw_action: torch.Tensor) -> torch.Tensor:
+        """
+        Approx Tanh(Normal) entropy with either 'mc' or 'analytic' approach.
+        :return: (B,) shaped tensor
+        """
+        if self.entropy_method == "mc":
+            return self._mc_entropy(dist)
+        else:
+            return self._analytic_entropy(dist, actions)
+
+    def _mc_entropy(self, dist: Normal) -> torch.Tensor:
+        """
+        MC-based approach:
+         1) draw n samples
+         2) transform => a = tanh(...)
+         3) approximate => H ~ -E[log p(a_samps)]
+        """
+        n = self.n_entropy_samples
+        raw_samps = dist.rsample([n])  # => (n,B,outDim)
+        a_samps   = torch.tanh(raw_samps)
+        logp_raw  = dist.log_prob(raw_samps).sum(dim=-1) # => (n,B)
+        eps = 1e-6
+        corr = torch.sum(torch.log(1 - a_samps.pow(2) + eps), dim=-1)
+        logp_all = logp_raw - corr
+        return - logp_all.mean(dim=0)  # => (B,)
+
+    def _analytic_entropy(self, dist: Normal, actions: torch.Tensor) -> torch.Tensor:
+        """
+        'analytic'/naive approach:
+        ent_raw = factorized normal entropy => dist.entropy().sum(dim=-1)
+        correction = sum(log(1 - actions^2))
+        => ent = ent_raw - correction
+        """
+        ent_raw = dist.entropy().sum(dim=-1)
+        eps = 1e-6
+        corr = torch.sum(torch.log(1 - actions.pow(2) + eps), dim=-1)
+        return ent_raw - corr
+
+
+class DiscretePolicyNetwork(BasePolicyNetwork):
+    """
+    For discrete or multi-discrete action spaces.
+    1) forward(x) => single-cat logits or list of multi-cat branch logits
+    2) get_actions => sample from Categorical => (actions, log_probs, entropies)
+    3) recompute_log_probs => re-calc log_probs & ent. sum across branches if multi-discrete
+    """
+
+    def __init__(self, in_features: int, out_features, hidden_size: int):
+        super().__init__()
+        self.in_features  = in_features
+        self.hidden_size  = hidden_size
+        # if out_features is int => single-cat
+        # if out_features is list => multi-discrete
+        self.out_is_multi = isinstance(out_features, list)
+
+        self.shared = nn.Sequential(
+            nn.Linear(in_features, hidden_size),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(),
+        )
+
+        if not self.out_is_multi:
+            # single-cat
+            self.head = nn.Linear(hidden_size, out_features)
+        else:
+            # multi-discrete => multiple heads
+            self.branch_heads = nn.ModuleList([
+                nn.Linear(hidden_size, branch_sz)
+                for branch_sz in out_features
+            ])
+
+        for layer in self.shared:
             if isinstance(layer, nn.Linear):
-                init.kaiming_normal_(layer.weight)
+                nn.init.xavier_normal_(layer.weight)
                 nn.init.constant_(layer.bias, 0.0)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.model(x)
+        if not self.out_is_multi:
+            nn.init.xavier_normal_(self.head.weight)
+            nn.init.constant_(self.head.bias, 0.0)
+        else:
+            for lin in self.branch_heads:
+                nn.init.xavier_normal_(lin.weight)
+                nn.init.constant_(lin.bias, 0.0)
+
+    def forward(self, x: torch.Tensor):
+        """
+        Return either a single-cat logits => shape (B, outDim),
+        or a list of branch logits => each => shape (B, branch_sz).
+        """
+        feats = self.shared(x)
+        if not self.out_is_multi:
+            return self.head(feats)  # => (B, outDim)
+        else:
+            return [bh(feats) for bh in self.branch_heads]
+
+    def get_actions(self, emb: torch.Tensor, eval: bool = False):
+        """
+        (actions, log_probs, entropies).
+        If multi-discrete, sum log_probs & ent across branches.
+        """
+        logits_list = self.forward(emb)
+        B = emb.shape[0]
+
+        if not self.out_is_multi:
+            # single-cat
+            dist = torch.distributions.Categorical(logits=logits_list)
+            if eval:
+                actions = torch.argmax(logits_list, dim=-1)
+            else:
+                actions = dist.sample()
+
+            log_probs = dist.log_prob(actions)  # => (B,)
+            entropies = dist.entropy()          # => (B,)
+            return actions, log_probs, entropies
+        else:
+            # multi-discrete => list of Categorical
+            actions_list, lp_list, ent_list = [], [], []
+            for branch_logits in logits_list:
+                dist_b = torch.distributions.Categorical(logits=branch_logits)
+                if eval:
+                    a_b = torch.argmax(branch_logits, dim=-1)
+                else:
+                    a_b = dist_b.sample()
+                lp_b  = dist_b.log_prob(a_b)
+                ent_b = dist_b.entropy()
+                actions_list.append(a_b)
+                lp_list.append(lp_b)
+                ent_list.append(ent_b)
+
+            # combine
+            # shape => (B, #branches)
+            acts_stacked = torch.stack(actions_list, dim=-1)
+            lp_stacked   = torch.stack(lp_list, dim=-1).sum(dim=-1)
+            ent_stacked  = torch.stack(ent_list, dim=-1).sum(dim=-1)
+            return acts_stacked, lp_stacked, ent_stacked
+
+    def recompute_log_probs(self, emb: torch.Tensor, actions: torch.Tensor):
+        """
+        For multi-discrete, 'actions' => shape (B, #branches).
+        For single-cat, => shape (B,).
+        Return => (log_probs, entropies)
+        """
+        logits_list = self.forward(emb)
+        B = emb.shape[0]
+
+        if not self.out_is_multi:
+            dist = torch.distributions.Categorical(logits=logits_list)
+            log_probs = dist.log_prob(actions)
+            entropies = dist.entropy()
+            return log_probs, entropies
+        else:
+            # multi-discrete
+            # actions => (B, num_branches)
+            actions = actions.long()
+            lp_list, ent_list = [], []
+            for i, branch_logits in enumerate(logits_list):
+                dist_b = torch.distributions.Categorical(logits=branch_logits)
+                a_b    = actions[:, i]
+                lp_b   = dist_b.log_prob(a_b)
+                ent_b  = dist_b.entropy()
+                lp_list.append(lp_b)
+                ent_list.append(ent_b)
+
+            log_probs = torch.stack(lp_list, dim=-1).sum(dim=-1)
+            entropies = torch.stack(ent_list, dim=-1).sum(dim=-1)
+            return log_probs, entropies
 
 
 class RSA(nn.Module):
@@ -70,6 +379,7 @@ class RSA(nn.Module):
         out, _ = self.multihead_attn(q, k, v)
         out = x + out  # residual
         return self.output_norm(out)
+
 
 class AgentIDPosEnc(nn.Module):
     """
@@ -114,14 +424,34 @@ class AgentIDPosEnc(nn.Module):
         return out.view(S,E,NA,self.id_embed_dim)
 
 
-# ------------------------------------------------------------------------
-#  GeneralObsEncoder: merges "central"/"agent" (and ID if agent) => aggregator
-# ------------------------------------------------------------------------
+class LinearNetwork(nn.Module):
+    """
+    A simple utility MLP block: Linear + optional activation + dropout.
+    Used by state encoders, action encoders, etc.
+    """
+    def __init__(self, in_features: int, out_features: int,
+                 dropout_rate=0.0, activation=True):
+        super(LinearNetwork, self).__init__()
+        layers = [nn.Linear(in_features, out_features)]
+        if dropout_rate > 0.0:
+            layers.append(nn.Dropout(dropout_rate))
+        if activation:
+            layers.append(nn.LeakyReLU())
+        self.model = nn.Sequential(*layers)
+
+        for layer in self.model:
+            if isinstance(layer, nn.Linear):
+                init.kaiming_normal_(layer.weight)
+                nn.init.constant_(layer.bias, 0.0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
 
 class GeneralObsEncoder(nn.Module):
     """
     A dictionary-based encoder for multiple keys: "central", "agent", etc.
-    Then merges them + (optionally) agent ID embeddings => aggregator.
+    Then merges them + (optionally) agent ID embeddings => aggregator net.
     Produces shape => (S,E,NA, aggregator_output_size).
     """
     def __init__(self, config: Dict[str, Any]):
@@ -167,8 +497,14 @@ class GeneralObsEncoder(nn.Module):
             self.agent_id_dim = id_cfg["id_embed_dim"]
             sum_dims         += self.agent_id_dim
 
-        # aggregator linear
-        self.aggregator_linear = LinearNetwork(sum_dims, self.aggregator_output_size)
+        # --------------------------------------------------
+        #  Custom aggregator net: sum_dims -> aggregator_output_size
+        # --------------------------------------------------
+        self.aggregator_net = nn.Sequential(
+            nn.Linear(sum_dims, self.aggregator_output_size),
+            nn.LeakyReLU(),
+            nn.LayerNorm(self.aggregator_output_size)
+        )
 
     def forward(self, obs_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
@@ -207,7 +543,6 @@ class GeneralObsEncoder(nn.Module):
 
         # 2) If there's an agent => add agent ID embeddings
         if (self.agent_id_enc is not None) and ("agent" in obs_dict):
-            # shape => (S,E,NA,aDim)
             agent_tensor = obs_dict["agent"]
             S,E,NA,_ = agent_tensor.shape
             agent_ids = torch.arange(NA, device=agent_tensor.device).view(1,1,NA)
@@ -221,67 +556,51 @@ class GeneralObsEncoder(nn.Module):
             so = sub_outputs[i]
             # shape => (S,E,xNA, dim)
             if so.shape[2] == 1 and final_NA > 1:
-                # expand
                 so = so.expand(so.shape[0], so.shape[1], final_NA, so.shape[-1])
             sub_outputs[i] = so
 
-        if len(sub_outputs) > 0:
-            combined = torch.cat(sub_outputs, dim=-1)  # => (S,E,NA, sum_dims)
-        else:
-            # empty => produce (1,1,1,0) => aggregator won't do anything
-            combined = torch.zeros((1,1,1,0), device=next(self.parameters()).device)
+        if len(sub_outputs) == 0:
+            # produce (1,1,1,0)
+            return torch.zeros((1,1,1,0), device=next(self.parameters()).device)
 
+        # cat => shape => (S,E,NA, sum_dims)
+        combined = torch.cat(sub_outputs, dim=-1)
+
+        # flatten => aggregator_net => shape => (S*E*NA, aggregator_output_size)
         S2,E2,NA2,sum_dim = combined.shape
         flat = combined.view(S2*E2*NA2, sum_dim)
-        agg_out_2d = self.aggregator_linear(flat)  # => (S2*E2*NA2, aggregator_output_size)
+
+        # pass aggregator_net => LN => shape => (S2*E2*NA2, aggregator_output_size)
+        agg_out_2d = self.aggregator_net(flat)
+
         return agg_out_2d.view(S2,E2,NA2,self.aggregator_output_size)
 
 
-# ------------------------------------------------------------------------
-#   StatesEncoder / StatesActionsEncoder
-# ------------------------------------------------------------------------
-
 class StatesEncoder(nn.Module):
-    """
-    e.g. g(...) in older code: takes (S,E,NA, aggregator_out_dim)
-    => (S,E,NA,H)
-    """
-    def __init__(self, state_dim, output_size,
-                 dropout_rate=0.0, activation=True):
+    def __init__(self, state_dim, output_size, dropout_rate=0.0, activation=True):
         super(StatesEncoder, self).__init__()
-        self.fc = LinearNetwork(state_dim, output_size,
-                                dropout_rate, activation)
+        self.net = nn.Sequential(
+            LinearNetwork(state_dim, output_size, dropout_rate, activation),
+            nn.LayerNorm(output_size)
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc(x)
+        return self.net(x)
 
 
 class StatesActionsEncoder(nn.Module):
-    """
-    e.g. f(...) => for groupmates' obs+actions
-    Input: obs => (S,E,A,(A-1),H)
-           act => (S,E,A,(A-1), actDim)
-    => output => (S,E,A,(A-1), H')
-    """
     def __init__(self, state_dim, action_dim, output_size,
                  dropout_rate=0.0, activation=True):
         super(StatesActionsEncoder, self).__init__()
-        self.fc = LinearNetwork(state_dim + action_dim, output_size,
-                                dropout_rate, activation)
+        self.net = nn.Sequential(
+            LinearNetwork(state_dim + action_dim, output_size, dropout_rate, activation),
+            nn.LayerNorm(output_size)
+        )
 
-    def forward(self,
-                observation: torch.Tensor,
-                action: torch.Tensor) -> torch.Tensor:
-        """
-        Cat along last dim => pass MLP => shape same # of leading dims
-        """
-        x = torch.cat([observation, action], dim=-1)  # => (S,E,A,(A-1), state_dim+action_dim)
-        return self.fc(x)
-
-
-# ------------------------------------------------------------------------
-#   ValueNetwork, SharedCritic, Policy
-# ------------------------------------------------------------------------
+    def forward(self, obs: torch.Tensor, act: torch.Tensor) -> torch.Tensor:
+        x = torch.cat([obs, act], dim=-1)
+        return self.net(x)
+    
 
 class ValueNetwork(nn.Module):
     """
@@ -294,13 +613,17 @@ class ValueNetwork(nn.Module):
         self.value_net = nn.Sequential(
             nn.Linear(in_features, hidden_size),
             nn.LeakyReLU(),
+            nn.LayerNorm(hidden_size),
             nn.Linear(hidden_size, hidden_size),
             nn.LeakyReLU(),
+            nn.LayerNorm(hidden_size),
             nn.Linear(hidden_size, 1)
         )
+        # Initialize weights
         for layer in self.value_net:
             if isinstance(layer, nn.Linear):
-                init.kaiming_normal_(layer.weight)
+                nn.init.kaiming_normal_(layer.weight)
+                # bias default is 0 or small
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.value_net(x)
@@ -344,118 +667,6 @@ class SharedCritic(nn.Module):
         return base
 
 
-class DiscretePolicyNetwork(nn.Module):
-    """
-    For discrete or multi-discrete action spaces
-    """
-    def __init__(self, in_features: int, out_features, hidden_size: int):
-        super().__init__()
-        self.in_features  = in_features
-        self.hidden_size  = hidden_size
-        self.shared = nn.Sequential(
-            nn.Linear(in_features, hidden_size),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.LeakyReLU(),
-        )
-
-        # either single-cat or multi-cat
-        if isinstance(out_features, int):
-            self.head = nn.Linear(hidden_size, out_features)
-        else:
-            # multi-discrete
-            self.branch_heads = nn.ModuleList([
-                nn.Linear(hidden_size, branch_sz)
-                for branch_sz in out_features
-            ])
-            self.out_is_multi = True
-
-        # init
-        for layer in self.shared:
-            if isinstance(layer, nn.Linear):
-                init.xavier_normal_(layer.weight)
-                nn.init.constant_(layer.bias, 0.0)
-
-        if hasattr(self, 'head'):
-            init.xavier_normal_(self.head.weight)
-            nn.init.constant_(self.head.bias, 0.0)
-        else:
-            for lin in self.branch_heads:
-                init.xavier_normal_(lin.weight)
-                nn.init.constant_(lin.bias, 0.0)
-
-    def forward(self, x: torch.Tensor):
-        """
-        x => (B, in_features)
-        returns => single-cat or list of cat logits
-        """
-        feats = self.shared(x)
-        if hasattr(self, 'head'):
-            return self.head(feats)
-        else:
-            # multi-discrete
-            return [bh(feats) for bh in self.branch_heads]
-
-class ContinuousPolicyNetwork(nn.Module):
-    """
-    Outputs unbounded mean + clamped log_std => Normal dist
-    """
-    def __init__(self, in_features: int, out_features: int,
-                 hidden_size: int,
-                 log_std_min: float, log_std_max: float):
-        super(ContinuousPolicyNetwork, self).__init__()
-        self.log_std_min = log_std_min
-        self.log_std_max = log_std_max
-
-        self.shared = nn.Sequential(
-            nn.Linear(in_features, hidden_size),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.LeakyReLU()
-        )
-        self.mean = nn.Linear(hidden_size, out_features)
-        self.log_std_layer = nn.Linear(hidden_size, out_features)
-
-        for layer in self.shared:
-            if isinstance(layer, nn.Linear):
-                init.xavier_normal_(layer.weight)
-                nn.init.constant_(layer.bias, 0.0)
-
-        init.xavier_normal_(self.mean.weight)
-        nn.init.constant_(self.mean.bias, 0.0)
-
-        init.xavier_normal_(self.log_std_layer.weight)
-        nn.init.constant_(self.log_std_layer.bias, 0.0)
-
-    def forward(self, x: torch.Tensor):
-        feats   = self.shared(x)
-        mean    = self.mean(feats)
-        log_std = self.log_std_layer(feats)
-        log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
-        std     = torch.exp(log_std)
-        return mean, std
-
-class QNetwork(nn.Module):
-    """
-    Optional Q-network for Q^\pi(s,a). Not actively used in MAPOCA code, but provided.
-    Input => (batch, state_dim+action_dim)
-    Output => (batch,1)
-    """
-    def __init__(self, state_dim: int, action_dim: int, hidden_size: int):
-        super(QNetwork, self).__init__()
-        self.fc1 = nn.Linear(state_dim + action_dim, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, 1)
-        init.kaiming_normal_(self.fc1.weight)
-        init.kaiming_normal_(self.fc2.weight)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = F.leaky_relu(self.fc1(x))
-        return self.fc2(x)
-
-
-# ------------------------------------------------------------------------
-#  New MultiAgentEmbeddingNetwork
-# ------------------------------------------------------------------------
 
 class MultiAgentEmbeddingNetwork(nn.Module):
     def __init__(self, net_cfg: Dict[str, Any]):
@@ -561,6 +772,7 @@ class MultiAgentEmbeddingNetwork(nn.Module):
 
         return group_obs.contiguous(), group_act.contiguous()
 
+
 class LN2d(nn.Module):
     """
     Applies LayerNorm across the channel dimension only.
@@ -580,6 +792,7 @@ class LN2d(nn.Module):
         # 3) permute back => (B, C, H, W)
         x = x.permute(0, 3, 1, 2)
         return x
+
 
 class ResidualBlock(nn.Module):
     """
@@ -610,15 +823,15 @@ class ResidualBlock(nn.Module):
         out = F.relu(out)
         return out
 
+
 class SpatialNetwork2D(nn.Module):
     """
     Updated network incorporating:
       - Coordinate channels
       - Residual blocks w/ LN2d (channel-only layer norm)
       - A final linear to choose output size
+      - A final LayerNorm on the flattened output
       - Reasonable defaults for 50x50 inputs
-
-    Now LN2d won't mismatch shapes.
     """
     def __init__(
         self,
@@ -638,32 +851,43 @@ class SpatialNetwork2D(nn.Module):
         self.initial_in_channels = in_channels + 2
 
         # Entry conv
-        self.entry_conv = nn.Conv2d(self.initial_in_channels, base_channels, kernel_size=3, padding=1)
-        init.kaiming_normal_(self.entry_conv.weight)
+        self.entry_conv = nn.Conv2d(
+            self.initial_in_channels,
+            base_channels,
+            kernel_size=3,
+            padding=1
+        )
+        nn.init.kaiming_normal_(self.entry_conv.weight)
         nn.init.constant_(self.entry_conv.bias, 0.0)
 
         self.entry_ln = LN2d(base_channels)
 
-        # Residual blocks (with occasional pooling)
+        # Residual blocks (with occasional pooling every 2 blocks)
         blocks = []
         current_channels = base_channels
         for i in range(num_blocks):
-            blocks.append(ResidualBlock(current_channels, kernel_size=3, padding=1))
-            # Pool every 2 blocks
+            blocks.append(
+                ResidualBlock(current_channels, kernel_size=3, padding=1)
+            )
             if (i + 1) % 2 == 0:
                 blocks.append(nn.MaxPool2d(kernel_size=2))
 
         self.res_blocks = nn.Sequential(*blocks)
 
         # Calculate final spatial size after pooling
-        pool_count = num_blocks // 2
+        pool_count = num_blocks // 2  # e.g. 4 blocks => 2 pools
         final_h = h // (2 ** pool_count)
         final_w = w // (2 ** pool_count)
 
-        # Final linear layer
-        self.final_fc = nn.Linear(current_channels * final_h * final_w, out_features)
-        init.kaiming_normal_(self.final_fc.weight)
+        # Final linear layer => out_features
+        self.final_fc = nn.Linear(
+            current_channels * final_h * final_w, out_features
+        )
+        nn.init.kaiming_normal_(self.final_fc.weight)
         nn.init.constant_(self.final_fc.bias, 0.0)
+
+        # Additional LayerNorm to keep final embedding stable
+        self.final_ln = nn.LayerNorm(out_features)
 
         self.out_features = out_features
 
@@ -672,38 +896,42 @@ class SpatialNetwork2D(nn.Module):
         x => (B, 2500) for a 50x50 map
         1) reshape => (B,1,h,w)
         2) add coordinate channels => (B,3,h,w)
-        3) entry conv + LN + ReLU
+        3) entry conv => LN => ReLU
         4) pass residual blocks
-        5) flatten + final FC => (B, out_features)
+        5) flatten => final fc => LN => (B, out_features)
         """
         B, N = x.shape
         if N != self.h * self.w:
-            raise ValueError(f"Expect input size {self.h*self.w}, got {N}.")
+            raise ValueError(
+                f"Expected input size {self.h*self.w}, got {N}."
+            )
 
-        # 1) reshape
+        # 1) reshape => (B,1,h,w)
         x_img = x.view(B, 1, self.h, self.w)
 
-        # 2) coordinate channels
+        # 2) coordinate channels => (B,3,h,w)
         device = x.device
         rows = torch.linspace(0, 1, self.h, device=device).view(1, 1, self.h, 1)
         cols = torch.linspace(0, 1, self.w, device=device).view(1, 1, 1, self.w)
 
-        row_channel = rows.expand(B, 1, self.h, self.w)
-        col_channel = cols.expand(B, 1, self.h, self.w)
+        row_channel = rows.expand(B, 1, self.h, self.w)  # (B,1,h,w)
+        col_channel = cols.expand(B, 1, self.h, self.w)  # (B,1,h,w)
 
-        x_coord = torch.cat([x_img, row_channel, col_channel], dim=1).contiguous()  # => (B,3,h,w)
+        x_coord = torch.cat([x_img, row_channel, col_channel], dim=1).contiguous()
+        # now x_coord => (B,3,h,w)
 
         # 3) entry conv => LN => ReLU
         out = self.entry_conv(x_coord)
         out = self.entry_ln(out)
         out = F.relu(out)
 
-        # 4) residual blocks
-        out = self.res_blocks(out)
+        # 4) residual blocks (with every 2 blocks => MaxPool)
+        out = self.res_blocks(out)  # => shape (B, C2, H2, W2)
 
-        # 5) flatten => final fc
+        # 5) flatten => final fc => LN
         B2, C2, H2, W2 = out.shape
         out_flat = out.contiguous().view(B2, C2 * H2 * W2)
         emb = self.final_fc(out_flat)
+        emb = self.final_ln(emb)
 
         return emb

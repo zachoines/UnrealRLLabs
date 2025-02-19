@@ -1,4 +1,4 @@
-from typing import Dict, Tuple
+from typing import Dict
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
@@ -11,53 +11,47 @@ from Source.Utility import RunningMeanStdNormalizer, LinearValueScheduler
 from Source.Networks import (
     MultiAgentEmbeddingNetwork,
     SharedCritic,
-    ContinuousPolicyNetwork,
+    TanhContinuousPolicyNetwork,
     DiscretePolicyNetwork
 )
 
 class MAPOCAAgent(Agent):
     """
-    MA-POCA Agent using a single common embedding pass. Key changes:
-      - We call `common_emb = embedding_network.get_common_embedding(states)`
-      - Then we call `embed_for_policy`, `embed_for_value`, `embed_for_baseline` on it,
-        so that we only parse the environment dictionary once per forward pass.
-      - For baseline, we also pass the actions to do groupmate-splitting.
-
-    The rest is standard PPO-like code for multi-agent posthumous credit assignment.
+    Multi-agent PPO (MAPOCA) style agent. Supports:
+      - TanhContinuous or Discrete policy networks
+      - clipped value & baseline (optional)
+      - single-pass approach for policy/value/baseline
     """
 
     def __init__(self, config: Dict, device: torch.device):
-        super(MAPOCAAgent, self).__init__(config, device)
+        super().__init__(config, device)
 
         agent_cfg = config["agent"]["params"]
         train_cfg = config["train"]
-        env_shape_cfg = config["environment"]["shape"]
-        action_cfg = env_shape_cfg["action"]
+        shape_cfg = config["environment"]["shape"]
+        action_cfg= shape_cfg["action"]
 
-        # --------------------
-        #    Hyperparams
-        # --------------------
-        self.gamma   = agent_cfg.get("gamma",  0.99)
+        # PPO / GAE Hyperparams
+        self.gamma   = agent_cfg.get("gamma", 0.99)
         self.lmbda   = agent_cfg.get("lambda", 0.95)
         self.lr      = agent_cfg.get("learning_rate", 3e-4)
+        self.value_loss_coeff    = agent_cfg.get("value_loss_coeff", 0.5)
+        self.baseline_loss_coeff = agent_cfg.get("baseline_loss_coeff", 0.5)
+        self.entropy_coeff       = agent_cfg.get("entropy_coeff", 0.01)
+        self.max_grad_norm       = agent_cfg.get("max_grad_norm", 0.5)
+        self.normalize_rewards   = agent_cfg.get("normalize_rewards", False)
+        self.normalize_adv       = agent_cfg.get("normalize_advantages", False)
+        self.ppo_clip_range      = agent_cfg.get("ppo_clip_range", 0.1)
 
-        self.value_loss_coeff     = agent_cfg.get("value_loss_coeff", 0.5)
-        self.baseline_loss_coeff  = agent_cfg.get("baseline_loss_coeff", 0.5)
-        self.entropy_coeff        = agent_cfg.get("entropy_coeff", 0.01)
-        self.base_entropy_coeff   = agent_cfg.get("entropy_coeff", 0.01)
-        self.max_grad_norm        = agent_cfg.get("max_grad_norm", 0.5)
-        self.normalize_rewards    = agent_cfg.get("normalize_rewards", False)
-        self.normalize_advantages = agent_cfg.get("normalize_advantages", False)
-        self.ppo_clip_range       = agent_cfg.get("ppo_clip_range", 0.1)
+        # Value clipping
+        self.clipped_value_loss  = agent_cfg.get("clipped_value_loss", False)
+        self.value_clip_range    = agent_cfg.get("value_clip_range", 0.2)
 
-        # Training config
-        self.epochs          = train_cfg.get("epochs", 4)
-        self.mini_batch_size = train_cfg.get("mini_batch_size", 128)
+        # training
+        self.epochs         = train_cfg.get("epochs", 4)
+        self.mini_batch_size= train_cfg.get("mini_batch_size", 128)
 
-        # --------------------
-        #   Action Space
-        # --------------------
-        # Checking whether 'agent' or 'central' block is used:
+        # Determine action space
         if "agent" in action_cfg:
             if "discrete" in action_cfg["agent"]:
                 self.action_space_type = "discrete"
@@ -73,7 +67,7 @@ class MAPOCAAgent(Agent):
             else:
                 raise ValueError("No discrete/continuous under action/agent.")
         elif "central" in action_cfg:
-            # single-agent version
+            # single-agent fallback
             if "discrete" in action_cfg["central"]:
                 self.action_space_type = "discrete"
                 d_list = action_cfg["central"]["discrete"]
@@ -90,30 +84,33 @@ class MAPOCAAgent(Agent):
         else:
             raise ValueError("No agent or central block in action config.")
 
-        # --------------------
-        #   Networks
-        # --------------------
+        # Build networks
         self.embedding_network = MultiAgentEmbeddingNetwork(
             agent_cfg["networks"]["MultiAgentEmbeddingNetwork"]
         ).to(device)
 
         self.shared_critic = SharedCritic(config).to(device)
 
-        # policy net: discrete or continuous
+        # policy net
+        pol_cfg = agent_cfg["networks"]["policy_network"]
         if self.action_space_type == "continuous":
-            self.policy_net = ContinuousPolicyNetwork(
-                **agent_cfg["networks"]["policy_network"],
-                out_features=self.action_dim
+            self.policy_net = TanhContinuousPolicyNetwork(
+                in_features=pol_cfg["in_features"],
+                out_features=self.action_dim,
+                hidden_size=pol_cfg["hidden_size"],
+                log_std_min=pol_cfg.get("log_std_min", -20.0),
+                log_std_max=pol_cfg.get("log_std_max", 2.0),
+                entropy_method=pol_cfg.get("entropy_method", "analytic"),
+                n_entropy_samples=pol_cfg.get("n_entropy_samples", 5)
             ).to(device)
         else:
             self.policy_net = DiscretePolicyNetwork(
-                **agent_cfg["networks"]["policy_network"],
-                out_features=self.action_dim
+                in_features=pol_cfg["in_features"],
+                out_features=self.action_dim,
+                hidden_size=pol_cfg["hidden_size"]
             ).to(device)
 
-        # --------------------
-        #   Optim & schedulers
-        # --------------------
+        # Optim & schedulers
         self.optimizer = optim.Adam(self.parameters(), lr=self.lr)
 
         lr_sched_cfg = agent_cfg["schedulers"].get("lr", None)
@@ -126,105 +123,57 @@ class MAPOCAAgent(Agent):
         if ent_sched_cfg:
             self.entropy_scheduler = LinearValueScheduler(**ent_sched_cfg)
 
-        # Optional normalizers
+        # Normalizers
         if self.normalize_rewards:
-            self.reward_normalizer = RunningMeanStdNormalizer(device=device)
+            self.reward_norm = RunningMeanStdNormalizer(device=device)
         else:
-            self.reward_normalizer = None
-
-        if self.normalize_advantages:
-            self.advantage_normalizer = RunningMeanStdNormalizer(device=device)
-        else:
-            self.advantage_normalizer = None
+            self.reward_norm = None
 
     def parameters(self):
         return (
-            list(self.embedding_network.parameters()) +
-            list(self.shared_critic.parameters()) +
-            list(self.policy_net.parameters())
+            list(self.embedding_network.parameters())
+            + list(self.shared_critic.parameters())
+            + list(self.policy_net.parameters())
         )
 
     # ------------------------------------------------------------
-    #             ACTION SELECTION
+    #  get_actions()
     # ------------------------------------------------------------
-    def get_actions(self,
-                    states: dict,
-                    dones: torch.Tensor,
-                    truncs: torch.Tensor,
-                    eval: bool = False):
+    @torch.no_grad()
+    def get_actions(self, states: dict, dones: torch.Tensor, truncs: torch.Tensor, eval: bool=False):
         """
-        states => e.g. {"central":(S,E,cDim), "agent":(S,E,NA,aDim)}
-        Return => (actions, (log_probs, entropies)) => shapes => (S,E,NA,...)
+        Build embeddings => pass to self.policy_net => reshape
+        Return => actions, (log_probs, entropies)
         """
-        with torch.no_grad():
-            common_emb = self.embedding_network.attend_for_common(
-                self.embedding_network.g(
-                    self.embedding_network.get_base_embedding(states)
-                )
+        common_emb = self.embedding_network.attend_for_common(
+            self.embedding_network.g(
+                self.embedding_network.get_base_embedding(states)
             )
-            S, E, NA, H = common_emb.shape
-            flat_emb = common_emb.contiguous().reshape(S*E*NA, H)
+        )
+        S,E,NA,H = common_emb.shape
+        emb_2d   = common_emb.view(S*E*NA, H)
 
-            if self.action_space_type == "continuous":
-                mean, std = self.policy_net(flat_emb)
-                dist = torch.distributions.Normal(mean, std)
-                if eval:
-                    actions_flat = mean
-                else:
-                    actions_flat = dist.sample()
+        actions_flat, lp_flat, ent_flat = self.policy_net.get_actions(emb_2d, eval=eval)
 
-                logp_flat = dist.log_prob(actions_flat).sum(dim=-1)
-                ent_flat  = dist.entropy().sum(dim=-1)
-
-                act_dim   = actions_flat.shape[-1]
-                actions   = actions_flat.reshape(S,E,NA, act_dim)
-                log_probs = logp_flat.reshape(S,E,NA)
-                entropy   = ent_flat.reshape(S,E,NA)
-
+        if self.action_space_type == "continuous":
+            act_dim = actions_flat.shape[-1]
+            actions = actions_flat.view(S,E,NA, act_dim)
+        else:
+            # discrete => single-cat or multi-cat
+            if actions_flat.dim()==1:
+                # single-cat => shape => (B,)
+                actions = actions_flat.view(S,E,NA,1)
             else:
-                # discrete or multi-discrete
-                logits_out = self.policy_net(flat_emb)
-                if isinstance(logits_out, list):
-                    # multi-discrete
-                    actions_list, lp_list, ent_list = [], [], []
-                    for branch_logits in logits_out:
-                        dist_b = torch.distributions.Categorical(logits=branch_logits)
-                        if eval:
-                            a_b = branch_logits.argmax(dim=-1)
-                        else:
-                            a_b = dist_b.sample()
-                        lp_b  = dist_b.log_prob(a_b)
-                        ent_b = dist_b.entropy()
-                        actions_list.append(a_b)
-                        lp_list.append(lp_b)
-                        ent_list.append(ent_b)
+                # multi-discrete => shape => (B,#branches)
+                nb = actions_flat.shape[-1]
+                actions = actions_flat.view(S,E,NA, nb)
 
-                    acts_stacked = torch.stack(actions_list, dim=-1)
-                    lp_stacked   = torch.stack(lp_list, dim=-1).sum(dim=-1)
-                    ent_stacked  = torch.stack(ent_list, dim=-1).sum(dim=-1)
-
-                    nb = len(logits_out)
-                    actions   = acts_stacked.reshape(S,E,NA, nb)
-                    log_probs = lp_stacked.reshape(S,E,NA)
-                    entropy   = ent_stacked.reshape(S,E,NA)
-                else:
-                    # single-cat
-                    dist_c = torch.distributions.Categorical(logits=logits_out)
-                    if eval:
-                        a_flat = logits_out.argmax(dim=-1)
-                    else:
-                        a_flat = dist_c.sample()
-                    lp_flat = dist_c.log_prob(a_flat)
-                    ent_flat= dist_c.entropy()
-
-                    actions   = a_flat.reshape(S,E,NA, 1)
-                    log_probs = lp_flat.reshape(S,E,NA)
-                    entropy   = ent_flat.reshape(S,E,NA)
-
-            return actions, (log_probs, entropy)
+        log_probs = lp_flat.view(S,E,NA)
+        entropies = ent_flat.view(S,E,NA)
+        return actions, (log_probs, entropies)
 
     # ------------------------------------------------------------
-    #                   MAIN UPDATE
+    #  update()
     # ------------------------------------------------------------
     def update(self,
                states: dict,
@@ -234,136 +183,155 @@ class MAPOCAAgent(Agent):
                dones: torch.Tensor,
                truncs: torch.Tensor):
         """
-        states => { "central":(NS,NE,cSize), "agent":(NS,NE,NA,aSize) }
-        next_states => same
-        actions => (NS,NE,NA, actDim or #branches)
-        rewards => (NS,NE,1)
-        ...
+        1) Possibly normalize rewards
+        2) Gather old values/baselines/log_probs
+        3) compute returns
+        4) mini-batch => compute new => clipped losses => step
+        5) Return logs
         """
-        # deduce (NS,NE,NA)
+        # shape check
         if "agent" in states:
             NS, NE, NA, _ = states["agent"].shape
         else:
-            # single-agent => shape => (NS,NE,cDim)
             NS, NE, _ = states["central"].shape
             NA = 1
 
-        # Optionally normalize rewards
+        # maybe norm rewards
         rewards_mean = rewards.mean()
-        if self.reward_normalizer:
-            self.reward_normalizer.update(rewards)
-            rewards = self.reward_normalizer.normalize(rewards)
+        if self.reward_norm:
+            self.reward_norm.update(rewards)
+            rewards = self.reward_norm.normalize(rewards)
 
-        # ---------------
-        #   1) Collect log_probs, values, and baselines
-        # ---------------
+        # 1) gather old data
         with torch.no_grad():
-            states_base_embeddings           = self.embedding_network.get_base_embedding(states)
-            states_common_embeddings, _      = self.embedding_network.get_common_and_baseline_embeddings(states_base_embeddings)
+            # single pass for states => base => (comm_emb, base_emb)
+            base_emb = self.embedding_network.get_base_embedding(states)
+            comm_emb, base_emb_ = self.embedding_network.get_common_and_baseline_embeddings(base_emb, actions)
+            comm_att = self.embedding_network.attend_for_common(comm_emb)
+            base_att = self.embedding_network.attend_for_baselines(base_emb_)
 
-            next_states_base_embeddings      = self.embedding_network.get_base_embedding(next_states)
-            next_states_common_embeddings, _ = self.embedding_network.get_common_and_baseline_embeddings(next_states_base_embeddings)
+            # old values, old baselines
+            old_vals  = self.shared_critic.values(comm_att)      # => (NS,NE,1)
+            old_bases = self.shared_critic.baselines(base_att)   # => (NS,NE,NA,1)
 
-            common_embeddings_attended       = self.embedding_network.attend_for_common(states_common_embeddings)
-            next_common_embeddings_attended  = self.embedding_network.attend_for_common(next_states_common_embeddings)
-                
-            values                           = self.get_value(common_embeddings_attended)
-            next_values                      = self.get_value(next_common_embeddings_attended)
-            old_log_probs, _                 = self.recompute_log_probs(common_embeddings_attended, actions)
+            # old log_probs
+            old_lp, _ = self._recompute_log_probs(comm_att, actions)
 
-            returns                          = self.compute_td_lambda_returns(rewards, values, next_values, dones, truncs)
+            # next states => next_values
+            next_base = self.embedding_network.get_base_embedding(next_states)
+            next_comm, _ = self.embedding_network.get_common_and_baseline_embeddings(next_base)
+            next_comm_att = self.embedding_network.attend_for_common(next_comm)
+            next_vals     = self.shared_critic.values(next_comm_att)
 
-        # ---------------
-        #   2) Mini-batch loop
-        # ---------------
-        indices = np.arange(NS)
+            # compute returns
+            returns = self._compute_td_lambda_returns(
+                rewards, old_vals, next_vals, dones, truncs
+            )
+
+        # 2) Prepare for mini-batches
+        idxes = np.arange(NS)
+        pol_losses, val_losses, base_losses = [], [], []
+        entropies = []
+        advantages_list, advantages_mean_list, advantages_std_list = [], [], []
+        returns_list, grad_norm_list, lrs_list = [], [], []
+
+        # single pass stats
+        returns_list.append(returns.mean().detach().cpu())
+
+        # 3) training loop
         for _ in range(self.epochs):
-            np.random.shuffle(indices)
-            num_batches = (NS + self.mini_batch_size - 1) // self.mini_batch_size
+            np.random.shuffle(idxes)
+            nB = (NS + self.mini_batch_size - 1)//self.mini_batch_size
 
-            policy_losses, value_losses, baseline_losses = [], [], []
-            entropies, returns_list, lrs_list, advantages_list, advantages_mean_list, advantages_std_list, grad_norm_list = [], [], [], [], [], [], []
-
-            for b in range(num_batches):
-                self.optimizer.zero_grad()
-
+            for b in range(nB):
                 start = b*self.mini_batch_size
                 end   = min((b+1)*self.mini_batch_size, NS)
-                mb_idx= indices[start:end]
+                mb_idx= idxes[start:end]
                 MB    = len(mb_idx)
 
-                # slice sub-batch from states
-                states_mb    = self._slice_state_dict(states, mb_idx)
-                actions_mb   = actions[mb_idx]
-                rets_mb      = returns[mb_idx]
-                old_lp_mb    = old_log_probs[mb_idx]
+                st_mb   = self._slice_state_dict(states, mb_idx)
+                act_mb  = actions[mb_idx]
+                ret_mb  = returns[mb_idx]        # => (MB,NE,1)
+                olp_mb  = old_lp[mb_idx]         # => (MB,NE,NA)
+                oval_mb = old_vals[mb_idx]       # => (MB,NE,1)
+                obase_mb= old_bases[mb_idx]      # => (MB,NE,NA,1)
 
-                # build common embeddings
-                base_emb_mb                    = self.embedding_network.get_base_embedding(states_mb)
-                common_emb_mb, baseline_emb_mb = self.embedding_network.get_common_and_baseline_embeddings(base_emb_mb, actions_mb)
-
-                # Perform multi-agent attention on embeddings
-                common_emb_att_mb              = self.embedding_network.attend_for_common(common_emb_mb)
-                baseline_emb_att_mb            = self.embedding_network.attend_for_baselines(baseline_emb_mb)
+                # new pass
+                base_mb = self.embedding_network.get_base_embedding(st_mb)
+                comm_mb, bas_mb = self.embedding_network.get_common_and_baseline_embeddings(base_mb, act_mb)
+                comm_att_mb = self.embedding_network.attend_for_common(comm_mb)
+                bas_att_mb  = self.embedding_network.attend_for_baselines(bas_mb)
 
                 # new log_probs
-                new_log_probs_mb, ent_mb       = self.recompute_log_probs(common_emb_att_mb, actions_mb)
+                new_lp_mb, ent_mb = self._recompute_log_probs(comm_att_mb, act_mb)
 
-                # new value & baseline
-                new_vals_mb                    = self.shared_critic.values(common_emb_att_mb)
-                new_baselines_mb               = self.shared_critic.baselines(baseline_emb_att_mb)
+                # new vals
+                new_vals_mb   = self.shared_critic.values(comm_att_mb)     # => (MB,NE,1)
+                new_base_mb   = self.shared_critic.baselines(bas_att_mb)   # => (MB,NE,NA,1)
 
-                # advantage => returns - baseline
-                rets_mb_xpd                    = rets_mb.unsqueeze(2).expand(MB, NE, NA, 1)
-                adv_mb                         = (rets_mb_xpd - new_baselines_mb).squeeze(-1)
+                # advantage => returns - new_base
+                ret_mb_exp    = ret_mb.unsqueeze(2).expand(MB, NE, NA, 1)
+                adv_mb        = (ret_mb_exp - new_base_mb).squeeze(-1)  # => (MB,NE,NA)
 
+                # advantage stats
                 adv_mean = adv_mb.mean()
-                adv_std = adv_mb.std() + 1e-8
-                advantages_mean_list.append(adv_mean)
-                advantages_std_list.append(adv_std)
-                if self.normalize_advantages:
+                adv_std  = adv_mb.std() + 1e-8
+                advantages_mean_list.append(adv_mean.detach().cpu())
+                advantages_std_list.append(adv_std.detach().cpu())
+                if self.normalize_adv:
                     adv_mb = (adv_mb - adv_mean)/adv_std
+                advantages_list.append(adv_mb.mean().detach().cpu())
 
-                # compute losses
-                pol_loss = self.policy_loss(
-                    new_log_probs_mb,
-                    old_lp_mb,
-                    adv_mb,
-                    self.ppo_clip_range
+                # policy ppo clip
+                pol_loss = self._ppo_clip_loss(
+                    new_lp_mb, olp_mb, adv_mb, self.ppo_clip_range
                 )
-                val_loss = F.mse_loss(new_vals_mb, rets_mb)
-                base_loss= F.mse_loss(new_baselines_mb, rets_mb_xpd)
-                ent_mean = ent_mb.mean()
 
-                if self.entropy_scheduler is not None:
+                # value => possibly clipped
+                if self.clipped_value_loss:
+                    val_loss = self._clipped_value_loss(
+                        oval_mb, new_vals_mb, ret_mb, self.value_clip_range
+                    )
+                else:
+                    val_loss = 0.5 * F.mse_loss(new_vals_mb, ret_mb)
+
+                # baseline => also clipped if desired
+                if self.clipped_value_loss:
+                    base_loss = self._clipped_value_loss(
+                        obase_mb, new_base_mb, ret_mb_exp, self.value_clip_range
+                    )
+                else:
+                    base_loss = 0.5 * F.mse_loss(new_base_mb, ret_mb_exp)
+
+                # final
+                ent_mean = ent_mb.mean()
+                if self.entropy_scheduler:
                     self.entropy_coeff = self.entropy_scheduler.step()
 
                 total_loss = pol_loss \
-                           + (self.value_loss_coeff * val_loss
-                             + self.baseline_loss_coeff * base_loss) \
-                           - self.entropy_coeff * ent_mean
+                           + self.value_loss_coeff*val_loss \
+                           + self.baseline_loss_coeff*base_loss \
+                           - self.entropy_coeff*ent_mean
 
+                self.optimizer.zero_grad()
                 total_loss.backward()
-                # grad_norm = clip_grad_norm_(self.parameters(), self.max_grad_norm)
+                gn = clip_grad_norm_(self.parameters(), self.max_grad_norm)
                 self.optimizer.step()
-
                 if self.lr_scheduler:
                     self.lr_scheduler.step()
 
-                # stats
-                advantages_list.append(adv_mb.detach().cpu())
-                policy_losses.append(pol_loss.detach().cpu())
-                value_losses.append(val_loss.detach().cpu())
-                baseline_losses.append(base_loss.detach().cpu())
+                pol_losses.append(pol_loss.detach().cpu())
+                val_losses.append(val_loss.detach().cpu())
+                base_losses.append(base_loss.detach().cpu())
                 entropies.append(ent_mean.detach().cpu())
-                returns_list.append(rets_mb.mean().detach().cpu())
-                lrs_list.append(self.get_average_lr(self.optimizer).detach().cpu())
-                grad_norm_list.append(self.total_grad_norm(self.parameters()))
+                grad_norm_list.append(gn)
+                lrs_list.append(self._get_avg_lr(self.optimizer))
 
+        # final logs
         return {
-            "Policy Loss":    torch.stack(policy_losses).mean(),
-            "Value Loss":     torch.stack(value_losses).mean(),
-            "Baseline Loss":  torch.stack(baseline_losses).mean(),
+            "Policy Loss":    torch.stack(pol_losses).mean(),
+            "Value Loss":     torch.stack(val_losses).mean(),
+            "Baseline Loss":  torch.stack(base_losses).mean(),
             "Entropy":        torch.stack(entropies).mean(),
             "Entropy coeff":  torch.tensor(self.entropy_coeff),
             "Avg. Adv":       torch.stack(advantages_list).mean(),
@@ -376,17 +344,16 @@ class MAPOCAAgent(Agent):
         }
 
     # ------------------------------------------------------------
-    #             Aux Methods
+    #  HELPER METHODS
     # ------------------------------------------------------------
-
-    def compute_td_lambda_returns(self,
-                                  rewards: torch.Tensor,
-                                  values:  torch.Tensor,
-                                  next_values: torch.Tensor,
-                                  dones:  torch.Tensor,
-                                  truncs: torch.Tensor):
+    def _compute_td_lambda_returns(self,
+                                   rewards: torch.Tensor,
+                                   values:  torch.Tensor,
+                                   next_values: torch.Tensor,
+                                   dones:  torch.Tensor,
+                                   truncs: torch.Tensor):
         """
-        Standard GAE/TD(λ). All shapes => (NS,NE,1).
+        Standard GAE-like approach => shapes => (NS,NE,1)
         """
         NS, NE, _ = rewards.shape
         out_rets = torch.zeros_like(rewards)
@@ -402,87 +369,69 @@ class MAPOCAAgent(Agent):
             out_rets[t] = gae + values[t]
         return out_rets
 
-    def get_value(self, emb: torch.Tensor):
-        return self.shared_critic.values(emb)
-
-    def policy_loss(self,
-                    new_log_probs: torch.Tensor,
-                    old_log_probs: torch.Tensor,
-                    advantages: torch.Tensor,
-                    clip_range: float):
-        """
-        Standard PPO clip objective
-        new_log_probs => shape (MB,NE,NA)
-        old_log_probs => shape (MB,NE,NA)
-        advantages    => shape (MB,NE,NA)
-        """
-        ratio = torch.exp(new_log_probs - old_log_probs)
-        clipped_ratio = torch.clamp(ratio, 1.0-clip_range, 1.0+clip_range)
-        obj1 = ratio * advantages
-        obj2 = clipped_ratio * advantages
+    def _ppo_clip_loss(self, new_lp, old_lp, adv, clip_range):
+        diff = (new_lp - old_lp) # .clamp(-10, 10) # Enable if there is instability 
+        ratio = torch.exp(diff)
+        clipped = torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
+        obj1 = ratio * adv
+        obj2 = clipped * adv
         return -torch.mean(torch.min(obj1, obj2))
 
-    def recompute_log_probs(self, policy_emb: torch.Tensor, actions: torch.Tensor):
+    def _clipped_value_loss(self,
+                            old_values: torch.Tensor,
+                            new_values: torch.Tensor,
+                            targets:   torch.Tensor,
+                            clip_range: float):
         """
-        Recompute log_probs & entropy with the current policy net.
-        policy_emb => (MB,NE,NA,H).
-        actions    => (MB,NE,NA,...).
+        old_values, new_values, targets => shape => (MB,NE,1) or (MB,NE,NA,1)
+        Return => scalar clipped value MSE
         """
-        MB, NE, NA, H = policy_emb.shape
-        flat_emb = policy_emb.reshape(MB*NE*NA, H)
+        v_clipped    = old_values + torch.clamp( (new_values - old_values),
+                                                 -clip_range, clip_range )
+        mse_unclipped= (new_values - targets).pow(2)
+        mse_clipped  = (v_clipped - targets).pow(2)
+        max_mse      = torch.max(mse_unclipped, mse_clipped)
+        return 0.5 * max_mse.mean()
+
+    def _recompute_log_probs(self, comm_att: torch.Tensor, actions: torch.Tensor):
+        """
+        Flatten => call self.policy_net.recompute_log_probs => reshape => (MB,NE,NA)
+        Return => (log_probs, entropies)
+        """
+        MB, NE, NA, H = comm_att.shape
+        emb_2d = comm_att.view(MB*NE*NA, H)
 
         if self.action_space_type == "continuous":
-            mean, std = self.policy_net(flat_emb)
-            dist = torch.distributions.Normal(mean, std)
             # shape => (MB,NE,NA, actDim)
             if actions.dim() == 4:
-                # e.g. (MB,NE,NA, actDim)
                 a_resh = actions.reshape(MB*NE*NA, actions.shape[-1])
             else:
                 a_resh = actions.reshape(MB*NE*NA, -1)
-
-            lp = dist.log_prob(a_resh).sum(dim=-1)
-            ent= dist.entropy().sum(dim=-1)
-            return lp.view(MB,NE,NA), ent.view(MB,NE,NA)
-
         else:
-            # discrete or multi
-            logits_list = self.policy_net(flat_emb)
-            if isinstance(logits_list, list):
-                # multi-discrete
-                # shape => (MB,NE,NA, len(logits_list))
-                a_resh = actions.reshape(MB*NE*NA, len(logits_list))
-
-                branch_lp, branch_ent = [], []
-                for i, branch_logits in enumerate(logits_list):
-                    dist_b = torch.distributions.Categorical(logits=branch_logits)
-                    a_b = a_resh[:, i]
-                    lp_b = dist_b.log_prob(a_b)
-                    ent_b= dist_b.entropy()
-                    branch_lp.append(lp_b)
-                    branch_ent.append(ent_b)
-
-                log_probs = torch.stack(branch_lp, dim=-1).sum(dim=-1)
-                entropy   = torch.stack(branch_ent, dim=-1).sum(dim=-1)
-                return (log_probs.view(MB,NE,NA),
-                        entropy.view(MB,NE,NA))
-
+            # discrete => single-cat or multi-cat
+            if actions.dim() == 4:
+                # multi-cat => (MB,NE,NA,#branches)
+                a_resh = actions.view(MB*NE*NA, actions.shape[-1])
             else:
-                # single-cat
-                dist_c = torch.distributions.Categorical(logits=logits_list)
-                a_resh = actions.reshape(MB*NE*NA)
-                lp = dist_c.log_prob(a_resh)
-                ent= dist_c.entropy()
-                return (lp.view(MB,NE,NA),
-                        ent.view(MB,NE,NA))
+                # single-cat => (MB,NE,NA)
+                a_resh = actions.view(MB*NE*NA)
+
+        lp_2d, ent_2d = self.policy_net.recompute_log_probs(emb_2d, a_resh)
+        return lp_2d.view(MB,NE,NA), ent_2d.view(MB,NE,NA)
 
     def _slice_state_dict(self, states_dict: dict, indices):
         """
-        Slices the dictionary along dimension=0 (the time/batch dimension).
+        Slices dict along dim=0 => (NS, NE, ...).
         """
         new_dict = {}
         idx_t = torch.as_tensor(indices, device=self.device)
         for k, v in states_dict.items():
-            # v => shape (NS, NE, ...) or (NS,NE,NA,...)
             new_dict[k] = v.index_select(0, idx_t).contiguous()
         return new_dict
+
+    def _get_avg_lr(self, optimizer) -> torch.Tensor:
+        lr_sum, count = 0.0, 0
+        for pg in optimizer.param_groups:
+            lr_sum += pg['lr']
+            count  += 1
+        return torch.tensor(lr_sum/max(count,1.0))

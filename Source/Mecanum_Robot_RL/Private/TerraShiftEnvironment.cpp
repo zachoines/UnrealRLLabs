@@ -4,7 +4,7 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
 {
     PrimaryActorTick.bCanEverTick = true;
     PrimaryActorTick.TickGroup = TG_PostUpdateWork;
-    MaxAgents = 10;
+    MaxAgents = 5;
     TerraShiftRoot = CreateDefaultSubobject<USceneComponent>(TEXT("TerraShiftRoot"));
     RootComponent = TerraShiftRoot;
 
@@ -399,12 +399,12 @@ void ATerraShiftEnvironment::Act(FAction Action)
         return;
     }
 
-    WaveSimulator->Step(FractalActions, 0.1f);
+    WaveSimulator->Step(FractalActions, GetWorld()->GetDeltaSeconds());
 
     // final wave => NxN in [-1..1]
     const FMatrix2D& WaveMap = WaveSimulator->GetWave();
     // apply to columns
-    Grid->UpdateColumnHeights(WaveMap);
+    Grid->UpdateColumnHeights(WaveMap * MaxColumnHeight);
 }
 
 void ATerraShiftEnvironment::UpdateActiveColumns()
@@ -577,14 +577,14 @@ float ATerraShiftEnvironment::Reward()
         // (A) Punish falling off platform
         if (GridObjectShouldCollectEventReward[AgentIndex] && GridObjectFallenOffGrid[AgentIndex])
         {
-            StepReward -= 10.0f;
+            StepReward -= (float) CurrentAgents;
             GridObjectShouldCollectEventReward[AgentIndex] = false;
         } 
 
         // (B) Reward reaching goal
         else if (GridObjectShouldCollectEventReward[AgentIndex] && GridObjectHasReachedGoal[AgentIndex])
         {
-            StepReward += 10.0f;
+            StepReward += 1.0f;
             GridObjectShouldCollectEventReward[AgentIndex] = false;
         }
         
@@ -609,7 +609,7 @@ float ATerraShiftEnvironment::Reward()
                 );
 
                 float improvementFraction = (PreviousDistances[AgentIndex] - newDist);
-                StepReward += 10.0 * FMath::Abs(improvementFraction) > 1e-2 ? improvementFraction: -0.0001;
+                StepReward += FMath::Abs(improvementFraction) > 1e-3 ? improvementFraction: -0.0001;
             }
 
             // 2) VELOCITY TOWARD GOAL
