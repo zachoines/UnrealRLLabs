@@ -404,7 +404,7 @@ class AgentIDPosEnc(nn.Module):
         # shape => (S,E,NA,1)
         agent_ids_f = agent_ids_f.unsqueeze(-1)
         # shape => (1,num_freqs)
-        scales = scales.view(1, self.num_freqs)
+        scales = scales.reshape(1, self.num_freqs)
 
         multiplied = agent_ids_f*scales  # => (S,E,NA,num_freqs)
         sines  = torch.sin(multiplied)
@@ -419,9 +419,9 @@ class AgentIDPosEnc(nn.Module):
         """
         raw_feat = self.sinusoidal_features(agent_ids)
         S,E,NA,D = raw_feat.shape
-        flat = raw_feat.contiguous().view(S*E*NA, D)
+        flat = raw_feat.contiguous().reshape(S*E*NA, D)
         out  = self.linear(flat)
-        return out.view(S,E,NA,self.id_embed_dim)
+        return out.reshape(S,E,NA,self.id_embed_dim)
 
 
 class LinearNetwork(nn.Module):
@@ -524,9 +524,9 @@ class GeneralObsEncoder(nn.Module):
                 # shape => (S,E,cDim)
                 S,E,cDim = x.shape
                 b = S*E
-                emb_2d = sub_enc(x.contiguous().view(b, cDim))  # => (b, out_dim)
+                emb_2d = sub_enc(x.contiguous().reshape(b, cDim))  # => (b, out_dim)
                 out_dim= self.sub_enc_outputs[key]
-                emb_3d = emb_2d.view(S,E,out_dim)               # => (S,E,out_dim)
+                emb_3d = emb_2d.reshape(S,E,out_dim)               # => (S,E,out_dim)
                 emb_4d = emb_3d.unsqueeze(2)                    # => (S,E,1,out_dim)
                 final_S, final_E, final_NA = S,E,1
                 sub_outputs.append(emb_4d)
@@ -535,9 +535,9 @@ class GeneralObsEncoder(nn.Module):
                 # shape => (S,E,NA,aDim)
                 S,E,NA,aDim = x.shape
                 b = S*E*NA
-                emb_2d = sub_enc(x.contiguous().view(b, aDim))  # => (b, out_dim)
+                emb_2d = sub_enc(x.contiguous().reshape(b, aDim))  # => (b, out_dim)
                 out_dim= self.sub_enc_outputs[key]
-                emb_4d = emb_2d.view(S,E,NA,out_dim)            # => (S,E,NA,out_dim)
+                emb_4d = emb_2d.reshape(S,E,NA,out_dim)            # => (S,E,NA,out_dim)
                 final_S, final_E, final_NA = S,E,NA
                 sub_outputs.append(emb_4d)
 
@@ -545,7 +545,7 @@ class GeneralObsEncoder(nn.Module):
         if (self.agent_id_enc is not None) and ("agent" in obs_dict):
             agent_tensor = obs_dict["agent"]
             S,E,NA,_ = agent_tensor.shape
-            agent_ids = torch.arange(NA, device=agent_tensor.device).view(1,1,NA)
+            agent_ids = torch.arange(NA, device=agent_tensor.device).reshape(1,1,NA)
             agent_ids = agent_ids.expand(S,E,NA)  # => (S,E,NA)
             id_4d = self.agent_id_enc(agent_ids)  # => (S,E,NA, id_embed_dim)
             sub_outputs.append(id_4d)
@@ -568,12 +568,12 @@ class GeneralObsEncoder(nn.Module):
 
         # flatten => aggregator_net => shape => (S*E*NA, aggregator_output_size)
         S2,E2,NA2,sum_dim = combined.shape
-        flat = combined.view(S2*E2*NA2, sum_dim)
+        flat = combined.reshape(S2*E2*NA2, sum_dim)
 
         # pass aggregator_net => LN => shape => (S2*E2*NA2, aggregator_output_size)
         agg_out_2d = self.aggregator_net(flat)
 
-        return agg_out_2d.view(S2,E2,NA2,self.aggregator_output_size)
+        return agg_out_2d.reshape(S2,E2,NA2,self.aggregator_output_size)
 
 
 class StatesEncoder(nn.Module):
@@ -650,8 +650,8 @@ class SharedCritic(nn.Module):
         """
         S,E,A,H = x.shape
         mean_emb = x.mean(dim=2)  # => (S,E,H)
-        flat     = mean_emb.view(S*E, H)
-        vals     = self.value_head(flat).view(S,E,1)
+        flat     = mean_emb.reshape(S*E, H)
+        vals     = self.value_head(flat).reshape(S,E,1)
         return vals
 
     def baselines(self, x: torch.Tensor) -> torch.Tensor:
@@ -662,8 +662,8 @@ class SharedCritic(nn.Module):
         S,E,A,A2,H = x.shape
         assert A == A2, "x must be shape (S,E,A,A,H)."
         mean_x = x.mean(dim=3)  # => (S,E,A,H)
-        flat   = mean_x.view(S*E*A, H)
-        base   = self.baseline_head(flat).view(S,E,A,1)
+        flat   = mean_x.reshape(S*E*A, H)
+        base   = self.baseline_head(flat).reshape(S,E,A,1)
         return base
 
 
@@ -725,13 +725,13 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         *batch_dims, NA, H = embeddings.shape
         
         # Flatten everything except the 'NA' and 'H' dimensions:
-        embeddings_flat = embeddings.view(math.prod(batch_dims), NA, H)
+        embeddings_flat = embeddings.reshape(math.prod(batch_dims), NA, H)
         
         # Apply  RSA module:
         attended_flat = RSA(embeddings_flat)
         
         # Reshape the output back to the original dimensions:
-        attended = attended_flat.view(*batch_dims, NA, H)
+        attended = attended_flat.reshape(*batch_dims, NA, H)
         
         return attended
 
@@ -778,16 +778,15 @@ class LN2d(nn.Module):
     Applies LayerNorm across the channel dimension only.
     Shape: (B, C, H, W) -> LN -> same shape.
     """
-    def __init__(self, num_channels):
+    def __init__(self, num_channels: int):
         super().__init__()
-        # We normalize over 'num_channels' only, ignoring H and W.
-        self.ln = nn.LayerNorm(num_channels)
+        self.ln = nn.LayerNorm(num_channels)  # LN over the 'channel' dimension
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x => (B, C, H, W)
         # 1) permute => (B, H, W, C)
-        x = x.permute(0, 2, 3, 1)  # (B, H, W, C)
-        # 2) apply LN over the last dimension (channels)
+        x = x.permute(0, 2, 3, 1)
+        # 2) apply LN over last dimension (channels)
         x = self.ln(x)
         # 3) permute back => (B, C, H, W)
         x = x.permute(0, 3, 1, 2)
@@ -796,9 +795,9 @@ class LN2d(nn.Module):
 
 class ResidualBlock(nn.Module):
     """
-    Same as before; a simple residual block with LN2d (channel-only LN).
+    A simple residual block with LN2d (channel-only LN).
     """
-    def __init__(self, channels, kernel_size=3, padding=1):
+    def __init__(self, channels: int, kernel_size=3, padding=1):
         super().__init__()
         self.conv1 = nn.Conv2d(channels, channels, kernel_size, padding=padding)
         self.ln1   = LN2d(channels)
@@ -826,18 +825,14 @@ class ResidualBlock(nn.Module):
 
 class SpatialNetwork2D(nn.Module):
     """
-    Updated network incorporating:
-      - Coordinate channels
-      - Residual blocks w/ LN2d (channel-only layer norm)
-      - A final linear to choose output size
-      - A final LayerNorm on the flattened output
-      - Reasonable defaults for 50x50 inputs
+    Convolutional network for 2D (h x w) data, using residual blocks + LN2d.
+    The row/column coordinate channels have been removed.
     """
     def __init__(
         self,
         h: int = 50,
         w: int = 50,
-        in_channels: int = 1,
+        in_channels: int = 1,       # no +2 for coords anymore
         base_channels: int = 16,
         num_blocks: int = 4,
         out_features: int = 128
@@ -845,10 +840,10 @@ class SpatialNetwork2D(nn.Module):
         super().__init__()
         self.h = h
         self.w = w
-        self.out_dim = out_features
+        self.out_features = out_features
 
-        # +2 for the (row, col) coordinate channels
-        self.initial_in_channels = in_channels + 2
+        # Input channels (no extra coordinate channels)
+        self.initial_in_channels = in_channels
 
         # Entry conv
         self.entry_conv = nn.Conv2d(
@@ -857,80 +852,60 @@ class SpatialNetwork2D(nn.Module):
             kernel_size=3,
             padding=1
         )
-        nn.init.kaiming_normal_(self.entry_conv.weight)
+        init.kaiming_normal_(self.entry_conv.weight)
         nn.init.constant_(self.entry_conv.bias, 0.0)
 
         self.entry_ln = LN2d(base_channels)
 
-        # Residual blocks (with occasional pooling every 2 blocks)
+        # Residual blocks (with a MaxPool2d every 2 blocks)
         blocks = []
         current_channels = base_channels
         for i in range(num_blocks):
-            blocks.append(
-                ResidualBlock(current_channels, kernel_size=3, padding=1)
-            )
+            blocks.append(ResidualBlock(current_channels, kernel_size=3, padding=1))
             if (i + 1) % 2 == 0:
                 blocks.append(nn.MaxPool2d(kernel_size=2))
 
         self.res_blocks = nn.Sequential(*blocks)
 
-        # Calculate final spatial size after pooling
-        pool_count = num_blocks // 2  # e.g. 4 blocks => 2 pools
+        # Compute final spatial size after pooling
+        pool_count = num_blocks // 2
         final_h = h // (2 ** pool_count)
         final_w = w // (2 ** pool_count)
 
         # Final linear layer => out_features
-        self.final_fc = nn.Linear(
-            current_channels * final_h * final_w, out_features
-        )
-        nn.init.kaiming_normal_(self.final_fc.weight)
+        self.final_fc = nn.Linear(current_channels * final_h * final_w, out_features)
+        init.kaiming_normal_(self.final_fc.weight)
         nn.init.constant_(self.final_fc.bias, 0.0)
 
-        # Additional LayerNorm to keep final embedding stable
+        # Additional LayerNorm for the flattened output
         self.final_ln = nn.LayerNorm(out_features)
-
-        self.out_features = out_features
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        x => (B, 2500) for a 50x50 map
+        x => (B, 2500) for a 50x50 map, with 1 channel.
         1) reshape => (B,1,h,w)
-        2) add coordinate channels => (B,3,h,w)
-        3) entry conv => LN => ReLU
-        4) pass residual blocks
-        5) flatten => final fc => LN => (B, out_features)
+        2) entry conv => LN => ReLU
+        3) pass residual blocks
+        4) flatten => final fc => LN => (B, out_features)
         """
         B, N = x.shape
         if N != self.h * self.w:
-            raise ValueError(
-                f"Expected input size {self.h*self.w}, got {N}."
-            )
+            raise ValueError(f"Expected input size {self.h*self.w}, got {N}.")
 
         # 1) reshape => (B,1,h,w)
-        x_img = x.view(B, 1, self.h, self.w)
+        x_img = x.reshape(B, 1, self.h, self.w)
 
-        # 2) coordinate channels => (B,3,h,w)
-        device = x.device
-        rows = torch.linspace(0, 1, self.h, device=device).view(1, 1, self.h, 1)
-        cols = torch.linspace(0, 1, self.w, device=device).view(1, 1, 1, self.w)
-
-        row_channel = rows.expand(B, 1, self.h, self.w)  # (B,1,h,w)
-        col_channel = cols.expand(B, 1, self.h, self.w)  # (B,1,h,w)
-
-        x_coord = torch.cat([x_img, row_channel, col_channel], dim=1).contiguous()
-        # now x_coord => (B,3,h,w)
-
-        # 3) entry conv => LN => ReLU
-        out = self.entry_conv(x_coord)
+        # 2) entry conv => LN => ReLU
+        out = self.entry_conv(x_img)
         out = self.entry_ln(out)
         out = F.relu(out)
 
-        # 4) residual blocks (with every 2 blocks => MaxPool)
-        out = self.res_blocks(out)  # => shape (B, C2, H2, W2)
+        # 3) residual blocks (+ occasional pooling)
+        out = self.res_blocks(out)  # => (B, channels, H2, W2)
 
-        # 5) flatten => final fc => LN
+        # 4) flatten => final fc => LN
         B2, C2, H2, W2 = out.shape
-        out_flat = out.contiguous().view(B2, C2 * H2 * W2)
+        out_flat = out.reshape(B2, C2 * H2 * W2)
         emb = self.final_fc(out_flat)
         emb = self.final_ln(emb)
 

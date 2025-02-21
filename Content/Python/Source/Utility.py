@@ -108,13 +108,15 @@ class RunningMeanStdNormalizer:
     B*T*... samples across each feature dimension.
     """
 
-    def __init__(self, epsilon: float = 1e-4, device: torch.device = torch.device("cpu")):
+    def __init__(self, warmup_steps: int = 0, epsilon: float = 1e-4, device: torch.device = torch.device("cpu")):
         """
         :param epsilon: initial count to avoid divide-by-zero
         :param device: store mean/var on this device
         """
         self.device = device
         self.epsilon = epsilon
+        self.warmup_steps = warmup_steps
+        self.current_step = 0
 
         # stats[key] = (mean: Tensor, var: Tensor, count: float)
         # single Tensors store under key="__single__"
@@ -128,6 +130,13 @@ class RunningMeanStdNormalizer:
         If 'x' is a dict => we handle each key's last dimension separately.
         If 'x' is a single Tensor => store in self.stats["__single__"].
         """
+        # Stop calling update if warmup steps have been exceeded
+        if self.warmup_steps > 0:
+            self.current_step += 1
+            skip_update = self.warmup_steps < self.current_step
+            if skip_update:
+                return
+
         if isinstance(x, torch.Tensor):
             self._update_single(x, key="__single__")
         elif isinstance(x, dict):

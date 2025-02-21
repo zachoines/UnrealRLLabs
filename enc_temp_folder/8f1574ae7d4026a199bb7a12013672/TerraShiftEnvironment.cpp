@@ -714,7 +714,7 @@ FVector ATerraShiftEnvironment::GenerateRandomGridLocation() const
     // 3) pick random cell from FreeIndices
     int32 chosenIdx = FreeIndices[FMath::RandRange(0, FreeIndices.Num() - 1)];
     FVector location = GridCenterPoints[chosenIdx];
-    location.Z = Grid->GetActorLocation().Z + (CellSize * MaxColumnHeight); // slightly above wave peak
+    location.Z = Grid->GetActorLocation().Z + MaxColumnHeight; // slightly above wave peak
     return location;
 }
 
@@ -813,7 +813,7 @@ void ATerraShiftEnvironment::UpdateGridObjectFlags()
     // Vertical bounds: let’s allow from (PlatformZ) up to (Grid->GetActorLocation().Z + some margin)
     // Because Grid is placed at PlatformZ + MaxColumnHeight, we can allow it a bit above that.
     float MinZ = Platform->GetActorLocation().Z - (CellSize * 2.0f);  // a bit below platform
-    float MaxZ = Grid->GetActorLocation().Z + (CellSize * MaxColumnHeight * 2.0f);      // a bit above the grid
+    float MaxZ = Grid->GetActorLocation().Z + (CellSize * 2.0f);      // a bit above the grid
 
     for (int32 AgentIndex = 0; AgentIndex < CurrentAgents; ++AgentIndex)
     {

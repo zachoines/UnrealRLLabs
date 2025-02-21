@@ -213,6 +213,9 @@ private:
      */
     FVector GenerateRandomGridLocation() const;
 
+
+    FMatrix2D ComputeCollisionDistanceMatrix() const;
+
     /**
      * Retrieves the current state of a specific agent.
      * @param AgentIndex Index of the agent.

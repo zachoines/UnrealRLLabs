@@ -39,7 +39,6 @@ class MAPOCAAgent(Agent):
         self.baseline_loss_coeff = agent_cfg.get("baseline_loss_coeff", 0.5)
         self.entropy_coeff       = agent_cfg.get("entropy_coeff", 0.01)
         self.max_grad_norm       = agent_cfg.get("max_grad_norm", 0.5)
-        self.normalize_rewards   = agent_cfg.get("normalize_rewards", False)
         self.normalize_adv       = agent_cfg.get("normalize_advantages", False)
         self.ppo_clip_range      = agent_cfg.get("ppo_clip_range", 0.1)
 
@@ -123,11 +122,29 @@ class MAPOCAAgent(Agent):
         if ent_sched_cfg:
             self.entropy_scheduler = LinearValueScheduler(**ent_sched_cfg)
 
+        policy_clip_sched_cfg = agent_cfg["schedulers"].get("policy_clip", None)
+        self.policy_clip_scheduler = None
+        if policy_clip_sched_cfg:
+            self.policy_clip_scheduler = LinearValueScheduler(**policy_clip_sched_cfg)
+
+        value_clip_sched_cfg = agent_cfg["schedulers"].get("value_clip", None)
+        self.value_clip_scheduler = None
+        if value_clip_sched_cfg:
+            self.value_clip_scheduler = LinearValueScheduler(**value_clip_sched_cfg)
+
+        grad_norm_sched_cfg = agent_cfg["schedulers"].get("max_grad_norm", None)
+        self.max_grad_norm_scheduler = None
+        if grad_norm_sched_cfg:
+            self.max_grad_norm_scheduler = LinearValueScheduler(**grad_norm_sched_cfg)
+
         # Normalizers
-        if self.normalize_rewards:
-            self.reward_norm = RunningMeanStdNormalizer(device=device)
-        else:
-            self.reward_norm = None
+        rewards_normalization_cfg = agent_cfg.get('rewards_normalizer', None)
+        self.rewards_normalizer = None
+        if rewards_normalization_cfg:
+            self.rewards_normalizer = RunningMeanStdNormalizer(
+                **rewards_normalization_cfg,
+                device=self.device
+            )
 
     def parameters(self):
         return (
@@ -198,9 +215,9 @@ class MAPOCAAgent(Agent):
 
         # maybe norm rewards
         rewards_mean = rewards.mean()
-        if self.reward_norm:
-            self.reward_norm.update(rewards)
-            rewards = self.reward_norm.normalize(rewards)
+        if self.rewards_normalizer:
+            self.rewards_normalizer.update(rewards)
+            self.rewards_normalizer.normalize(rewards)
 
         # 1) gather old data
         with torch.no_grad():
@@ -244,6 +261,20 @@ class MAPOCAAgent(Agent):
             nB = (NS + self.mini_batch_size - 1)//self.mini_batch_size
 
             for b in range(nB):
+
+                # Step other schedulers
+                if self.entropy_scheduler:
+                    self.entropy_coeff = self.entropy_scheduler.step()
+
+                if self.policy_clip_scheduler:
+                    self.ppo_clip_range = self.policy_clip_scheduler.step()
+
+                if self.value_clip_scheduler:
+                    self.value_clip_range = self.value_clip_scheduler.step()
+
+                if self.max_grad_norm_scheduler:
+                    self.max_grad_norm = self.max_grad_norm_scheduler.step()
+
                 start = b*self.mini_batch_size
                 end   = min((b+1)*self.mini_batch_size, NS)
                 mb_idx= idxes[start:end]
@@ -303,11 +334,8 @@ class MAPOCAAgent(Agent):
                 else:
                     base_loss = 0.5 * F.mse_loss(new_base_mb, ret_mb_exp)
 
-                # final
+                # final loss
                 ent_mean = ent_mb.mean()
-                if self.entropy_scheduler:
-                    self.entropy_coeff = self.entropy_scheduler.step()
-
                 total_loss = pol_loss \
                            + self.value_loss_coeff*val_loss \
                            + self.baseline_loss_coeff*base_loss \
@@ -370,7 +398,7 @@ class MAPOCAAgent(Agent):
         return out_rets
 
     def _ppo_clip_loss(self, new_lp, old_lp, adv, clip_range):
-        diff = (new_lp - old_lp) # .clamp(-10, 10) # Enable if there is instability 
+        diff = (new_lp - old_lp).clamp(-10, 10) # Enable if there is instability 
         ratio = torch.exp(diff)
         clipped = torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
         obj1 = ratio * adv

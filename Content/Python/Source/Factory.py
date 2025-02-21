@@ -27,14 +27,9 @@ class AgentEnvFactory:
         return agent, env_comm
 
     def create_runner(self, agent: Agent, agentComm: SharedMemoryInterface) -> RLRunner:
-        train_params = self.config['train']
-        normalizeStates = train_params.get('normalize_states', False)
-        saveFrequency  = train_params.get('saveFrequency', 10)
-
         runner = RLRunner(
             agent=agent, 
             agentComm=agentComm, 
-            normalizeStates=normalizeStates, 
-            saveFrequency=saveFrequency
+            config=self.config
         )
         return runner

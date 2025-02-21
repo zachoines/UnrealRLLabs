@@ -68,6 +68,9 @@ void AGridObjectManager::SpawnGridObjectAtIndex(int32 Index, FVector InWorldLoca
     if (GridObject) {
         // Adjust the GridObject's location to ensure it's above the grid
         FVector Location = InWorldLocation;
+        FBoxSphereBounds GridObjectBounds = GridObject->MeshComponent->CalcLocalBounds();
+        FVector LocalOffsets = GridObjectBounds.BoxExtent * GridObject->MeshComponent->GetRelativeScale3D();
+        Location.Z += LocalOffsets.Z * 4; // So GridObjects don't spawn "in" each other, but rather fall onto the grid
 
         // Reset and activate the GridObject
         GridObject->ResetGridObject();
