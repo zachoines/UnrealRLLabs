@@ -3,23 +3,46 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 
-// Local includes
+#include "BaseEnvironment.h"
 #include "ExperienceBuffer.h"
-#include "VectorEnvironment.h"
 #include "SharedMemoryAgentCommunicator.h"
 #include "ActionSpace.h"
+#include "EnvironmentConfig.h"
+#include "RLTypes.h"
 #include "RLRunner.generated.h"
 
-// Forward declaration to avoid circular includes
-class UEnvironmentConfig;
-struct FBaseInitParams;
+/**
+ * Holds “pending” data for each environment with action-repeat:
+ *   - The last state from the beginning of the repeated-block
+ *   - The chosen action
+ *   - Accumulated reward
+ *   - Action repeat counter
+ */
+USTRUCT()
+struct FPendingTransition
+{
+    GENERATED_BODY()
+
+    FState PrevState;
+    FAction Action;
+    float AccumulatedReward;
+    int32 RepeatCounter;
+    bool  bDoneOrTrunc;
+
+    FPendingTransition()
+        : AccumulatedReward(0.f)
+        , RepeatCounter(0)
+        , bDoneOrTrunc(false)
+    {}
+};
 
 /**
- * The RLRunner is responsible for coordinating:
- *   - The VectorEnvironment (multiple Env instances)
- *   - Communication with Python-based RL (via USharedMemoryAgentCommunicator)
- *   - Collecting experiences / training updates
- *   - Handling multi-agent or single-agent setups
+ * The RLRunner orchestrates multiple environment instances for TerraShift,
+ * each with asynchronous action repeat, bridging states & actions
+ * with the Python RL side (SharedMemory).
+ *
+ * It adds transitions to the new UExperienceBuffer,
+ * then triggers `AgentComm->Update()` once each environment has at least `batch_size` transitions.
  */
 UCLASS(Blueprintable, BlueprintType)
 class UNREALRLLABS_API ARLRunner : public AActor
@@ -27,82 +50,86 @@ class UNREALRLLABS_API ARLRunner : public AActor
     GENERATED_BODY()
 
 public:
-    // Sets default values for this actor's properties
     ARLRunner();
 
-    // Called every frame
     virtual void Tick(float DeltaTime) override;
 
-    /**
-     * Initialize the runner:
-     *   1) Spawns the VectorEnvironment with the specified environment class + init-params
-     *   2) Reads necessary config data from EnvConfig
-     *   3) Sets up communicator / experience buffer / multi-agent logic
-     */
+    /** Initialize runner: spawn envs, set up communicator, parse config, etc. */
     void InitRunner(
         TSubclassOf<ABaseEnvironment> EnvironmentClass,
         TArray<FBaseInitParams*> ParamsArray,
         UEnvironmentConfig* InEnvConfig
     );
 
-    /**
-     * Request actions from the Python side, or sample random if not connected
-     */
-    TArray<FAction> GetActions(TArray<FState> States, TArray<float> Dones, TArray<float> Truncs);
-
-    /**
-     * Add a batch of experiences to the replay buffer
-     */
-    void AddExperiences(const TArray<FExperienceBatch>& EnvironmentTrajectories);
-
-    /**
-     * Sample experiences from the buffer
-     */
-    TArray<FExperienceBatch> SampleExperiences(int bSize);
-
-    /**
-     * The current number of agents in each environment (if multi-agent).
-     */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Train Params")
-    int CurrentAgents;
-
 private:
+    // --------------------------
+    //   MAIN FLOW
+    // --------------------------
+    void CollectTransitions();  // Gather Reward/Done/Trunc => finalize transitions if needed
+    void DecideActions();       // For envs that need a new action
+    void StepEnvironments();    // Env->Act(...) calls
 
-    /** Pointer to the vector environment that manages multiple environment instances. */
+    // Each environment is stored in this array
     UPROPERTY()
-    AVectorEnvironment* VectorEnvironment;
+    TArray<ABaseEnvironment*> Environments;
 
-    /** The replay/experience buffer */
+    // For multi-agent
+    bool bIsMultiAgent;
+    int32 MinAgents;
+    int32 MaxAgents;
+    int32 CurrentAgents;
+
+    // Shared buffer
     UPROPERTY()
     UExperienceBuffer* ExperienceBufferInstance;
 
-    /** Shared memory communicator to Python-based RL */
+    // Communicator to Python
     UPROPERTY()
     USharedMemoryAgentCommunicator* AgentComm;
 
-    /** A pointer to our JSON-based environment config. */
+    // Config
     UPROPERTY()
     UEnvironmentConfig* EnvConfig;
 
-    /** Tracking counters */
-    unsigned long int CurrentStep;
-    unsigned long int CurrentUpdate;
+    // Training hyperparams
+    int32 BufferSize;
+    int32 BatchSize;
+    int32 ActionRepeat;
 
-    /** Multi-agent related parameters */
-    int MinAgents;
-    int MaxAgents;
-    bool IsMultiAgent;
+    // For building fallback random actions
+    TArray<int32> DiscreteActionSizes;
+    TArray<FVector2D> ContinuousActionRanges;
 
-    /** Replay buffer capacity and batch size */
-    int BufferSize;
-    int BatchSize;
+    // Per-environment pending transitions
+    TArray<FPendingTransition> Pending;
 
-    /** Number of steps to keep repeating the same action */
-    int ActionRepeat;
+    // Counters
+    uint64 CurrentStep;
+    uint64 CurrentUpdate;
 
-    /** Current repetition count */
-    int ActionRepeatCounter;
+private:
+    // --------------------------
+    //   Internal Helpers
+    // --------------------------
+    void ParseActionSpaceFromConfig();
+    FAction EnvSample(int EnvIndex);
 
-    /** The last-chosen actions */
-    TArray<FAction> Actions;
+    /** Return environment's current state (multi-agent combined or single). */
+    FState GetEnvState(ABaseEnvironment* Env);
+
+    /** Reset environment i => store new state in the pending struct */
+    void ResetEnvironment(int EnvIndex);
+
+    /** Start a new block for environment i after finishing old. */
+    void StartNewBlock(int EnvIndex, const FState& State);
+
+    /** Finalize the pending block => create an FExperience => add to buffer => maybe train update. */
+    void FinalizeTransition(int EnvIndex, const FState& NextState, bool bDone, bool bTrunc);
+
+    /** Possibly do a training update => if all envs have at least BatchSize experiences. */
+    void MaybeTrainUpdate();
+
+    /** Gather actions from Python or fallback random. */
+    TArray<FAction> GetActionsFromPython(const TArray<FState>& EnvStates, const TArray<float>& EnvDones, const TArray<float>& EnvTruncs);
+    TArray<FAction> SampleAllEnvActions();
 };

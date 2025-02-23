@@ -6,6 +6,7 @@ import torch.nn.init as init
 from typing import Dict, Union, List, Any
 from torch.distributions import Normal
 from abc import ABC, abstractmethod
+from .Utility import init_weights_leaky_relu, init_weights_leaky_relu_conv
 
 class BasePolicyNetwork(nn.Module, ABC):
     """
@@ -68,45 +69,31 @@ class TanhContinuousPolicyNetwork(BasePolicyNetwork):
         self.entropy_method = entropy_method
         self.n_entropy_samples = n_entropy_samples
 
-        # Shared MLP trunk
         self.shared = nn.Sequential(
             nn.Linear(in_features, hidden_size),
-            nn.LeakyReLU(),
-            nn.LayerNorm(hidden_size),
-            nn.Linear(hidden_size, hidden_size),
-            nn.LeakyReLU(),
-            nn.LayerNorm(hidden_size)
+            nn.LeakyReLU(0.01),
         )
 
         self.mean_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
-            nn.LeakyReLU(),
-            nn.LayerNorm(hidden_size),
+            nn.LeakyReLU(0.01),
             nn.Linear(hidden_size, out_features),
         )
 
         self.log_std_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
-            nn.LeakyReLU(),
-            nn.LayerNorm(hidden_size),
+            nn.LeakyReLU(0.01),
             nn.Linear(hidden_size, out_features),
         )
 
-        # Properly init all linear modules
-        def init_linear(layer):
-            nn.init.xavier_normal_(layer.weight)
-            nn.init.constant_(layer.bias, 0.0)
-
-        for mod in (self.shared, self.mean_head, self.log_std_head):
-            for sublayer in mod:
-                if isinstance(sublayer, nn.Linear):
-                    init_linear(sublayer)
+        self.shared.apply(lambda m: init_weights_leaky_relu(m, 0.01))
+        self.mean_head.apply(lambda m: init_weights_leaky_relu(m, 0.01))
+        self.log_std_head.apply(lambda m: init_weights_leaky_relu(m, 0.01))
 
     def forward(self, x):
         feats = self.shared(x)
         mean  = self.mean_head(feats)
         raw_log_std = self.log_std_head(feats)
-        # clamp log_std => [log_std_min, log_std_max]
         clamped_log_std = self.log_std_min + 0.5 * (self.log_std_max - self.log_std_min) * (
             torch.tanh(raw_log_std) + 1.0
         )
@@ -227,11 +214,12 @@ class DiscretePolicyNetwork(BasePolicyNetwork):
         # if out_features is list => multi-discrete
         self.out_is_multi = isinstance(out_features, list)
 
+        # Shared MLP for hidden layers
         self.shared = nn.Sequential(
             nn.Linear(in_features, hidden_size),
-            nn.LeakyReLU(),
+            nn.LeakyReLU(0.01),
             nn.Linear(hidden_size, hidden_size),
-            nn.LeakyReLU(),
+            nn.LeakyReLU(0.01),
         )
 
         if not self.out_is_multi:
@@ -244,18 +232,10 @@ class DiscretePolicyNetwork(BasePolicyNetwork):
                 for branch_sz in out_features
             ])
 
-        for layer in self.shared:
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_normal_(layer.weight)
-                nn.init.constant_(layer.bias, 0.0)
-
-        if not self.out_is_multi:
-            nn.init.xavier_normal_(self.head.weight)
-            nn.init.constant_(self.head.bias, 0.0)
-        else:
-            for lin in self.branch_heads:
-                nn.init.xavier_normal_(lin.weight)
-                nn.init.constant_(lin.bias, 0.0)
+        # ---------------------------------------------
+        #  Apply Kaiming init (LeakyReLU) to all Linear layers
+        # ---------------------------------------------
+        self.apply(lambda m: init_weights_leaky_relu(m, 0.01))
 
     def forward(self, x: torch.Tensor):
         """
@@ -351,9 +331,9 @@ class RSA(nn.Module):
     """
     def __init__(self, embed_size: int, heads: int, dropout_rate=0.0):
         super(RSA, self).__init__()
-        self.query_embed = self._linear_layer(embed_size, embed_size)
-        self.key_embed   = self._linear_layer(embed_size, embed_size)
-        self.value_embed = self._linear_layer(embed_size, embed_size)
+        self.query_embed = nn.Linear(embed_size, embed_size)
+        self.key_embed   = nn.Linear(embed_size, embed_size)
+        self.value_embed = nn.Linear(embed_size, embed_size)
         
         self.input_norm  = nn.LayerNorm(embed_size)
         self.output_norm = nn.LayerNorm(embed_size)
@@ -362,11 +342,9 @@ class RSA(nn.Module):
             embed_size, heads, batch_first=True, dropout=dropout_rate
         )
 
-    def _linear_layer(self, in_size: int, out_size: int) -> nn.Module:
-        layer = nn.Linear(in_size, out_size)
-        init.kaiming_normal_(layer.weight)
-        nn.init.constant_(layer.bias, 0.0)
-        return layer
+        self.query_embed.apply(lambda m: init_weights_leaky_relu(m, 0.01))
+        self.key_embed.apply(lambda m: init_weights_leaky_relu(m, 0.01))
+        self.value_embed.apply(lambda m: init_weights_leaky_relu(m, 0.01))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -377,39 +355,51 @@ class RSA(nn.Module):
         k = self.key_embed(x)
         v = self.value_embed(x)
         out, _ = self.multihead_attn(q, k, v)
-        out = x + out  # residual
+        out = x + out
         return self.output_norm(out)
 
 
 class AgentIDPosEnc(nn.Module):
     """
-    For each integer agent index i, produce a sinusoidal+linear embedding of size id_embed_dim.
+    Produces a sinusoidal feature embedding for each integer agent ID,
+    then passes it through a Linear layer => (..., id_embed_dim).
+
+    Typical usage:
+      - agent_ids => shape (S,E,NA) of integer indices
+      - output => shape (S,E,NA,id_embed_dim)
     """
     def __init__(self, num_freqs: int = 8, id_embed_dim: int = 32):
         super().__init__()
         self.num_freqs   = num_freqs
         self.id_embed_dim= id_embed_dim
-        self.linear = nn.Linear(2*num_freqs, id_embed_dim)
-        init.kaiming_normal_(self.linear.weight)
-        nn.init.constant_(self.linear.bias, 0.0)
+
+        # We transform (2 * num_freqs) features into id_embed_dim
+        self.linear = nn.Linear(2 * num_freqs, id_embed_dim)
+        self.linear.apply(lambda m: init_weights_leaky_relu(m, 0.01))
 
     def sinusoidal_features(self, agent_ids: torch.Tensor) -> torch.Tensor:
         """
-        agent_ids => (S,E,NA) int => returns => (S,E,NA,2*num_freqs)
+        agent_ids => (S,E,NA), int indices
+        Returns => (S,E,NA, 2*num_freqs) with [sin(...), cos(...)]
         """
+        # Convert agent IDs to float
         agent_ids_f = agent_ids.float()
+
+        # freq_exponents => [0..num_freqs-1]
         freq_exponents = torch.arange(self.num_freqs, device=agent_ids.device, dtype=torch.float32)
-        scales = torch.pow(2.0, freq_exponents)  # (num_freqs,)
+        scales = torch.pow(2.0, freq_exponents)  # shape => (num_freqs,)
 
         # shape => (S,E,NA,1)
         agent_ids_f = agent_ids_f.unsqueeze(-1)
+
         # shape => (1,num_freqs)
         scales = scales.reshape(1, self.num_freqs)
 
-        multiplied = agent_ids_f*scales  # => (S,E,NA,num_freqs)
+        multiplied = agent_ids_f * scales  # => (S,E,NA,num_freqs)
         sines  = torch.sin(multiplied)
         cosines= torch.cos(multiplied)
         feats  = torch.cat([sines, cosines], dim=-1)  # => (S,E,NA,2*num_freqs)
+
         return feats
 
     def forward(self, agent_ids: torch.Tensor) -> torch.Tensor:
@@ -417,32 +407,66 @@ class AgentIDPosEnc(nn.Module):
         agent_ids => shape (S,E,NA)
         returns => (S,E,NA, id_embed_dim)
         """
+        # Build sinusoidal features => (S,E,NA, 2*num_freqs)
         raw_feat = self.sinusoidal_features(agent_ids)
-        S,E,NA,D = raw_feat.shape
-        flat = raw_feat.contiguous().reshape(S*E*NA, D)
-        out  = self.linear(flat)
-        return out.reshape(S,E,NA,self.id_embed_dim)
+
+        # Flatten => (S*E*NA, 2*num_freqs)
+        S, E, NA, D = raw_feat.shape
+        flat = raw_feat.reshape(S * E * NA, D)
+
+        # Pass through linear => (S*E*NA, id_embed_dim)
+        out = self.linear(flat)
+
+        # Reshape => (S,E,NA, id_embed_dim)
+        return out.reshape(S, E, NA, self.id_embed_dim)
 
 
 class LinearNetwork(nn.Module):
     """
-    A simple utility MLP block: Linear + optional activation + dropout.
-    Used by state encoders, action encoders, etc.
+    A simple MLP block that includes:
+      - Linear(in_features, out_features)
+      - Optional Dropout
+      - Optional LeakyReLU(0.01)
+      - Optional LayerNorm
+
+    Args:
+        in_features (int):  input feature dimension
+        out_features (int): output feature dimension
+        dropout_rate (float): if >0, adds Dropout(dropout_rate)
+        activation (bool): if True, adds LeakyReLU(0.01)
+        layer_norm (bool): if True, adds LayerNorm(out_features) at the end
+
+    Returns:
+        A sequential block => [Linear, (Dropout?), (LeakyReLU?), (LayerNorm?)]
     """
-    def __init__(self, in_features: int, out_features: int,
-                 dropout_rate=0.0, activation=True):
-        super(LinearNetwork, self).__init__()
-        layers = [nn.Linear(in_features, out_features)]
+    def __init__(self,
+                 in_features: int,
+                 out_features: int,
+                 dropout_rate: float = 0.0,
+                 activation: bool = True,
+                 layer_norm: bool = False):
+        super().__init__()
+        layers = []
+
+        # 1) mandatory linear
+        layers.append(nn.Linear(in_features, out_features))
+
+        # 2) optional dropout
         if dropout_rate > 0.0:
             layers.append(nn.Dropout(dropout_rate))
+
+        # 3) optional leaky relu
         if activation:
-            layers.append(nn.LeakyReLU())
+            layers.append(nn.LeakyReLU(0.01))
+
+        # 4) optional layer norm
+        if layer_norm:
+            layers.append(nn.LayerNorm(out_features))
+
         self.model = nn.Sequential(*layers)
 
-        for layer in self.model:
-            if isinstance(layer, nn.Linear):
-                init.kaiming_normal_(layer.weight)
-                nn.init.constant_(layer.bias, 0.0)
+        # apply Kaiming init for all linear submodules
+        self.model.apply(lambda m: init_weights_leaky_relu(m, 0.01))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
@@ -450,28 +474,28 @@ class LinearNetwork(nn.Module):
 
 class GeneralObsEncoder(nn.Module):
     """
-    A dictionary-based encoder for multiple keys: "central", "agent", etc.
-    Then merges them + (optionally) agent ID embeddings => aggregator net.
-    Produces shape => (S,E,NA, aggregator_output_size).
+    A dictionary-based encoder that handles multiple observation types ("central", "agent", etc.),
+    merges them (+ optional agent ID embeddings), and passes the merged tensor through
+    an aggregator net to produce a final embedding of shape (S,E,NA, aggregator_output_size).
     """
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
         self.encoder_cfgs           = config["encoders"]
         self.aggregator_output_size = config["aggregator_output_size"]
 
-        # Build sub-encoders
         self.encoders        = nn.ModuleDict()
         self.sub_enc_outputs = {}
         sum_dims = 0
         has_agent = False
 
+        # Build sub-encoders from config
         for enc_info in self.encoder_cfgs:
             key       = enc_info["key"]
             net_class = enc_info["network"]
             params    = enc_info["params"]
 
             if net_class == "SpatialNetwork2D":
-                sub_enc = SpatialNetwork2D(**params)
+                sub_enc = SpatialNetwork2D(**params)   # e.g. returns out_features
                 out_dim = sub_enc.out_features
             elif net_class == "LinearNetwork":
                 sub_enc = LinearNetwork(**params)
@@ -486,72 +510,81 @@ class GeneralObsEncoder(nn.Module):
             if key == "agent":
                 has_agent = True
 
-        # If there's an "agent" key, we also expect "agent_id_enc" in config
+        # Agent ID encoding
         self.agent_id_enc = None
         self.agent_id_dim = 0
         if has_agent:
             if "agent_id_enc" not in config:
-                raise ValueError("agent_id_enc not found in config despite 'agent' key.")
+                raise ValueError("agent_id_enc not found despite 'agent' key present.")
             id_cfg = config["agent_id_enc"]
             self.agent_id_enc = AgentIDPosEnc(**id_cfg)
             self.agent_id_dim = id_cfg["id_embed_dim"]
-            sum_dims         += self.agent_id_dim
+            sum_dims += self.agent_id_dim
 
-        # --------------------------------------------------
-        #  Custom aggregator net: sum_dims -> aggregator_output_size
-        # --------------------------------------------------
+        # Aggregator net: merges sub-encoder outputs into aggregator_output_size
         self.aggregator_net = nn.Sequential(
-            nn.Linear(sum_dims, self.aggregator_output_size),
-            nn.LeakyReLU(),
-            nn.LayerNorm(self.aggregator_output_size)
+            LinearNetwork(
+                sum_dims,
+                self.aggregator_output_size,
+                activation=True,
+                layer_norm=True
+            ),
+            # LinearNetwork(
+            #     sum_dims // 2,
+            #     self.aggregator_output_size,
+            #     activation=True,
+            #     layer_norm=True
+            # )
         )
+        
 
     def forward(self, obs_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
-        obs_dict: e.g. { "central":(S,E,cDim), "agent":(S,E,NA,aDim) }
-        => returns => (S,E,NA, aggregator_output_size)
+        obs_dict can have:
+          - "central": shape (S,E,cDim)
+          - "agent":   shape (S,E,NA,aDim)
+        Returns => (S,E,NA, aggregator_output_size)
         """
         sub_outputs = []
-        final_S, final_E, final_NA = 1,1,1  # placeholders
+        final_S, final_E, final_NA = 1, 1, 1
 
-        # 1) Build sub-encoder outputs
+        # Build sub-encoder outputs
         for key, sub_enc in self.encoders.items():
             x = obs_dict.get(key, None)
             if x is None:
                 continue
 
             if key == "central":
-                # shape => (S,E,cDim)
-                S,E,cDim = x.shape
-                b = S*E
-                emb_2d = sub_enc(x.contiguous().reshape(b, cDim))  # => (b, out_dim)
-                out_dim= self.sub_enc_outputs[key]
-                emb_3d = emb_2d.reshape(S,E,out_dim)               # => (S,E,out_dim)
-                emb_4d = emb_3d.unsqueeze(2)                    # => (S,E,1,out_dim)
-                final_S, final_E, final_NA = S,E,1
+                # (S,E,cDim)
+                S, E, cDim = x.shape
+                b = S * E
+                emb_2d = sub_enc(x.reshape(b, cDim))     # => (b, out_dim)
+                out_dim = self.sub_enc_outputs[key]
+                emb_3d = emb_2d.reshape(S, E, out_dim)   # => (S,E,out_dim)
+                emb_4d = emb_3d.unsqueeze(2)          # => (S,E,1,out_dim)
+                final_S, final_E, final_NA = S, E, 1
                 sub_outputs.append(emb_4d)
 
             elif key == "agent":
-                # shape => (S,E,NA,aDim)
-                S,E,NA,aDim = x.shape
-                b = S*E*NA
-                emb_2d = sub_enc(x.contiguous().reshape(b, aDim))  # => (b, out_dim)
-                out_dim= self.sub_enc_outputs[key]
-                emb_4d = emb_2d.reshape(S,E,NA,out_dim)            # => (S,E,NA,out_dim)
-                final_S, final_E, final_NA = S,E,NA
+                # (S,E,NA,aDim)
+                S, E, NA, aDim = x.shape
+                b = S * E * NA
+                emb_2d = sub_enc(x.reshape(b, aDim))     # => (b, out_dim)
+                out_dim = self.sub_enc_outputs[key]
+                emb_4d = emb_2d.reshape(S, E, NA, out_dim)
+                final_S, final_E, final_NA = S, E, NA
                 sub_outputs.append(emb_4d)
 
-        # 2) If there's an agent => add agent ID embeddings
+        # If there's an agent => add agent ID embeddings
         if (self.agent_id_enc is not None) and ("agent" in obs_dict):
             agent_tensor = obs_dict["agent"]
-            S,E,NA,_ = agent_tensor.shape
-            agent_ids = torch.arange(NA, device=agent_tensor.device).reshape(1,1,NA)
-            agent_ids = agent_ids.expand(S,E,NA)  # => (S,E,NA)
-            id_4d = self.agent_id_enc(agent_ids)  # => (S,E,NA, id_embed_dim)
+            S, E, NA, _ = agent_tensor.shape
+            agent_ids = torch.arange(NA, device=agent_tensor.device).reshape(1, 1, NA)
+            agent_ids = agent_ids.expand(S, E, NA)  # => (S,E,NA)
+            id_4d = self.agent_id_enc(agent_ids)    # => (S,E,NA,id_dim)
             sub_outputs.append(id_4d)
 
-        # 3) If we only had "central" => final_NA=1; If we had "agent" => final_NA=NA
-        # Expand each sub-output to match final_NA
+        # Expand sub-outputs to match final_NA if needed
         for i in range(len(sub_outputs)):
             so = sub_outputs[i]
             # shape => (S,E,xNA, dim)
@@ -561,69 +594,62 @@ class GeneralObsEncoder(nn.Module):
 
         if len(sub_outputs) == 0:
             # produce (1,1,1,0)
-            return torch.zeros((1,1,1,0), device=next(self.parameters()).device)
+            return torch.zeros((1, 1, 1, 0), device=next(self.parameters()).device)
 
-        # cat => shape => (S,E,NA, sum_dims)
+        # Concatenate => (S,E,NA, sum_dims)
         combined = torch.cat(sub_outputs, dim=-1)
+        S2, E2, NA2, sum_dim = combined.shape
+        flat = combined.reshape(S2 * E2 * NA2, sum_dim)
 
-        # flatten => aggregator_net => shape => (S*E*NA, aggregator_output_size)
-        S2,E2,NA2,sum_dim = combined.shape
-        flat = combined.reshape(S2*E2*NA2, sum_dim)
-
-        # pass aggregator_net => LN => shape => (S2*E2*NA2, aggregator_output_size)
+        # aggregator_net => LN => shape => (S2*E2*NA2, aggregator_output_size)
         agg_out_2d = self.aggregator_net(flat)
 
-        return agg_out_2d.reshape(S2,E2,NA2,self.aggregator_output_size)
+        # reshape => (S2,E2,NA2, aggregator_output_size)
+        return agg_out_2d.reshape(S2, E2, NA2, self.aggregator_output_size)
 
 
 class StatesEncoder(nn.Module):
-    def __init__(self, state_dim, output_size, dropout_rate=0.0, activation=True):
-        super(StatesEncoder, self).__init__()
-        self.net = nn.Sequential(
-            LinearNetwork(state_dim, output_size, dropout_rate, activation),
-            nn.LayerNorm(output_size)
-        )
+    """
+    Encodes a state vector of size (B, state_dim) into (B, output_size).
+    Optionally includes dropout and a LeakyReLU activation.
+    """
+    def __init__(self, state_dim, output_size, dropout_rate=0.0, activation=False, layer_norm: bool = True):
+        super().__init__()
+        self.net = LinearNetwork(state_dim, output_size, dropout_rate, activation, layer_norm)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
 
 class StatesActionsEncoder(nn.Module):
+    """
+    Concatenates state + action => feeds into a small MLP => (B, output_size).
+    Useful for baseline or Q-value networks that need (s,a) pairs.
+    """
     def __init__(self, state_dim, action_dim, output_size,
-                 dropout_rate=0.0, activation=True):
-        super(StatesActionsEncoder, self).__init__()
-        self.net = nn.Sequential(
-            LinearNetwork(state_dim + action_dim, output_size, dropout_rate, activation),
-            nn.LayerNorm(output_size)
-        )
+                 dropout_rate=0.0, activation=False, layer_norm: bool = True):
+        super().__init__()
+        self.net = self.net = LinearNetwork(state_dim + action_dim, output_size, dropout_rate, activation, layer_norm)
 
     def forward(self, obs: torch.Tensor, act: torch.Tensor) -> torch.Tensor:
         x = torch.cat([obs, act], dim=-1)
         return self.net(x)
-    
+
 
 class ValueNetwork(nn.Module):
     """
-    A small MLP for producing a scalar value from a per-env or per-agent embedding.
-    Input => (Batch, Features)
-    Output => (Batch, 1)
+    Produces a scalar value from an embedding of shape (B, in_features).
+    Typically used for value functions or baselines in RL.
     """
     def __init__(self, in_features: int, hidden_size: int, dropout_rate=0.0):
-        super(ValueNetwork, self).__init__()
+        super().__init__()
         self.value_net = nn.Sequential(
             nn.Linear(in_features, hidden_size),
-            nn.LeakyReLU(),
-            nn.LayerNorm(hidden_size),
-            nn.Linear(hidden_size, hidden_size),
-            nn.LeakyReLU(),
-            nn.LayerNorm(hidden_size),
+            nn.LeakyReLU(0.01),
             nn.Linear(hidden_size, 1)
         )
-        # Initialize weights
-        for layer in self.value_net:
-            if isinstance(layer, nn.Linear):
-                nn.init.kaiming_normal_(layer.weight)
-                # bias default is 0 or small
+        # Apply Kaiming init to these layers
+        self.value_net.apply(lambda m: init_weights_leaky_relu(m, 0.01))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.value_net(x)
@@ -665,7 +691,6 @@ class SharedCritic(nn.Module):
         flat   = mean_x.reshape(S*E*A, H)
         base   = self.baseline_head(flat).reshape(S,E,A,1)
         return base
-
 
 
 class MultiAgentEmbeddingNetwork(nn.Module):
@@ -773,66 +798,66 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         return group_obs.contiguous(), group_act.contiguous()
 
 
-class LN2d(nn.Module):
+class GN2d(nn.Module):
     """
-    Applies LayerNorm across the channel dimension only.
-    Shape: (B, C, H, W) -> LN -> same shape.
+    Applies GroupNorm to a (B, C, H, W) tensor.
+    By default, num_groups=1 => 'InstanceNorm'-like behavior,
+    normalizing each channel across HxW for each sample.
     """
-    def __init__(self, num_channels: int):
+    def __init__(self, num_channels: int, num_groups: int = 1):
         super().__init__()
-        self.ln = nn.LayerNorm(num_channels)  # LN over the 'channel' dimension
+        self.gn = nn.GroupNorm(num_groups=num_groups, num_channels=num_channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x => (B, C, H, W)
-        # 1) permute => (B, H, W, C)
-        x = x.permute(0, 2, 3, 1)
-        # 2) apply LN over last dimension (channels)
-        x = self.ln(x)
-        # 3) permute back => (B, C, H, W)
-        x = x.permute(0, 3, 1, 2)
-        return x
+        # x => shape (B, C, H, W)
+        return self.gn(x)
 
 
 class ResidualBlock(nn.Module):
     """
-    A simple residual block with LN2d (channel-only LN).
+    A simple residual block with channel-only GroupNorm:
+      conv1 -> GN2d -> LeakyReLU
+      conv2 -> GN2d
+      skip + final LeakyReLU
     """
-    def __init__(self, channels: int, kernel_size=3, padding=1):
+    def __init__(self, channels: int, kernel_size: int = 3, padding: int = 1):
         super().__init__()
         self.conv1 = nn.Conv2d(channels, channels, kernel_size, padding=padding)
-        self.ln1   = LN2d(channels)
+        self.gn1   = GN2d(channels)
         self.conv2 = nn.Conv2d(channels, channels, kernel_size, padding=padding)
-        self.ln2   = LN2d(channels)
+        self.gn2   = GN2d(channels)
 
-        init.kaiming_normal_(self.conv1.weight)
-        nn.init.constant_(self.conv1.bias, 0.0)
-        init.kaiming_normal_(self.conv2.weight)
-        nn.init.constant_(self.conv2.bias, 0.0)
+        # Apply Kaiming init to the conv layers
+        self.apply(lambda m: init_weights_leaky_relu_conv(m, 0.01))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
+
         out = self.conv1(x)
-        out = self.ln1(out)
-        out = F.relu(out)
+        out = self.gn1(out)
+        out = F.leaky_relu(out, negative_slope=0.01)
 
         out = self.conv2(out)
-        out = self.ln2(out)
+        out = self.gn2(out)
 
         out += residual
-        out = F.relu(out)
+        out = F.leaky_relu(out, negative_slope=0.01)
         return out
-
 
 class SpatialNetwork2D(nn.Module):
     """
-    Convolutional network for 2D (h x w) data, using residual blocks + LN2d.
-    The row/column coordinate channels have been removed.
+    2D convolutional network with ResidualBlocks + GroupNorm.
+    Steps:
+      1) Reshape => (B,1,h,w)
+      2) entry conv => GN2d => LeakyReLU
+      3) residual blocks (MaxPool2d every 2 blocks)
+      4) flatten => final fc => LayerNorm => (B, out_features)
     """
     def __init__(
         self,
         h: int = 50,
         w: int = 50,
-        in_channels: int = 1,       # no +2 for coords anymore
+        in_channels: int = 1,
         base_channels: int = 16,
         num_blocks: int = 4,
         out_features: int = 128
@@ -842,71 +867,59 @@ class SpatialNetwork2D(nn.Module):
         self.w = w
         self.out_features = out_features
 
-        # Input channels (no extra coordinate channels)
-        self.initial_in_channels = in_channels
+        # 1) Entry conv => GN2d => LeakyReLU
+        self.entry_conv = nn.Conv2d(in_channels, base_channels, kernel_size=3, padding=1)
+        self.entry_gn   = GN2d(base_channels)
 
-        # Entry conv
-        self.entry_conv = nn.Conv2d(
-            self.initial_in_channels,
-            base_channels,
-            kernel_size=3,
-            padding=1
-        )
-        init.kaiming_normal_(self.entry_conv.weight)
-        nn.init.constant_(self.entry_conv.bias, 0.0)
-
-        self.entry_ln = LN2d(base_channels)
-
-        # Residual blocks (with a MaxPool2d every 2 blocks)
+        # 2) Build residual blocks + optional pooling
         blocks = []
         current_channels = base_channels
         for i in range(num_blocks):
             blocks.append(ResidualBlock(current_channels, kernel_size=3, padding=1))
             if (i + 1) % 2 == 0:
                 blocks.append(nn.MaxPool2d(kernel_size=2))
-
         self.res_blocks = nn.Sequential(*blocks)
 
-        # Compute final spatial size after pooling
+        # 3) Final Linear => out_features
         pool_count = num_blocks // 2
         final_h = h // (2 ** pool_count)
         final_w = w // (2 ** pool_count)
-
-        # Final linear layer => out_features
         self.final_fc = nn.Linear(current_channels * final_h * final_w, out_features)
-        init.kaiming_normal_(self.final_fc.weight)
-        nn.init.constant_(self.final_fc.bias, 0.0)
 
-        # Additional LayerNorm for the flattened output
+        # 4) Optionally a layer norm on the final embedding
         self.final_ln = nn.LayerNorm(out_features)
+
+        # Now apply Kaiming init
+        # - conv layers => init_weights_leaky_relu_conv
+        # - linear layers => init_weights_leaky_relu
+        self.entry_conv.apply(lambda m: init_weights_leaky_relu_conv(m, 0.01))
+        self.final_fc.apply(lambda m: init_weights_leaky_relu(m, 0.01))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        x => (B, 2500) for a 50x50 map, with 1 channel.
+        x => (B, N) with N = h*w
         1) reshape => (B,1,h,w)
-        2) entry conv => LN => ReLU
-        3) pass residual blocks
-        4) flatten => final fc => LN => (B, out_features)
+        2) conv => GN2d => LeakyReLU
+        3) residual blocks => flatten => final fc => LN
         """
         B, N = x.shape
         if N != self.h * self.w:
             raise ValueError(f"Expected input size {self.h*self.w}, got {N}.")
 
-        # 1) reshape => (B,1,h,w)
+        # reshape => (B,1,h,w)
         x_img = x.reshape(B, 1, self.h, self.w)
 
-        # 2) entry conv => LN => ReLU
+        # entry conv => groupnorm => leaky relu
         out = self.entry_conv(x_img)
-        out = self.entry_ln(out)
-        out = F.relu(out)
+        out = self.entry_gn(out)
+        out = F.leaky_relu(out, 0.01)
 
-        # 3) residual blocks (+ occasional pooling)
-        out = self.res_blocks(out)  # => (B, channels, H2, W2)
+        # residual blocks (w/ occasional MaxPool2d)
+        out = self.res_blocks(out)
 
-        # 4) flatten => final fc => LN
+        # flatten => final fc => final LN
         B2, C2, H2, W2 = out.shape
         out_flat = out.reshape(B2, C2 * H2 * W2)
         emb = self.final_fc(out_flat)
         emb = self.final_ln(emb)
-
         return emb

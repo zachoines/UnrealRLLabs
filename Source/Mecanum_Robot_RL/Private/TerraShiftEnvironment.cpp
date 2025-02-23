@@ -571,65 +571,93 @@ bool ATerraShiftEnvironment::Trunc()
 float ATerraShiftEnvironment::Reward()
 {
     float StepReward = 0.0f;
-    float TotalDistanceImprovements = 0.0;
+
+    // --- Constants & Scales (tweak as needed) ---
+    constexpr float REACH_GOAL_REWARD = 3.0f;   // Slightly higher than old +2
+    constexpr float FALL_OFF_PENALTY = 0.5f;   // Slightly lower than old -1
+    constexpr float VELOCITY_ALIGN_SCALE = 0.01f;  // Horizontal/vertical movement shaping
+    constexpr float ACCEL_PENALTY_SCALE = 0.0005f;// Penalty scale for "excess" XY & upward Z acceleration
+
+    // Clamps
+    constexpr float MAX_SPEED_ALONG_GOAL = 200.0f; // Example clamp for alignment
+    constexpr float MAX_ACCEL_MAG = 2000.0f;// Example clamp for acceleration
+
+    float DeltaTime = GetWorld()->GetDeltaSeconds();
+    if (DeltaTime < KINDA_SMALL_NUMBER)
+    {
+        // If dt is extremely small, skip any shaping.
+        return 0.0f;
+    }
+
     for (int32 AgentIndex = 0; AgentIndex < CurrentAgents; ++AgentIndex)
     {
-        // (A) Punish falling off platform
+        // Check for event-based rewards or penalties
         if (GridObjectShouldCollectEventReward[AgentIndex] && GridObjectFallenOffGrid[AgentIndex])
         {
-            StepReward -= 1;
-            GridObjectShouldCollectEventReward[AgentIndex] = false;
-        } 
-
-        // (B) Reward reaching goal
-        else if (GridObjectShouldCollectEventReward[AgentIndex] && GridObjectHasReachedGoal[AgentIndex])
-        {
-            StepReward += 2.0f;
+            StepReward -= FALL_OFF_PENALTY;
             GridObjectShouldCollectEventReward[AgentIndex] = false;
         }
-        
-        // (C) If still in play
+        else if (GridObjectShouldCollectEventReward[AgentIndex] && GridObjectHasReachedGoal[AgentIndex])
+        {
+            StepReward += REACH_GOAL_REWARD;
+            GridObjectShouldCollectEventReward[AgentIndex] = false;
+        }
+        // Otherwise, apply continuous shaping if the object is active
         else if (AgentHasActiveGridObject[AgentIndex])
-        {   
+        {
             AGridObject* GridObject = GridObjectManager->GetGridObject(AgentIndex);
             AGoalPlatform* AssignedGoal = GoalPlatforms[AgentGoalIndices[AgentIndex]];
-            FVector ObjLocalPos = Platform->GetActorTransform().InverseTransformPosition(
-                GridObject->GetObjectLocation()
-            );
-            FVector GoalLocalPos = Platform->GetActorTransform().InverseTransformPosition(
-                AssignedGoal->GetActorLocation()
-            );
+            if (!GridObject || !AssignedGoal) { continue; }
 
-            // 1) DISTANCE IMPROVEMENT
-            if (PreviousDistances[AgentIndex] > 0.0f)
+            // 1) Velocity alignment with goal
+            FVector ObjLocalPos = Platform->GetActorTransform().InverseTransformPosition(GridObject->GetObjectLocation());
+            FVector GoalLocalPos = Platform->GetActorTransform().InverseTransformPosition(AssignedGoal->GetActorLocation());
+
+            FVector toGoal = (GoalLocalPos - ObjLocalPos);
+            float distGoal = toGoal.Size();
+            if (distGoal > 1e-3f)
             {
-                float newDist = FVector::Distance(
-                    ObjLocalPos,
-                    GoalLocalPos
+                toGoal.Normalize();
+                FVector CurrentVel = Platform->GetActorTransform().InverseTransformVector(
+                    GridObject->MeshComponent->GetPhysicsLinearVelocity()
                 );
 
-                float improvementFraction = (PreviousDistances[AgentIndex] - newDist) * 10.0;
-                StepReward += FMath::Abs(improvementFraction) > 1e-3 ? improvementFraction: -0.0001;
+                float speedAlongGoal = FVector::DotProduct(CurrentVel, toGoal);
+
+                // Clamp speed along goal so large speeds don't blow up the reward
+                float clampedSpeed = FMath::Clamp(speedAlongGoal, -MAX_SPEED_ALONG_GOAL, MAX_SPEED_ALONG_GOAL);
+
+                // Multiply by delta-time so it's not frame-rate dependent
+                float velReward = VELOCITY_ALIGN_SCALE * clampedSpeed * DeltaTime;
+                StepReward += velReward;
             }
 
-            // 2) VELOCITY TOWARD GOAL
-            //{
-            //    FVector ObjectLocalVel = Platform->GetActorTransform().InverseTransformVector(
-            //        GridObject->MeshComponent->GetPhysicsLinearVelocity()
-            //    );
+            // 2) Acceleration penalty (only XY + positive Z)
+            if (PreviousObjectVelocities[AgentIndex] != FVector::ZeroVector)
+            {
+                FVector CurrentVel = Platform->GetActorTransform().InverseTransformVector(
+                    GridObject->MeshComponent->GetPhysicsLinearVelocity()
+                );
+                FVector PrevVel = PreviousObjectVelocities[AgentIndex];
 
-            //    FVector toGoal = (GoalLocalPos - ObjLocalPos);
-            //    float distGoal = toGoal.Size();
-            //    if (distGoal > SMALL_NUMBER)
-            //    {
-            //        // Dot product => + if going toward, - if away
-            //        float dotToGoal = FVector::DotProduct(ObjectLocalVel, toGoal);
-            //        if (FMath::Abs(dotToGoal) > MaxDot) {
-            //            MaxDot = FMath::Abs(dotToGoal);
-            //        }
-            //        StepReward += FMath::Abs(dotToGoal) > 1e-2 ? dotToGoal : -0.0001;
-            //    }
-            //}
+                // Total acceleration in local frame
+                FVector aTotal = (CurrentVel - PrevVel) / DeltaTime;
+
+                // "Free" negative Z acceleration (gravity).
+                // So we only measure XY plus positive Z as "excess."
+                float ax = aTotal.X;
+                float ay = aTotal.Y;
+                float az = (aTotal.Z > 0.f) ? aTotal.Z : 0.f;  // zero out negative Z
+
+                float rawAccelMag = FVector(ax, ay, az).Size();
+
+                // Clamp to avoid extreme negativity
+                float clampedAccel = FMath::Min(rawAccelMag, MAX_ACCEL_MAG);
+
+                // Scale by ACCEL_PENALTY_SCALE and DeltaTime
+                float accelPenalty = ACCEL_PENALTY_SCALE * clampedAccel * DeltaTime;
+                StepReward -= accelPenalty;
+            }
         }
     }
 
@@ -674,7 +702,8 @@ AMainPlatform* ATerraShiftEnvironment::SpawnPlatform(FVector Location)
 
 FVector ATerraShiftEnvironment::GenerateRandomGridLocation() const
 {
-    float spawnCollisionRadius = CellSize * 2.0f;
+
+    float spawnCollisionRadius = CellSize * 4.0f;
 
     // 1) Build distance matrix
     FMatrix2D distMatrix = ComputeCollisionDistanceMatrix();
@@ -873,7 +902,7 @@ void ATerraShiftEnvironment::UpdateGridObjectFlags()
                         AgentHasActiveGridObject[AgentIndex] = false;
                         GridObjectFallenOffGrid[AgentIndex] = true;
                         GridObjectShouldCollectEventReward[AgentIndex] = true;
-                        ShouldRespawnGridObject = true;
+                        ShouldRespawnGridObject = false;   // no respawn => it's done
                         GridObjectManager->DisableGridObject(AgentIndex);
                     }
                 }

@@ -1,74 +1,104 @@
 #include "ExperienceBuffer.h"
 
-UExperienceBuffer::UExperienceBuffer() : BufferCapacity(0) {}
-
-void UExperienceBuffer::AddExperiences(const TArray<FExperienceBatch>& EnvironmentTrajectories)
+UExperienceBuffer::UExperienceBuffer()
+    : NumEnvironments(0)
+    , BufferCapacity(0)
+    , bSampleWithReplacement(false)
+    , bRandomSample(false)
 {
-    if (ExperienceDeques.Num() == 0)
-    {
-        for (int32 i = 0; i < EnvironmentTrajectories[0].Experiences.Num(); ++i)
-        {
-            ExperienceDeques.Add(TArray<FExperience>());
-        }
-    }
-
-    // For each step in trajectory
-    for (int32 i = 0; i < EnvironmentTrajectories.Num(); ++i)
-    {
-        // For each environment 
-        for (int32 j = 0; j < EnvironmentTrajectories[i].Experiences.Num(); ++j)
-        {
-            // Append step in trajectory
-            ExperienceDeques[j].Add(EnvironmentTrajectories[i].Experiences[j]);
-        }
-    }
-
-    EnsureBufferLimit();
 }
 
-TArray<FExperienceBatch> UExperienceBuffer::SampleExperiences(int32 BatchSize)
+void UExperienceBuffer::Initialize(int32 InNumEnvs,
+    int32 InBufferCapacity,
+    bool InSampleWithReplacement,
+    bool InRandomSample)
 {
-    TArray<FExperienceBatch> SampledExperiences;
+    NumEnvironments = InNumEnvs;
+    BufferCapacity = InBufferCapacity;
+    bSampleWithReplacement = InSampleWithReplacement;
+    bRandomSample = InRandomSample;
 
-    for (TArray<FExperience>& Deque : ExperienceDeques)
+    EnvDeques.SetNum(NumEnvironments);
+}
+
+void UExperienceBuffer::AddExperience(int32 EnvIndex, const FExperience& Exp)
+{
+    if (EnvIndex < 0 || EnvIndex >= EnvDeques.Num())
     {
-        FExperienceBatch Batch;
+        UE_LOG(LogTemp, Warning, TEXT("AddExperience: invalid EnvIndex=%d"), EnvIndex);
+        return;
+    }
 
-        if (Deque.Num() == 0 || Deque.Num() < BatchSize)
+    // Append
+    EnvDeques[EnvIndex].Add(Exp);
+
+    // If over capacity => remove oldest
+    while (EnvDeques[EnvIndex].Num() > BufferCapacity)
+    {
+        EnvDeques[EnvIndex].RemoveAt(0, 1, false);
+    }
+}
+
+int32 UExperienceBuffer::MinSizeAcrossEnvs() const
+{
+    if (EnvDeques.Num() == 0) return 0;
+    int32 minVal = INT_MAX;
+    for (const auto& dq : EnvDeques)
+    {
+        if (dq.Num() < minVal)
         {
+            minVal = dq.Num();
+        }
+    }
+    return (minVal == INT_MAX ? 0 : minVal);
+}
+
+TArray<FExperienceBatch> UExperienceBuffer::SampleEnvironmentTrajectories(int32 batchSize)
+{
+    TArray<FExperienceBatch> out;
+    out.SetNum(EnvDeques.Num());
+
+    for (int32 e = 0; e < EnvDeques.Num(); e++)
+    {
+        FExperienceBatch batch;
+
+        if (EnvDeques[e].Num() < batchSize)
+        {
+            // Not enough data => return empty
+            // or you can handle partial
+            UE_LOG(LogTemp, Warning, TEXT("Env=%d has only %d experiences < batchSize=%d"), e, EnvDeques[e].Num(), batchSize);
             return TArray<FExperienceBatch>();
         }
 
-        for (int32 i = 0; i < BatchSize; ++i)
+        if (bRandomSample)
         {
-            Batch.Experiences.Add(Deque[0]);
-            Deque.RemoveAt(0);
+            // sample random indices
+            for (int32 i = 0; i < batchSize; i++)
+            {
+                int32 idx = FMath::RandRange(0, EnvDeques[e].Num() - 1);
+                batch.Experiences.Add(EnvDeques[e][idx]);
+
+                if (!bSampleWithReplacement)
+                {
+                    EnvDeques[e].RemoveAt(idx, 1, false);
+                }
+            }
+        }
+        else
+        {
+            // chronological => from front of the deque
+            for (int32 i = 0; i < batchSize; i++)
+            {
+                batch.Experiences.Add(EnvDeques[e][0]);
+                if (!bSampleWithReplacement)
+                {
+                    EnvDeques[e].RemoveAt(0, 1, false);
+                }
+            }
         }
 
-        SampledExperiences.Add(Batch);
+        out[e] = batch;
     }
 
-    return SampledExperiences;
-}
-
-void UExperienceBuffer::SetBufferCapacity(int32 NewCapacity)
-{
-    BufferCapacity = NewCapacity;
-    EnsureBufferLimit();
-}
-
-int32 UExperienceBuffer::Size()
-{
-    return ExperienceDeques[0].Num();
-}
-
-void UExperienceBuffer::EnsureBufferLimit()
-{
-    for (TArray<FExperience>& Deque : ExperienceDeques)
-    {
-        while (Deque.Num() > BufferCapacity)
-        {
-            Deque.RemoveAt(0);
-        }
-    }
+    return out;
 }

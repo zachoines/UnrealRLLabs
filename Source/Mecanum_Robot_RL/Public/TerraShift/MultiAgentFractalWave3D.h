@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include <random>
 #include "UObject/NoExportTypes.h"
 #include "EnvironmentConfig.h"
 #include "TerraShift/Matrix2D.h"
@@ -71,12 +72,11 @@ struct FFractalAgentState
     UPROPERTY()
     float BaseFreq;
     UPROPERTY()
-    int32 Octaves;
-    UPROPERTY()
     float Lacunarity;
     UPROPERTY()
     float Gain;
-
+    UPROPERTY()
+    float Octaves;
     UPROPERTY()
     float BlendWeight;
 
@@ -177,16 +177,18 @@ private:
     UPROPERTY()
     FVector2D BaseFreqRange;
     UPROPERTY()
-    FIntPoint  OctavesRange;
-    UPROPERTY()
     FVector2D LacunarityRange;
     UPROPERTY()
     FVector2D GainRange;
     UPROPERTY()
     FVector2D BlendWeightRange;
+    UPROPERTY()
+    int32 Octaves;
 
 private:
     void InitializeAgents();
     void RenderFractalForAgent(FFractalAgentState& Agent);
     float FractalSample3D(float X, float Y, float Z, float BaseFreq, int32 Octs, float Lacun, float Gn) const;
+    static std::mt19937& GetNormalGenerator();
+    float SampleNormalInRange(const FVector2D& Range);
 };

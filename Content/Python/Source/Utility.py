@@ -1,6 +1,40 @@
 import torch
+import torch.nn as nn
+import torch.nn.init as init
+import torch.nn.functional as F
 import numpy as np
 from typing import Union, Dict
+
+def init_weights_leaky_relu_conv(m: nn.Module, negative_slope: float = 0.01):
+    """
+    Applies Kaiming initialization to nn.Conv2d layers,
+    assuming a LeakyReLU with the given negative_slope.
+    """
+    if isinstance(m, nn.Conv2d):
+        init.kaiming_normal_(
+            m.weight,
+            a=negative_slope,
+            mode='fan_in',
+            nonlinearity='leaky_relu'
+        )
+        if m.bias is not None:
+            init.constant_(m.bias, 0.0)
+
+def init_weights_leaky_relu(m: nn.Module, negative_slope: float = 0.01):
+    """
+    Applies Kaiming initialization to nn.Linear layers,
+    assuming a LeakyReLU with the given negative_slope.
+    """
+    if isinstance(m, nn.Linear):
+        init.kaiming_normal_(
+            m.weight,
+            a=negative_slope,
+            mode='fan_in',
+            nonlinearity='leaky_relu'
+        )
+        if m.bias is not None:
+            init.constant_(m.bias, 0.0)
+
 
 class OneCycleCosineScheduler:
     def __init__(self, max_value, total_steps, pct_start=0.3, div_factor=25., final_div_factor=1e4):

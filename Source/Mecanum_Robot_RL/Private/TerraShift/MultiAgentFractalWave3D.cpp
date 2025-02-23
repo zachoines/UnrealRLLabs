@@ -14,11 +14,7 @@ void UMultiAgentFractalWave3D::InitializeFromConfig(UEnvironmentConfig* Config)
     
     if (!Config || !Config->IsValid())
     {
-        UE_LOG(LogTemp, Warning, TEXT("Could not find environment/MultiAgentFractalWave in config. Using defaults."));
-        NumAgents = 3;
-        ImageSize = 50;
-        PitchLimit = PI / 2.f;
-        bYawWrap = true;
+        UE_LOG(LogTemp, Error, TEXT("Could not find environment/MultiAgentFractalWave in config!"));
         return;
     }
 
@@ -66,15 +62,6 @@ void UMultiAgentFractalWave3D::InitializeFromConfig(UEnvironmentConfig* Config)
             TArray<float> bf = FracCfg->Get("base_freq_range")->AsArrayOfNumbers();
             if (bf.Num() == 2) BaseFreqRange = FVector2D(bf[0], bf[1]);
         }
-        if (FracCfg->HasPath("octaves_range"))
-        {
-            TArray<float> of = FracCfg->Get("octaves_range")->AsArrayOfNumbers();
-            if (of.Num() == 2)
-            {
-                OctavesRange.X = (int32)of[0];
-                OctavesRange.Y = (int32)of[1];
-            }
-        }
         if (FracCfg->HasPath("lacunarity_range"))
         {
             TArray<float> lr = FracCfg->Get("lacunarity_range")->AsArrayOfNumbers();
@@ -103,6 +90,10 @@ void UMultiAgentFractalWave3D::InitializeFromConfig(UEnvironmentConfig* Config)
         ? Config->Get("yaw_wrap")->AsBool()
         : true;
 
+    Octaves = Config->HasPath("octaves")
+        ? Config->Get("octaves")->AsNumber()
+        : 3;
+
     // create NxN wave
     FinalWave = FMatrix2D(ImageSize, ImageSize, 0.f);
 
@@ -126,24 +117,31 @@ void UMultiAgentFractalWave3D::InitializeAgents()
     {
         FFractalAgentState& S = Agents[i];
 
-        float px = FMath::RandRange(PosRange.X, PosRange.Y);
-        float py = FMath::RandRange(PosRange.X, PosRange.Y);
-        float pz = FMath::RandRange(PosRange.X, PosRange.Y);
+        // positions => normal sampling 
+        float px = SampleNormalInRange(PosRange);
+        float py = SampleNormalInRange(PosRange);
+        float pz = SampleNormalInRange(PosRange);
         S.Pos3D = FVector(px, py, pz);
 
-        S.Pitch = FMath::RandRange(PitchRange.X, PitchRange.Y);
-        S.Yaw = FMath::RandRange(YawRange.X, YawRange.Y);
+        // pitch, yaw => normal sampling if you want them centered in [PitchRange..YawRange]
+        S.Pitch = SampleNormalInRange(PitchRange);
+        S.Yaw = SampleNormalInRange(YawRange);
+
+        // The rest as is (or also normal if you prefer)
         S.FOVDegrees = DefaultFOVDeg;
         S.ImageSize = ImageSize;
         S.SampleDist = DefaultSampleDist;
 
-        S.BaseFreq = FMath::RandRange(BaseFreqRange.X, BaseFreqRange.Y);
-        S.Octaves = FMath::RandRange(OctavesRange.X, OctavesRange.Y);
-        S.Lacunarity = FMath::RandRange(LacunarityRange.X, LacunarityRange.Y);
-        S.Gain = FMath::RandRange(GainRange.X, GainRange.Y);
-        S.BlendWeight = FMath::RandRange(BlendWeightRange.X, BlendWeightRange.Y);
+        // fractal params => normal sampling 
+        S.BaseFreq = SampleNormalInRange(BaseFreqRange);
+        S.Lacunarity = SampleNormalInRange(LacunarityRange);
+        S.Gain = SampleNormalInRange(GainRange);
+        S.BlendWeight = SampleNormalInRange(BlendWeightRange);
 
-        // allocate NxN
+        // Set as a constant
+        S.Octaves = Octaves;
+
+        // NxN fractal image
         S.FractalImage.SetNumZeroed(ImageSize * ImageSize);
     }
 }
@@ -224,14 +222,13 @@ TArray<float> UMultiAgentFractalWave3D::GetAgentStateVariables(int32 AgentIndex)
     }
     const FFractalAgentState& A = Agents[AgentIndex];
     // Collect a standard set of state variables:
-    // [posX, posY, posZ, pitch, yaw, baseFreq, octaves, lacunarity, gain, blendWeight, fovDeg, sampleDist]
+    // [posX, posY, posZ, pitch, yaw, baseFreq, lacunarity, gain, blendWeight, fovDeg, sampleDist]
     Result.Add(A.Pos3D.X);
     Result.Add(A.Pos3D.Y);
     Result.Add(A.Pos3D.Z);
     Result.Add(A.Pitch);
     Result.Add(A.Yaw);
     Result.Add(A.BaseFreq);
-    Result.Add((float)A.Octaves);
     Result.Add(A.Lacunarity);
     Result.Add(A.Gain);
     Result.Add(A.BlendWeight);
@@ -308,4 +305,32 @@ float UMultiAgentFractalWave3D::FractalSample3D(
         amplitude *= Gn;
     }
     return FMath::Clamp(total, -1.f, 1.f);
+}
+
+std::mt19937& UMultiAgentFractalWave3D::GetNormalGenerator()
+{
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    return gen;
+}
+
+float UMultiAgentFractalWave3D::SampleNormalInRange(const FVector2D& Range)
+{
+    // Midpoint and the range’s span
+    float mid = 0.5f * (Range.X + Range.Y);
+    float span = (Range.Y - Range.X);
+
+    // For a typical normal distribution, ±3 std dev covers ~99.7% of samples.
+    // So we define stdev = span/6 => most samples stay within [X..Y].
+    float stdev = span / 6.f;
+
+    // Setup distribution with mean=mid, stddev=stdev
+    std::normal_distribution<float> dist(mid, stdev);
+
+    // Sample
+    float val = dist(GetNormalGenerator());
+
+    // Clamp to the [X..Y] range
+    val = FMath::Clamp(val, Range.X, Range.Y);
+    return val;
 }

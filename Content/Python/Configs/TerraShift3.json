@@ -1,0 +1,188 @@
+{
+    "environment": {
+     "name": "TerraShift",
+     "id": "3",
+     "params": {
+       "PlatformSize": 1.0,
+       "MaxColumnHeight": 4.0,
+       "ObjectSize": [0.10, 0.10, 0.10],
+       "ObjectMass": 2.0,
+       "GridSize": 50,
+       "MaxSteps": 128,
+       "NumGoals": 4,
+       "SpawnDelay": 0.25,
+       "MaxAgents": 5,
+       "GoalThreshold": 1.5,
+       "MultiAgentFractalWave": {
+         "num_agents": 5,
+         "image_size": 50,
+         "agent_init": {
+           "pos_range": [-5.0, 5.0],
+           "pitch_range": [-0.3, 0.3],
+           "yaw_range": [0.0, 6.283185],
+           "fov_deg": 60.0,
+           "sample_dist": 10.0
+         },
+         "fractal_init": {
+           "base_freq_range": [0.1, 0.2],
+           "octaves_range": [3, 6],
+           "lacunarity_range": [1.5, 3.0],
+           "gain_range": [0.3, 0.8],
+           "blend_weight_range": [0.5, 1.5]
+         },
+         "pitch_limit": 1.5708,
+         "yaw_wrap": true
+       }
+     },
+     "shape": {
+       "state": {
+         "central": {
+           "obs_size": 2500
+         },
+         "agent": {
+           "obs_size": 38,
+           "min": 5,
+           "max": 5
+         }
+       },
+       "action": {
+         "agent": {
+           "continuous": [
+             { "min": -1.0, "max": 1.0 },
+             { "min": -1.0, "max": 1.0 },
+             { "min": -1.0, "max": 1.0 },
+             { "min": -1.0, "max": 1.0 },
+             { "min": -1.0, "max": 1.0 },
+             { "min": -1.0, "max": 1.0 },
+             { "min": -1.0, "max": 1.0 },
+             { "min": -1.0, "max": 1.0 },
+             { "min": -1.0, "max": 1.0 }
+           ]
+         }
+       }
+     }
+   },
+   "agent": {
+     "type": "MA_POCA",
+     "params": {
+       "learning_rate": 0.0001,
+       "gamma": 0.99,
+       "lambda": 0.95,
+ 
+       "value_loss_coeff": 0.3,
+       "baseline_loss_coeff": 0.15,
+ 
+       "normalize_advantages": true,
+       "clipped_value_loss": true,
+       
+       "max_grad_norm": 0.5,
+       "ppo_clip_range": 0.05,
+       "value_clip_range": 0.1,
+       "entropy_coeff": 0.01,
+ 
+       "schedulers": {
+         "lr": {
+           "start_factor": 1.0,
+           "end_factor": 0.1,
+           "total_iters": 1000
+         },
+         "entropy_coeff": {
+           "start_value": 0.01,
+           "end_value": 0.001,
+           "total_iters": 1000
+         }
+       },
+ 
+       "networks": {
+         "MultiAgentEmbeddingNetwork": {
+           "general_obs_encoder": {
+             "encoders": [
+               {
+                 "key": "central",
+                 "network": "SpatialNetwork2D",
+                 "params": {
+                   "h": 50,
+                   "w": 50,
+                   "in_channels": 1,
+                   "base_channels": 16,
+                   "num_blocks": 4,
+                   "out_features": 128
+                 }
+               },
+               {
+                 "key": "agent",
+                 "network": "LinearNetwork",
+                 "params": {
+                   "in_features": 38,
+                   "out_features": 64,
+                   "dropout_rate": 0.0,
+                   "activation": true,
+                   "layer_norm" : true
+                 }
+               }
+             ],
+             "agent_id_enc": {
+               "num_freqs": 16,
+               "id_embed_dim": 32
+             },
+             "aggregator_output_size": 128 
+           },
+           "obs_encoder": {
+             "state_dim": 128,
+             "output_size": 128,
+             "dropout_rate": 0.0,
+             "activation": true,
+             "layer_norm": false
+           },
+           "obs_actions_encoder": {
+             "state_dim": 128,
+             "action_dim": 9,
+             "output_size": 128,
+             "dropout_rate": 0.0,
+             "activation": true,
+             "layer_norm": false
+           },
+           "RSA": {
+             "embed_size": 128,
+             "heads": 8,
+             "dropout_rate": 0.0
+           }
+         },
+         "policy_network": {
+           "in_features": 128,
+           "hidden_size": 128,
+           "log_std_min": -20.0,
+           "log_std_max": 2.0,
+           "entropy_method": "mc",
+           "n_entropy_samples": 100,
+           "num_agents": 5
+         },
+         "critic_network": {
+           "value_head": {
+             "in_features": 128,
+             "hidden_size": 128,
+             "dropout_rate": 0.0
+           },
+           "baseline_head": {
+             "in_features": 128,
+             "hidden_size": 128,
+             "dropout_rate": 0.0
+           }
+         }
+       }
+     }
+   },
+   "train": {
+     "states_normalizer": {
+       "warmup_steps" : 1000
+     },
+     "num_environments": 8,
+     "epochs": 6,
+     "mini_batch_size": 64,
+     "buffer_size": 512,
+     "batch_size": 512,
+     "AgentsResetFrequency": 0,
+     "ActionRepeat": 0,
+     "saveFrequency": 20
+   }
+ }

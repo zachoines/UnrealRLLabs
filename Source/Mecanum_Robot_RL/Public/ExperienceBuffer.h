@@ -1,45 +1,59 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include <deque>
-#include "BaseEnvironment.h"
-#include "ActionSpace.h"
+#include "UObject/NoExportTypes.h"
 #include "RLTypes.h"
 #include "ExperienceBuffer.generated.h"
 
+/**
+ * A single experience record: {State, Action, Reward, NextState, Done, Trunc}.
+ */
 USTRUCT(BlueprintType)
-struct UNREALRLLABS_API FExperience
+struct FExperience
 {
     GENERATED_BODY()
 
-    UPROPERTY(BlueprintReadWrite, Category = "Experience")
+    UPROPERTY(BlueprintReadWrite)
     FState State;
 
-    UPROPERTY(BlueprintReadWrite, Category = "Experience")
+    UPROPERTY(BlueprintReadWrite)
     FAction Action;
 
-    UPROPERTY(BlueprintReadWrite, Category = "Experience")
+    UPROPERTY(BlueprintReadWrite)
     float Reward;
 
-    UPROPERTY(BlueprintReadWrite, Category = "Experience")
+    UPROPERTY(BlueprintReadWrite)
     FState NextState;
 
-    UPROPERTY(BlueprintReadWrite, Category = "Experience")
+    UPROPERTY(BlueprintReadWrite)
     bool Trunc;
 
-    UPROPERTY(BlueprintReadWrite, Category = "Experience")
+    UPROPERTY(BlueprintReadWrite)
     bool Done;
 };
 
+/**
+ * A batch of experiences. Typically from 1 environment if using the
+ * 'SampleEnvironmentTrajectories()' approach.
+ */
 USTRUCT(BlueprintType)
-struct UNREALRLLABS_API FExperienceBatch
+struct FExperienceBatch
 {
-    GENERATED_USTRUCT_BODY()
+    GENERATED_BODY()
 
-    UPROPERTY(BlueprintReadWrite, Category = "Experience")
+    UPROPERTY(BlueprintReadWrite)
     TArray<FExperience> Experiences;
 };
 
+/**
+ * UExperienceBuffer stores experiences per-environment in separate "deques".
+ *
+ * For on-policy PPO, we typically:
+ *  - Add experiences per environment step
+ *  - Once each environment has at least 'batchSize' experiences, we sample
+ *    exactly 'batchSize' from each env => building TArray<FExperienceBatch>
+ *    => pass to training.
+ */
 UCLASS(Blueprintable, BlueprintType)
 class UNREALRLLABS_API UExperienceBuffer : public UObject
 {
@@ -48,16 +62,46 @@ class UNREALRLLABS_API UExperienceBuffer : public UObject
 public:
     UExperienceBuffer();
 
-    void AddExperiences(const TArray<FExperienceBatch>& EnvironmentTrajectories);
-    TArray<FExperienceBatch> SampleExperiences(int32 BatchSize);
-    void SetBufferCapacity(int32 NewCapacity);
-    int32 Size();
+    /**
+     * Initialize the buffer with `NumEnvironments`, capacity,
+     * plus sampling policy flags (withReplacement, randomSample).
+     */
+    UFUNCTION(BlueprintCallable)
+    void Initialize(int32 InNumEnvs,
+        int32 InBufferCapacity,
+        bool InSampleWithReplacement,
+        bool InRandomSample);
+
+    /** Add a single experience to a specific environment. */
+    UFUNCTION(BlueprintCallable)
+    void AddExperience(int32 EnvIndex, const FExperience& Exp);
+
+    /**
+     * Return how many experiences the environment with the *fewest* experiences has.
+     * We use this to see if we can sample a batch from *all* environments.
+     */
+    UFUNCTION(BlueprintCallable)
+    int32 MinSizeAcrossEnvs() const;
+
+    /**
+     * Sample exactly `batchSize` experiences from each environment
+     * => returns TArray<FExperienceBatch> of size = #envs.
+     * If randomSample => pick random items; else pick from front (FIFO).
+     * If sampleWithReplacement => do not remove them from the buffer; else remove them.
+     */
+    UFUNCTION(BlueprintCallable)
+    TArray<FExperienceBatch> SampleEnvironmentTrajectories(int32 batchSize);
 
 private:
     UPROPERTY()
+    int32 NumEnvironments;
+
+    UPROPERTY()
     int32 BufferCapacity;
 
-    TArray<TArray<FExperience>> ExperienceDeques;
+    bool bSampleWithReplacement;
+    bool bRandomSample;
 
-    void EnsureBufferLimit();
+    /** For each environment => we store experiences in a TArray (like a deque). */
+    TArray<TArray<FExperience>> EnvDeques;
 };

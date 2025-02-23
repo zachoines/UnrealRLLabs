@@ -27,7 +27,7 @@ class DeterministicFractal3D:
         amplitude = 1.0
         freq = base_freq
 
-        for _ in range(octaves):
+        for _ in range(2):
             # We'll pass (freq*x, freq*y, freq*z) so each octave has a higher frequency.
             noise_val = pnoise3(freq * x,
                                 freq * y,

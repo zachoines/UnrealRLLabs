@@ -1,19 +1,21 @@
 #include "RLRunner.h"
-#include "EnvironmentConfig.h"
+#include "Kismet/GameplayStatics.h"
 #include "Misc/Paths.h"
 
-// Sets default values
 ARLRunner::ARLRunner()
 {
-    PrimaryActorTick.bCanEverTick = true; // We tick each frame
-    CurrentAgents = -1;
+    PrimaryActorTick.bCanEverTick = true;
+    bIsMultiAgent = false;
+    MinAgents = 1;
+    MaxAgents = 1;
+    CurrentAgents = 1;
 
-    // Create the experience buffer
-    ExperienceBufferInstance = NewObject<UExperienceBuffer>();
+    BufferSize = 1024;
+    BatchSize = 128;
+    ActionRepeat = 1;
 
     CurrentStep = 0;
     CurrentUpdate = 0;
-    ActionRepeatCounter = 0;
 }
 
 void ARLRunner::InitRunner(
@@ -24,24 +26,18 @@ void ARLRunner::InitRunner(
 {
     EnvConfig = InEnvConfig;
 
-    // 1) Check if environment/shape/agent path exists => multi-agent or not
-    IsMultiAgent = EnvConfig->HasPath(TEXT("environment/shape/state/agent"));
-
-    if (IsMultiAgent)
+    bIsMultiAgent = EnvConfig->HasPath(TEXT("environment/shape/state/agent"));
+    if (bIsMultiAgent)
     {
-        // If agent block exists, read min & max from there
         MinAgents = EnvConfig->Get(TEXT("environment/shape/state/agent/min"))->AsInt();
         MaxAgents = EnvConfig->Get(TEXT("environment/shape/state/agent/max"))->AsInt();
     }
     else
     {
-        // If there's no agent block, single-agent
         MinAgents = 1;
         MaxAgents = 1;
     }
 
-    // 2) Read training hyperparams from "train" section
-    //    e.g. "train/buffer_size", "train/batch_size", "train/ActionRepeat"
     if (EnvConfig->HasPath(TEXT("train/buffer_size")))
     {
         BufferSize = EnvConfig->Get(TEXT("train/buffer_size"))->AsInt();
@@ -53,138 +49,372 @@ void ARLRunner::InitRunner(
     if (EnvConfig->HasPath(TEXT("train/ActionRepeat")))
     {
         ActionRepeat = EnvConfig->Get(TEXT("train/ActionRepeat"))->AsInt();
+        if (ActionRepeat < 1) ActionRepeat = 1;
     }
 
-    // 3) Spawn & init the vector environment
-    VectorEnvironment = GetWorld()->SpawnActor<AVectorEnvironment>(
-        AVectorEnvironment::StaticClass(),
-        FVector::ZeroVector,
-        FRotator::ZeroRotator
-    );
-    if (!VectorEnvironment)
+    UWorld* World = GetWorld();
+    if (!World)
     {
-        UE_LOG(LogTemp, Error, TEXT("RLRunner::InitRunner - Failed to spawn AVectorEnvironment."));
+        UE_LOG(LogTemp, Error, TEXT("No valid UWorld in RLRunner."));
         return;
     }
-    VectorEnvironment->InitEnv(EnvironmentClass, ParamsArray);
 
-    // 4) Create shared memory communicator & init with config
+    Environments.Empty();
+    for (FBaseInitParams* Param : ParamsArray)
+    {
+        ABaseEnvironment* Env = World->SpawnActor<ABaseEnvironment>(
+            EnvironmentClass,
+            Param->Location,
+            FRotator::ZeroRotator
+        );
+        if (Env)
+        {
+            Env->InitEnv(Param);
+            Environments.Add(Env);
+        }
+        else
+        {
+            UE_LOG(LogTemp, Error, TEXT("Failed to spawn environment actor."));
+        }
+    }
+
+    // Create the Experience Buffer
+    ExperienceBufferInstance = NewObject<UExperienceBuffer>(this);
+    if (ExperienceBufferInstance)
+    {
+        // We'll initialize it with #environments so it can maintain per-env deques
+        // plus any additional params if we want
+        ExperienceBufferInstance->Initialize(
+            Environments.Num(),          // # environments
+            BufferSize,                  // capacity
+            false,                       // sample_with_replacement (for PPO => false)
+            false                        // random-sample => false (for PPO => chronological)
+        );
+    }
+
+    // Create communicator
     AgentComm = NewObject<USharedMemoryAgentCommunicator>(this);
     if (AgentComm)
     {
-        // Pass the entire config so the communicator can read e.g. state size, etc.
         AgentComm->Init(EnvConfig);
     }
-    else
+
+    ParseActionSpaceFromConfig();
+
+    CurrentAgents = (bIsMultiAgent) ? FMath::RandRange(MinAgents, MaxAgents) : 1;
+
+    // Reset each environment
+    for (ABaseEnvironment* Env : Environments)
     {
-        UE_LOG(LogTemp, Error, TEXT("RLRunner::InitRunner - Could not create SharedMemoryAgentCommunicator."));
+        Env->ResetEnv(CurrentAgents);
     }
 
-    // 5) Decide how many agents to use now
-    CurrentAgents = (IsMultiAgent)
-        ? FMath::RandRange(MinAgents, MaxAgents)
-        : 1;
+    // Create pending transitions
+    Pending.SetNum(Environments.Num());
+    for (int32 i = 0; i < Environments.Num(); i++)
+    {
+        // We'll store the environment's current state
+        FState st = GetEnvState(Environments[i]);
+        StartNewBlock(i, st);
+    }
 
-    // 6) Reset the environment w/ that agent count
-    VectorEnvironment->ResetEnv(CurrentAgents);
-
-    // 7) Setup experience buffer
-    ExperienceBufferInstance->SetBufferCapacity(BufferSize);
-
-    // Reset counters
     CurrentStep = 0;
     CurrentUpdate = 0;
-    ActionRepeatCounter = 0;
 }
 
 void ARLRunner::Tick(float DeltaTime)
 {
-    // 1) Only record transitions once per "action" if ActionRepeat > 0
-    if (ActionRepeatCounter == 0)
+    Super::Tick(DeltaTime);
+
+    CollectTransitions();
+    DecideActions();
+    StepEnvironments();
+
+    CurrentStep++;
+}
+
+// ---------------------
+//  CollectTransitions
+// ---------------------
+void ARLRunner::CollectTransitions()
+{
+    for (int32 i = 0; i < Environments.Num(); i++)
     {
-        // VectorEnvironment->Transition() moves env forward 1 step 
-        auto [Dones, Truncs, Rewards, LastActions, States, NextStates] = VectorEnvironment->Transition();
+        ABaseEnvironment* Env = Environments[i];
+        Env->PreTransition();
 
-        // If not the first step, record experiences
-        if (CurrentStep > 1)
+        float stepReward = Env->Reward();
+        bool  bDone = Env->Done();
+        bool  bTrunc = Env->Trunc();
+
+        // accumulate
+        Pending[i].AccumulatedReward += stepReward;
+
+        // increment the counter
+        Pending[i].RepeatCounter++;
+
+        // if done/trunc => or actionRepeat block ended => finalize
+        bool bActionRepeatFinished = (Pending[i].RepeatCounter >= ActionRepeat);
+        if (bDone || bTrunc || bActionRepeatFinished)
         {
-            TArray<FExperienceBatch> EnvironmentTrajectories;
-            FExperienceBatch Batch;
-
-            for (int32 i = 0; i < States.Num(); i++)
+            // gather nextState
+            FState nextState;
+            if (bDone || bTrunc)
             {
-                FExperience Exp;
-                Exp.State = States[i];
-                Exp.Action = LastActions[i];
-                Exp.Done = (Dones[i] != 0.f);
-                Exp.Trunc = (Truncs[i] != 0.f);
-                Exp.Reward = Rewards[i];
-                Exp.NextState = NextStates[i];
-                Batch.Experiences.Add(Exp);
+                // reset
+                ResetEnvironment(i);
+                nextState = GetEnvState(Environments[i]);
             }
-            EnvironmentTrajectories.Add(Batch);
-            AddExperiences(EnvironmentTrajectories);
-
-            // If the replay buffer is sufficiently full, do training update
-            if (ExperienceBufferInstance->Size() >= BatchSize)
+            else
             {
-                CurrentUpdate++;
-                TArray<FExperienceBatch> Transitions = SampleExperiences(BatchSize);
-                /*AgentComm->WriteTransitionsToFile(
-                    Transitions, 
-                    "C:\\Users\\zachoines\\Documents\\Unreal\\UnrealRLLabs\\Content\\Python\\TEST\\UnrealTransitions.csv"
-                );*/
-                AgentComm->Update(Transitions, CurrentAgents);
+                nextState = GetEnvState(Environments[i]);
+            }
+
+            FinalizeTransition(i, nextState, bDone, bTrunc);
+
+            if (!bDone && !bTrunc)
+            {
+                // start new block
+                StartNewBlock(i, nextState);
             }
         }
 
-        // 2) Query new actions from the Python side
-        Actions = GetActions(VectorEnvironment->GetStates(), Dones, Truncs);
-    }
-
-    // 3) Apply the actions to the environment
-    VectorEnvironment->Step(Actions);
-    CurrentStep++;
-
-    // 4) Handle action-repeat logic
-    if (ActionRepeat > 0)
-    {
-        ActionRepeatCounter = (ActionRepeatCounter + 1) % ActionRepeat;
-    }
-    else
-    {
-        ActionRepeatCounter = 0;
+        Env->PostTransition();
     }
 }
 
-TArray<FAction> ARLRunner::GetActions(TArray<FState> States, TArray<float> Dones, TArray<float> Truncs)
+// ---------------------
+//  DecideActions
+// ---------------------
+void ARLRunner::DecideActions()
+{
+    // We'll see which envs need a new action => if their repeatCounter==0
+    // But note that we just finished CollectTransitions => some envs might have
+    // started a new block => so RepeatCounter==0 => need new action
+
+    bool anyNeedNew = false;
+    for (auto& p : Pending)
+    {
+        if (p.RepeatCounter == 0)
+        {
+            anyNeedNew = true;
+            break;
+        }
+    }
+    if (!anyNeedNew) return; // no new actions needed
+
+    // We gather states/dones/truncs for each environment
+    TArray<FState> EnvStates;
+    EnvStates.SetNum(Environments.Num());
+    TArray<float> Dones;
+    Dones.SetNum(Environments.Num());
+    TArray<float> Truncs;
+    Truncs.SetNum(Environments.Num());
+
+    for (int32 i = 0; i < Environments.Num(); i++)
+    {
+        EnvStates[i] = GetEnvState(Environments[i]);
+        bool bDone = Environments[i]->Done();
+        bool bTrunc = Environments[i]->Trunc();
+        Dones[i] = (bDone ? 1.f : 0.f);
+        Truncs[i] = (bTrunc ? 1.f : 0.f);
+    }
+
+    // get actions from python
+    TArray<FAction> newActions = GetActionsFromPython(EnvStates, Dones, Truncs);
+
+    // assign to those envs whose repeatCounter==0
+    for (int32 i = 0; i < Environments.Num(); i++)
+    {
+        if (Pending[i].RepeatCounter == 0)
+        {
+            Pending[i].Action = newActions[i];
+        }
+    }
+}
+
+// ---------------------
+//  StepEnvironments
+// ---------------------
+void ARLRunner::StepEnvironments()
+{
+    // For each env => if done, skip
+    for (int32 i = 0; i < Environments.Num(); i++)
+    {
+        ABaseEnvironment* Env = Environments[i];
+        bool bDone = Env->Done();
+        bool bTrunc = Env->Trunc();
+        if (bDone || bTrunc)
+        {
+            continue; // skip stepping
+        }
+
+        Env->PreStep();
+        Env->Act(Pending[i].Action);
+        Env->PostStep();
+    }
+}
+
+// ---------------------
+//  FinalizeTransition
+// ---------------------
+void ARLRunner::FinalizeTransition(int EnvIndex, const FState& NextState, bool bDone, bool bTrunc)
+{
+    FPendingTransition& P = Pending[EnvIndex];
+
+    // create experience
+    FExperience Exp;
+    Exp.State = P.PrevState;
+    Exp.Action = P.Action;
+    Exp.Reward = P.AccumulatedReward;
+    Exp.NextState = NextState;
+    Exp.Done = bDone;
+    Exp.Trunc = bTrunc;
+
+    // add to the experience buffer
+    if (ExperienceBufferInstance)
+    {
+        ExperienceBufferInstance->AddExperience(EnvIndex, Exp);
+    }
+
+    // done => we don't start a new block here 
+    // that is done in CollectTransitions if not done/trunc
+
+    // check if each environment has >= batch_size => do an update if yes
+    MaybeTrainUpdate();
+}
+
+// ---------------------
+//  StartNewBlock
+// ---------------------
+void ARLRunner::StartNewBlock(int EnvIndex, const FState& State)
+{
+    FPendingTransition& p = Pending[EnvIndex];
+    p.PrevState = State;
+    p.Action = FAction();
+    p.AccumulatedReward = 0.f;
+    p.RepeatCounter = 0;
+    p.bDoneOrTrunc = false;
+}
+
+// ---------------------
+//  ResetEnvironment
+// ---------------------
+void ARLRunner::ResetEnvironment(int EnvIndex)
+{
+    Environments[EnvIndex]->ResetEnv(CurrentAgents);
+}
+
+// ---------------------
+//  MaybeTrainUpdate
+// ---------------------
+void ARLRunner::MaybeTrainUpdate()
+{
+    if (!AgentComm || !ExperienceBufferInstance) return;
+
+    // if all env deques have at least BatchSize
+    int32 minSize = ExperienceBufferInstance->MinSizeAcrossEnvs();
+    if (minSize >= BatchSize)
+    {
+        CurrentUpdate++;
+        // we sample from each env => produce an array of FExperienceBatch => one per env
+        TArray<FExperienceBatch> Batches = ExperienceBufferInstance->SampleEnvironmentTrajectories(BatchSize);
+        // Send to Python
+        AgentComm->Update(Batches, CurrentAgents);
+    }
+}
+
+// ---------------------
+//  parse action space
+// ---------------------
+void ARLRunner::ParseActionSpaceFromConfig()
+{
+    DiscreteActionSizes.Empty();
+    ContinuousActionRanges.Empty();
+    if (!EnvConfig) return;
+
+    if (EnvConfig->HasPath(TEXT("environment/shape/action/agent/discrete")))
+    {
+        auto Node = EnvConfig->Get(TEXT("environment/shape/action/agent/discrete"));
+        auto Arr = Node->AsArrayOfConfigs();
+        for (auto* c : Arr)
+        {
+            int32 n = c->Get(TEXT("num_choices"))->AsInt();
+            DiscreteActionSizes.Add(n);
+        }
+    }
+    if (EnvConfig->HasPath(TEXT("environment/shape/action/agent/continuous")))
+    {
+        auto Node = EnvConfig->Get(TEXT("environment/shape/action/agent/continuous"));
+        auto Arr = Node->AsArrayOfConfigs();
+        for (auto* r : Arr)
+        {
+            float mn = r->Get(TEXT("min"))->AsNumber();
+            float mx = r->Get(TEXT("max"))->AsNumber();
+            ContinuousActionRanges.Add(FVector2D(mn, mx));
+        }
+    }
+}
+
+// ---------------------
+//  EnvSample
+// ---------------------
+FAction ARLRunner::EnvSample(int EnvIndex)
+{
+    FAction act;
+    for (int32 agentIdx = 0; agentIdx < CurrentAgents; agentIdx++)
+    {
+        // discrete
+        for (int32 d = 0; d < DiscreteActionSizes.Num(); d++)
+        {
+            int32 range = DiscreteActionSizes[d];
+            int32 choice = FMath::RandRange(0, range - 1);
+            act.Values.Add((float)choice);
+        }
+        // continuous
+        for (int32 c = 0; c < ContinuousActionRanges.Num(); c++)
+        {
+            float mn = ContinuousActionRanges[c].X;
+            float mx = ContinuousActionRanges[c].Y;
+            float val = FMath::RandRange(mn, mx);
+            act.Values.Add(val);
+        }
+    }
+    return act;
+}
+
+// ---------------------
+//  GetEnvState
+// ---------------------
+FState ARLRunner::GetEnvState(ABaseEnvironment* Env)
+{
+    return Env->State();
+}
+
+// ---------------------
+//  GetActionsFromPython
+// ---------------------
+TArray<FAction> ARLRunner::GetActionsFromPython(
+    const TArray<FState>& EnvStates,
+    const TArray<float>& EnvDones,
+    const TArray<float>& EnvTruncs
+)
 {
     if (!AgentComm)
     {
-        // fallback: sample random actions
-        UE_LOG(LogTemp, Warning, TEXT("RLRunner::GetActions - AgentComm is null. Using random actions."));
-        return VectorEnvironment->SampleActions();
+        return SampleAllEnvActions();
     }
-
-    return AgentComm->GetActions(States, Dones, Truncs, CurrentAgents);
+    // use communicator
+    return AgentComm->GetActions(EnvStates, EnvDones, EnvTruncs, CurrentAgents);
 }
 
-void ARLRunner::AddExperiences(const TArray<FExperienceBatch>& EnvironmentTrajectories)
+TArray<FAction> ARLRunner::SampleAllEnvActions()
 {
-    if (!ExperienceBufferInstance)
+    TArray<FAction> out;
+    out.SetNum(Environments.Num());
+    for (int32 i = 0; i < Environments.Num(); i++)
     {
-        UE_LOG(LogTemp, Warning, TEXT("RLRunner::AddExperiences - ExperienceBufferInstance is null."));
-        return;
+        out[i] = EnvSample(i);
     }
-    ExperienceBufferInstance->AddExperiences(EnvironmentTrajectories);
-}
-
-TArray<FExperienceBatch> ARLRunner::SampleExperiences(int bSize)
-{
-    if (!ExperienceBufferInstance)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("RLRunner::SampleExperiences - ExperienceBufferInstance is null."));
-        return {};
-    }
-    return ExperienceBufferInstance->SampleExperiences(bSize);
+    return out;
 }
