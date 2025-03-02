@@ -82,13 +82,11 @@ void ARLRunner::InitRunner(
     ExperienceBufferInstance = NewObject<UExperienceBuffer>(this);
     if (ExperienceBufferInstance)
     {
-        // We'll initialize it with #environments so it can maintain per-env deques
-        // plus any additional params if we want
         ExperienceBufferInstance->Initialize(
-            Environments.Num(),          // # environments
-            BufferSize,                  // capacity
-            false,                       // sample_with_replacement (for PPO => false)
-            false                        // random-sample => false (for PPO => chronological)
+            Environments.Num(), // # environments
+            BufferSize,         // capacity
+            false,              // sample_with_replacement (for PPO => false)
+            false               // random-sample => false (for PPO => chronological)
         );
     }
 
@@ -126,7 +124,13 @@ void ARLRunner::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
 
-    CollectTransitions();
+    // We skip collecting transitions on the first tick, since
+    // there's no previous step to form a valid transition from.
+    if (CurrentStep > 0)
+    {
+        CollectTransitions();
+    }
+
     DecideActions();
     StepEnvironments();
 
@@ -189,9 +193,7 @@ void ARLRunner::CollectTransitions()
 void ARLRunner::DecideActions()
 {
     // We'll see which envs need a new action => if their repeatCounter==0
-    // But note that we just finished CollectTransitions => some envs might have
-    // started a new block => so RepeatCounter==0 => need new action
-
+    // Because we either just started or we just finished a block
     bool anyNeedNew = false;
     for (auto& p : Pending)
     {
@@ -201,7 +203,12 @@ void ARLRunner::DecideActions()
             break;
         }
     }
-    if (!anyNeedNew) return; // no new actions needed
+
+    // If no environment is at repeatCounter=0, we keep old actions
+    if (!anyNeedNew)
+    {
+        return;
+    }
 
     // We gather states/dones/truncs for each environment
     TArray<FState> EnvStates;
@@ -220,10 +227,10 @@ void ARLRunner::DecideActions()
         Truncs[i] = (bTrunc ? 1.f : 0.f);
     }
 
-    // get actions from python
+    // get actions from python or fallback
     TArray<FAction> newActions = GetActionsFromPython(EnvStates, Dones, Truncs);
 
-    // assign to those envs whose repeatCounter==0
+    // assign to those envs whose repeatCounter == 0
     for (int32 i = 0; i < Environments.Num(); i++)
     {
         if (Pending[i].RepeatCounter == 0)
@@ -238,7 +245,7 @@ void ARLRunner::DecideActions()
 // ---------------------
 void ARLRunner::StepEnvironments()
 {
-    // For each env => if done, skip
+    // For each env => if done, skip stepping
     for (int32 i = 0; i < Environments.Num(); i++)
     {
         ABaseEnvironment* Env = Environments[i];

@@ -35,7 +35,6 @@ def init_weights_leaky_relu(m: nn.Module, negative_slope: float = 0.01):
         if m.bias is not None:
             init.constant_(m.bias, 0.0)
 
-
 class OneCycleCosineScheduler:
     def __init__(self, max_value, total_steps, pct_start=0.3, div_factor=25., final_div_factor=1e4):
         self.max_value = max_value
@@ -66,7 +65,7 @@ class OneCycleCosineScheduler:
     def reset(self):
         self.t = 0
 
-class ModifiedOneCycleLR(torch.optim.lr_scheduler.OneCycleLR):
+class OneCycleLRWithMin(torch.optim.lr_scheduler.OneCycleLR):
     def __init__(self, optimizer, max_lr, total_steps=None, anneal_strategy='cos', pct_start=0.3, div_factor=25., final_div_factor=1e4, **kwargs):
         super().__init__(optimizer, max_lr=max_lr, total_steps=total_steps, anneal_strategy=anneal_strategy, pct_start=pct_start,div_factor=div_factor, final_div_factor=final_div_factor, **kwargs)
         self.min_lr = max_lr / final_div_factor

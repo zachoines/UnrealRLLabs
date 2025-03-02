@@ -16,7 +16,7 @@ class RLRunner:
         self.writer = SummaryWriter()
         self.agent = agent
         self.agentComm = agentComm
-        self.stateNormalizer = None
+        self.state_normalizer = None
         if state_normalization_config:
             self.state_normalizer = RunningMeanStdNormalizer(
                 **state_normalization_config,

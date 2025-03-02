@@ -321,6 +321,6 @@ private:
 
     // Event-based
     static constexpr float REACH_GOAL_REWARD = 0.1f;
-    static constexpr float FALL_OFF_PENALTY = -0.01f;
+    static constexpr float FALL_OFF_PENALTY = -0.1f;
 
 };

@@ -65,9 +65,24 @@ private:
     // --------------------------
     //   MAIN FLOW
     // --------------------------
-    void CollectTransitions();  // Gather Reward/Done/Trunc => finalize transitions if needed
-    void DecideActions();       // For envs that need a new action
-    void StepEnvironments();    // Env->Act(...) calls
+
+    /**
+     * Called AFTER the environment has stepped at least once.
+     * Gathers (reward, done, trunc) => finalizes transitions if needed,
+     * and resets environment if done/trunc.
+     */
+    void CollectTransitions();
+
+    /**
+     * For environment that needs new actions (repeatCounter==0),
+     * gather new actions from Python or random fallback.
+     */
+    void DecideActions();
+
+    /**
+     * Actually apply the current pending actions to each environment => PreStep->Act->PostStep
+     */
+    void StepEnvironments();
 
     // Each environment is stored in this array
     UPROPERTY()

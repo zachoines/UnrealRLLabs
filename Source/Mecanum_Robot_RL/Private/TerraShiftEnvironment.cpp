@@ -214,6 +214,11 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
     PreviousDistances.Init(-1.0f, CurrentAgents);
     PreviousPositions.Init(FVector::One() * -1.0f, CurrentAgents);
 
+    CurrentObjectVelocities.Init(FVector::ZeroVector, CurrentAgents);
+    CurrentObjectAcceleration.Init(FVector::ZeroVector, CurrentAgents);
+    CurrentDistances.Init(-1.0f, CurrentAgents);
+    CurrentPositions.Init(FVector::One() * -1.0f, CurrentAgents);
+
     // Reset columns and grid objects
     GridObjectManager->ResetGridObjects();
     Grid->ResetGrid();
@@ -252,47 +257,34 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
 TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
 {
     TArray<float> State;
-    FVector ObjectWorldPosition = FVector::ZeroVector;
-    FVector ObjectWorldVelocity = FVector::ZeroVector;
-    FVector ObjectRelativePosition = FVector::ZeroVector;
-    FVector ObjectRelativeVelocity = FVector::ZeroVector;
-    FVector ObjectRelativeAcceleration = FVector::ZeroVector;
+    
+    // 1) Retrieve object's relative world position/velocity/acceleration if active
+    FVector ObjectRelativePosition = CurrentPositions[AgentIndex];
+    FVector ObjectRelativeVelocity = CurrentObjectVelocities[AgentIndex];
+    FVector ObjectRelativeAcceleration = CurrentObjectAcceleration[AgentIndex];
 
-    // 2) Retrieve object's relative world position/velocity/acceleration if active
-    bool bHasActiveObject = AgentHasActiveGridObject[AgentIndex];
-    if (bHasActiveObject && GridObjectManager)
-    {
-        AGridObject* GridObject = GridObjectManager->GetGridObject(AgentIndex);
-        ObjectWorldPosition = GridObject->GetObjectLocation();
-        ObjectWorldVelocity = GridObject->MeshComponent->GetPhysicsLinearVelocity();
+    /*FVector PreviousObjectRelativePosition = PreviousPositions[AgentIndex];
+    FVector PreviousObjectRelativeVelocity = PreviousObjectVelocities[AgentIndex];*/
+    FVector PreviousObjectRelativeAcceleration = PreviousObjectAcceleration[AgentIndex];
 
-        // 3) Convert object position/velocity to relative coordinates (platform-based)
-        ObjectRelativePosition = Platform->GetActorTransform().InverseTransformPosition(ObjectWorldPosition);
-        ObjectRelativeVelocity = Platform->GetActorTransform().InverseTransformVector(ObjectWorldVelocity);
-        if (PreviousObjectVelocities[AgentIndex] != FVector::ZeroVector) 
-        {
-            ObjectRelativeAcceleration = ObjectRelativeVelocity - PreviousObjectVelocities[AgentIndex];
-        } 
-    }
+    float DistanceToGoal = CurrentDistances[AgentIndex];
 
-    // 3) Retrieve the goal platform's position in relative coords
+    // 2) Retrieve the goal platform's position in relative coords
     int32 AgentGoalIndex = AgentGoalIndices[AgentIndex];
     FVector GoalRelativePosition = Platform->GetActorTransform().InverseTransformPosition(
         GoalPlatforms[AgentGoalIndex]->GetActorLocation()
     );
 
-    // 4) Distance to the assigned goal (if object is active)
-    float DistanceToGoal = -1.0f;
-    if (bHasActiveObject)
-    {
-        AGoalPlatform* AssignedGoal = GoalPlatforms[AgentGoalIndex];
-        if (AssignedGoal)
-        {
-            DistanceToGoal = FVector::Dist(ObjectRelativePosition, GoalRelativePosition);
-        }
-    }
 
-    // 5) Add object and goal positions (X,Y,Z)
+    // 3.) Scale state
+    DistanceToGoal /= PlatformWorldSize.X;
+    ObjectRelativePosition /= PlatformWorldSize.X;
+    GoalRelativePosition /= PlatformWorldSize.X;
+    ObjectRelativeVelocity /= PlatformWorldSize.X;
+    ObjectRelativeAcceleration /= 980.0; // Scale by gravity
+    PreviousObjectRelativeAcceleration /= 980.0; // Scale by gravity
+
+    // 4) Add object and goal positions (X,Y,Z)
     State.Add(ObjectRelativePosition.X);
     State.Add(ObjectRelativePosition.Y);
     State.Add(ObjectRelativePosition.Z);
@@ -301,43 +293,43 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
     State.Add(GoalRelativePosition.Y);
     State.Add(GoalRelativePosition.Z);
 
-    // 6) Add object velocity (X,Y,Z)
+    // 5) Add object velocity (X,Y,Z)
     State.Add(ObjectRelativeVelocity.X);
     State.Add(ObjectRelativeVelocity.Y);
     State.Add(ObjectRelativeVelocity.Z);
 
-    // 7) Add object acceleration (X,Y,Z)
+    // 6) Add object acceleration (X,Y,Z)
     State.Add(ObjectRelativeAcceleration.X);
     State.Add(ObjectRelativeAcceleration.Y);
     State.Add(ObjectRelativeAcceleration.Z);
 
-    // 8) Add previous object velocity (X, Y, Z)
-    State.Add(PreviousObjectVelocities[AgentIndex].X);
-    State.Add(PreviousObjectVelocities[AgentIndex].Y);
-    State.Add(PreviousObjectVelocities[AgentIndex].Z);
+    //// 7) Add previous object velocity (X, Y, Z)
+    //State.Add(PreviousObjectVelocities[AgentIndex].X);
+    //State.Add(PreviousObjectVelocities[AgentIndex].Y);
+    //State.Add(PreviousObjectVelocities[AgentIndex].Z);
 
     // 9.) Add previous object acceleration (X, Y, Z)
     State.Add(PreviousObjectAcceleration[AgentIndex].X);
     State.Add(PreviousObjectAcceleration[AgentIndex].Y);
     State.Add(PreviousObjectAcceleration[AgentIndex].Z);
 
-    // 10)  Add previous object distance to the assigned goal
-    State.Add(PreviousDistances[AgentIndex]);
+    //// 10)  Add previous object distance to the assigned goal
+    //State.Add(PreviousDistances[AgentIndex]);
 
-    // 11) Add previous object position (X,Y,Z)
-    State.Add(PreviousPositions[AgentIndex].X);
-    State.Add(PreviousPositions[AgentIndex].Y);
-    State.Add(PreviousPositions[AgentIndex].Z);
+    //// 11) Add previous object position (X,Y,Z)
+    //State.Add(PreviousPositions[AgentIndex].X);
+    //State.Add(PreviousPositions[AgentIndex].Y);
+    //State.Add(PreviousPositions[AgentIndex].Z);
 
-    // 12) Flag: is the GridObject active?
-    State.Add(bHasActiveObject ? 1.0f : 0.0f);
+    // 7) Flag: is the GridObject active?
+    State.Add(AgentHasActiveGridObject[AgentIndex] ? 1.0f : 0.0f);
 
-    // 13) Add the (GoalIndex + 1) if active, else 0, plus distance to goal
-    State.Add(bHasActiveObject ? static_cast<float>(AgentGoalIndex + 1) : 0.0f);
+    // 8) Add the (GoalIndex + 1) if active, else 0, plus distance to goal
+    State.Add(AgentHasActiveGridObject[AgentIndex] ? static_cast<float>(AgentGoalIndex + 1) : 0.0f);
     State.Add(DistanceToGoal);
     State.Add(LastDeltaTime);
 
-    // 14) Agent Wave State
+    // 9) Agent Wave State
     State.Append(WaveSimulator->GetAgentStateVariables(AgentIndex));
     // State.Append(WaveSimulator->GetAgentFractalImage(AgentIndex));
     return State;
@@ -523,15 +515,19 @@ void ATerraShiftEnvironment::PreTransition()
 {
     // Check and respawn GridObjects if necessary
     UpdateGridObjectFlags();
+
+    
+    // Store previous object information
+    UpdateObjectStats();
+
+
+    // Handle objects marked for respawn. Needs to happen before we call 
+    RespawnGridObjects();
 }
 
 void ATerraShiftEnvironment::PostTransition()
 {
-    // Handle objects marked for respawn
-    RespawnGridObjects();
-    
-    // Store previous object information
-    UpdateObjectStats();
+
 }
 
 void ATerraShiftEnvironment::PostStep()
@@ -541,16 +537,11 @@ void ATerraShiftEnvironment::PostStep()
 
 void ATerraShiftEnvironment::PreStep()
 {
-    
+
 }
 
 bool ATerraShiftEnvironment::Done()
 {
-    // Grid object has fallen off grid
-    /*if (GridObjectFallenOffGrid.Contains(true)) {
-        return true;
-    }*/
-
     // If there are no more GridObjects left to handle, then the environment is done
     if (CurrentStep > 0 && (!AgentHasActiveGridObject.Contains(true) && !GridObjectShouldRespawn.Contains(true))) {
         return true;
@@ -571,97 +562,192 @@ bool ATerraShiftEnvironment::Trunc()
 float ATerraShiftEnvironment::Reward()
 {
     float StepReward = 0.0f;
-
-    // --- Constants & Scales (tweak as needed) ---
-    constexpr float REACH_GOAL_REWARD = 3.0f;   // Slightly higher than old +2
-    constexpr float FALL_OFF_PENALTY = 0.5f;   // Slightly lower than old -1
-    constexpr float VELOCITY_ALIGN_SCALE = 0.01f;  // Horizontal/vertical movement shaping
-    constexpr float ACCEL_PENALTY_SCALE = 0.0005f;// Penalty scale for "excess" XY & upward Z acceleration
-
-    // Clamps
-    constexpr float MAX_SPEED_ALONG_GOAL = 200.0f; // Example clamp for alignment
-    constexpr float MAX_ACCEL_MAG = 2000.0f;// Example clamp for acceleration
-
-    float DeltaTime = GetWorld()->GetDeltaSeconds();
-    if (DeltaTime < KINDA_SMALL_NUMBER)
-    {
-        // If dt is extremely small, skip any shaping.
+    if (LastDeltaTime < KINDA_SMALL_NUMBER) {
+        // If dt is extremely small, skip 
         return 0.0f;
     }
 
     for (int32 AgentIndex = 0; AgentIndex < CurrentAgents; ++AgentIndex)
     {
-        // Check for event-based rewards or penalties
+        // ------------------ (A) Handle event-based rewards first ------------------
         if (GridObjectShouldCollectEventReward[AgentIndex] && GridObjectFallenOffGrid[AgentIndex])
         {
-            StepReward -= FALL_OFF_PENALTY;
+            StepReward += FALL_OFF_PENALTY;
             GridObjectShouldCollectEventReward[AgentIndex] = false;
+            continue; // skip sub-rewards
         }
         else if (GridObjectShouldCollectEventReward[AgentIndex] && GridObjectHasReachedGoal[AgentIndex])
         {
             StepReward += REACH_GOAL_REWARD;
             GridObjectShouldCollectEventReward[AgentIndex] = false;
+            continue; // skip sub-rewards
         }
-        // Otherwise, apply continuous shaping if the object is active
-        else if (AgentHasActiveGridObject[AgentIndex])
+
+        // If object is not active, skip
+        if (!AgentHasActiveGridObject[AgentIndex]) {
+            continue;
+        }
+
+        AGridObject* GridObject = GridObjectManager->GetGridObject(AgentIndex);
+        AGoalPlatform* AssignedGoal = GoalPlatforms[AgentGoalIndices[AgentIndex]];
+        if (!GridObject || !AssignedGoal)
         {
-            AGridObject* GridObject = GridObjectManager->GetGridObject(AgentIndex);
-            AGoalPlatform* AssignedGoal = GoalPlatforms[AgentGoalIndices[AgentIndex]];
-            if (!GridObject || !AssignedGoal) { continue; }
+            continue;
+        }
 
-            // 1) Velocity alignment with goal
-            FVector ObjLocalPos = Platform->GetActorTransform().InverseTransformPosition(GridObject->GetObjectLocation());
-            FVector GoalLocalPos = Platform->GetActorTransform().InverseTransformPosition(AssignedGoal->GetActorLocation());
+        // Current location & velocity
+        FVector ObjectWorldPos = GridObject->GetObjectLocation();
+        FVector ObjectWorldVel = GridObject->MeshComponent->GetPhysicsLinearVelocity();
+        FVector ObjLocalPos = Platform->GetActorTransform().InverseTransformPosition(ObjectWorldPos);
+        FVector VelLocal = Platform->GetActorTransform().InverseTransformVector(ObjectWorldVel);
 
-            FVector toGoal = (GoalLocalPos - ObjLocalPos);
-            float distGoal = toGoal.Size();
-            if (distGoal > 1e-3f)
+        // Next, the goal local pos
+        FVector GoalLocalPos = Platform->GetActorTransform().InverseTransformPosition(
+            AssignedGoal->GetActorLocation()
+        );
+
+        float subReward = 0.0f; // sum of sub-rewards for this agent
+
+        // ------------------------------------------------------------
+        // 0) Velocity To Goal (XY) 
+        // ------------------------------------------------------------
+        if (bUseVelAlignment)
+        {
+            FVector toGoalXY = (GoalLocalPos - ObjLocalPos);
+            toGoalXY.Z = 0.0f;
+            float distXY = toGoalXY.Size();
+            if (distXY > KINDA_SMALL_NUMBER)
             {
-                toGoal.Normalize();
-                FVector CurrentVel = Platform->GetActorTransform().InverseTransformVector(
-                    GridObject->MeshComponent->GetPhysicsLinearVelocity()
-                );
+                toGoalXY.Normalize();
+                float speedAlongGoal = FVector::DotProduct(VelLocal, toGoalXY);
+                float clampedSpeed = ThresholdAndClamp(speedAlongGoal, VelAlign_Min, VelAlign_Max);
 
-                float speedAlongGoal = FVector::DotProduct(CurrentVel, toGoal);
-
-                // Clamp speed along goal so large speeds don't blow up the reward
-                float clampedSpeed = FMath::Clamp(speedAlongGoal, -MAX_SPEED_ALONG_GOAL, MAX_SPEED_ALONG_GOAL);
-
-                // Multiply by delta-time so it's not frame-rate dependent
-                float velReward = VELOCITY_ALIGN_SCALE * clampedSpeed * DeltaTime;
-                StepReward += velReward;
-            }
-
-            // 2) Acceleration penalty (only XY + positive Z)
-            if (PreviousObjectVelocities[AgentIndex] != FVector::ZeroVector)
-            {
-                FVector CurrentVel = Platform->GetActorTransform().InverseTransformVector(
-                    GridObject->MeshComponent->GetPhysicsLinearVelocity()
-                );
-                FVector PrevVel = PreviousObjectVelocities[AgentIndex];
-
-                // Total acceleration in local frame
-                FVector aTotal = (CurrentVel - PrevVel) / DeltaTime;
-
-                // "Free" negative Z acceleration (gravity).
-                // So we only measure XY plus positive Z as "excess."
-                float ax = aTotal.X;
-                float ay = aTotal.Y;
-                float az = (aTotal.Z > 0.f) ? aTotal.Z : 0.f;  // zero out negative Z
-
-                float rawAccelMag = FVector(ax, ay, az).Size();
-
-                // Clamp to avoid extreme negativity
-                float clampedAccel = FMath::Min(rawAccelMag, MAX_ACCEL_MAG);
-
-                // Scale by ACCEL_PENALTY_SCALE and DeltaTime
-                float accelPenalty = ACCEL_PENALTY_SCALE * clampedAccel * DeltaTime;
-                StepReward -= accelPenalty;
+                // scale * DeltaTime
+                subReward += VelAlign_Scale * clampedSpeed * LastDeltaTime;
             }
         }
+
+        // ------------------------------------------------------------
+        // 1) XY Distance Improvement
+        // ------------------------------------------------------------
+        if (bUseXYDistanceImprovement && PreviousDistances[AgentIndex] > 0)
+        {
+            float prevDistXY = PreviousDistances[AgentIndex]; // stored somewhere each step
+            float currDistXY = FVector::Distance(ObjLocalPos, GoalLocalPos);
+
+            if (prevDistXY > 0.f && currDistXY > 0.f)
+            {
+                float distDelta = (prevDistXY - currDistXY) / PlatformWorldSize.X;
+                float clampedDelta = ThresholdAndClamp(distDelta, DistImprove_Min, DistImprove_Max);
+                subReward += DistImprove_Scale * clampedDelta;
+            }
+        }
+
+        // ------------------------------------------------------------
+        // 2) Z Acceleration Penalty
+        // ------------------------------------------------------------
+        if (bUseZAccelerationPenalty && PreviousObjectVelocities[AgentIndex] != FVector::ZeroVector)
+        {
+
+            FVector aTotal = (VelLocal - PreviousObjectVelocities[AgentIndex]) / LastDeltaTime;
+
+            // Example: only positive Z => launching up
+            float positiveZ = (aTotal.Z > 0.f) ? aTotal.Z : 0.f;
+            float clampedZ = ThresholdAndClamp(positiveZ, ZAccel_Min, ZAccel_Max);
+
+            // penalty => subtract
+            subReward -= (ZAccel_Scale * clampedZ * LastDeltaTime);
+        }
+
+        // ------------------------------------------------------------
+        // 3) Cradle Reward
+        // ------------------------------------------------------------
+        if (bUseCradleReward)
+        {
+            // We'll do the bounding approach, similar to "GetActiveColumnsInProximity"
+            // 1) get the object's bounding sphere from calc bounds
+            FBoxSphereBounds ObjectBounds = GridObject->MeshComponent->CalcBounds(
+                GridObject->MeshComponent->GetComponentTransform()
+            );
+            float SphereRadius = ObjectBounds.SphereRadius; // The bounding sphere radius
+
+            float EffectiveRadius = SphereRadius * CradleRadiusMultiplier;
+
+            // 2) bounding box corners in world coords
+            float MinX = ObjectWorldPos.X - EffectiveRadius;
+            float MaxX = ObjectWorldPos.X + EffectiveRadius;
+            float MinY = ObjectWorldPos.Y - EffectiveRadius;
+            float MaxY = ObjectWorldPos.Y + EffectiveRadius;
+
+            // 3) convert to grid indices
+            // We have the platform size, grid size, cell size, etc. 
+            // from environment init or members
+            float HalfPlatformSize = PlatformWorldSize.X * 0.5f;
+            float GridOriginX = PlatformCenter.X - HalfPlatformSize;
+            float GridOriginY = PlatformCenter.Y - HalfPlatformSize;
+
+            int32 MinXIndex = FMath::FloorToInt((MinX - GridOriginX) / CellSize);
+            int32 MaxXIndex = FMath::FloorToInt((MaxX - GridOriginX) / CellSize);
+            int32 MinYIndex = FMath::FloorToInt((MinY - GridOriginY) / CellSize);
+            int32 MaxYIndex = FMath::FloorToInt((MaxY - GridOriginY) / CellSize);
+
+            // clamp indices
+            MinXIndex = FMath::Clamp(MinXIndex, 0, GridSize - 1);
+            MaxXIndex = FMath::Clamp(MaxXIndex, 0, GridSize - 1);
+            MinYIndex = FMath::Clamp(MinYIndex, 0, GridSize - 1);
+            MaxYIndex = FMath::Clamp(MaxYIndex, 0, GridSize - 1);
+
+            // 4) accumulate cradle measure
+            float sumGap = 0.0f;
+            int   numColumns = 0;
+
+            // object "bottom" => sphere centerZ - radius
+            float objectBottomZ = ObjectWorldPos.Z - SphereRadius;
+
+            for (int32 X = MinXIndex; X <= MaxXIndex; ++X)
+            {
+                for (int32 Y = MinYIndex; Y <= MaxYIndex; ++Y)
+                {
+                    int32 ColumnIndex = X * GridSize + Y;
+                    const FVector& colCenter = GridCenterPoints[ColumnIndex];
+
+                    // check 2D distance
+                    float dist2D = FVector::Dist2D(colCenter, ObjectWorldPos);
+                    if (dist2D > EffectiveRadius) {
+                        continue; // skip if out of range
+                    }
+
+                    // wave top => colCenter.Z + Grid->GetColumnHeight(ColumnIndex)
+                    float waveTopZ = colCenter.Z + Grid->GetColumnHeight(ColumnIndex);
+
+                    // gap => how far the object's bottom is from the wave top
+                    float gap = FMath::Abs(objectBottomZ - waveTopZ);
+
+                    sumGap += gap;
+                    numColumns++;
+                }
+            }
+
+            if (numColumns > 0)
+            {
+                float avgGap = sumGap / float(numColumns);
+
+                // Option: penalize large gap => negative => smaller => better
+                // cradleRaw = -avgGap, so small gap => near zero, large gap => more negative
+                float cradleRaw = -avgGap;
+                float cradleClamped = ThresholdAndClamp(cradleRaw, Cradle_DistMin, Cradle_DistMax);
+
+                // add to subReward
+                subReward += (Cradle_Scale * cradleClamped);
+            }
+        }
+
+
+        // accumulate subReward to global StepReward
+        StepReward += subReward;
     }
 
-    return StepReward;
+    return StepReward / (float) CurrentAgents;
 }
 
 AMainPlatform* ATerraShiftEnvironment::SpawnPlatform(FVector Location)
@@ -937,14 +1023,18 @@ void ATerraShiftEnvironment::UpdateObjectStats() {
                 FVector GoalRelativePosition = Platform->GetActorTransform().InverseTransformPosition(GoalWorldPosition);
                 FVector ObjectRelativePosition = Platform->GetActorTransform().InverseTransformPosition(ObjectWorldPosition);
                 FVector ObjectRelativeVelocity = Platform->GetActorTransform().InverseTransformVector(ObjectWorldVelocity);
-                FVector ObjectRelativeVelocityPrevious = PreviousObjectVelocities[i];
-                FVector ObjectRelativeAcceleration = !FMath::IsNearlyZero(LastDeltaTime) ? (ObjectRelativeVelocity - ObjectRelativeVelocityPrevious) / LastDeltaTime : FVector::Zero();
+                FVector ObjectRelativeAcceleration = !FMath::IsNearlyZero(LastDeltaTime) ? (ObjectRelativeVelocity - CurrentObjectVelocities[i]) / LastDeltaTime : FVector::Zero();
              
-                // Store for later use
-                PreviousObjectVelocities[i] = ObjectRelativeVelocity;
-                PreviousObjectAcceleration[i] = ObjectRelativeAcceleration;
-                PreviousDistances[i] = FVector::Dist(ObjectRelativePosition, GoalRelativePosition);
-                PreviousPositions[i] = ObjectRelativePosition;
+                // Update currenent/previous states for later use in Rewards/Dones/State/etc.
+                PreviousObjectVelocities[i] = CurrentObjectVelocities[i];
+                PreviousObjectAcceleration[i] = CurrentObjectAcceleration[i];
+                PreviousDistances[i] = CurrentDistances[i];
+                PreviousPositions[i] = CurrentPositions[i];
+
+                CurrentObjectVelocities[i] = ObjectRelativeVelocity;
+                CurrentObjectAcceleration[i] = ObjectRelativeAcceleration;
+                CurrentDistances[i] = FVector::Dist(ObjectRelativePosition, GoalRelativePosition);
+                CurrentPositions[i] = ObjectRelativePosition;
             }
             else
             {
@@ -952,6 +1042,11 @@ void ATerraShiftEnvironment::UpdateObjectStats() {
                 PreviousObjectAcceleration[i] = FVector::ZeroVector;
                 PreviousDistances[i] = -1;
                 PreviousPositions[i] = FVector::ZeroVector;
+
+                CurrentObjectVelocities[i] = FVector::ZeroVector;
+                CurrentObjectAcceleration[i] = FVector::ZeroVector;
+                CurrentDistances[i] = -1;
+                CurrentPositions[i] = FVector::ZeroVector;
             }
 
             if (GridObjectShouldRespawn[i]) {
@@ -1037,4 +1132,17 @@ void ATerraShiftEnvironment::UpdateGoal(int32 GoalIndex)
         NewGoalPlatform->InitializeGoalPlatform(GoalLocation, GoalPlatformScale, GoalColor, Platform);
         GoalPlatforms.Add(NewGoalPlatform);
     }
+}
+
+float ATerraShiftEnvironment::ThresholdAndClamp(float value, float minVal, float maxVal)
+{
+    // 1) If abs(value) < minVal => return 0
+    if (FMath::Abs(value) < minVal)
+    {
+        return 0.0f;
+    }
+
+    // 2) Clamp magnitude to maxVal
+    float clamped = FMath::Clamp(value, -maxVal, maxVal);
+    return clamped;
 }

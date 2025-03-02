@@ -72,6 +72,8 @@ class TanhContinuousPolicyNetwork(BasePolicyNetwork):
         self.shared = nn.Sequential(
             nn.Linear(in_features, hidden_size),
             nn.LeakyReLU(0.01),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(0.01),
         )
 
         self.mean_head = nn.Sequential(
@@ -232,9 +234,6 @@ class DiscretePolicyNetwork(BasePolicyNetwork):
                 for branch_sz in out_features
             ])
 
-        # ---------------------------------------------
-        #  Apply Kaiming init (LeakyReLU) to all Linear layers
-        # ---------------------------------------------
         self.apply(lambda m: init_weights_leaky_relu(m, 0.01))
 
     def forward(self, x: torch.Tensor):
@@ -323,7 +322,7 @@ class DiscretePolicyNetwork(BasePolicyNetwork):
 
 class RSA(nn.Module):
     """
-    Relational Self-Attention (RSA):
+    Residual Self-Attention (RSA):
     Produces relational embeddings among agents.
 
     Input:  (Batch,Agents,H)
@@ -357,6 +356,52 @@ class RSA(nn.Module):
         out, _ = self.multihead_attn(q, k, v)
         out = x + out
         return self.output_norm(out)
+
+
+class AgentSelfAttention(nn.Module):
+    """
+    A wrapper around PyTorch's TransformerEncoder/TransformerEncoderLayer
+    for multi-agent self-attention.
+
+    Usage:
+      embed_size=64, nheads=4 => typical small
+      feedforward_mult=4 => means feedforward hidden size = 4*embed_size
+      num_layers=1 => how many stacked layers
+      dropout=0.1 => typical dropout (only if needed)
+    
+    Input shape => (batch, agents, embed_size)
+    Output shape=> (batch, agents, embed_size)
+    """
+
+    def __init__(self, 
+                 embed_size: int, 
+                 nheads: int, 
+                 feedforward_mult: int = 4, 
+                 dropout: float = 0.1,
+                 num_layers: int = 1):
+        super().__init__()
+
+        # 1) A single TransformerEncoderLayer
+        #    - batch_first=True => we accept (batch, seq_len, embed_size)
+        #    - feedforward_dim => feedforward_mult*embed_size
+        layer = nn.TransformerEncoderLayer(
+            d_model=embed_size,
+            nhead=nheads,
+            dim_feedforward=feedforward_mult * embed_size,
+            dropout=dropout,
+            batch_first=True
+        )
+
+        # 2) Possibly stack multiple layers
+        self.encoder = nn.TransformerEncoder(layer, num_layers=num_layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x => shape (batch, agents, embed_size)
+        returns => shape (batch, agents, embed_size)
+        """
+        out = self.encoder(x)
+        return out
 
 
 class AgentIDPosEnc(nn.Module):
@@ -493,13 +538,16 @@ class GeneralObsEncoder(nn.Module):
             key       = enc_info["key"]
             net_class = enc_info["network"]
             params    = enc_info["params"]
-
-            if net_class == "SpatialNetwork2D":
-                sub_enc = SpatialNetwork2D(**params)   # e.g. returns out_features
+        
+            if net_class == "LightweightSpatialNetwork2D":
+                # the new smaller CNN
+                sub_enc = LightweightSpatialNetwork2D(**params)
                 out_dim = sub_enc.out_features
+
             elif net_class == "LinearNetwork":
                 sub_enc = LinearNetwork(**params)
                 out_dim = params["out_features"]
+
             else:
                 raise ValueError(f"Unknown sub-encoder: {net_class}")
 
@@ -528,13 +576,7 @@ class GeneralObsEncoder(nn.Module):
                 self.aggregator_output_size,
                 activation=True,
                 layer_norm=True
-            ),
-            # LinearNetwork(
-            #     sum_dims // 2,
-            #     self.aggregator_output_size,
-            #     activation=True,
-            #     layer_norm=True
-            # )
+            )
         )
         
 
@@ -561,7 +603,7 @@ class GeneralObsEncoder(nn.Module):
                 emb_2d = sub_enc(x.reshape(b, cDim))     # => (b, out_dim)
                 out_dim = self.sub_enc_outputs[key]
                 emb_3d = emb_2d.reshape(S, E, out_dim)   # => (S,E,out_dim)
-                emb_4d = emb_3d.unsqueeze(2)          # => (S,E,1,out_dim)
+                emb_4d = emb_3d.unsqueeze(2)            # => (S,E,1,out_dim)
                 final_S, final_E, final_NA = S, E, 1
                 sub_outputs.append(emb_4d)
 
@@ -704,9 +746,9 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         self.f = StatesActionsEncoder(**net_cfg["obs_actions_encoder"])
         self.g = StatesEncoder(**net_cfg["obs_encoder"])
 
-        # 3) common RSA for policy, value, baseline
-        self.common_rsa = RSA(**net_cfg.get("common_rsa", net_cfg["RSA"]))
-        self.baseline_rsa = RSA(**net_cfg.get("baseline_rsa", net_cfg["RSA"]))
+        # 3) seperate AgentSelfAttention for policy/value and baseline
+        self.common_attention = AgentSelfAttention(**net_cfg["common_attention"])
+        self.baseline_attention = AgentSelfAttention(**net_cfg["baseline_attention"])
 
     # --------------------------------------------------------------------
     #  Produce "base embedding" from raw dictionary of observarion
@@ -740,10 +782,10 @@ class MultiAgentEmbeddingNetwork(nn.Module):
             return agent_obs_emb, None
     
     def attend_for_baselines(self, embeddings):
-        return self._apply_attention(self.baseline_rsa, embeddings)
+        return self._apply_attention(self.baseline_attention, embeddings)
     
     def attend_for_common(self, embeddings):
-        return self._apply_attention(self.common_rsa, embeddings)
+        return self._apply_attention(self.common_attention, embeddings)
     
     def _apply_attention(self, RSA, embeddings):
         # Unpack all but the last two dimensions into batch_dims:
@@ -844,6 +886,7 @@ class ResidualBlock(nn.Module):
         out = F.leaky_relu(out, negative_slope=0.01)
         return out
 
+
 class SpatialNetwork2D(nn.Module):
     """
     2D convolutional network with ResidualBlocks + GroupNorm.
@@ -884,7 +927,8 @@ class SpatialNetwork2D(nn.Module):
         pool_count = num_blocks // 2
         final_h = h // (2 ** pool_count)
         final_w = w // (2 ** pool_count)
-        self.final_fc = nn.Linear(current_channels * final_h * final_w, out_features)
+        in_features = current_channels * final_h * final_w
+        self.final_fc = nn.Linear(in_features, out_features)
 
         # 4) Optionally a layer norm on the final embedding
         self.final_ln = nn.LayerNorm(out_features)
@@ -920,6 +964,157 @@ class SpatialNetwork2D(nn.Module):
         # flatten => final fc => final LN
         B2, C2, H2, W2 = out.shape
         out_flat = out.reshape(B2, C2 * H2 * W2)
+        emb = self.final_fc(out_flat)
+        emb = self.final_ln(emb)
+        return emb
+
+
+class CoordConv2D(nn.Module):
+    """
+    A simple 'coord conv' approach to inject absolute (x,y) positions as additional channels.
+    Input shape: (B, 1, H, W) for the wave, or (B, in_channels, H, W).
+    Output shape: (B, in_channels+2, H, W).
+      - The 2 extra channels are X_ij, Y_ij in [-1, 1].
+    """
+    def __init__(self, h: int, w: int):
+        super().__init__()
+        self.h = h
+        self.w = w
+
+        # Pre-compute normalized coordinate grids in [-1..1]
+        # shape => (H, W)
+        xs = torch.linspace(-1.0, 1.0, w).reshape(1, w).expand(h, w)
+        ys = torch.linspace(-1.0, 1.0, h).reshape(h, 1).expand(h, w)
+
+        # so xs[i, j] is x-coord, ys[i, j] is y-coord
+        # => final shape => (2, H, W)
+        coords = torch.stack([ys, xs], dim=0)  
+        # register as buffer so it's on correct device
+        self.register_buffer("coords", coords, persistent=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x => (B, C, H, W). We'll append 2 coordinate channels => (B, C+2, H, W).
+        """
+        B, C, H, W = x.shape
+        if H != self.h or W != self.w:
+            raise ValueError(f"CoordConv2D expects H,W=({self.h},{self.w}). Got {H,W}.")
+
+        # coords => shape (2,H,W), unsqueeze => (1,2,H,W), expand => (B,2,H,W)
+        coords_expanded = self.coords.unsqueeze(0).expand(B, -1, -1, -1)
+        # cat => (B, C+2, H, W)
+        out = torch.cat([x, coords_expanded], dim=1)
+        return out
+
+
+class LightweightSpatialNetwork2D(nn.Module):
+    """
+    A smaller CNN for 2D wave heightmaps with coordinate injection for absolute position.
+    Steps:
+      1) Reshape => (B, 1, H, W)   # single channel wave
+      2) Append 2 channels => (x,y) => total 3 channels
+      3) A few small conv layers => GN => LeakyReLU
+      4) Minimal pooling (1 or 2 times) to reduce dimension
+      5) flatten => final fc => LN => out_features
+    Typically for wave features => 50x50 input
+    """
+
+    def __init__(
+        self,
+        h: int = 50,
+        w: int = 50,
+        in_channels: int = 1,
+        base_channels: int = 8,
+        num_conv_layers: int = 2,
+        out_features: int = 64,
+        pooling_layers: int = 1,
+        kernel_size: int = 3,
+        dropout: float = 0.0
+    ):
+        """
+        :param h,w: input height/width
+        :param in_channels: typically 1 for the wave
+        :param base_channels: #channels in the first conv
+        :param num_conv_layers: how many conv->norm->relu blocks
+        :param out_features: final output dimension
+        :param pooling_layers: how many times we do a MaxPool2d(kernel_size=2)
+        :param kernel_size: kernel for convs (3 is typical)
+        :param dropout: if >0, we do nn.Dropout after conv layers
+        """
+        super().__init__()
+        self.h = h
+        self.w = w
+        self.out_features = out_features
+
+        # 1) We'll do a small 'coordconv' to add x,y channels => total in_channels + 2
+        self.coordconv = CoordConv2D(h, w)
+        in_ch = in_channels + 2
+
+        # 2) Build conv layers
+        layers = []
+        current_channels = in_ch
+        for i in range(num_conv_layers):
+            conv = nn.Conv2d(
+                in_channels=current_channels, 
+                out_channels=base_channels, 
+                kernel_size=kernel_size, 
+                padding=kernel_size//2
+            )
+            layers.append(conv)
+            # groupnorm or layernorm can be used. We'll do groupnorm with 1 group => instance-norm style
+            layers.append(nn.GroupNorm(num_groups=1, num_channels=base_channels))
+            layers.append(nn.LeakyReLU(0.01))
+
+            current_channels = base_channels
+        
+            if dropout > 0:
+                layers.append(nn.Dropout2d(dropout))
+
+        # 3) optional pooling
+        #  do pooling_layers times => each => reduce spatial by half
+        pool_list = []
+        for _ in range(pooling_layers):
+            pool_list.append(nn.MaxPool2d(kernel_size=2))
+
+        self.conv_stack = nn.Sequential(*layers, *pool_list)
+
+        # 4) figure out final shape after these pools
+        # for each pool => h,w => h/2, w/2
+        final_h = h >> pooling_layers  # h // 2**pooling_layers
+        final_w = w >> pooling_layers
+        in_feat = current_channels * final_h * final_w
+
+        # 5) final fc => out_features
+        self.final_fc = nn.Linear(in_feat, out_features)
+        self.final_ln = nn.LayerNorm(out_features)
+
+        # apply kaiming init to all conv layers
+        self.apply(lambda m: init_weights_leaky_relu_conv(m, 0.01))
+        self.apply(lambda m: init_weights_leaky_relu(m, 0.01))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x => shape (B, N) with N = h*w
+        => we reshape => (B,1,h,w), then add x,y coords => (B,3,h,w)
+        => pass conv stack => flatten => final fc => LN => (B,out_features)
+        """
+        B, N = x.shape
+        if N != self.h * self.w:
+            raise ValueError(f"Expected input size {self.h*self.w}, got {N}.")
+
+        # reshape => (B, 1, h, w)
+        x_img = x.reshape(B, 1, self.h, self.w)
+
+        # coord conv => (B, 3, h, w)
+        out = self.coordconv(x_img)
+
+        # pass conv stack
+        out = self.conv_stack(out)
+        # flatten
+        B2, C2, H2, W2 = out.shape
+        out_flat = out.reshape(B2, C2 * H2 * W2)
+
+        # final fc => layer norm
         emb = self.final_fc(out_flat)
         emb = self.final_ln(emb)
         return emb

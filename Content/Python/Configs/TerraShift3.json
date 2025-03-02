@@ -182,7 +182,7 @@
      "buffer_size": 512,
      "batch_size": 512,
      "AgentsResetFrequency": 0,
-     "ActionRepeat": 0,
+     "ActionRepeat": 3,
      "saveFrequency": 20
    }
  }

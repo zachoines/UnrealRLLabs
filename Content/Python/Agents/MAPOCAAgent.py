@@ -7,7 +7,7 @@ from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import LinearLR
 
 from Source.Agent import Agent
-from Source.Utility import RunningMeanStdNormalizer, LinearValueScheduler
+from Source.Utility import RunningMeanStdNormalizer, LinearValueScheduler, OneCycleLRWithMin
 from Source.Networks import (
     MultiAgentEmbeddingNetwork,
     SharedCritic,
@@ -17,10 +17,10 @@ from Source.Networks import (
 
 class MAPOCAAgent(Agent):
     """
-    Multi-agent PPO (MAPOCA) style agent. Supports:
-      - TanhContinuous or Discrete policy networks
-      - clipped value & baseline (optional)
-      - single-pass approach for policy/value/baseline
+    Multi-agent PPO (MAPOCA) style agent. 
+    - TanhContinuous or Discrete policy networks
+    - clipped value & baseline (optional)
+    - single-pass approach for policy/value/baseline
     """
 
     def __init__(self, config: Dict, device: torch.device):
@@ -168,25 +168,25 @@ class MAPOCAAgent(Agent):
             )
         )
         S,E,NA,H = common_emb.shape
-        emb_2d   = common_emb.view(S*E*NA, H)
+        emb_2d   = common_emb.reshape(S*E*NA, H)
 
         actions_flat, lp_flat, ent_flat = self.policy_net.get_actions(emb_2d, eval=eval)
 
         if self.action_space_type == "continuous":
             act_dim = actions_flat.shape[-1]
-            actions = actions_flat.view(S,E,NA, act_dim)
+            actions = actions_flat.reshape(S,E,NA, act_dim)
         else:
             # discrete => single-cat or multi-cat
             if actions_flat.dim()==1:
                 # single-cat => shape => (B,)
-                actions = actions_flat.view(S,E,NA,1)
+                actions = actions_flat.reshape(S,E,NA,1)
             else:
                 # multi-discrete => shape => (B,#branches)
                 nb = actions_flat.shape[-1]
-                actions = actions_flat.view(S,E,NA, nb)
+                actions = actions_flat.reshape(S,E,NA, nb)
 
-        log_probs = lp_flat.view(S,E,NA)
-        entropies = ent_flat.view(S,E,NA)
+        log_probs = lp_flat.reshape(S,E,NA)
+        entropies = ent_flat.reshape(S,E,NA)
         return actions, (log_probs, entropies)
 
     # ------------------------------------------------------------
@@ -219,9 +219,10 @@ class MAPOCAAgent(Agent):
             self.rewards_normalizer.update(rewards)
             self.rewards_normalizer.normalize(rewards)
 
+        # ------------------------------------------------
         # 1) gather old data
+        # ------------------------------------------------
         with torch.no_grad():
-            # single pass for states => base => (comm_emb, base_emb)
             base_emb = self.embedding_network.get_base_embedding(states)
             comm_emb, base_emb_ = self.embedding_network.get_common_and_baseline_embeddings(base_emb, actions)
             comm_att = self.embedding_network.attend_for_common(comm_emb)
@@ -245,33 +246,41 @@ class MAPOCAAgent(Agent):
                 rewards, old_vals, next_vals, dones, truncs
             )
 
-        # 2) Prepare for mini-batches
+        # ------------------------------------------------
+        # 2) Prepare arrays to store logs
+        # ------------------------------------------------
         idxes = np.arange(NS)
         pol_losses, val_losses, base_losses = [], [], []
         entropies = []
         advantages_list, advantages_mean_list, advantages_std_list = [], [], []
         returns_list, grad_norm_list, lrs_list = [], [], []
 
+        # For debugging log-prob
+        logprob_means, logprob_mins, logprob_maxs = [], [], []
+
+        # We'll store layer-wise gradient sums for averaging
+        grad_norms_sum_per_layer = {}
+        grad_norms_count = 0
+
         # single pass stats
         returns_list.append(returns.mean().detach().cpu())
 
-        # 3) training loop
+        # ------------------------------------------------
+        # 3) Training loop over epochs + mini-batches
+        # ------------------------------------------------
         for _ in range(self.epochs):
             np.random.shuffle(idxes)
             nB = (NS + self.mini_batch_size - 1)//self.mini_batch_size
 
             for b in range(nB):
 
-                # Step other schedulers
+                # Step schedulers
                 if self.entropy_scheduler:
                     self.entropy_coeff = self.entropy_scheduler.step()
-
                 if self.policy_clip_scheduler:
                     self.ppo_clip_range = self.policy_clip_scheduler.step()
-
                 if self.value_clip_scheduler:
                     self.value_clip_range = self.value_clip_scheduler.step()
-
                 if self.max_grad_norm_scheduler:
                     self.max_grad_norm = self.max_grad_norm_scheduler.step()
 
@@ -287,7 +296,7 @@ class MAPOCAAgent(Agent):
                 oval_mb = old_vals[mb_idx]       # => (MB,NE,1)
                 obase_mb= old_bases[mb_idx]      # => (MB,NE,NA,1)
 
-                # new pass
+                # forward pass on new states
                 base_mb = self.embedding_network.get_base_embedding(st_mb)
                 comm_mb, bas_mb = self.embedding_network.get_common_and_baseline_embeddings(base_mb, act_mb)
                 comm_att_mb = self.embedding_network.attend_for_common(comm_mb)
@@ -296,7 +305,13 @@ class MAPOCAAgent(Agent):
                 # new log_probs
                 new_lp_mb, ent_mb = self._recompute_log_probs(comm_att_mb, act_mb)
 
-                # new vals
+                # Log-prob stats
+                lp_det = new_lp_mb.detach()
+                logprob_means.append(lp_det.mean().cpu())
+                logprob_mins.append(lp_det.min().cpu())
+                logprob_maxs.append(lp_det.max().cpu())
+
+                # new V, baseline
                 new_vals_mb   = self.shared_critic.values(comm_att_mb)     # => (MB,NE,1)
                 new_base_mb   = self.shared_critic.baselines(bas_att_mb)   # => (MB,NE,NA,1)
 
@@ -311,11 +326,16 @@ class MAPOCAAgent(Agent):
                 advantages_std_list.append(adv_std.detach().cpu())
                 if self.normalize_adv:
                     adv_mb = (adv_mb - adv_mean)/adv_std
-                advantages_list.append(adv_mb.mean().detach().cpu())
+                    adv_clip_factor = 5.0 # 5 stds
+                    adv_mb = adv_mb.clamp(-adv_clip_factor, adv_clip_factor)
+
+                # detach advantage for policy gradient
+                detached_adv = adv_mb.detach()
+                advantages_list.append(detached_adv.mean().cpu())
 
                 # policy ppo clip
                 pol_loss = self._ppo_clip_loss(
-                    new_lp_mb, olp_mb, adv_mb, self.ppo_clip_range
+                    new_lp_mb, olp_mb, detached_adv, self.ppo_clip_range
                 )
 
                 # value => possibly clipped
@@ -326,7 +346,7 @@ class MAPOCAAgent(Agent):
                 else:
                     val_loss = 0.5 * F.mse_loss(new_vals_mb, ret_mb)
 
-                # baseline => also clipped if desired
+                # baseline => possibly clipped
                 if self.clipped_value_loss:
                     base_loss = self._clipped_value_loss(
                         obase_mb, new_base_mb, ret_mb_exp, self.value_clip_range
@@ -343,6 +363,10 @@ class MAPOCAAgent(Agent):
 
                 self.optimizer.zero_grad()
                 total_loss.backward()
+
+                # measure per-layer grad norms before clipping
+                self._accumulate_per_layer_grad_norms(grad_norms_sum_per_layer)
+
                 gn = clip_grad_norm_(self.parameters(), self.max_grad_norm)
                 self.optimizer.step()
                 if self.lr_scheduler:
@@ -355,8 +379,18 @@ class MAPOCAAgent(Agent):
                 grad_norm_list.append(gn)
                 lrs_list.append(self._get_avg_lr(self.optimizer))
 
+                grad_norms_count += 1
+
+        # ------------------------------------------------
         # final logs
-        return {
+        # ------------------------------------------------
+        # average the per-layer grad norms over all mini-batches
+        layer_grad_norm_logs = {}
+        for pname, accum in grad_norms_sum_per_layer.items():
+            mean_norm = accum / float(grad_norms_count)
+            layer_grad_norm_logs[f"GradNorm/{pname}"] = mean_norm
+
+        logs = {
             "Policy Loss":    torch.stack(pol_losses).mean(),
             "Value Loss":     torch.stack(val_losses).mean(),
             "Baseline Loss":  torch.stack(base_losses).mean(),
@@ -369,7 +403,16 @@ class MAPOCAAgent(Agent):
             "Avg. Rewards":   rewards_mean,
             "Avg. Grad Norm": torch.stack(grad_norm_list).mean(),
             "Learning Rate":  torch.stack(lrs_list).mean(),
+
+            # log-prob stats
+            "Avg. LogProb":   torch.stack(logprob_means).mean(),
+            "Min. LogProb":   torch.stack(logprob_mins).mean(),
+            "Max. LogProb":   torch.stack(logprob_maxs).mean(),
         }
+
+        # add per-layer grad norms to logs
+        logs.update(layer_grad_norm_logs)
+        return logs
 
     # ------------------------------------------------------------
     #  HELPER METHODS
@@ -398,7 +441,7 @@ class MAPOCAAgent(Agent):
         return out_rets
 
     def _ppo_clip_loss(self, new_lp, old_lp, adv, clip_range):
-        diff = (new_lp - old_lp).clamp(-10, 10) # Enable if there is instability 
+        diff = (new_lp - old_lp).clamp(-10, 10) # to avoid extreme exponent
         ratio = torch.exp(diff)
         clipped = torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
         obj1 = ratio * adv
@@ -427,7 +470,7 @@ class MAPOCAAgent(Agent):
         Return => (log_probs, entropies)
         """
         MB, NE, NA, H = comm_att.shape
-        emb_2d = comm_att.view(MB*NE*NA, H)
+        emb_2d = comm_att.reshape(MB*NE*NA, H)
 
         if self.action_space_type == "continuous":
             # shape => (MB,NE,NA, actDim)
@@ -439,13 +482,13 @@ class MAPOCAAgent(Agent):
             # discrete => single-cat or multi-cat
             if actions.dim() == 4:
                 # multi-cat => (MB,NE,NA,#branches)
-                a_resh = actions.view(MB*NE*NA, actions.shape[-1])
+                a_resh = actions.reshape(MB*NE*NA, actions.shape[-1])
             else:
                 # single-cat => (MB,NE,NA)
-                a_resh = actions.view(MB*NE*NA)
+                a_resh = actions.reshape(MB*NE*NA)
 
         lp_2d, ent_2d = self.policy_net.recompute_log_probs(emb_2d, a_resh)
-        return lp_2d.view(MB,NE,NA), ent_2d.view(MB,NE,NA)
+        return lp_2d.reshape(MB,NE,NA), ent_2d.reshape(MB,NE,NA)
 
     def _slice_state_dict(self, states_dict: dict, indices):
         """
@@ -463,3 +506,26 @@ class MAPOCAAgent(Agent):
             lr_sum += pg['lr']
             count  += 1
         return torch.tensor(lr_sum/max(count,1.0))
+
+    def _accumulate_per_layer_grad_norms(self, grad_norms_sum_per_layer: dict):
+        """
+        Accumulate gradient L2-norms for each parameter name. Typically, param 'name'
+        is unique because named_parameters() includes sub-module prefixes.
+
+        If a collision occurs (extremely rare), we append a suffix index.
+        """
+        for param_name, param in self.named_parameters():
+            if param.grad is not None:
+                gnorm = param.grad.data.norm(2).item()
+                # ensure uniqueness if name collision
+                tmp_name = param_name
+                idx_sfx = 0
+                while tmp_name in grad_norms_sum_per_layer:
+                    # append an index
+                    idx_sfx += 1
+                    tmp_name = f"{param_name}__dup{idx_sfx}"
+                
+                if tmp_name not in grad_norms_sum_per_layer:
+                    grad_norms_sum_per_layer[tmp_name] = 0.0
+                
+                grad_norms_sum_per_layer[tmp_name] += gnorm

@@ -7,34 +7,25 @@
 #include "TerraShift/Matrix2D.h"
 #include "MultiAgentFractalWave3D.generated.h"
 
-/**
- * The agent "action" deltas for controlling camera & fractal.
- */
 USTRUCT(BlueprintType)
 struct FFractalAgentAction
 {
     GENERATED_BODY()
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    FVector dPos;
-
+    FVector dPos;          // in [-1..1]
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float dPitch;
-
+    float dPitch;          // in [-1..1]
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float dYaw;
-
+    float dYaw;            // in [-1..1]
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float dBaseFreq;
-
+    float dBaseFreq;       // in [-1..1]
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float dLacunarity;
-
+    float dLacunarity;     // in [-1..1]
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float dGain;
-
+    float dGain;           // in [-1..1]
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float dBlendWeight;
+    float dBlendWeight;    // in [-1..1]
 
     FFractalAgentAction()
     {
@@ -48,15 +39,11 @@ struct FFractalAgentAction
     }
 };
 
-/**
- * Agent camera/fractal state + flattened NxN fractal image.
- */
 USTRUCT()
 struct FFractalAgentState
 {
     GENERATED_BODY()
 
-    // Camera transforms
     UPROPERTY()
     FVector Pos3D;
 
@@ -68,7 +55,6 @@ struct FFractalAgentState
     UPROPERTY()
     float FOVDegrees;
 
-    // Fractal noise params
     UPROPERTY()
     float BaseFreq;
     UPROPERTY()
@@ -76,17 +62,15 @@ struct FFractalAgentState
     UPROPERTY()
     float Gain;
     UPROPERTY()
-    float Octaves;
+    int32 Octaves;
     UPROPERTY()
     float BlendWeight;
 
     UPROPERTY()
     int32 ImageSize;
-
     UPROPERTY()
     float SampleDist;
 
-    // Flattened NxN fractal image in [-1..1]
     UPROPERTY()
     TArray<float> FractalImage;
 
@@ -121,26 +105,54 @@ public:
     UFUNCTION(BlueprintCallable, Category = "FractalWave")
     void Reset(int32 NewNumAgents);
 
+    /**
+     * Step environment with the given multi-agent actions.
+     *
+     * If bWrapPos (etc.) is true => wrap in [StatePosRange.X..StatePosRange.Y],
+     * else clamp.
+     */
     UFUNCTION(BlueprintCallable, Category = "FractalWave")
     void Step(const TArray<FFractalAgentAction>& Actions, float DeltaTime = 0.1f);
 
-    /** Final NxN wave in [-1..1]. */
     UFUNCTION(BlueprintCallable, Category = "FractalWave")
     const FMatrix2D& GetWave() const;
 
     UFUNCTION(BlueprintCallable, Category = "FractalWave")
     int32 GetNumAgents() const { return Agents.Num(); }
 
-    /** Return the NxN fractal image for a single agent. */
     UFUNCTION(BlueprintCallable, Category = "FractalWave")
     TArray<float> GetAgentFractalImage(int32 AgentIndex) const;
 
     /**
-     * Return a TArray<float> containing other agent state variables:
-     * e.g. [posX, posY, posZ, pitch, yaw, baseFreq, octaves, lacunarity, gain, blendWeight, fovDeg, sampleDist].
+     * Return an array of normalized state variables in [-1..1],
+     * based on user-defined 'state_ranges' from config.
      */
     UFUNCTION(BlueprintCallable, Category = "FractalWave")
     TArray<float> GetAgentStateVariables(int32 AgentIndex) const;
+
+    // -------------------
+    //   WRAP TOGGLES
+    // -------------------
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    bool bWrapPos = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    bool bWrapPitch = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    bool bWrapYaw = true; // we had yaw_wrap originally set to true
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    bool bWrapFreq = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    bool bWrapLacunarity = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    bool bWrapGain = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    bool bWrapBlendWeight = false;
 
 private:
 
@@ -150,18 +162,16 @@ private:
     UPROPERTY()
     TArray<FFractalAgentState> Agents;
 
-    // config-based
     UPROPERTY()
     int32 NumAgents;
     UPROPERTY()
     int32 ImageSize;
 
-    UPROPERTY()
-    float PitchLimit;
-    UPROPERTY()
-    bool bYawWrap;
+    // Removed pitch_limit. We'll rely on pitch_range for bounding or wrapping.
 
-    // Ranges for random init
+    // -------------------
+    //  Initialization Ranges
+    // -------------------
     UPROPERTY()
     FVector2D PosRange;
     UPROPERTY()
@@ -173,7 +183,7 @@ private:
     UPROPERTY()
     float DefaultSampleDist;
 
-    // fractal param ranges
+    // fractal param ranges for random init
     UPROPERTY()
     FVector2D BaseFreqRange;
     UPROPERTY()
@@ -185,10 +195,62 @@ private:
     UPROPERTY()
     int32 Octaves;
 
+    // -------------------
+    //  Action Ranges => Delta
+    // -------------------
+    UPROPERTY()
+    FVector2D ActionPosRange;
+    UPROPERTY()
+    FVector2D ActionPitchRange;
+    UPROPERTY()
+    FVector2D ActionYawRange;
+    UPROPERTY()
+    FVector2D ActionBaseFreqRange;
+    UPROPERTY()
+    FVector2D ActionLacunarityRange;
+    UPROPERTY()
+    FVector2D ActionGainRange;
+    UPROPERTY()
+    FVector2D ActionBlendWeightRange;
+
+    // -------------------
+    //  State Normalization Ranges
+    // -------------------
+    UPROPERTY()
+    FVector2D StatePosRange;
+    UPROPERTY()
+    FVector2D StatePitchRange;
+    UPROPERTY()
+    FVector2D StateYawRange;
+    UPROPERTY()
+    FVector2D StateBaseFreqRange;
+    UPROPERTY()
+    FVector2D StateLacunarityRange;
+    UPROPERTY()
+    FVector2D StateGainRange;
+    UPROPERTY()
+    FVector2D StateBlendWeightRange;
+
 private:
     void InitializeAgents();
     void RenderFractalForAgent(FFractalAgentState& Agent);
-    float FractalSample3D(float X, float Y, float Z, float BaseFreq, int32 Octs, float Lacun, float Gn) const;
+    float FractalSample3D(float X, float Y, float Z,
+        float BaseFreq, int32 Octs,
+        float Lacun, float Gn) const;
+
+    // random generation
     static std::mt19937& GetNormalGenerator();
     float SampleNormalInRange(const FVector2D& Range);
+
+    // mapping
+    float Map(float x, float in_min, float in_max, float out_min, float out_max) const;
+
+    // interpret [-1..1] => [MinVal..MaxVal]
+    float ActionScaled(float InputN11, float MinVal, float MaxVal) const;
+
+    // interpret [Value.. in MinMax] => [-1..1]
+    float NormalizeValue(float Value, float MinVal, float MaxVal) const;
+
+    // modular wrap a value into [MinVal..MaxVal)
+    float WrapValue(float val, float MinVal, float MaxVal) const;
 };
