@@ -27,11 +27,11 @@
         "wrap_blend_weight": true,
 
         "agent_init": {
-          "pos_range": [-1, 1],
+          "pos_range": [-10, 10],
           "pitch_range": [-1.57, 1.57],
           "yaw_range": [0, 6.28318],
           "fov_deg": 60,
-          "sample_dist": 1
+          "sample_dist": 10
         },
         "fractal_init": {
           "base_freq_range": [0.01, 2.0],
@@ -40,9 +40,9 @@
           "blend_weight_range": [0, 5]
         },
         "action_ranges": {
-          "pos_minmax": [-0.1, 0.1],
-          "pitch_minmax": [-0.15, 0.15],
-          "yaw_minmax": [-0.15, 0.15],
+          "pos_minmax": [-1, 1],
+          "pitch_minmax": [-0.39, 0.39],
+          "yaw_minmax": [-0.39, 0.39],
           "base_freq_minmax": [-0.02, 0.02],
           "lacunarity_minmax": [-0.02, 0.02],
           "gain_minmax": [-0.15, 0.15],
@@ -208,13 +208,13 @@
   },
 
   "train": {
-    "num_environments": 8,
+    "num_environments": 32,
     "epochs": 6,
-    "mini_batch_size": 32,
-    "buffer_size": 128,
-    "batch_size": 128,
+    "mini_batch_size": 12,
+    "buffer_size": 96,
+    "batch_size": 96,
     "AgentsResetFrequency": 0,
-    "ActionRepeat": 3,
+    "ActionRepeat": 4,
     "saveFrequency": 20
   }
 }

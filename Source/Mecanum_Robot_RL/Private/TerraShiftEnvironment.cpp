@@ -231,7 +231,7 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
     GoalPlatforms.Empty();
 
     // Randomly determine number of current goals between 1 and 4
-    NumGoals = FMath::RandRange(1, 4);
+    // NumGoals = Math::RandRange(1, 4);
 
     // Create goal platforms
     for (int32 i = 0; i < NumGoals; ++i)
