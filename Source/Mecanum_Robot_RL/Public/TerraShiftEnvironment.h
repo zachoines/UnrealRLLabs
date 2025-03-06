@@ -304,7 +304,7 @@ private:
 
     // XY distance improvement constants (units relative to platform (1m by 1m depending on PlatformScale))
     static constexpr float DistImprove_Scale = 1.0f;
-    static constexpr float DistImprove_Min = 0.0001f;
+    static constexpr float DistImprove_Min = 0.0f;
     static constexpr float DistImprove_Max = 1.0f;
 
     // Z-acceleration penalty (gravity is 980cm.t^2 )
@@ -320,7 +320,7 @@ private:
     static constexpr float CradleRadiusMultiplier = 1.5f;
 
     // Event-based
-    static constexpr float REACH_GOAL_REWARD = 0.01f;
-    static constexpr float FALL_OFF_PENALTY = -0.001f;
+    static constexpr float REACH_GOAL_REWARD = 0.1f;
+    static constexpr float FALL_OFF_PENALTY = 0.01f;
 
 };

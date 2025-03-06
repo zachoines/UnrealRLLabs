@@ -110,11 +110,12 @@ class MAPOCAAgent(Agent):
             ).to(device)
 
         # Optim & schedulers
-        self.optimizer = optim.Adam(self.parameters(), lr=self.lr)
+        self.optimizer = optim.AdamW(self.parameters(), lr=self.lr)
 
         lr_sched_cfg = agent_cfg["schedulers"].get("lr", None)
         self.lr_scheduler = None
         if lr_sched_cfg:
+            # self.lr_scheduler = OneCycleLRWithMin(self.optimizer, **lr_sched_cfg)
             self.lr_scheduler = LinearLR(self.optimizer, **lr_sched_cfg)
 
         ent_sched_cfg = agent_cfg["schedulers"].get("entropy_coeff", None)

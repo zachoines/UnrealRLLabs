@@ -688,7 +688,9 @@ class ValueNetwork(nn.Module):
         self.value_net = nn.Sequential(
             nn.Linear(in_features, hidden_size),
             nn.LeakyReLU(0.01),
-            nn.Linear(hidden_size, 1)
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(0.01),
+            nn.Linear(in_features, 1),
         )
         # Apply Kaiming init to these layers
         self.value_net.apply(lambda m: init_weights_leaky_relu(m, 0.01))
