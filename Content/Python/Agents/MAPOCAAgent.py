@@ -7,7 +7,7 @@ from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import LinearLR
 
 from Source.Agent import Agent
-from Source.Utility import RunningMeanStdNormalizer, LinearValueScheduler, OneCycleLRWithMin
+from Source.Utility import RunningMeanStdNormalizer, LinearValueScheduler, OneCycleLRWithMin,OneCycleCosineScheduler
 from Source.Networks import (
     MultiAgentEmbeddingNetwork,
     SharedCritic,
@@ -115,13 +115,14 @@ class MAPOCAAgent(Agent):
         lr_sched_cfg = agent_cfg["schedulers"].get("lr", None)
         self.lr_scheduler = None
         if lr_sched_cfg:
-            # self.lr_scheduler = OneCycleLRWithMin(self.optimizer, **lr_sched_cfg)
-            self.lr_scheduler = LinearLR(self.optimizer, **lr_sched_cfg)
+            self.lr_scheduler = OneCycleLRWithMin(self.optimizer, **lr_sched_cfg)
+            # self.lr_scheduler = LinearLR(self.optimizer, **lr_sched_cfg)
 
         ent_sched_cfg = agent_cfg["schedulers"].get("entropy_coeff", None)
         self.entropy_scheduler = None
         if ent_sched_cfg:
-            self.entropy_scheduler = LinearValueScheduler(**ent_sched_cfg)
+            # self.entropy_scheduler = LinearValueScheduler(**ent_sched_cfg)
+            self.entropy_scheduler = OneCycleCosineScheduler(**ent_sched_cfg)
 
         policy_clip_sched_cfg = agent_cfg["schedulers"].get("policy_clip", None)
         self.policy_clip_scheduler = None

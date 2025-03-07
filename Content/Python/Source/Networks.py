@@ -842,6 +842,78 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         return group_obs.contiguous(), group_act.contiguous()
 
 
+class CrossAttentionFeatureExtractor(nn.Module):
+    def __init__(self, obs_size, num_agents, h, w, embed_dim, num_heads):
+        super().__init__()
+
+        self.num_agents = num_agents
+        self.embed_dim = embed_dim
+        self.h, self.w = h, w
+
+        # Agent MLP encoder (processes agent state)
+        self.agent_encoder = nn.Sequential(
+            nn.Linear(obs_size, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, embed_dim)
+        )
+
+        # Positional embedding for each agent (each agent gets unique encoding)
+        self.agent_pos_embedding = nn.Embedding(num_agents, embed_dim)
+
+        # CNN for central state processing (before Transformer Value `V`)
+        self.central_cnn = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, embed_dim, kernel_size=3, stride=1, padding=1),
+            nn.ReLU()
+        )
+
+        # Positional encoding for Keys (`K`)
+        self.position_embedding = nn.Embedding(h * w, embed_dim)
+
+        # Transformer Multihead Attention
+        self.cross_attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+
+    def forward(self, agent_state, central_state):
+        num_steps, num_envs, num_agents, obs_size = agent_state.shape
+        _, _, h, w = central_state.shape
+
+        assert num_agents == self.num_agents, "Mismatch in agent count and model config"
+
+        # Process agent states (MLP)
+        agent_state_flat = agent_state.reshape(-1, obs_size)  # [num_steps * num_envs * num_agents, obs_size]
+        agent_embed = self.agent_encoder(agent_state_flat)  # [num_steps * num_envs * num_agents, embed_dim]
+        agent_embed = agent_embed.view(num_steps, num_envs, num_agents, self.embed_dim)  # [num_steps, num_envs, num_agents, embed_dim]
+
+        # Add unique agent positional embeddings
+        agent_indices = torch.arange(num_agents, device=agent_state.device).expand(num_steps, num_envs, num_agents)
+        agent_pos_embeds = self.agent_pos_embedding(agent_indices)  # [num_steps, num_envs, num_agents, embed_dim]
+        agent_embed = agent_embed + agent_pos_embeds  # Element-wise add agent position embeddings
+
+        # Reshape for Transformer input (flattened agent dim)
+        agent_embed = agent_embed.reshape(num_steps, num_envs * num_agents, self.embed_dim)  # [num_steps, num_envs * num_agents, embed_dim]
+
+        # Generate Key (`K`) as Positional Embeddings (Spatial Encoding)
+        indices = torch.arange(h * w, device=agent_state.device)  # [h * w]
+        pos_embeds = self.position_embedding(indices)  # [h*w, embed_dim]
+        pos_embeds = pos_embeds.unsqueeze(0).expand(num_steps, num_envs, h * w, self.embed_dim).contiguous()  # [num_steps, num_envs, h*w, embed_dim]
+        pos_embeds = pos_embeds.view(num_steps, num_envs * h * w, self.embed_dim)  # [num_steps, num_envs * h*w, embed_dim]
+
+        # Process central state into Values (`V`) using CNN
+        central_state = central_state.unsqueeze(2)  # Add channel dim: [num_steps, num_envs, 1, h, w]
+        central_embed = self.central_cnn(central_state.view(-1, 1, h, w))  # [num_steps * num_envs, embed_dim, h, w]
+        central_embed = central_embed.view(num_steps, num_envs, self.embed_dim, h * w).permute(0, 1, 3, 2)  # [num_steps, num_envs, h*w, embed_dim]
+        central_embed = central_embed.reshape(num_steps, num_envs * h * w, self.embed_dim)  # [num_steps, num_envs * h*w, embed_dim]
+
+        # Cross-Attention: Agents query the height map (Q = agent, K = pos emb, V = CNN features)
+        attn_output, _ = self.cross_attention(agent_embed, pos_embeds, central_embed)  # [num_steps, num_envs * num_agents, embed_dim]
+
+        # Reshape back to [num_steps, num_envs, num_agents, embed_dim]
+        attn_output = attn_output.view(num_steps, num_envs, num_agents, self.embed_dim)
+
+        return attn_output  # Features for policy network
+
+
 class GN2d(nn.Module):
     """
     Applies GroupNorm to a (B, C, H, W) tensor.

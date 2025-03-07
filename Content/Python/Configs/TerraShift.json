@@ -92,7 +92,7 @@
   "agent": {
     "type": "MA_POCA",
     "params": {
-      "learning_rate": 0.0001,
+      "learning_rate": 0.0002,
       "gamma": 0.99,
       "lambda": 0.95,
       "value_loss_coeff": 0.5,
@@ -102,14 +102,29 @@
       "max_grad_norm": 0.5,
       "ppo_clip_range": 0.1,
       "value_clip_range": 0.2,
-      "entropy_coeff": 0.001,
+      "entropy_coeff": 0.005,
       "schedulers": {
-        "lr": {
+        "lr_disabled": {
           "start_factor": 1,
           "end_factor": 0.0001,
           "total_iters": 10000
         },
+        "lr": {
+          "max_lr": 0.0005, 
+          "total_steps": 100000, 
+          "anneal_strategy": "cos", 
+          "pct_start": 0.3, 
+          "div_factor": 100,
+          "final_div_factor": 10000
+        },
         "entropy_coeff": {
+          "max_value": 0.01, 
+          "total_steps": 100000, 
+          "pct_start": 0.3, 
+          "div_factor": 10, 
+          "final_div_factor": 1000
+        },
+        "entropy_coeff_disabled": {
           "start_value": 0.01,
           "end_value": 0.001,
           "total_iters": 10000
@@ -185,7 +200,7 @@
         "policy_network": {
           "in_features": 64,
           "hidden_size": 64,
-          "log_std_min": -15,
+          "log_std_min": -8,
           "log_std_max": 2,
           "entropy_method": "mc",
           "n_entropy_samples": 10,
@@ -208,8 +223,8 @@
   },
 
   "train": {
-    "num_environments": 4,
-    "epochs": 4,
+    "num_environments": 8,
+    "epochs": 8,
     "mini_batch_size": 64,
     "buffer_size": 512,
     "batch_size": 512,

@@ -59,6 +59,8 @@ class OneCycleCosineScheduler:
             self.current_value = self.final_value
         self.t += 1
 
+        return self.current_value
+
     def value(self):
         return self.current_value
 
