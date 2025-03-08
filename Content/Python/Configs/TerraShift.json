@@ -97,10 +97,10 @@
       "lambda": 0.95,
       "value_loss_coeff": 0.5,
       "baseline_loss_coeff": 0.25,
-      "normalize_advantages": true,
+      "normalize_advantages": false,
       "clipped_value_loss": true,
       "max_grad_norm": 0.5,
-      "ppo_clip_range": 0.1,
+      "ppo_clip_range": 0.2,
       "value_clip_range": 0.2,
       "entropy_coeff": 0.005,
       "schedulers": {
@@ -110,7 +110,7 @@
           "total_iters": 10000
         },
         "lr": {
-          "max_lr": 0.0005, 
+          "max_lr": 0.001, 
           "total_steps": 100000, 
           "anneal_strategy": "cos", 
           "pct_start": 0.3, 
@@ -122,7 +122,7 @@
           "total_steps": 100000, 
           "pct_start": 0.3, 
           "div_factor": 10, 
-          "final_div_factor": 1000
+          "final_div_factor": 100
         },
         "entropy_coeff_disabled": {
           "start_value": 0.01,
@@ -132,43 +132,22 @@
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
-          "general_obs_encoder": {
-            "encoders": [
-              {
-                "key": "central",
-                "network": "LightweightSpatialNetwork2D",
-                "params": {
-                  "h": 50,
-                  "w": 50,
-                  "in_channels": 1,
-                  "base_channels": 8,
-                  "num_conv_layers": 2,
-                  "out_features": 128,
-                  "pooling_layers": 1,
-                  "kernel_size": 3,
-                  "dropout": 0
-                }
-              },
-              {
-                "key": "agent",
-                "network": "LinearNetwork",
-                "params": {
-                  "in_features": 28,
-                  "out_features": 64,
-                  "dropout_rate": 0,
-                  "activation": true,
-                  "layer_norm": true
-                }
-              }
-            ],
-            "agent_id_enc": {
-              "num_freqs": 16,
-              "id_embed_dim": 32
-            },
-            "aggregator_output_size": 128
+          "cross_attention_feature_extractor" : {
+            "obs_size": 28, 
+            "num_agents": 5, 
+            "h": 50,
+            "w": 50, 
+            "embed_dim": 128, 
+            "num_heads": 8, 
+            "cnn_channels": [32, 64], 
+            "cnn_kernel_sizes": [5, 3], 
+            "cnn_strides": [2, 2], 
+            "transformer_layers": 2, 
+            "num_patches": 16
           },
           "obs_encoder": {
             "state_dim": 128,
+            "hidden_size": 128,
             "output_size": 64,
             "dropout_rate": 0,
             "activation": true,
@@ -177,6 +156,7 @@
           "obs_actions_encoder": {
             "state_dim": 128,
             "action_dim": 9,
+            "hidden_size": 128,
             "output_size": 64,
             "dropout_rate": 0,
             "activation": true,
@@ -184,14 +164,14 @@
           },
           "common_attention": {
             "embed_size": 64,
-            "nheads": 8,
+            "nheads": 4,
             "feedforward_mult": 2,
             "dropout": 0,
             "num_layers": 2
           },
           "baseline_attention": {
             "embed_size": 64,
-            "nheads": 8,
+            "nheads": 4,
             "feedforward_mult": 2,
             "dropout": 0,
             "num_layers": 2

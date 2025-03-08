@@ -655,9 +655,12 @@ class StatesEncoder(nn.Module):
     Encodes a state vector of size (B, state_dim) into (B, output_size).
     Optionally includes dropout and a LeakyReLU activation.
     """
-    def __init__(self, state_dim, output_size, dropout_rate=0.0, activation=False, layer_norm: bool = True):
+    def __init__(self, state_dim, hidden_size, output_size, dropout_rate=0.0, activation=False, layer_norm: bool = False):
         super().__init__()
-        self.net = LinearNetwork(state_dim, output_size, dropout_rate, activation, layer_norm)
+        self.net = nn.Sequential(
+            LinearNetwork(state_dim, hidden_size, dropout_rate, activation, layer_norm),
+            LinearNetwork(hidden_size, output_size, dropout_rate, activation, layer_norm)
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
@@ -668,10 +671,13 @@ class StatesActionsEncoder(nn.Module):
     Concatenates state + action => feeds into a small MLP => (B, output_size).
     Useful for baseline or Q-value networks that need (s,a) pairs.
     """
-    def __init__(self, state_dim, action_dim, output_size,
-                 dropout_rate=0.0, activation=False, layer_norm: bool = True):
+    def __init__(self, state_dim, action_dim, hidden_size, output_size,
+                 dropout_rate=0.0, activation=False, layer_norm: bool = False):
         super().__init__()
-        self.net = self.net = LinearNetwork(state_dim + action_dim, output_size, dropout_rate, activation, layer_norm)
+        self.net = nn.Sequential(
+            LinearNetwork(state_dim + action_dim, hidden_size, dropout_rate, activation, layer_norm),
+            LinearNetwork(hidden_size, output_size, dropout_rate, activation, layer_norm)
+        )
 
     def forward(self, obs: torch.Tensor, act: torch.Tensor) -> torch.Tensor:
         x = torch.cat([obs, act], dim=-1)
@@ -741,8 +747,8 @@ class MultiAgentEmbeddingNetwork(nn.Module):
     def __init__(self, net_cfg: Dict[str, Any]):
         super(MultiAgentEmbeddingNetwork, self).__init__()
 
-        # 1) The dictionary based obs embedder with final aggregation at end
-        self.general_obs_encoder = GeneralObsEncoder(net_cfg["general_obs_encoder"])
+        # 1) The dictionary based obs embedder
+        self.base_encoder = CrossAttentionFeatureExtractor(**net_cfg["cross_attention_feature_extractor"])
 
         # 2) For obs and obs+actions encoding
         self.f = StatesActionsEncoder(**net_cfg["obs_actions_encoder"])
@@ -760,7 +766,7 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         obs_dict => { "central":(S,E,cDim), "agent":(S,E,NA,aDim) }
         => shape => (S,E,NA, aggregator_out_dim)
         """
-        return self.general_obs_encoder(obs_dict)
+        return self.base_encoder(obs_dict)
 
 
     # --------------------------------------------------------------------
@@ -843,40 +849,87 @@ class MultiAgentEmbeddingNetwork(nn.Module):
 
 
 class CrossAttentionFeatureExtractor(nn.Module):
-    def __init__(self, obs_size, num_agents, h, w, embed_dim, num_heads):
+    def __init__(
+        self, 
+        obs_size: int, 
+        num_agents: int, 
+        h: int = 50, 
+        w: int = 50, 
+        embed_dim: int = 64, 
+        num_heads: int = 4, 
+        cnn_channels: list = [32, 64], 
+        cnn_kernel_sizes: list = [5, 3], 
+        cnn_strides: list = [2, 2], 
+        transformer_layers: int = 2, 
+        num_patches: int = 16
+    ):
+        """
+        Args:
+            obs_size (int): Dimension of agent observations.
+            num_agents (int): Number of agents per environment.
+            h (int, optional): Height of the height map. Defaults to 50.
+            w (int, optional): Width of the height map. Defaults to 50.
+            embed_dim (int, optional): Size of embeddings. Defaults to 64.
+            num_heads (int, optional): Number of attention heads. Defaults to 4.
+            cnn_channels (list, optional): CNN channel sizes. Defaults to [32, 64].
+            cnn_kernel_sizes (list, optional): CNN kernel sizes. Defaults to [5, 3].
+            cnn_strides (list, optional): CNN strides per layer. Defaults to [2, 2].
+            transformer_layers (int, optional): Number of transformer layers. Defaults to 2.
+            num_patches (int, optional): Number of patches in the CNN output. Defaults to 16.
+        """
         super().__init__()
 
         self.num_agents = num_agents
         self.embed_dim = embed_dim
         self.h, self.w = h, w
+        self.num_patches = num_patches
 
-        # Agent MLP encoder (processes agent state)
+        # Agent MLP encoder
         self.agent_encoder = nn.Sequential(
             nn.Linear(obs_size, embed_dim),
             nn.ReLU(),
             nn.Linear(embed_dim, embed_dim)
         )
 
-        # Positional embedding for each agent (each agent gets unique encoding)
+        # Positional embedding for each agent
         self.agent_pos_embedding = nn.Embedding(num_agents, embed_dim)
 
-        # CNN for central state processing (before Transformer Value `V`)
-        self.central_cnn = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(32, embed_dim, kernel_size=3, stride=1, padding=1),
-            nn.ReLU()
+        # CNN for local feature extraction from height map
+        cnn_layers = []
+        in_channels = 1  # Single-channel height map
+        for out_channels, kernel_size, stride in zip(cnn_channels, cnn_kernel_sizes, cnn_strides):
+            cnn_layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=kernel_size // 2))
+            cnn_layers.append(nn.ReLU())
+            in_channels = out_channels
+        cnn_layers.append(nn.Conv2d(cnn_channels[-1], embed_dim, kernel_size=3, stride=2, padding=1))  # Final layer to match embed_dim
+        cnn_layers.append(nn.ReLU())
+        cnn_layers.append(nn.AdaptiveAvgPool2d((4, 4)))  # Downsample to fixed size patches
+
+        self.central_cnn = nn.Sequential(*cnn_layers)
+
+        # Transformer for global terrain understanding
+        self.terrain_transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, batch_first=True),
+            num_layers=transformer_layers
         )
 
-        # Positional encoding for Keys (`K`)
-        self.position_embedding = nn.Embedding(h * w, embed_dim)
+        # Positional embedding for CNN patches
+        self.patch_position_embedding = nn.Embedding(num_patches, embed_dim)
 
-        # Transformer Multihead Attention
+        # Transformer Multihead Attention for Agent-Terrain interaction
         self.cross_attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
 
-    def forward(self, agent_state, central_state):
+    def forward(self, state):
+        """
+        state: Dict containing:
+            - "central": Tensor of shape [num_steps, num_envs, h * w]
+            - "agent":   Tensor of shape [num_steps, num_envs, num_agents, obs_size]
+        """
+        central_state = state["central"]  # Shape: [num_steps, num_envs, h * w]
+        agent_state = state["agent"]      # Shape: [num_steps, num_envs, num_agents, obs_size]
+
         num_steps, num_envs, num_agents, obs_size = agent_state.shape
-        _, _, h, w = central_state.shape
+        _, _, hw = central_state.shape  # hw = h * w
 
         assert num_agents == self.num_agents, "Mismatch in agent count and model config"
 
@@ -893,20 +946,24 @@ class CrossAttentionFeatureExtractor(nn.Module):
         # Reshape for Transformer input (flattened agent dim)
         agent_embed = agent_embed.reshape(num_steps, num_envs * num_agents, self.embed_dim)  # [num_steps, num_envs * num_agents, embed_dim]
 
-        # Generate Key (`K`) as Positional Embeddings (Spatial Encoding)
-        indices = torch.arange(h * w, device=agent_state.device)  # [h * w]
-        pos_embeds = self.position_embedding(indices)  # [h*w, embed_dim]
-        pos_embeds = pos_embeds.unsqueeze(0).expand(num_steps, num_envs, h * w, self.embed_dim).contiguous()  # [num_steps, num_envs, h*w, embed_dim]
-        pos_embeds = pos_embeds.view(num_steps, num_envs * h * w, self.embed_dim)  # [num_steps, num_envs * h*w, embed_dim]
+        # Process central state into CNN features
+        central_state = central_state.reshape(num_steps, num_envs, 1, self.h, self.w)  # [num_steps, num_envs, 1, h, w]
+        central_embed = self.central_cnn(central_state.view(-1, 1, self.h, self.w))  # [num_steps * num_envs, embed_dim, 4, 4]
 
-        # Process central state into Values (`V`) using CNN
-        central_state = central_state.unsqueeze(2)  # Add channel dim: [num_steps, num_envs, 1, h, w]
-        central_embed = self.central_cnn(central_state.view(-1, 1, h, w))  # [num_steps * num_envs, embed_dim, h, w]
-        central_embed = central_embed.view(num_steps, num_envs, self.embed_dim, h * w).permute(0, 1, 3, 2)  # [num_steps, num_envs, h*w, embed_dim]
-        central_embed = central_embed.reshape(num_steps, num_envs * h * w, self.embed_dim)  # [num_steps, num_envs * h*w, embed_dim]
+        # Flatten CNN output into patches
+        central_embed = central_embed.view(num_steps, num_envs, self.embed_dim, self.num_patches).permute(0, 1, 3, 2)  # [num_steps, num_envs, num_patches, embed_dim]
+        central_embed = central_embed.reshape(num_steps, num_envs * self.num_patches, self.embed_dim)  # [num_steps, num_envs * num_patches, embed_dim]
 
-        # Cross-Attention: Agents query the height map (Q = agent, K = pos emb, V = CNN features)
-        attn_output, _ = self.cross_attention(agent_embed, pos_embeds, central_embed)  # [num_steps, num_envs * num_agents, embed_dim]
+        # Generate Keys (`K`) as Positional Embeddings
+        patch_indices = torch.arange(self.num_patches, device=agent_state.device).expand(num_steps, num_envs, self.num_patches)
+        key_embeds = self.patch_position_embedding(patch_indices)  # [num_steps, num_envs, num_patches, embed_dim]
+        key_embeds = key_embeds.reshape(num_steps, num_envs * self.num_patches, self.embed_dim)  # [num_steps, num_envs * num_patches, embed_dim]
+
+        # Transformer for global terrain understanding
+        central_embed = self.terrain_transformer(central_embed)  # [num_steps, num_envs * num_patches, embed_dim]
+
+        # Cross-Attention: Query (Agents) → Key (Positions) → Value (Processed Terrain Features)
+        attn_output, _ = self.cross_attention(agent_embed, key_embeds, central_embed)  # [num_steps, num_envs * num_agents, embed_dim]
 
         # Reshape back to [num_steps, num_envs, num_agents, embed_dim]
         attn_output = attn_output.view(num_steps, num_envs, num_agents, self.embed_dim)
