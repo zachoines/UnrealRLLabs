@@ -106,7 +106,7 @@
       "schedulers": {
         "lr": {
           "max_lr": 0.0003, 
-          "total_steps": 10000, 
+          "total_steps": 30000, 
           "anneal_strategy": "cos", 
           "pct_start": 0.3, 
           "div_factor": 100,
@@ -114,7 +114,7 @@
         },
         "entropy_coeff": {
           "max_value": 0.01, 
-          "total_steps": 10000, 
+          "total_steps": 30000, 
           "pct_start": 0.3, 
           "div_factor": 10, 
           "final_div_factor": 100
@@ -139,9 +139,9 @@
             "w": 50, 
             "embed_dim": 64, 
             "num_heads": 4, 
-            "cnn_channels": [32, 64], 
-            "cnn_kernel_sizes": [5, 3], 
-            "cnn_strides": [2, 2], 
+            "cnn_channels": [32, 64, 128], 
+            "cnn_kernel_sizes": [5, 3, 3], 
+            "cnn_strides": [2, 2, 2], 
             "transformer_layers": 2, 
             "scale_ratios": [0.25, 0.125, 0.0625],
             "top_k_scales": 2
