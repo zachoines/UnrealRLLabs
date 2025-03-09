@@ -691,6 +691,9 @@ class CrossAttentionFeatureExtractor(nn.Module):
             num_layers=2
         )
 
+        self.apply(lambda m: init_weights_leaky_relu_conv(m, 0.01))
+        self.apply(lambda m: init_weights_leaky_relu(m, 0.01))
+
     def forward(self, state):
         """
         state: Dict containing:
