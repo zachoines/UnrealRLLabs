@@ -614,12 +614,12 @@ class MultiAgentEmbeddingNetwork(nn.Module):
 class CrossAttentionFeatureExtractor(nn.Module):
     def __init__(
         self, 
-        obs_size: int = 28,  
-        num_agents: int = 5,  
-        h: int = 50, w: int = 50,  
+        obs_size: int = 28,   # Agent state size (28 elements)
+        num_agents: int = 5,  # Number of agents
+        h: int = 50, w: int = 50,  # Terrain dimensions (50x50)
         embed_dim: int = 64, 
         num_heads: int = 4, 
-        cnn_channels: list = [32, 64, 128],  
+        cnn_channels: list = [32, 64, 128],
         cnn_kernel_sizes: list = [5, 3, 3], 
         cnn_strides: list = [2, 2, 2], 
         transformer_layers: int = 2, 
@@ -636,38 +636,38 @@ class CrossAttentionFeatureExtractor(nn.Module):
         self.scale_sizes = [math.floor(h * r) for r in scale_ratios]
         self.top_k_scales = top_k_scales  
 
-        # **Agent MLP encoder**
+        # Agent MLP encoder (with LayerNorm)
         self.agent_encoder = nn.Sequential(
             nn.Linear(obs_size, embed_dim),
             nn.LeakyReLU(),
-            nn.LayerNorm(embed_dim),  
+            nn.LayerNorm(embed_dim),  # LayerNorm for stability
             nn.Linear(embed_dim, embed_dim),
             nn.LeakyReLU(),
-            nn.LayerNorm(embed_dim)  
+            nn.LayerNorm(embed_dim)  # LayerNorm for final stability
         )
 
-        # **Positional embedding for each agent**
+        # Positional embedding for each agent
         self.agent_pos_embedding = nn.Embedding(num_agents, embed_dim)
 
-        # **CNNs for multi-scale feature extraction **
+        # CNNs for adaptive multi-scale feature extraction with **progressive GroupNorm**
+        group_norms = [16, 8, 4]  # Decreasing number of groups for deeper layers
         self.central_cnns = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(1, cnn_channels[i], kernel_size=cnn_kernel_sizes[i], stride=cnn_strides[i], padding=cnn_kernel_sizes[i] // 2),
+                nn.GroupNorm(group_norms[i], cnn_channels[i]),  # Progressive reduction in num_groups
                 nn.LeakyReLU(),
-                # **Only first layer uses GroupNorm**
-                nn.GroupNorm(16, cnn_channels[i]) if i == 0 else nn.Identity(),  
                 nn.Conv2d(cnn_channels[i], cnn_channels[i], kernel_size=3, stride=1, padding=1),
+                nn.GroupNorm(group_norms[i], cnn_channels[i]),  # Stabilize feature maps
                 nn.LeakyReLU(),
-                # **Deeper layers use LayerNorm instead**
                 nn.Conv2d(cnn_channels[i], embed_dim, kernel_size=3, stride=2, padding=1),
-                nn.LayerNorm([embed_dim, math.floor(h * scale_ratios[i]), math.floor(w * scale_ratios[i])]),  
+                nn.GroupNorm(group_norms[i], embed_dim),  # Normalize final embedding layer
                 nn.LeakyReLU(),
                 nn.AdaptiveAvgPool2d((s, s))
             )
             for i, s in enumerate(self.scale_sizes)
         ])
 
-        # **Transformer for each scale**
+        # Transformer for each scale (LayerNorm inside Transformer layers)
         self.terrain_transformers = nn.ModuleList([
             nn.TransformerEncoder(
                 nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, batch_first=True, norm_first=True),
@@ -676,22 +676,22 @@ class CrossAttentionFeatureExtractor(nn.Module):
             for _ in range(self.num_scales)
         ])
 
-        # **Positional embeddings for adaptive patches**
+        # Positional embeddings for adaptive patches
         self.patch_position_embeddings = nn.ModuleList([
             nn.Embedding(s * s, embed_dim)
             for s in self.scale_sizes
         ])
 
-        # **Cross-Attention for Agent-Terrain interaction at each scale**
+        # Cross-Attention for Agent-Terrain interaction at each scale
         self.cross_attentions = nn.ModuleList([
             nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
             for _ in range(self.num_scales)
         ])
 
-        # **Agent-to-Agent Self-Attention**
+        # Agent-to-Agent Self-Attention (with LayerNorm)
         self.agent_self_attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
 
-        # **Hierarchical Transformer for Merging Multi-Scale Representations**
+        # Hierarchical Transformer for Merging Multi-Scale Representations
         self.scale_merging_transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, batch_first=True, norm_first=True),
             num_layers=2
@@ -713,32 +713,48 @@ class CrossAttentionFeatureExtractor(nn.Module):
 
         assert num_agents == self.num_agents, "Mismatch in agent count and model config"
 
-        # **Process agent states (MLP)**
+        # Process agent states (MLP)
         agent_state_flat = agent_state.reshape(-1, obs_size)
         agent_embed = self.agent_encoder(agent_state_flat)
         agent_embed = agent_embed.view(num_steps, num_envs, num_agents, self.embed_dim)
 
-        # **Add unique agent positional embeddings**
+        # Add unique agent positional embeddings
         agent_indices = torch.arange(num_agents, device=agent_state.device).expand(num_steps, num_envs, num_agents)
         agent_pos_embeds = self.agent_pos_embedding(agent_indices)
         agent_embed = agent_embed + agent_pos_embeds  
 
         agent_embed = agent_embed.view(-1, num_agents, self.embed_dim)
 
-        # **Process multi-scale terrain features**
         multi_scale_outputs = []
         for scale_idx, scale_size in enumerate(self.scale_sizes):
+
+            # Process central state with CNN
             central_scaled = central_state.reshape(num_steps, num_envs, 1, self.h, self.w)
             central_embed = self.central_cnns[scale_idx](central_scaled.view(-1, 1, self.h, self.w))
+
+            # Flatten CNN output into patches
             num_patches = scale_size * scale_size
             central_embed = central_embed.view(-1, self.embed_dim, num_patches).permute(0, 2, 1)
-            attn_output, _ = self.cross_attentions[scale_idx](agent_embed, central_embed, central_embed)
+
+            # Generate Keys (`K`) as Positional Embeddings
+            patch_indices = torch.arange(num_patches, device=agent_state.device).expand(agent_embed.shape[0], num_patches)
+            key_embeds = self.patch_position_embeddings[scale_idx](patch_indices)
+
+            # Transformer for global terrain understanding
+            central_embed = self.terrain_transformers[scale_idx](central_embed)
+
+            # **Cross-Attention: Query (Agents) → Key (Positions) → Value (Processed Terrain Features)**
+            attn_output, _ = self.cross_attentions[scale_idx](agent_embed, key_embeds, central_embed)
             multi_scale_outputs.append(attn_output)
 
+        # Aggregate multi-scale outputs
         agent_embed = torch.stack(multi_scale_outputs, dim=0).mean(dim=0)
+
+        # **NEW: Agent-to-Agent Communication**
         agent_embed, _ = self.agent_self_attention(agent_embed, agent_embed, agent_embed)
 
         return agent_embed.view(num_steps, num_envs, num_agents, self.embed_dim)
+
 
 class GN2d(nn.Module):
     """
