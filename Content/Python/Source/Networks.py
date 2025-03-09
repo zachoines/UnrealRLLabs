@@ -307,7 +307,9 @@ class SharedCritic(nn.Module):
      1) A **global value function** `V(s)`, shared across agents in an environment.
      2) **Per-agent counterfactual baselines** `Q_ψ`, used for advantage calculations.
     
-    Uses **attention-based aggregation** to determine **which agents contribute most**.
+    Uses **different attention-based aggregation** for:
+    - The **global value function (`values`)** (which determines the team's expected return).
+    - The **per-agent baselines (`baselines`)** (which disentangles an agent's individual contribution).
     """
 
     def __init__(self, config):
@@ -317,11 +319,14 @@ class SharedCritic(nn.Module):
         self.value_head = ValueNetwork(**net_cfg['value_head'])
         self.baseline_head = ValueNetwork(**net_cfg['baseline_head'])
 
-        # **Learnable Attention Weights for Value Aggregation** (Per-Environment)
-        self.value_attention = nn.Linear(net_cfg['value_head']['in_features'], 1)  # (H → 1)
-        
-        # **Learnable Attention Weights for Baseline Aggregation** (Per-Agent)
-        self.baseline_attention = nn.Linear(net_cfg['baseline_head']['in_features'], 1)  # (H → 1)
+        # **Global Attention Weights for Value Function (Per-Environment)**
+        self.value_attention = nn.Linear(net_cfg['value_head']['in_features'], 1)
+
+        # **Local Attention Weights for Baseline Function (Per-Agent)**
+        self.baseline_attention = nn.Linear(net_cfg['baseline_head']['in_features'], 1)
+
+        # **Learnable Global Context Vector for Value Function**
+        self.global_query = nn.Parameter(torch.randn(1, 1, net_cfg['value_head']['in_features']))
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -329,22 +334,29 @@ class SharedCritic(nn.Module):
 
     def values(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Compute **per-environment** value:
-        - Input: x => (S,E,A,H)
-        - We perform **attention-based weighted sum across agents (dim=2)**.
-        - Output: (S,E,1)
+        Compute **per-environment value function `V(s)`**:
+        - Input: x => (S,E,A,H) (state embeddings for each agent)
+        - Uses **global softmax attention** over all agents to determine importance.
+        - Output: (S,E,1) (single value for the environment)
         """
         S, E, A, H = x.shape
 
-        # Compute per-agent importance weights
-        attn_weights = self.value_attention(x).squeeze(-1)  # Shape: (S,E,A)
+        # Mean Pooling for Stability
+        mean_emb = x.mean(dim=2)  # (S,E,H)
+
+        # **Global Attention-Based Scaling (Shared Context)**
+        query = self.global_query.expand(S, E, H).unsqueeze(2)  # (S,E,1,H)
+        attn_weights = torch.matmul(x, query.transpose(-1, -2)).squeeze(-1)  # (S,E,A)
         attn_weights = torch.softmax(attn_weights, dim=2)  # Normalize across agents
 
-        # Weighted sum across agents
+        # Weighted Sum Across Agents
         weighted_emb = (attn_weights.unsqueeze(-1) * x).sum(dim=2)  # (S,E,H)
 
-        # Compute final value estimate
-        flat = weighted_emb.reshape(S * E, H)
+        # Final Representation (Mean + Attention Hybrid)
+        final_emb = (0.5 * mean_emb) + (0.5 * weighted_emb)  # Hybrid Combination
+
+        # Compute Final Value Estimate
+        flat = final_emb.reshape(S * E, H)
         vals = self.value_head(flat).reshape(S, E, 1)
 
         return vals
@@ -353,25 +365,30 @@ class SharedCritic(nn.Module):
         """
         Compute **per-agent counterfactual baselines**:
         - Input: x => (S,E,A,A,H) (groupmate-aware embeddings)
-        - We perform **attention-based weighted sum across groupmates (dim=3)**.
-        - Output: (S,E,A,1)
+        - Uses **local softmax attention** over **groupmates only** (dim=3).
+        - Output: (S,E,A,1) (one baseline per agent)
         """
         S, E, A, A2, H = x.shape
         assert A == A2, "x must be shape (S,E,A,A,H)."
 
-        # Compute per-groupmate importance weights
-        attn_weights = self.baseline_attention(x).squeeze(-1)  # Shape: (S,E,A,A)
+        # Mean Pooling Across Groupmates for Stability
+        mean_emb = x.mean(dim=3)  # (S,E,A,H)
+
+        # **Local Attention Over Groupmates (Relative Importance)**
+        attn_weights = self.baseline_attention(x).squeeze(-1)  # (S,E,A,A)
         attn_weights = torch.softmax(attn_weights, dim=3)  # Normalize across groupmates
 
-        # Weighted sum across groupmates
+        # Weighted Sum Across Groupmates
         weighted_emb = (attn_weights.unsqueeze(-1) * x).sum(dim=3)  # (S,E,A,H)
 
-        # Compute per-agent baselines
-        flat = weighted_emb.reshape(S * E * A, H)
+        # Final Representation (Mean + Attention Hybrid)
+        final_emb = (0.5 * mean_emb) + (0.5 * weighted_emb)  # Hybrid Combination
+
+        # Compute Per-Agent Baselines
+        flat = final_emb.reshape(S * E * A, H)
         base = self.baseline_head(flat).reshape(S, E, A, 1)
 
         return base
-
 
 class TanhContinuousPolicyNetwork(BasePolicyNetwork):
     """

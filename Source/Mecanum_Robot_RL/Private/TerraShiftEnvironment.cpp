@@ -337,15 +337,16 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
 
 void ATerraShiftEnvironment::Act(FAction Action)
 {
-    // We'll define 9 floats per agent in the range [-1..1]:
-    //   [0..2] => dPos.X, dPos.Y, dPos.Z
-    //   [3] => dPitch
-    //   [4] => dYaw
-    //   [5] => dBaseFreq
-    //   [6] => dLacunarity
-    //   [7] => dGain
-    //   [8] => dBlendWeight
-    const int32 ValuesPerAgent = 9;
+    // Now we define 7 floats per agent in the range [-1..1]:
+    //   [0] => dPitch
+    //   [1] => dYaw
+    //   [2] => dRoll
+    //   [3] => dBaseFreq
+    //   [4] => dLacunarity
+    //   [5] => dGain
+    //   [6] => dBlendWeight
+
+    const int32 ValuesPerAgent = 7;
 
     if (Action.Values.Num() != CurrentAgents * ValuesPerAgent)
     {
@@ -354,30 +355,27 @@ void ATerraShiftEnvironment::Act(FAction Action)
         return;
     }
 
+    // Prepare array of fractal actions
     TArray<FFractalAgentAction> FractalActions;
     FractalActions.SetNum(CurrentAgents);
 
-    // parse
+    // Parse inputs
     for (int32 i = 0; i < CurrentAgents; i++)
     {
         const int32 BaseIndex = i * ValuesPerAgent;
 
-        // Each input is in [-1..1].
-        float dx = Action.Values[BaseIndex + 0];
-        float dy = Action.Values[BaseIndex + 1];
-        float dz = Action.Values[BaseIndex + 2];
-
-        float dPitch = Action.Values[BaseIndex + 3];
-        float dYaw = Action.Values[BaseIndex + 4];
-        float dBaseFreq = Action.Values[BaseIndex + 5];
-        float dLacunarity = Action.Values[BaseIndex + 6];
-        float dGain = Action.Values[BaseIndex + 7];
-        float dBlendWeight = Action.Values[BaseIndex + 8];
+        float dPitch = Action.Values[BaseIndex + 0];
+        float dYaw = Action.Values[BaseIndex + 1];
+        float dRoll = Action.Values[BaseIndex + 2];
+        float dBaseFreq = Action.Values[BaseIndex + 3];
+        float dLacunarity = Action.Values[BaseIndex + 4];
+        float dGain = Action.Values[BaseIndex + 5];
+        float dBlendWeight = Action.Values[BaseIndex + 6];
 
         FFractalAgentAction& FA = FractalActions[i];
-        FA.dPos = FVector(dx, dy, dz);
         FA.dPitch = dPitch;
         FA.dYaw = dYaw;
+        FA.dRoll = dRoll;
         FA.dBaseFreq = dBaseFreq;
         FA.dLacunarity = dLacunarity;
         FA.dGain = dGain;
@@ -395,7 +393,8 @@ void ATerraShiftEnvironment::Act(FAction Action)
 
     // final wave => NxN in [-1..1]
     const FMatrix2D& WaveMap = WaveSimulator->GetWave();
-    // apply to columns
+
+    // Apply wave to your grid or columns
     Grid->UpdateColumnHeights(WaveMap * MaxColumnHeight);
 }
 

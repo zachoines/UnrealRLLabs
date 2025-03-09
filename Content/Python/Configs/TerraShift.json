@@ -13,48 +13,51 @@
       "SpawnDelay": 0.25,
       "MaxAgents": 5,
       "GoalThreshold": 1.75,
-
       "MultiAgentFractalWave": {
         "num_agents": 5,
         "image_size": 50,
         "octaves": 3,
-        "wrap_pos": true,
+    
         "wrap_pitch": true,
         "wrap_yaw": true,
+        "wrap_roll": true,
         "wrap_freq": true,
         "wrap_lacunarity": true,
         "wrap_gain": true,
         "wrap_blend_weight": true,
-
+    
         "agent_init": {
-          "pos_range": [-10, 10],
           "pitch_range": [-1.57, 1.57],
           "yaw_range": [0, 6.28318],
+          "roll_range": [0, 6.28318],
           "fov_deg": 60,
           "sample_dist": 10
         },
+    
         "fractal_init": {
           "base_freq_range": [0.01, 2.0],
           "lacunarity_range": [1, 2],
           "gain_range": [0, 1],
           "blend_weight_range": [0, 5]
         },
+    
         "action_ranges": {
-          "pos_minmax": [-1, 1],
           "pitch_minmax": [-0.39, 0.39],
-          "yaw_minmax": [-0.39, 0.39],
-          "base_freq_minmax": [-0.02, 0.02],
-          "lacunarity_minmax": [-0.02, 0.02],
-          "gain_minmax": [-0.15, 0.15],
+          "yaw_minmax":   [-0.39, 0.39],
+          "roll_minmax":  [-0.39, 0.39],
+          "base_freq_minmax":    [-0.02, 0.02],
+          "lacunarity_minmax":   [-0.02, 0.02],
+          "gain_minmax":         [-0.15, 0.15],
           "blend_weight_minmax": [-0.15, 0.15]
         },
+    
         "state_ranges": {
-          "pos_range": [-10, 10],
           "pitch_range": [-1.57, 1.57],
-          "yaw_range": [0, 6.28318],
-          "base_freq_range": [0.01, 2],
+          "yaw_range":   [0, 6.28318],
+          "roll_range":  [0, 6.28318],
+          "base_freq_range":  [0.01, 2],
           "lacunarity_range": [1, 2],
-          "gain_range": [0, 1],
+          "gain_range":       [0, 1],
           "blend_weight_range": [0, 5]
         }
       }
@@ -66,7 +69,7 @@
           "obs_size": 2500
         },
         "agent": {
-          "obs_size": 28,
+          "obs_size": 26,
           "min": 5,
           "max": 5
         }
@@ -74,8 +77,6 @@
       "action": {
         "agent": {
           "continuous": [
-            { "min": -1, "max": 1 },
-            { "min": -1, "max": 1 },
             { "min": -1, "max": 1 },
             { "min": -1, "max": 1 },
             { "min": -1, "max": 1 },
@@ -92,7 +93,7 @@
   "agent": {
     "type": "MA_POCA",
     "params": {
-      "learning_rate": 0.0003,
+      "learning_rate": 0.0001,
       "gamma": 0.99,
       "lambda": 0.95,
       "value_loss_coeff": 0.5,
@@ -105,26 +106,26 @@
       "entropy_coeff": 0.005,
       "schedulers": {
         "lr": {
-          "max_lr": 0.0003, 
-          "total_steps": 30000, 
+          "max_lr": 0.0001, 
+          "total_steps": 100000, 
           "anneal_strategy": "cos", 
-          "pct_start": 0.3, 
-          "div_factor": 100,
-          "final_div_factor": 10000
+          "pct_start": 0.1, 
+          "div_factor": 10,
+          "final_div_factor": 100
         },
-        "entropy_coeff": {
+        "lr_linear_disabled": {
+          "start_factor": 1,
+          "end_factor": 0.0001,
+          "total_iters": 10000
+        },
+        "entropy_coeff_cos_disabled": {
           "max_value": 0.01, 
           "total_steps": 30000, 
           "pct_start": 0.3, 
           "div_factor": 10, 
           "final_div_factor": 100
         },
-        "lr_disabled": {
-          "start_factor": 1,
-          "end_factor": 0.0001,
-          "total_iters": 10000
-        },
-        "entropy_coeff_disabled": {
+        "entropy_coeff_linear_disabled": {
           "start_value": 0.01,
           "end_value": 0.001,
           "total_iters": 10000
@@ -133,7 +134,7 @@
       "networks": {
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor" : {
-            "obs_size": 28, 
+            "obs_size": 26, 
             "num_agents": 5, 
             "h": 50,
             "w": 50, 
@@ -156,7 +157,7 @@
           },
           "obs_actions_encoder": {
             "state_dim": 64,
-            "action_dim": 9,
+            "action_dim": 7,
             "hidden_size": 64,
             "output_size": 64,
             "dropout_rate": 0,
@@ -167,7 +168,7 @@
         "policy_network": {
           "in_features": 64,
           "hidden_size": 128,
-          "log_std_min": -20,
+          "log_std_min": -8,
           "log_std_max": 2,
           "entropy_method": "mc",
           "n_entropy_samples": 10,
@@ -191,8 +192,8 @@
 
   "train": {
     "num_environments": 6,
-    "epochs": 6,
-    "mini_batch_size": 32,
+    "epochs": 4,
+    "mini_batch_size": 64,
     "buffer_size": 256,
     "batch_size": 256,
     "AgentsResetFrequency": 0,

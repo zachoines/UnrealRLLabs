@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include <random>
@@ -7,31 +7,43 @@
 #include "TerraShift/Matrix2D.h"
 #include "MultiAgentFractalWave3D.generated.h"
 
+/**
+ * Each agent's action: 7 degrees of freedom, each in [-1..1].
+ *
+ * We interpret them as deltas for pitch, yaw, roll, fractal freq,
+ * lacunarity, gain, and blend weight.
+ */
 USTRUCT(BlueprintType)
 struct FFractalAgentAction
 {
     GENERATED_BODY()
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    FVector dPos;          // in [-1..1]
+    float dPitch;        // [-1..1]
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float dPitch;          // in [-1..1]
+    float dYaw;          // [-1..1]
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float dYaw;            // in [-1..1]
+    float dRoll;         // [-1..1]
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float dBaseFreq;       // in [-1..1]
+    float dBaseFreq;     // [-1..1]
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float dLacunarity;     // in [-1..1]
+    float dLacunarity;   // [-1..1]
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float dGain;           // in [-1..1]
+    float dGain;         // [-1..1]
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float dBlendWeight;    // in [-1..1]
+    float dBlendWeight;  // [-1..1]
 
     FFractalAgentAction()
     {
-        dPos = FVector::ZeroVector;
         dPitch = 0.f;
         dYaw = 0.f;
+        dRoll = 0.f;
         dBaseFreq = 0.f;
         dLacunarity = 0.f;
         dGain = 0.f;
@@ -39,18 +51,25 @@ struct FFractalAgentAction
     }
 };
 
+/**
+ * Each agent's internal state:
+ *  - (Pitch, Yaw, Roll) => orientation angles in radians
+ *  - FOVDegrees & SampleDist => constants (not changed by actions)
+ *  - (BaseFreq, Lacunarity, Gain, BlendWeight) => fractal params
+ *  - Octaves => fractal octaves
+ *  - FractalImage => the rendered fractal for each step
+ */
 USTRUCT()
 struct FFractalAgentState
 {
     GENERATED_BODY()
 
     UPROPERTY()
-    FVector Pos3D;
-
-    UPROPERTY()
     float Pitch;
     UPROPERTY()
     float Yaw;
+    UPROPERTY()
+    float Roll;
 
     UPROPERTY()
     float FOVDegrees;
@@ -76,15 +95,15 @@ struct FFractalAgentState
 
     FFractalAgentState()
     {
-        Pos3D = FVector::ZeroVector;
         Pitch = 0.f;
         Yaw = 0.f;
-        FOVDegrees = 60.f;
+        Roll = 0.f;
 
+        FOVDegrees = 60.f;
         BaseFreq = 0.15f;
-        Octaves = 4;
-        Lacunarity = 2.5f;
+        Lacunarity = 2.f;
         Gain = 0.6f;
+        Octaves = 3;
         BlendWeight = 1.f;
 
         ImageSize = 50;
@@ -92,6 +111,13 @@ struct FFractalAgentState
     }
 };
 
+/**
+ * UMultiAgentFractalWave3D:
+ *  - Manages multiple agents
+ *  - Each agent has rotation + fractal parameters
+ *  - Renders fractal images from origin
+ *  - Weighted sum => final wave in [-1..1]
+ */
 UCLASS(BlueprintType)
 class UNREALRLLABS_API UMultiAgentFractalWave3D : public UObject
 {
@@ -106,10 +132,10 @@ public:
     void Reset(int32 NewNumAgents);
 
     /**
-     * Step environment with the given multi-agent actions.
-     *
-     * If bWrapPos (etc.) is true => wrap in [StatePosRange.X..StatePosRange.Y],
-     * else clamp.
+     * Step environment with multi-agent actions:
+     *  - scale & apply each delta (pitch, yaw, roll, fractal params)
+     *  - re-render each agent's fractal
+     *  - combine wave
      */
     UFUNCTION(BlueprintCallable, Category = "FractalWave")
     void Step(const TArray<FFractalAgentAction>& Actions, float DeltaTime = 0.1f);
@@ -124,40 +150,42 @@ public:
     TArray<float> GetAgentFractalImage(int32 AgentIndex) const;
 
     /**
-     * Return an array of normalized state variables in [-1..1],
-     * based on user-defined 'state_ranges' from config.
+     * Returns agent's state variables in [-1..1].
+     *
+     * pitchNorm, yawNorm, rollNorm,
+     * freqNorm, lacNorm, gainNorm, blendNorm
      */
     UFUNCTION(BlueprintCallable, Category = "FractalWave")
     TArray<float> GetAgentStateVariables(int32 AgentIndex) const;
 
     // -------------------
-    //   WRAP TOGGLES
+    //   Wrap Toggles
     // -------------------
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bWrapPos = false;
+    bool bWrapPitch = true;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bWrapPitch = false;
+    bool bWrapYaw = true;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bWrapYaw = true; // we had yaw_wrap originally set to true
+    bool bWrapRoll = true;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bWrapFreq = false;
+    bool bWrapFreq = true;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bWrapLacunarity = false;
+    bool bWrapLacunarity = true;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bWrapGain = false;
+    bool bWrapGain = true;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bWrapBlendWeight = false;
+    bool bWrapBlendWeight = true;
 
 private:
 
     UPROPERTY()
-    FMatrix2D FinalWave;
+    FMatrix2D FinalWave;     // NxN final image
 
     UPROPERTY()
     TArray<FFractalAgentState> Agents;
@@ -167,23 +195,21 @@ private:
     UPROPERTY()
     int32 ImageSize;
 
-    // Removed pitch_limit. We'll rely on pitch_range for bounding or wrapping.
-
     // -------------------
     //  Initialization Ranges
     // -------------------
-    UPROPERTY()
-    FVector2D PosRange;
     UPROPERTY()
     FVector2D PitchRange;
     UPROPERTY()
     FVector2D YawRange;
     UPROPERTY()
+    FVector2D RollRange;
+
+    UPROPERTY()
     float DefaultFOVDeg;
     UPROPERTY()
     float DefaultSampleDist;
 
-    // fractal param ranges for random init
     UPROPERTY()
     FVector2D BaseFreqRange;
     UPROPERTY()
@@ -199,11 +225,11 @@ private:
     //  Action Ranges => Delta
     // -------------------
     UPROPERTY()
-    FVector2D ActionPosRange;
-    UPROPERTY()
     FVector2D ActionPitchRange;
     UPROPERTY()
     FVector2D ActionYawRange;
+    UPROPERTY()
+    FVector2D ActionRollRange;
     UPROPERTY()
     FVector2D ActionBaseFreqRange;
     UPROPERTY()
@@ -217,11 +243,11 @@ private:
     //  State Normalization Ranges
     // -------------------
     UPROPERTY()
-    FVector2D StatePosRange;
-    UPROPERTY()
     FVector2D StatePitchRange;
     UPROPERTY()
     FVector2D StateYawRange;
+    UPROPERTY()
+    FVector2D StateRollRange;
     UPROPERTY()
     FVector2D StateBaseFreqRange;
     UPROPERTY()
@@ -244,13 +270,9 @@ private:
 
     // mapping
     float Map(float x, float in_min, float in_max, float out_min, float out_max) const;
-
-    // interpret [-1..1] => [MinVal..MaxVal]
     float ActionScaled(float InputN11, float MinVal, float MaxVal) const;
-
-    // interpret [Value.. in MinMax] => [-1..1]
     float NormalizeValue(float Value, float MinVal, float MaxVal) const;
 
-    // modular wrap a value into [MinVal..MaxVal)
+    // modular wrap
     float WrapValue(float val, float MinVal, float MaxVal) const;
 };

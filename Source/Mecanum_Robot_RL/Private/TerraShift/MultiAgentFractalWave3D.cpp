@@ -12,51 +12,76 @@ void UMultiAgentFractalWave3D::InitializeFromConfig(UEnvironmentConfig* Config)
         return;
     }
 
+    // -- Basic parameters --
     NumAgents = Config->HasPath("num_agents")
         ? Config->Get("num_agents")->AsInt()
-        : 3;
+        : 5;
     ImageSize = Config->HasPath("image_size")
         ? Config->Get("image_size")->AsInt()
         : 50;
-
-    // octaves
     Octaves = Config->HasPath("octaves")
         ? Config->Get("octaves")->AsInt()
-        : 4;
+        : 3;
 
-    // We no longer read pitch_limit, ignoring that.
-
-    // If config has "yaw_wrap", we can read that:
-    if (Config->HasPath("yaw_wrap"))
-    {
-        bWrapYaw = Config->Get("yaw_wrap")->AsBool();
-    }
+    // Wrap toggles
+    if (Config->HasPath("wrap_pitch"))
+        bWrapPitch = Config->Get("wrap_pitch")->AsBool();
+    if (Config->HasPath("wrap_yaw"))
+        bWrapYaw = Config->Get("wrap_yaw")->AsBool();
+    if (Config->HasPath("wrap_roll"))
+        bWrapRoll = Config->Get("wrap_roll")->AsBool();
+    if (Config->HasPath("wrap_freq"))
+        bWrapFreq = Config->Get("wrap_freq")->AsBool();
+    if (Config->HasPath("wrap_lacunarity"))
+        bWrapLacunarity = Config->Get("wrap_lacunarity")->AsBool();
+    if (Config->HasPath("wrap_gain"))
+        bWrapGain = Config->Get("wrap_gain")->AsBool();
+    if (Config->HasPath("wrap_blend_weight"))
+        bWrapBlendWeight = Config->Get("wrap_blend_weight")->AsBool();
 
     // agent_init
     UEnvironmentConfig* AInit = Config->Get("agent_init");
     if (AInit && AInit->IsValid())
     {
-        if (AInit->HasPath("pos_range"))
-        {
-            auto pr = AInit->Get("pos_range")->AsArrayOfNumbers();
-            if (pr.Num() == 2) PosRange = FVector2D(pr[0], pr[1]);
-        }
         if (AInit->HasPath("pitch_range"))
         {
             auto rr = AInit->Get("pitch_range")->AsArrayOfNumbers();
             if (rr.Num() == 2) PitchRange = FVector2D(rr[0], rr[1]);
         }
+        else
+            PitchRange = FVector2D(-1.57f, 1.57f);
+
         if (AInit->HasPath("yaw_range"))
         {
             auto yr = AInit->Get("yaw_range")->AsArrayOfNumbers();
             if (yr.Num() == 2) YawRange = FVector2D(yr[0], yr[1]);
         }
+        else
+            YawRange = FVector2D(0.f, 6.28318f);
+
+        if (AInit->HasPath("roll_range"))
+        {
+            auto ro = AInit->Get("roll_range")->AsArrayOfNumbers();
+            if (ro.Num() == 2) RollRange = FVector2D(ro[0], ro[1]);
+        }
+        else
+            RollRange = FVector2D(0.f, 6.28318f);
+
         DefaultFOVDeg = AInit->HasPath("fov_deg")
             ? AInit->Get("fov_deg")->AsNumber()
             : 60.f;
         DefaultSampleDist = AInit->HasPath("sample_dist")
             ? AInit->Get("sample_dist")->AsNumber()
             : 10.f;
+    }
+    else
+    {
+        // fallback
+        PitchRange = FVector2D(-1.57f, 1.57f);
+        YawRange = FVector2D(0.f, 6.28318f);
+        RollRange = FVector2D(0.f, 6.28318f);
+        DefaultFOVDeg = 60.f;
+        DefaultSampleDist = 10.f;
     }
 
     // fractal_init
@@ -68,111 +93,189 @@ void UMultiAgentFractalWave3D::InitializeFromConfig(UEnvironmentConfig* Config)
             auto bf = FInit->Get("base_freq_range")->AsArrayOfNumbers();
             if (bf.Num() == 2) BaseFreqRange = FVector2D(bf[0], bf[1]);
         }
+        else
+            BaseFreqRange = FVector2D(0.01f, 2.0f);
+
         if (FInit->HasPath("lacunarity_range"))
         {
             auto lr = FInit->Get("lacunarity_range")->AsArrayOfNumbers();
             if (lr.Num() == 2) LacunarityRange = FVector2D(lr[0], lr[1]);
         }
+        else
+            LacunarityRange = FVector2D(1.f, 2.f);
+
         if (FInit->HasPath("gain_range"))
         {
             auto gr = FInit->Get("gain_range")->AsArrayOfNumbers();
             if (gr.Num() == 2) GainRange = FVector2D(gr[0], gr[1]);
         }
+        else
+            GainRange = FVector2D(0.f, 1.f);
+
         if (FInit->HasPath("blend_weight_range"))
         {
             auto bw = FInit->Get("blend_weight_range")->AsArrayOfNumbers();
             if (bw.Num() == 2) BlendWeightRange = FVector2D(bw[0], bw[1]);
         }
+        else
+            BlendWeightRange = FVector2D(0.f, 5.f);
+    }
+    else
+    {
+        // fallback
+        BaseFreqRange = FVector2D(0.01f, 2.0f);
+        LacunarityRange = FVector2D(1.f, 2.f);
+        GainRange = FVector2D(0.f, 1.f);
+        BlendWeightRange = FVector2D(0.f, 5.f);
     }
 
     // action_ranges
     UEnvironmentConfig* ActCfg = Config->Get("action_ranges");
     if (ActCfg && ActCfg->IsValid())
     {
-        if (ActCfg->HasPath("pos_minmax"))
-        {
-            auto pm = ActCfg->Get("pos_minmax")->AsArrayOfNumbers();
-            if (pm.Num() == 2) ActionPosRange = FVector2D(pm[0], pm[1]);
-        }
         if (ActCfg->HasPath("pitch_minmax"))
         {
             auto pm = ActCfg->Get("pitch_minmax")->AsArrayOfNumbers();
             if (pm.Num() == 2) ActionPitchRange = FVector2D(pm[0], pm[1]);
         }
+        else
+            ActionPitchRange = FVector2D(-0.39f, 0.39f);
+
         if (ActCfg->HasPath("yaw_minmax"))
         {
             auto ym = ActCfg->Get("yaw_minmax")->AsArrayOfNumbers();
             if (ym.Num() == 2) ActionYawRange = FVector2D(ym[0], ym[1]);
         }
+        else
+            ActionYawRange = FVector2D(-0.39f, 0.39f);
+
+        if (ActCfg->HasPath("roll_minmax"))
+        {
+            auto rm = ActCfg->Get("roll_minmax")->AsArrayOfNumbers();
+            if (rm.Num() == 2) ActionRollRange = FVector2D(rm[0], rm[1]);
+        }
+        else
+            ActionRollRange = FVector2D(-0.39f, 0.39f);
+
         if (ActCfg->HasPath("base_freq_minmax"))
         {
             auto bf = ActCfg->Get("base_freq_minmax")->AsArrayOfNumbers();
             if (bf.Num() == 2) ActionBaseFreqRange = FVector2D(bf[0], bf[1]);
         }
+        else
+            ActionBaseFreqRange = FVector2D(-0.02f, 0.02f);
+
         if (ActCfg->HasPath("lacunarity_minmax"))
         {
             auto lr = ActCfg->Get("lacunarity_minmax")->AsArrayOfNumbers();
             if (lr.Num() == 2) ActionLacunarityRange = FVector2D(lr[0], lr[1]);
         }
+        else
+            ActionLacunarityRange = FVector2D(-0.02f, 0.02f);
+
         if (ActCfg->HasPath("gain_minmax"))
         {
             auto gr = ActCfg->Get("gain_minmax")->AsArrayOfNumbers();
             if (gr.Num() == 2) ActionGainRange = FVector2D(gr[0], gr[1]);
         }
+        else
+            ActionGainRange = FVector2D(-0.15f, 0.15f);
+
         if (ActCfg->HasPath("blend_weight_minmax"))
         {
             auto bw = ActCfg->Get("blend_weight_minmax")->AsArrayOfNumbers();
             if (bw.Num() == 2) ActionBlendWeightRange = FVector2D(bw[0], bw[1]);
         }
+        else
+            ActionBlendWeightRange = FVector2D(-0.15f, 0.15f);
+    }
+    else
+    {
+        // fallback
+        ActionPitchRange = FVector2D(-0.39f, 0.39f);
+        ActionYawRange = FVector2D(-0.39f, 0.39f);
+        ActionRollRange = FVector2D(-0.39f, 0.39f);
+        ActionBaseFreqRange = FVector2D(-0.02f, 0.02f);
+        ActionLacunarityRange = FVector2D(-0.02f, 0.02f);
+        ActionGainRange = FVector2D(-0.15f, 0.15f);
+        ActionBlendWeightRange = FVector2D(-0.15f, 0.15f);
     }
 
     // state_ranges
     UEnvironmentConfig* SR = Config->Get("state_ranges");
     if (SR && SR->IsValid())
     {
-        if (SR->HasPath("pos_range"))
-        {
-            auto pr = SR->Get("pos_range")->AsArrayOfNumbers();
-            if (pr.Num() == 2) StatePosRange = FVector2D(pr[0], pr[1]);
-        }
         if (SR->HasPath("pitch_range"))
         {
             auto rr = SR->Get("pitch_range")->AsArrayOfNumbers();
             if (rr.Num() == 2) StatePitchRange = FVector2D(rr[0], rr[1]);
         }
+        else
+            StatePitchRange = FVector2D(-1.57f, 1.57f);
+
         if (SR->HasPath("yaw_range"))
         {
             auto yr = SR->Get("yaw_range")->AsArrayOfNumbers();
             if (yr.Num() == 2) StateYawRange = FVector2D(yr[0], yr[1]);
         }
+        else
+            StateYawRange = FVector2D(0.f, 6.28318f);
+
+        if (SR->HasPath("roll_range"))
+        {
+            auto ro = SR->Get("roll_range")->AsArrayOfNumbers();
+            if (ro.Num() == 2) StateRollRange = FVector2D(ro[0], ro[1]);
+        }
+        else
+            StateRollRange = FVector2D(0.f, 6.28318f);
+
         if (SR->HasPath("base_freq_range"))
         {
             auto bf = SR->Get("base_freq_range")->AsArrayOfNumbers();
             if (bf.Num() == 2) StateBaseFreqRange = FVector2D(bf[0], bf[1]);
         }
+        else
+            StateBaseFreqRange = FVector2D(0.01f, 2.0f);
+
         if (SR->HasPath("lacunarity_range"))
         {
             auto lr = SR->Get("lacunarity_range")->AsArrayOfNumbers();
             if (lr.Num() == 2) StateLacunarityRange = FVector2D(lr[0], lr[1]);
         }
+        else
+            StateLacunarityRange = FVector2D(1.f, 2.f);
+
         if (SR->HasPath("gain_range"))
         {
             auto gr = SR->Get("gain_range")->AsArrayOfNumbers();
             if (gr.Num() == 2) StateGainRange = FVector2D(gr[0], gr[1]);
         }
+        else
+            StateGainRange = FVector2D(0.f, 1.f);
+
         if (SR->HasPath("blend_weight_range"))
         {
             auto bw = SR->Get("blend_weight_range")->AsArrayOfNumbers();
             if (bw.Num() == 2) StateBlendWeightRange = FVector2D(bw[0], bw[1]);
         }
+        else
+            StateBlendWeightRange = FVector2D(0.f, 5.f);
+    }
+    else
+    {
+        // fallback for state ranges
+        StatePitchRange = FVector2D(-1.57f, 1.57f);
+        StateYawRange = FVector2D(0.f, 6.28318f);
+        StateRollRange = FVector2D(0.f, 6.28318f);
+        StateBaseFreqRange = FVector2D(0.01f, 2.0f);
+        StateLacunarityRange = FVector2D(1.f, 2.f);
+        StateGainRange = FVector2D(0.f, 1.f);
+        StateBlendWeightRange = FVector2D(0.f, 5.f);
     }
 
-    // We'll also read wrap toggles from config if you want. Example:
-    // if (Config->HasPath("wrap_pos")) { bWrapPos = Config->Get("wrap_pos")->AsBool(); }
-    // etc.
-
-    // create NxN wave
+    // Initialize final wave
     FinalWave = FMatrix2D(ImageSize, ImageSize, 0.f);
+
     InitializeAgents();
 }
 
@@ -192,24 +295,20 @@ void UMultiAgentFractalWave3D::InitializeAgents()
     {
         FFractalAgentState& S = Agents[i];
 
-        // random init from posRange etc.
-        float px = SampleNormalInRange(PosRange);
-        float py = SampleNormalInRange(PosRange);
-        float pz = SampleNormalInRange(PosRange);
-        S.Pos3D = FVector(px, py, pz);
-
+        // Random init from configured ranges
         S.Pitch = SampleNormalInRange(PitchRange);
         S.Yaw = SampleNormalInRange(YawRange);
+        S.Roll = SampleNormalInRange(RollRange);
 
         S.FOVDegrees = DefaultFOVDeg;
-        S.ImageSize = ImageSize;
         S.SampleDist = DefaultSampleDist;
+        S.ImageSize = ImageSize;
+        S.Octaves = Octaves;
 
         S.BaseFreq = SampleNormalInRange(BaseFreqRange);
         S.Lacunarity = SampleNormalInRange(LacunarityRange);
         S.Gain = SampleNormalInRange(GainRange);
         S.BlendWeight = SampleNormalInRange(BlendWeightRange);
-        S.Octaves = Octaves;
 
         S.FractalImage.SetNumZeroed(ImageSize * ImageSize);
     }
@@ -222,29 +321,9 @@ void UMultiAgentFractalWave3D::Step(const TArray<FFractalAgentAction>& Actions, 
         FFractalAgentState& A = Agents[i];
         const FFractalAgentAction& Act = Actions[i];
 
-        // Position
-        float dx = ActionScaled(Act.dPos.X, ActionPosRange.X, ActionPosRange.Y) * DeltaTime;
-        float dy = ActionScaled(Act.dPos.Y, ActionPosRange.X, ActionPosRange.Y) * DeltaTime;
-        float dz = ActionScaled(Act.dPos.Z, ActionPosRange.X, ActionPosRange.Y) * DeltaTime;
-
-        float newPosX = A.Pos3D.X + dx;
-        float newPosY = A.Pos3D.Y + dy;
-        float newPosZ = A.Pos3D.Z + dz;
-        if (bWrapPos)
-        {
-            newPosX = WrapValue(newPosX, StatePosRange.X, StatePosRange.Y);
-            newPosY = WrapValue(newPosY, StatePosRange.X, StatePosRange.Y);
-            newPosZ = WrapValue(newPosZ, StatePosRange.X, StatePosRange.Y);
-        }
-        else
-        {
-            newPosX = FMath::Clamp(newPosX, StatePosRange.X, StatePosRange.Y);
-            newPosY = FMath::Clamp(newPosY, StatePosRange.X, StatePosRange.Y);
-            newPosZ = FMath::Clamp(newPosZ, StatePosRange.X, StatePosRange.Y);
-        }
-        A.Pos3D = FVector(newPosX, newPosY, newPosZ);
-
-        // Pitch
+        //
+        // PITCH
+        //
         float dpitch = ActionScaled(Act.dPitch, ActionPitchRange.X, ActionPitchRange.Y) * DeltaTime;
         float newPitch = A.Pitch + dpitch;
         if (bWrapPitch)
@@ -257,16 +336,14 @@ void UMultiAgentFractalWave3D::Step(const TArray<FFractalAgentAction>& Actions, 
         }
         A.Pitch = newPitch;
 
-        // Yaw
+        //
+        // YAW
+        //
         float dyaw = ActionScaled(Act.dYaw, ActionYawRange.X, ActionYawRange.Y) * DeltaTime;
         float newYaw = A.Yaw + dyaw;
         if (bWrapYaw)
         {
-            // We do 0..2pi wrapping in the old approach:
-            // but if you want to unify with StateYawRange, use:
-            // newYaw = WrapValue(newYaw, StateYawRange.X, StateYawRange.Y);
-            while (newYaw < 0.f)        newYaw += 2.f * PI;
-            while (newYaw >= 2.f * PI) newYaw -= 2.f * PI;
+            newYaw = WrapValue(newYaw, StateYawRange.X, StateYawRange.Y);
         }
         else
         {
@@ -274,7 +351,24 @@ void UMultiAgentFractalWave3D::Step(const TArray<FFractalAgentAction>& Actions, 
         }
         A.Yaw = newYaw;
 
-        // Base Frequency
+        //
+        // ROLL
+        //
+        float droll = ActionScaled(Act.dRoll, ActionRollRange.X, ActionRollRange.Y) * DeltaTime;
+        float newRoll = A.Roll + droll;
+        if (bWrapRoll)
+        {
+            newRoll = WrapValue(newRoll, StateRollRange.X, StateRollRange.Y);
+        }
+        else
+        {
+            newRoll = FMath::Clamp(newRoll, StateRollRange.X, StateRollRange.Y);
+        }
+        A.Roll = newRoll;
+
+        //
+        // BaseFreq
+        //
         float dfreq = ActionScaled(Act.dBaseFreq, ActionBaseFreqRange.X, ActionBaseFreqRange.Y) * DeltaTime;
         float newFreq = A.BaseFreq + dfreq;
         if (bWrapFreq)
@@ -287,7 +381,9 @@ void UMultiAgentFractalWave3D::Step(const TArray<FFractalAgentAction>& Actions, 
         }
         A.BaseFreq = newFreq;
 
+        //
         // Lacunarity
+        //
         float dlac = ActionScaled(Act.dLacunarity, ActionLacunarityRange.X, ActionLacunarityRange.Y) * DeltaTime;
         float newLac = A.Lacunarity + dlac;
         if (bWrapLacunarity)
@@ -300,7 +396,9 @@ void UMultiAgentFractalWave3D::Step(const TArray<FFractalAgentAction>& Actions, 
         }
         A.Lacunarity = newLac;
 
+        //
         // Gain
+        //
         float dgain = ActionScaled(Act.dGain, ActionGainRange.X, ActionGainRange.Y) * DeltaTime;
         float newGain = A.Gain + dgain;
         if (bWrapGain)
@@ -313,7 +411,9 @@ void UMultiAgentFractalWave3D::Step(const TArray<FFractalAgentAction>& Actions, 
         }
         A.Gain = newGain;
 
+        //
         // Blend Weight
+        //
         float dbw = ActionScaled(Act.dBlendWeight, ActionBlendWeightRange.X, ActionBlendWeightRange.Y) * DeltaTime;
         float newBW = A.BlendWeight + dbw;
         if (bWrapBlendWeight)
@@ -327,9 +427,9 @@ void UMultiAgentFractalWave3D::Step(const TArray<FFractalAgentAction>& Actions, 
         A.BlendWeight = newBW;
     }
 
-    // Re-render each fractal => combine wave
+    // -- Re-render each fractal => combine wave
     int32 N = ImageSize;
-    TArray<float> WaveSums; WaveSums.SetNumZeroed(N * N);
+    TArray<float> WaveSums;   WaveSums.SetNumZeroed(N * N);
     TArray<float> WeightSums; WeightSums.SetNumZeroed(N * N);
 
     for (int32 i = 0; i < Agents.Num(); i++)
@@ -337,6 +437,7 @@ void UMultiAgentFractalWave3D::Step(const TArray<FFractalAgentAction>& Actions, 
         RenderFractalForAgent(Agents[i]);
         float w = Agents[i].BlendWeight;
         const TArray<float>& Img = Agents[i].FractalImage;
+
         for (int32 idx = 0; idx < N * N; idx++)
         {
             WaveSums[idx] += (Img[idx] * w);
@@ -348,7 +449,8 @@ void UMultiAgentFractalWave3D::Step(const TArray<FFractalAgentAction>& Actions, 
     for (int32 idx = 0; idx < N * N; idx++)
     {
         float w = (WeightSums[idx] == 0.f) ? 1e-6f : WeightSums[idx];
-        float val = WaveSums[idx] / w; // in [-1..1]
+        float val = WaveSums[idx] / w;
+        val = FMath::Clamp(val, -1.f, 1.f); // just in case
         int32 row = idx / N;
         int32 col = idx % N;
         FinalWave[row][col] = val;
@@ -375,28 +477,21 @@ TArray<float> UMultiAgentFractalWave3D::GetAgentStateVariables(int32 AgentIndex)
 
     const FFractalAgentState& A = Agents[AgentIndex];
 
-    // position => normalized
-    float px = NormalizeValue(A.Pos3D.X, StatePosRange.X, StatePosRange.Y);
-    float py = NormalizeValue(A.Pos3D.Y, StatePosRange.X, StatePosRange.Y);
-    float pz = NormalizeValue(A.Pos3D.Z, StatePosRange.X, StatePosRange.Y);
-
-    // pitch => normalized
+    // pitch, yaw, roll => normalized
     float pitchNorm = NormalizeValue(A.Pitch, StatePitchRange.X, StatePitchRange.Y);
-
-    // yaw => normalize
     float yawNorm = NormalizeValue(A.Yaw, StateYawRange.X, StateYawRange.Y);
+    float rollNorm = NormalizeValue(A.Roll, StateRollRange.X, StateRollRange.Y);
 
-    // fractal params => normalize
+    // fractal params => normalized
     float freqNorm = NormalizeValue(A.BaseFreq, StateBaseFreqRange.X, StateBaseFreqRange.Y);
     float lacNorm = NormalizeValue(A.Lacunarity, StateLacunarityRange.X, StateLacunarityRange.Y);
     float gainNorm = NormalizeValue(A.Gain, StateGainRange.X, StateGainRange.Y);
     float blendNorm = NormalizeValue(A.BlendWeight, StateBlendWeightRange.X, StateBlendWeightRange.Y);
 
-    Result.Add(px);
-    Result.Add(py);
-    Result.Add(pz);
+    // e.g. {pitchNorm, yawNorm, rollNorm, freqNorm, lacNorm, gainNorm, blendNorm}
     Result.Add(pitchNorm);
     Result.Add(yawNorm);
+    Result.Add(rollNorm);
     Result.Add(freqNorm);
     Result.Add(lacNorm);
     Result.Add(gainNorm);
@@ -412,12 +507,14 @@ void UMultiAgentFractalWave3D::RenderFractalForAgent(FFractalAgentState& Agent)
 
     float halfFov = FMath::DegreesToRadians(Agent.FOVDegrees * 0.5f);
 
+    // The camera is at origin [0,0,0], we rotate each direction by pitch,yaw,roll
     for (int32 v = 0; v < N; v++)
     {
         float ndc_y = (float(v) / (N - 1)) * 2.f - 1.f;
         for (int32 u = 0; u < N; u++)
         {
             float ndc_x = (float(u) / (N - 1)) * 2.f - 1.f;
+
             float cx = ndc_x * FMath::Tan(halfFov);
             float cy = -ndc_y * FMath::Tan(halfFov);
             float cz = 1.f;
@@ -426,26 +523,32 @@ void UMultiAgentFractalWave3D::RenderFractalForAgent(FFractalAgentState& Agent)
             cy /= length;
             cz /= length;
 
-            // rotate by agent yaw
-            float sy = FMath::Sin(Agent.Yaw);
-            float cyw = FMath::Cos(Agent.Yaw);
-            float rx = cx * cyw + cz * sy;
-            float rz = -cx * sy + cz * cyw;
-            float ry = cy;
+            // Yaw->Pitch->Roll rotation
+            float sinY = FMath::Sin(Agent.Yaw);
+            float cosY = FMath::Cos(Agent.Yaw);
+            float rx = cx * cosY - cy * sinY;
+            float ry = cx * sinY + cy * cosY;
+            float rz = cz;
 
-            // rotate by agent pitch
-            float sp = FMath::Sin(Agent.Pitch);
-            float cp = FMath::Cos(Agent.Pitch);
-            float final_x = rx;
-            float final_y = ry * cp - rz * sp;
-            float final_z = ry * sp + rz * cp;
+            float sinP = FMath::Sin(Agent.Pitch);
+            float cosP = FMath::Cos(Agent.Pitch);
+            float r2x = rx;
+            float r2y = ry * cosP - rz * sinP;
+            float r2z = ry * sinP + rz * cosP;
 
-            float sx = Agent.Pos3D.X + Agent.SampleDist * final_x;
-            float sy_ = Agent.Pos3D.Y + Agent.SampleDist * final_y;
-            float sz = Agent.Pos3D.Z + Agent.SampleDist * final_z;
+            float sinR = FMath::Sin(Agent.Roll);
+            float cosR = FMath::Cos(Agent.Roll);
+            float final_x = r2x * cosR + r2z * sinR;
+            float final_y = r2y;
+            float final_z = -r2x * sinR + r2z * cosR;
+
+            // sample position in fractal space
+            float sx = final_x * Agent.SampleDist;
+            float sy = final_y * Agent.SampleDist;
+            float sz = final_z * Agent.SampleDist;
 
             float val = FractalSample3D(
-                sx, sy_, sz,
+                sx, sy, sz,
                 Agent.BaseFreq,
                 Agent.Octaves,
                 Agent.Lacunarity,
@@ -459,7 +562,8 @@ void UMultiAgentFractalWave3D::RenderFractalForAgent(FFractalAgentState& Agent)
 
 float UMultiAgentFractalWave3D::FractalSample3D(
     float X, float Y, float Z,
-    float BaseFreq, int32 Octs, float Lacun, float Gn
+    float BaseFreq, int32 Octs,
+    float Lacun, float Gn
 ) const
 {
     float total = 0.f;
@@ -493,14 +597,12 @@ float UMultiAgentFractalWave3D::SampleNormalInRange(const FVector2D& Range)
     return val;
 }
 
-/** interpret a [-1..1] input => [MinVal..MaxVal]. */
 float UMultiAgentFractalWave3D::ActionScaled(float InputN11, float MinVal, float MaxVal) const
 {
     float t = FMath::Clamp(InputN11, -1.f, 1.f);
     return Map(t, -1.f, 1.f, MinVal, MaxVal);
 }
 
-/** interpret a value in [MinVal..MaxVal] => [-1..1]. */
 float UMultiAgentFractalWave3D::NormalizeValue(float Value, float MinVal, float MaxVal) const
 {
     if (MinVal >= MaxVal) return 0.f;
@@ -519,11 +621,10 @@ float UMultiAgentFractalWave3D::Map(float x, float in_min, float in_max, float o
     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
-/** Wrap 'val' into the domain [MinVal..MaxVal) using modular arithmetic. */
 float UMultiAgentFractalWave3D::WrapValue(float val, float MinVal, float MaxVal) const
 {
     float range = MaxVal - MinVal;
-    if (range <= 0.f) return val; // no wrap possible
+    if (range <= 0.f) return val;
     val -= MinVal;
     while (val < 0.f)    val += range;
     while (val >= range) val -= range;
