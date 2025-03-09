@@ -37,6 +37,342 @@ class BasePolicyNetwork(nn.Module, ABC):
         raise NotImplementedError
 
 
+class DiscretePolicyNetwork(BasePolicyNetwork):
+    """
+    For discrete or multi-discrete action spaces.
+    1) forward(x) => single-cat logits or list of multi-cat branch logits
+    2) get_actions => sample from Categorical => (actions, log_probs, entropies)
+    3) recompute_log_probs => re-calc log_probs & ent. sum across branches if multi-discrete
+    """
+
+    def __init__(self, in_features: int, out_features, hidden_size: int):
+        super().__init__()
+        self.in_features  = in_features
+        self.hidden_size  = hidden_size
+        # if out_features is int => single-cat
+        # if out_features is list => multi-discrete
+        self.out_is_multi = isinstance(out_features, list)
+
+        # Shared MLP for hidden layers
+        self.shared = nn.Sequential(
+            nn.Linear(in_features, hidden_size),
+            nn.LeakyReLU(0.01),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(0.01),
+        )
+
+        if not self.out_is_multi:
+            # single-cat
+            self.head = nn.Linear(hidden_size, out_features)
+        else:
+            # multi-discrete => multiple heads
+            self.branch_heads = nn.ModuleList([
+                nn.Linear(hidden_size, branch_sz)
+                for branch_sz in out_features
+            ])
+
+        self.apply(lambda m: init_weights_leaky_relu(m, 0.01))
+
+    def forward(self, x: torch.Tensor):
+        """
+        Return either a single-cat logits => shape (B, outDim),
+        or a list of branch logits => each => shape (B, branch_sz).
+        """
+        feats = self.shared(x)
+        if not self.out_is_multi:
+            return self.head(feats)  # => (B, outDim)
+        else:
+            return [bh(feats) for bh in self.branch_heads]
+
+    def get_actions(self, emb: torch.Tensor, eval: bool = False):
+        """
+        (actions, log_probs, entropies).
+        If multi-discrete, sum log_probs & ent across branches.
+        """
+        logits_list = self.forward(emb)
+        B = emb.shape[0]
+
+        if not self.out_is_multi:
+            # single-cat
+            dist = torch.distributions.Categorical(logits=logits_list)
+            if eval:
+                actions = torch.argmax(logits_list, dim=-1)
+            else:
+                actions = dist.sample()
+
+            log_probs = dist.log_prob(actions)  # => (B,)
+            entropies = dist.entropy()          # => (B,)
+            return actions, log_probs, entropies
+        else:
+            # multi-discrete => list of Categorical
+            actions_list, lp_list, ent_list = [], [], []
+            for branch_logits in logits_list:
+                dist_b = torch.distributions.Categorical(logits=branch_logits)
+                if eval:
+                    a_b = torch.argmax(branch_logits, dim=-1)
+                else:
+                    a_b = dist_b.sample()
+                lp_b  = dist_b.log_prob(a_b)
+                ent_b = dist_b.entropy()
+                actions_list.append(a_b)
+                lp_list.append(lp_b)
+                ent_list.append(ent_b)
+
+            # combine
+            # shape => (B, #branches)
+            acts_stacked = torch.stack(actions_list, dim=-1)
+            lp_stacked   = torch.stack(lp_list, dim=-1).sum(dim=-1)
+            ent_stacked  = torch.stack(ent_list, dim=-1).sum(dim=-1)
+            return acts_stacked, lp_stacked, ent_stacked
+
+    def recompute_log_probs(self, emb: torch.Tensor, actions: torch.Tensor):
+        """
+        For multi-discrete, 'actions' => shape (B, #branches).
+        For single-cat, => shape (B,).
+        Return => (log_probs, entropies)
+        """
+        logits_list = self.forward(emb)
+        B = emb.shape[0]
+
+        if not self.out_is_multi:
+            dist = torch.distributions.Categorical(logits=logits_list)
+            log_probs = dist.log_prob(actions)
+            entropies = dist.entropy()
+            return log_probs, entropies
+        else:
+            # multi-discrete
+            # actions => (B, num_branches)
+            actions = actions.long()
+            lp_list, ent_list = [], []
+            for i, branch_logits in enumerate(logits_list):
+                dist_b = torch.distributions.Categorical(logits=branch_logits)
+                a_b    = actions[:, i]
+                lp_b   = dist_b.log_prob(a_b)
+                ent_b  = dist_b.entropy()
+                lp_list.append(lp_b)
+                ent_list.append(ent_b)
+
+            log_probs = torch.stack(lp_list, dim=-1).sum(dim=-1)
+            entropies = torch.stack(ent_list, dim=-1).sum(dim=-1)
+            return log_probs, entropies
+
+
+class RSA(nn.Module):
+    """
+    Residual Self-Attention (RSA):
+    Produces relational embeddings among agents.
+
+    Input:  (Batch,Agents,H)
+    Output: (Batch,Agents,H)
+    """
+    def __init__(self, embed_size: int, heads: int, dropout_rate=0.0):
+        super(RSA, self).__init__()
+        self.query_embed = nn.Linear(embed_size, embed_size)
+        self.key_embed   = nn.Linear(embed_size, embed_size)
+        self.value_embed = nn.Linear(embed_size, embed_size)
+        
+        self.input_norm  = nn.LayerNorm(embed_size)
+        self.output_norm = nn.LayerNorm(embed_size)
+        
+        self.multihead_attn = nn.MultiheadAttention(
+            embed_size, heads, batch_first=True, dropout=dropout_rate
+        )
+
+        self.query_embed.apply(lambda m: init_weights_leaky_relu(m, 0.01))
+        self.key_embed.apply(lambda m: init_weights_leaky_relu(m, 0.01))
+        self.value_embed.apply(lambda m: init_weights_leaky_relu(m, 0.01))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x => shape (Batch, Agents, H)
+        """
+        x = self.input_norm(x)
+        q = self.query_embed(x)
+        k = self.key_embed(x)
+        v = self.value_embed(x)
+        out, _ = self.multihead_attn(q, k, v)
+        out = x + out
+        return self.output_norm(out)
+
+
+class LinearNetwork(nn.Module):
+    """
+    A simple MLP block that includes:
+      - Linear(in_features, out_features)
+      - Optional Dropout
+      - Optional LeakyReLU(0.01)
+      - Optional LayerNorm
+
+    Args:
+        in_features (int):  input feature dimension
+        out_features (int): output feature dimension
+        dropout_rate (float): if >0, adds Dropout(dropout_rate)
+        activation (bool): if True, adds LeakyReLU(0.01)
+        layer_norm (bool): if True, adds LayerNorm(out_features) at the end
+
+    Returns:
+        A sequential block => [Linear, (Dropout?), (LeakyReLU?), (LayerNorm?)]
+    """
+    def __init__(self,
+                 in_features: int,
+                 out_features: int,
+                 dropout_rate: float = 0.0,
+                 activation: bool = True,
+                 layer_norm: bool = False):
+        super().__init__()
+        layers = []
+
+        # 1) mandatory linear
+        layers.append(nn.Linear(in_features, out_features))
+
+        # 2) optional dropout
+        if dropout_rate > 0.0:
+            layers.append(nn.Dropout(dropout_rate))
+
+        # 3) optional leaky relu
+        if activation:
+            layers.append(nn.LeakyReLU(0.01))
+
+        # 4) optional layer norm
+        if layer_norm:
+            layers.append(nn.LayerNorm(out_features))
+
+        self.model = nn.Sequential(*layers)
+
+        # apply Kaiming init for all linear submodules
+        self.model.apply(lambda m: init_weights_leaky_relu(m, 0.01))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
+
+class StatesEncoder(nn.Module):
+    """
+    Encodes a state vector of size (B, state_dim) into (B, output_size).
+    Optionally includes dropout and a LeakyReLU activation.
+    """
+    def __init__(self, state_dim, hidden_size, output_size, dropout_rate=0.0, activation=False, layer_norm: bool = False):
+        super().__init__()
+        self.net = nn.Sequential(
+            LinearNetwork(state_dim, hidden_size, dropout_rate, activation, layer_norm),
+            LinearNetwork(hidden_size, output_size, dropout_rate, activation, layer_norm)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class StatesActionsEncoder(nn.Module):
+    """
+    Concatenates state + action => feeds into a small MLP => (B, output_size).
+    Useful for baseline or Q-value networks that need (s,a) pairs.
+    """
+    def __init__(self, state_dim, action_dim, hidden_size, output_size,
+                 dropout_rate=0.0, activation=False, layer_norm: bool = False):
+        super().__init__()
+        self.net = nn.Sequential(
+            LinearNetwork(state_dim + action_dim, hidden_size, dropout_rate, activation, layer_norm),
+            LinearNetwork(hidden_size, output_size, dropout_rate, activation, layer_norm)
+        )
+
+    def forward(self, obs: torch.Tensor, act: torch.Tensor) -> torch.Tensor:
+        x = torch.cat([obs, act], dim=-1)
+        return self.net(x)
+
+
+class ValueNetwork(nn.Module):
+    """
+    Produces a scalar value from an embedding of shape (B, in_features).
+    Typically used for value functions or baselines in RL.
+    """
+    def __init__(self, in_features: int, hidden_size: int, dropout_rate=0.0):
+        super().__init__()
+        self.value_net = nn.Sequential(
+            nn.Linear(in_features, hidden_size),
+            nn.LeakyReLU(0.01),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(0.01),
+            nn.Linear(in_features, 1),
+        )
+        # Apply Kaiming init to these layers
+        self.value_net.apply(lambda m: init_weights_leaky_relu(m, 0.01))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.value_net(x)
+
+
+class SharedCritic(nn.Module):
+    """
+    Shared critic that outputs:
+     1) A **global value function** `V(s)`, shared across agents in an environment.
+     2) **Per-agent counterfactual baselines** `Q_ψ`, used for advantage calculations.
+    
+    Uses **attention-based aggregation** to determine **which agents contribute most**.
+    """
+
+    def __init__(self, config):
+        super(SharedCritic, self).__init__()
+        net_cfg = config['agent']['params']['networks']['critic_network']
+
+        self.value_head = ValueNetwork(**net_cfg['value_head'])
+        self.baseline_head = ValueNetwork(**net_cfg['baseline_head'])
+
+        # **Learnable Attention Weights for Value Aggregation** (Per-Environment)
+        self.value_attention = nn.Linear(net_cfg['value_head']['in_features'], 1)  # (H → 1)
+        
+        # **Learnable Attention Weights for Baseline Aggregation** (Per-Agent)
+        self.baseline_attention = nn.Linear(net_cfg['baseline_head']['in_features'], 1)  # (H → 1)
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.apply(lambda m: init_weights_leaky_relu(m, 0.01))
+
+    def values(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Compute **per-environment** value:
+        - Input: x => (S,E,A,H)
+        - We perform **attention-based weighted sum across agents (dim=2)**.
+        - Output: (S,E,1)
+        """
+        S, E, A, H = x.shape
+
+        # Compute per-agent importance weights
+        attn_weights = self.value_attention(x).squeeze(-1)  # Shape: (S,E,A)
+        attn_weights = torch.softmax(attn_weights, dim=2)  # Normalize across agents
+
+        # Weighted sum across agents
+        weighted_emb = (attn_weights.unsqueeze(-1) * x).sum(dim=2)  # (S,E,H)
+
+        # Compute final value estimate
+        flat = weighted_emb.reshape(S * E, H)
+        vals = self.value_head(flat).reshape(S, E, 1)
+
+        return vals
+
+    def baselines(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Compute **per-agent counterfactual baselines**:
+        - Input: x => (S,E,A,A,H) (groupmate-aware embeddings)
+        - We perform **attention-based weighted sum across groupmates (dim=3)**.
+        - Output: (S,E,A,1)
+        """
+        S, E, A, A2, H = x.shape
+        assert A == A2, "x must be shape (S,E,A,A,H)."
+
+        # Compute per-groupmate importance weights
+        attn_weights = self.baseline_attention(x).squeeze(-1)  # Shape: (S,E,A,A)
+        attn_weights = torch.softmax(attn_weights, dim=3)  # Normalize across groupmates
+
+        # Weighted sum across groupmates
+        weighted_emb = (attn_weights.unsqueeze(-1) * x).sum(dim=3)  # (S,E,A,H)
+
+        # Compute per-agent baselines
+        flat = weighted_emb.reshape(S * E * A, H)
+        base = self.baseline_head(flat).reshape(S, E, A, 1)
+
+        return base
+
+
 class TanhContinuousPolicyNetwork(BasePolicyNetwork):
     """
     A Tanh-squashed Normal distribution. Typical usage:
@@ -200,549 +536,6 @@ class TanhContinuousPolicyNetwork(BasePolicyNetwork):
         return ent_raw - corr
 
 
-class DiscretePolicyNetwork(BasePolicyNetwork):
-    """
-    For discrete or multi-discrete action spaces.
-    1) forward(x) => single-cat logits or list of multi-cat branch logits
-    2) get_actions => sample from Categorical => (actions, log_probs, entropies)
-    3) recompute_log_probs => re-calc log_probs & ent. sum across branches if multi-discrete
-    """
-
-    def __init__(self, in_features: int, out_features, hidden_size: int):
-        super().__init__()
-        self.in_features  = in_features
-        self.hidden_size  = hidden_size
-        # if out_features is int => single-cat
-        # if out_features is list => multi-discrete
-        self.out_is_multi = isinstance(out_features, list)
-
-        # Shared MLP for hidden layers
-        self.shared = nn.Sequential(
-            nn.Linear(in_features, hidden_size),
-            nn.LeakyReLU(0.01),
-            nn.Linear(hidden_size, hidden_size),
-            nn.LeakyReLU(0.01),
-        )
-
-        if not self.out_is_multi:
-            # single-cat
-            self.head = nn.Linear(hidden_size, out_features)
-        else:
-            # multi-discrete => multiple heads
-            self.branch_heads = nn.ModuleList([
-                nn.Linear(hidden_size, branch_sz)
-                for branch_sz in out_features
-            ])
-
-        self.apply(lambda m: init_weights_leaky_relu(m, 0.01))
-
-    def forward(self, x: torch.Tensor):
-        """
-        Return either a single-cat logits => shape (B, outDim),
-        or a list of branch logits => each => shape (B, branch_sz).
-        """
-        feats = self.shared(x)
-        if not self.out_is_multi:
-            return self.head(feats)  # => (B, outDim)
-        else:
-            return [bh(feats) for bh in self.branch_heads]
-
-    def get_actions(self, emb: torch.Tensor, eval: bool = False):
-        """
-        (actions, log_probs, entropies).
-        If multi-discrete, sum log_probs & ent across branches.
-        """
-        logits_list = self.forward(emb)
-        B = emb.shape[0]
-
-        if not self.out_is_multi:
-            # single-cat
-            dist = torch.distributions.Categorical(logits=logits_list)
-            if eval:
-                actions = torch.argmax(logits_list, dim=-1)
-            else:
-                actions = dist.sample()
-
-            log_probs = dist.log_prob(actions)  # => (B,)
-            entropies = dist.entropy()          # => (B,)
-            return actions, log_probs, entropies
-        else:
-            # multi-discrete => list of Categorical
-            actions_list, lp_list, ent_list = [], [], []
-            for branch_logits in logits_list:
-                dist_b = torch.distributions.Categorical(logits=branch_logits)
-                if eval:
-                    a_b = torch.argmax(branch_logits, dim=-1)
-                else:
-                    a_b = dist_b.sample()
-                lp_b  = dist_b.log_prob(a_b)
-                ent_b = dist_b.entropy()
-                actions_list.append(a_b)
-                lp_list.append(lp_b)
-                ent_list.append(ent_b)
-
-            # combine
-            # shape => (B, #branches)
-            acts_stacked = torch.stack(actions_list, dim=-1)
-            lp_stacked   = torch.stack(lp_list, dim=-1).sum(dim=-1)
-            ent_stacked  = torch.stack(ent_list, dim=-1).sum(dim=-1)
-            return acts_stacked, lp_stacked, ent_stacked
-
-    def recompute_log_probs(self, emb: torch.Tensor, actions: torch.Tensor):
-        """
-        For multi-discrete, 'actions' => shape (B, #branches).
-        For single-cat, => shape (B,).
-        Return => (log_probs, entropies)
-        """
-        logits_list = self.forward(emb)
-        B = emb.shape[0]
-
-        if not self.out_is_multi:
-            dist = torch.distributions.Categorical(logits=logits_list)
-            log_probs = dist.log_prob(actions)
-            entropies = dist.entropy()
-            return log_probs, entropies
-        else:
-            # multi-discrete
-            # actions => (B, num_branches)
-            actions = actions.long()
-            lp_list, ent_list = [], []
-            for i, branch_logits in enumerate(logits_list):
-                dist_b = torch.distributions.Categorical(logits=branch_logits)
-                a_b    = actions[:, i]
-                lp_b   = dist_b.log_prob(a_b)
-                ent_b  = dist_b.entropy()
-                lp_list.append(lp_b)
-                ent_list.append(ent_b)
-
-            log_probs = torch.stack(lp_list, dim=-1).sum(dim=-1)
-            entropies = torch.stack(ent_list, dim=-1).sum(dim=-1)
-            return log_probs, entropies
-
-
-class RSA(nn.Module):
-    """
-    Residual Self-Attention (RSA):
-    Produces relational embeddings among agents.
-
-    Input:  (Batch,Agents,H)
-    Output: (Batch,Agents,H)
-    """
-    def __init__(self, embed_size: int, heads: int, dropout_rate=0.0):
-        super(RSA, self).__init__()
-        self.query_embed = nn.Linear(embed_size, embed_size)
-        self.key_embed   = nn.Linear(embed_size, embed_size)
-        self.value_embed = nn.Linear(embed_size, embed_size)
-        
-        self.input_norm  = nn.LayerNorm(embed_size)
-        self.output_norm = nn.LayerNorm(embed_size)
-        
-        self.multihead_attn = nn.MultiheadAttention(
-            embed_size, heads, batch_first=True, dropout=dropout_rate
-        )
-
-        self.query_embed.apply(lambda m: init_weights_leaky_relu(m, 0.01))
-        self.key_embed.apply(lambda m: init_weights_leaky_relu(m, 0.01))
-        self.value_embed.apply(lambda m: init_weights_leaky_relu(m, 0.01))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x => shape (Batch, Agents, H)
-        """
-        x = self.input_norm(x)
-        q = self.query_embed(x)
-        k = self.key_embed(x)
-        v = self.value_embed(x)
-        out, _ = self.multihead_attn(q, k, v)
-        out = x + out
-        return self.output_norm(out)
-
-
-class AgentSelfAttention(nn.Module):
-    """
-    A wrapper around PyTorch's TransformerEncoder/TransformerEncoderLayer
-    for multi-agent self-attention.
-
-    Usage:
-      embed_size=64, nheads=4 => typical small
-      feedforward_mult=4 => means feedforward hidden size = 4*embed_size
-      num_layers=1 => how many stacked layers
-      dropout=0.1 => typical dropout (only if needed)
-    
-    Input shape => (batch, agents, embed_size)
-    Output shape=> (batch, agents, embed_size)
-    """
-
-    def __init__(self, 
-                 embed_size: int, 
-                 nheads: int, 
-                 feedforward_mult: int = 4, 
-                 dropout: float = 0.1,
-                 num_layers: int = 1):
-        super().__init__()
-
-        # 1) A single TransformerEncoderLayer
-        #    - batch_first=True => we accept (batch, seq_len, embed_size)
-        #    - feedforward_dim => feedforward_mult*embed_size
-        layer = nn.TransformerEncoderLayer(
-            d_model=embed_size,
-            nhead=nheads,
-            dim_feedforward=feedforward_mult * embed_size,
-            dropout=dropout,
-            batch_first=True
-        )
-
-        # 2) Possibly stack multiple layers
-        self.encoder = nn.TransformerEncoder(layer, num_layers=num_layers)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x => shape (batch, agents, embed_size)
-        returns => shape (batch, agents, embed_size)
-        """
-        out = self.encoder(x)
-        return out
-
-
-class AgentIDPosEnc(nn.Module):
-    """
-    Produces a sinusoidal feature embedding for each integer agent ID,
-    then passes it through a Linear layer => (..., id_embed_dim).
-
-    Typical usage:
-      - agent_ids => shape (S,E,NA) of integer indices
-      - output => shape (S,E,NA,id_embed_dim)
-    """
-    def __init__(self, num_freqs: int = 8, id_embed_dim: int = 32):
-        super().__init__()
-        self.num_freqs   = num_freqs
-        self.id_embed_dim= id_embed_dim
-
-        # We transform (2 * num_freqs) features into id_embed_dim
-        self.linear = nn.Linear(2 * num_freqs, id_embed_dim)
-        self.linear.apply(lambda m: init_weights_leaky_relu(m, 0.01))
-
-    def sinusoidal_features(self, agent_ids: torch.Tensor) -> torch.Tensor:
-        """
-        agent_ids => (S,E,NA), int indices
-        Returns => (S,E,NA, 2*num_freqs) with [sin(...), cos(...)]
-        """
-        # Convert agent IDs to float
-        agent_ids_f = agent_ids.float()
-
-        # freq_exponents => [0..num_freqs-1]
-        freq_exponents = torch.arange(self.num_freqs, device=agent_ids.device, dtype=torch.float32)
-        scales = torch.pow(2.0, freq_exponents)  # shape => (num_freqs,)
-
-        # shape => (S,E,NA,1)
-        agent_ids_f = agent_ids_f.unsqueeze(-1)
-
-        # shape => (1,num_freqs)
-        scales = scales.reshape(1, self.num_freqs)
-
-        multiplied = agent_ids_f * scales  # => (S,E,NA,num_freqs)
-        sines  = torch.sin(multiplied)
-        cosines= torch.cos(multiplied)
-        feats  = torch.cat([sines, cosines], dim=-1)  # => (S,E,NA,2*num_freqs)
-
-        return feats
-
-    def forward(self, agent_ids: torch.Tensor) -> torch.Tensor:
-        """
-        agent_ids => shape (S,E,NA)
-        returns => (S,E,NA, id_embed_dim)
-        """
-        # Build sinusoidal features => (S,E,NA, 2*num_freqs)
-        raw_feat = self.sinusoidal_features(agent_ids)
-
-        # Flatten => (S*E*NA, 2*num_freqs)
-        S, E, NA, D = raw_feat.shape
-        flat = raw_feat.reshape(S * E * NA, D)
-
-        # Pass through linear => (S*E*NA, id_embed_dim)
-        out = self.linear(flat)
-
-        # Reshape => (S,E,NA, id_embed_dim)
-        return out.reshape(S, E, NA, self.id_embed_dim)
-
-
-class LinearNetwork(nn.Module):
-    """
-    A simple MLP block that includes:
-      - Linear(in_features, out_features)
-      - Optional Dropout
-      - Optional LeakyReLU(0.01)
-      - Optional LayerNorm
-
-    Args:
-        in_features (int):  input feature dimension
-        out_features (int): output feature dimension
-        dropout_rate (float): if >0, adds Dropout(dropout_rate)
-        activation (bool): if True, adds LeakyReLU(0.01)
-        layer_norm (bool): if True, adds LayerNorm(out_features) at the end
-
-    Returns:
-        A sequential block => [Linear, (Dropout?), (LeakyReLU?), (LayerNorm?)]
-    """
-    def __init__(self,
-                 in_features: int,
-                 out_features: int,
-                 dropout_rate: float = 0.0,
-                 activation: bool = True,
-                 layer_norm: bool = False):
-        super().__init__()
-        layers = []
-
-        # 1) mandatory linear
-        layers.append(nn.Linear(in_features, out_features))
-
-        # 2) optional dropout
-        if dropout_rate > 0.0:
-            layers.append(nn.Dropout(dropout_rate))
-
-        # 3) optional leaky relu
-        if activation:
-            layers.append(nn.LeakyReLU(0.01))
-
-        # 4) optional layer norm
-        if layer_norm:
-            layers.append(nn.LayerNorm(out_features))
-
-        self.model = nn.Sequential(*layers)
-
-        # apply Kaiming init for all linear submodules
-        self.model.apply(lambda m: init_weights_leaky_relu(m, 0.01))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.model(x)
-
-
-class GeneralObsEncoder(nn.Module):
-    """
-    A dictionary-based encoder that handles multiple observation types ("central", "agent", etc.),
-    merges them (+ optional agent ID embeddings), and passes the merged tensor through
-    an aggregator net to produce a final embedding of shape (S,E,NA, aggregator_output_size).
-    """
-    def __init__(self, config: Dict[str, Any]):
-        super().__init__()
-        self.encoder_cfgs           = config["encoders"]
-        self.aggregator_output_size = config["aggregator_output_size"]
-
-        self.encoders        = nn.ModuleDict()
-        self.sub_enc_outputs = {}
-        sum_dims = 0
-        has_agent = False
-
-        # Build sub-encoders from config
-        for enc_info in self.encoder_cfgs:
-            key       = enc_info["key"]
-            net_class = enc_info["network"]
-            params    = enc_info["params"]
-        
-            if net_class == "LightweightSpatialNetwork2D":
-                # the new smaller CNN
-                sub_enc = LightweightSpatialNetwork2D(**params)
-                out_dim = sub_enc.out_features
-
-            elif net_class == "LinearNetwork":
-                sub_enc = LinearNetwork(**params)
-                out_dim = params["out_features"]
-
-            else:
-                raise ValueError(f"Unknown sub-encoder: {net_class}")
-
-            self.encoders[key] = sub_enc
-            self.sub_enc_outputs[key] = out_dim
-            sum_dims += out_dim
-
-            if key == "agent":
-                has_agent = True
-
-        # Agent ID encoding
-        self.agent_id_enc = None
-        self.agent_id_dim = 0
-        if has_agent:
-            if "agent_id_enc" not in config:
-                raise ValueError("agent_id_enc not found despite 'agent' key present.")
-            id_cfg = config["agent_id_enc"]
-            self.agent_id_enc = AgentIDPosEnc(**id_cfg)
-            self.agent_id_dim = id_cfg["id_embed_dim"]
-            sum_dims += self.agent_id_dim
-
-        # Aggregator net: merges sub-encoder outputs into aggregator_output_size
-        self.aggregator_net = nn.Sequential(
-            LinearNetwork(
-                sum_dims,
-                self.aggregator_output_size,
-                activation=True,
-                layer_norm=True
-            )
-        )
-        
-
-    def forward(self, obs_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """
-        obs_dict can have:
-          - "central": shape (S,E,cDim)
-          - "agent":   shape (S,E,NA,aDim)
-        Returns => (S,E,NA, aggregator_output_size)
-        """
-        sub_outputs = []
-        final_S, final_E, final_NA = 1, 1, 1
-
-        # Build sub-encoder outputs
-        for key, sub_enc in self.encoders.items():
-            x = obs_dict.get(key, None)
-            if x is None:
-                continue
-
-            if key == "central":
-                # (S,E,cDim)
-                S, E, cDim = x.shape
-                b = S * E
-                emb_2d = sub_enc(x.reshape(b, cDim))     # => (b, out_dim)
-                out_dim = self.sub_enc_outputs[key]
-                emb_3d = emb_2d.reshape(S, E, out_dim)   # => (S,E,out_dim)
-                emb_4d = emb_3d.unsqueeze(2)            # => (S,E,1,out_dim)
-                final_S, final_E, final_NA = S, E, 1
-                sub_outputs.append(emb_4d)
-
-            elif key == "agent":
-                # (S,E,NA,aDim)
-                S, E, NA, aDim = x.shape
-                b = S * E * NA
-                emb_2d = sub_enc(x.reshape(b, aDim))     # => (b, out_dim)
-                out_dim = self.sub_enc_outputs[key]
-                emb_4d = emb_2d.reshape(S, E, NA, out_dim)
-                final_S, final_E, final_NA = S, E, NA
-                sub_outputs.append(emb_4d)
-
-        # If there's an agent => add agent ID embeddings
-        if (self.agent_id_enc is not None) and ("agent" in obs_dict):
-            agent_tensor = obs_dict["agent"]
-            S, E, NA, _ = agent_tensor.shape
-            agent_ids = torch.arange(NA, device=agent_tensor.device).reshape(1, 1, NA)
-            agent_ids = agent_ids.expand(S, E, NA)  # => (S,E,NA)
-            id_4d = self.agent_id_enc(agent_ids)    # => (S,E,NA,id_dim)
-            sub_outputs.append(id_4d)
-
-        # Expand sub-outputs to match final_NA if needed
-        for i in range(len(sub_outputs)):
-            so = sub_outputs[i]
-            # shape => (S,E,xNA, dim)
-            if so.shape[2] == 1 and final_NA > 1:
-                so = so.expand(so.shape[0], so.shape[1], final_NA, so.shape[-1])
-            sub_outputs[i] = so
-
-        if len(sub_outputs) == 0:
-            # produce (1,1,1,0)
-            return torch.zeros((1, 1, 1, 0), device=next(self.parameters()).device)
-
-        # Concatenate => (S,E,NA, sum_dims)
-        combined = torch.cat(sub_outputs, dim=-1)
-        S2, E2, NA2, sum_dim = combined.shape
-        flat = combined.reshape(S2 * E2 * NA2, sum_dim)
-
-        # aggregator_net => LN => shape => (S2*E2*NA2, aggregator_output_size)
-        agg_out_2d = self.aggregator_net(flat)
-
-        # reshape => (S2,E2,NA2, aggregator_output_size)
-        return agg_out_2d.reshape(S2, E2, NA2, self.aggregator_output_size)
-
-
-class StatesEncoder(nn.Module):
-    """
-    Encodes a state vector of size (B, state_dim) into (B, output_size).
-    Optionally includes dropout and a LeakyReLU activation.
-    """
-    def __init__(self, state_dim, hidden_size, output_size, dropout_rate=0.0, activation=False, layer_norm: bool = False):
-        super().__init__()
-        self.net = nn.Sequential(
-            LinearNetwork(state_dim, hidden_size, dropout_rate, activation, layer_norm),
-            LinearNetwork(hidden_size, output_size, dropout_rate, activation, layer_norm)
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
-class StatesActionsEncoder(nn.Module):
-    """
-    Concatenates state + action => feeds into a small MLP => (B, output_size).
-    Useful for baseline or Q-value networks that need (s,a) pairs.
-    """
-    def __init__(self, state_dim, action_dim, hidden_size, output_size,
-                 dropout_rate=0.0, activation=False, layer_norm: bool = False):
-        super().__init__()
-        self.net = nn.Sequential(
-            LinearNetwork(state_dim + action_dim, hidden_size, dropout_rate, activation, layer_norm),
-            LinearNetwork(hidden_size, output_size, dropout_rate, activation, layer_norm)
-        )
-
-    def forward(self, obs: torch.Tensor, act: torch.Tensor) -> torch.Tensor:
-        x = torch.cat([obs, act], dim=-1)
-        return self.net(x)
-
-
-class ValueNetwork(nn.Module):
-    """
-    Produces a scalar value from an embedding of shape (B, in_features).
-    Typically used for value functions or baselines in RL.
-    """
-    def __init__(self, in_features: int, hidden_size: int, dropout_rate=0.0):
-        super().__init__()
-        self.value_net = nn.Sequential(
-            nn.Linear(in_features, hidden_size),
-            nn.LeakyReLU(0.01),
-            nn.Linear(hidden_size, hidden_size),
-            nn.LeakyReLU(0.01),
-            nn.Linear(in_features, 1),
-        )
-        # Apply Kaiming init to these layers
-        self.value_net.apply(lambda m: init_weights_leaky_relu(m, 0.01))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.value_net(x)
-
-
-class SharedCritic(nn.Module):
-    """
-    Has two MLP heads:
-     1) value_head => V(s)
-     2) baseline_head => Q_ψ for counterfactual baseline
-    """
-    def __init__(self, config):
-        super(SharedCritic, self).__init__()
-        net_cfg = config['agent']['params']['networks']['critic_network']
-        self.value_head    = ValueNetwork(**net_cfg['value_head'])
-        self.baseline_head = ValueNetwork(**net_cfg['baseline_head'])
-
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    def values(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x => (S,E,A,H). We average across agents => shape => (S,E,H)
-        => pass value_head => => (S,E,1)
-        """
-        S,E,A,H = x.shape
-        mean_emb = x.mean(dim=2)  # => (S,E,H)
-        flat     = mean_emb.reshape(S*E, H)
-        vals     = self.value_head(flat).reshape(S,E,1)
-        return vals
-
-    def baselines(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x => (S,E,A,A,H). Average across groupmates => shape => (S,E,A,H)
-        => pass baseline_head => => (S,E,A,1)
-        """
-        S,E,A,A2,H = x.shape
-        assert A == A2, "x must be shape (S,E,A,A,H)."
-        mean_x = x.mean(dim=3)  # => (S,E,A,H)
-        flat   = mean_x.reshape(S*E*A, H)
-        base   = self.baseline_head(flat).reshape(S,E,A,1)
-        return base
-
-
 class MultiAgentEmbeddingNetwork(nn.Module):
     def __init__(self, net_cfg: Dict[str, Any]):
         super(MultiAgentEmbeddingNetwork, self).__init__()
@@ -753,10 +546,6 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         # 2) For obs and obs+actions encoding
         self.f = StatesActionsEncoder(**net_cfg["obs_actions_encoder"])
         self.g = StatesEncoder(**net_cfg["obs_encoder"])
-
-        # 3) seperate AgentSelfAttention for policy/value and baseline
-        self.common_attention = AgentSelfAttention(**net_cfg["common_attention"])
-        self.baseline_attention = AgentSelfAttention(**net_cfg["baseline_attention"])
 
     # --------------------------------------------------------------------
     #  Produce "base embedding" from raw dictionary of observarion
@@ -772,43 +561,18 @@ class MultiAgentEmbeddingNetwork(nn.Module):
     # --------------------------------------------------------------------
     #  Step 2c: embed_for_baseline
     # --------------------------------------------------------------------
-    def get_common_and_baseline_embeddings(self,
+    def get_baseline_embeddings(self,
                            common_emb: torch.Tensor,
                            actions: torch.Tensor=None) -> torch.Tensor:
-        if actions != None:
-            groupmates_emb, groupmates_actions = \
-                self._split_agent_and_groupmates(common_emb, actions)
+        groupmates_emb, groupmates_actions = \
+            self._split_agent_and_groupmates(common_emb, actions)
 
 
-            agent_obs_emb = self.g(common_emb) # => shape (S,E,A,1,H)
-            groupmates_obs_emb= self.f(groupmates_emb, groupmates_actions) # => (S,E,A,(A-1),H)
-            
-            # (S,E,A,H) and (S,E,A,A,H2)
-            return agent_obs_emb, torch.cat([agent_obs_emb.unsqueeze(dim=3), groupmates_obs_emb], dim=3)
-        else:
-            agent_obs_emb = self.g(common_emb)
-            return agent_obs_emb, None
-    
-    def attend_for_baselines(self, embeddings):
-        return self._apply_attention(self.baseline_attention, embeddings)
-    
-    def attend_for_common(self, embeddings):
-        return self._apply_attention(self.common_attention, embeddings)
-    
-    def _apply_attention(self, RSA, embeddings):
-        # Unpack all but the last two dimensions into batch_dims:
-        *batch_dims, NA, H = embeddings.shape
+        agent_obs_emb = self.g(common_emb) # => shape (S,E,A,1,H)
+        groupmates_obs_actions_emb= self.f(groupmates_emb, groupmates_actions) # => (S,E,A,(A-1),H)
         
-        # Flatten everything except the 'NA' and 'H' dimensions:
-        embeddings_flat = embeddings.reshape(math.prod(batch_dims), NA, H)
-        
-        # Apply  RSA module:
-        attended_flat = RSA(embeddings_flat)
-        
-        # Reshape the output back to the original dimensions:
-        attended = attended_flat.reshape(*batch_dims, NA, H)
-        
-        return attended
+        # (S,E,A,H) and (S,E,A,A,H2)
+        return torch.cat([agent_obs_emb.unsqueeze(dim=3), groupmates_obs_actions_emb], dim=3)
 
     # --------------------------------------------------------------------
     #  Helper: _split_agent_and_groupmates
@@ -826,7 +590,6 @@ class MultiAgentEmbeddingNetwork(nn.Module):
           groupmates_actions => (S,E,A,A-1, act_dim)
         """
         S,E,A,H = obs_4d.shape
-        act_dim = actions.shape[-1]
 
         group_obs_list = []
         group_act_list = []
@@ -861,28 +624,18 @@ class CrossAttentionFeatureExtractor(nn.Module):
         cnn_kernel_sizes: list = [5, 3], 
         cnn_strides: list = [2, 2], 
         transformer_layers: int = 2, 
-        num_patches: int = 16
+        scale_ratios: list = [1/4, 1/8, 1/16],
+        top_k_scales: int = 2
     ):
-        """
-        Args:
-            obs_size (int): Dimension of agent observations.
-            num_agents (int): Number of agents per environment.
-            h (int, optional): Height of the height map. Defaults to 50.
-            w (int, optional): Width of the height map. Defaults to 50.
-            embed_dim (int, optional): Size of embeddings. Defaults to 64.
-            num_heads (int, optional): Number of attention heads. Defaults to 4.
-            cnn_channels (list, optional): CNN channel sizes. Defaults to [32, 64].
-            cnn_kernel_sizes (list, optional): CNN kernel sizes. Defaults to [5, 3].
-            cnn_strides (list, optional): CNN strides per layer. Defaults to [2, 2].
-            transformer_layers (int, optional): Number of transformer layers. Defaults to 2.
-            num_patches (int, optional): Number of patches in the CNN output. Defaults to 16.
-        """
         super().__init__()
 
         self.num_agents = num_agents
         self.embed_dim = embed_dim
         self.h, self.w = h, w
-        self.num_patches = num_patches
+        self.scale_ratios = scale_ratios
+        self.num_scales = len(scale_ratios)
+        self.scale_sizes = [math.floor(h * r) for r in scale_ratios]
+        self.top_k_scales = top_k_scales  
 
         # Agent MLP encoder
         self.agent_encoder = nn.Sequential(
@@ -894,30 +647,49 @@ class CrossAttentionFeatureExtractor(nn.Module):
         # Positional embedding for each agent
         self.agent_pos_embedding = nn.Embedding(num_agents, embed_dim)
 
-        # CNN for local feature extraction from height map
-        cnn_layers = []
-        in_channels = 1  # Single-channel height map
-        for out_channels, kernel_size, stride in zip(cnn_channels, cnn_kernel_sizes, cnn_strides):
-            cnn_layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=kernel_size // 2))
-            cnn_layers.append(nn.ReLU())
-            in_channels = out_channels
-        cnn_layers.append(nn.Conv2d(cnn_channels[-1], embed_dim, kernel_size=3, stride=2, padding=1))  # Final layer to match embed_dim
-        cnn_layers.append(nn.ReLU())
-        cnn_layers.append(nn.AdaptiveAvgPool2d((4, 4)))  # Downsample to fixed size patches
+        # CNNs for adaptive multi-scale feature extraction
+        self.central_cnns = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(1, cnn_channels[0], kernel_size=cnn_kernel_sizes[0], stride=cnn_strides[0], padding=cnn_kernel_sizes[0] // 2),
+                nn.ReLU(),
+                nn.Conv2d(cnn_channels[0], cnn_channels[1], kernel_size=cnn_kernel_sizes[1], stride=cnn_strides[1], padding=cnn_kernel_sizes[1] // 2),
+                nn.ReLU(),
+                nn.Conv2d(cnn_channels[1], embed_dim, kernel_size=3, stride=2, padding=1),
+                nn.ReLU(),
+                nn.AdaptiveAvgPool2d((s, s))
+            )
+            for s in self.scale_sizes
+        ])
 
-        self.central_cnn = nn.Sequential(*cnn_layers)
+        # Transformer for each scale
+        self.terrain_transformers = nn.ModuleList([
+            nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, batch_first=True),
+                num_layers=transformer_layers
+            )
+            for _ in range(self.num_scales)
+        ])
 
-        # Transformer for global terrain understanding
-        self.terrain_transformer = nn.TransformerEncoder(
+        # Positional embeddings for adaptive patches
+        self.patch_position_embeddings = nn.ModuleList([
+            nn.Embedding(s * s, embed_dim)
+            for s in self.scale_sizes
+        ])
+
+        # Cross-Attention for Agent-Terrain interaction at each scale
+        self.cross_attentions = nn.ModuleList([
+            nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+            for _ in range(self.num_scales)
+        ])
+
+        # Agent-to-Agent Self-Attention
+        self.agent_self_attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+
+        # Hierarchical Transformer for Merging Multi-Scale Representations
+        self.scale_merging_transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, batch_first=True),
-            num_layers=transformer_layers
+            num_layers=2
         )
-
-        # Positional embedding for CNN patches
-        self.patch_position_embedding = nn.Embedding(num_patches, embed_dim)
-
-        # Transformer Multihead Attention for Agent-Terrain interaction
-        self.cross_attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
 
     def forward(self, state):
         """
@@ -925,50 +697,54 @@ class CrossAttentionFeatureExtractor(nn.Module):
             - "central": Tensor of shape [num_steps, num_envs, h * w]
             - "agent":   Tensor of shape [num_steps, num_envs, num_agents, obs_size]
         """
-        central_state = state["central"]  # Shape: [num_steps, num_envs, h * w]
-        agent_state = state["agent"]      # Shape: [num_steps, num_envs, num_agents, obs_size]
+        central_state = state["central"]
+        agent_state = state["agent"]
 
         num_steps, num_envs, num_agents, obs_size = agent_state.shape
-        _, _, hw = central_state.shape  # hw = h * w
 
         assert num_agents == self.num_agents, "Mismatch in agent count and model config"
 
         # Process agent states (MLP)
-        agent_state_flat = agent_state.reshape(-1, obs_size)  # [num_steps * num_envs * num_agents, obs_size]
-        agent_embed = self.agent_encoder(agent_state_flat)  # [num_steps * num_envs * num_agents, embed_dim]
-        agent_embed = agent_embed.view(num_steps, num_envs, num_agents, self.embed_dim)  # [num_steps, num_envs, num_agents, embed_dim]
+        agent_state_flat = agent_state.reshape(-1, obs_size)
+        agent_embed = self.agent_encoder(agent_state_flat)
+        agent_embed = agent_embed.view(num_steps, num_envs, num_agents, self.embed_dim)
 
         # Add unique agent positional embeddings
         agent_indices = torch.arange(num_agents, device=agent_state.device).expand(num_steps, num_envs, num_agents)
-        agent_pos_embeds = self.agent_pos_embedding(agent_indices)  # [num_steps, num_envs, num_agents, embed_dim]
-        agent_embed = agent_embed + agent_pos_embeds  # Element-wise add agent position embeddings
+        agent_pos_embeds = self.agent_pos_embedding(agent_indices)
+        agent_embed = agent_embed + agent_pos_embeds  
 
-        # Reshape for Transformer input (flattened agent dim)
-        agent_embed = agent_embed.reshape(num_steps, num_envs * num_agents, self.embed_dim)  # [num_steps, num_envs * num_agents, embed_dim]
+        agent_embed = agent_embed.view(-1, num_agents, self.embed_dim)
 
-        # Process central state into CNN features
-        central_state = central_state.reshape(num_steps, num_envs, 1, self.h, self.w)  # [num_steps, num_envs, 1, h, w]
-        central_embed = self.central_cnn(central_state.view(-1, 1, self.h, self.w))  # [num_steps * num_envs, embed_dim, 4, 4]
+        multi_scale_outputs = []
+        for scale_idx, scale_size in enumerate(self.scale_sizes):
 
-        # Flatten CNN output into patches
-        central_embed = central_embed.view(num_steps, num_envs, self.embed_dim, self.num_patches).permute(0, 1, 3, 2)  # [num_steps, num_envs, num_patches, embed_dim]
-        central_embed = central_embed.reshape(num_steps, num_envs * self.num_patches, self.embed_dim)  # [num_steps, num_envs * num_patches, embed_dim]
+            # Process central state with CNN
+            central_scaled = central_state.reshape(num_steps, num_envs, 1, self.h, self.w)
+            central_embed = self.central_cnns[scale_idx](central_scaled.view(-1, 1, self.h, self.w))
 
-        # Generate Keys (`K`) as Positional Embeddings
-        patch_indices = torch.arange(self.num_patches, device=agent_state.device).expand(num_steps, num_envs, self.num_patches)
-        key_embeds = self.patch_position_embedding(patch_indices)  # [num_steps, num_envs, num_patches, embed_dim]
-        key_embeds = key_embeds.reshape(num_steps, num_envs * self.num_patches, self.embed_dim)  # [num_steps, num_envs * num_patches, embed_dim]
+            # Flatten CNN output into patches
+            num_patches = scale_size * scale_size
+            central_embed = central_embed.view(-1, self.embed_dim, num_patches).permute(0, 2, 1)
 
-        # Transformer for global terrain understanding
-        central_embed = self.terrain_transformer(central_embed)  # [num_steps, num_envs * num_patches, embed_dim]
+            # Generate Keys (`K`) as Positional Embeddings
+            patch_indices = torch.arange(num_patches, device=agent_state.device).expand(agent_embed.shape[0], num_patches)
+            key_embeds = self.patch_position_embeddings[scale_idx](patch_indices)
 
-        # Cross-Attention: Query (Agents) → Key (Positions) → Value (Processed Terrain Features)
-        attn_output, _ = self.cross_attention(agent_embed, key_embeds, central_embed)  # [num_steps, num_envs * num_agents, embed_dim]
+            # Transformer for global terrain understanding
+            central_embed = self.terrain_transformers[scale_idx](central_embed)
 
-        # Reshape back to [num_steps, num_envs, num_agents, embed_dim]
-        attn_output = attn_output.view(num_steps, num_envs, num_agents, self.embed_dim)
+            # **Cross-Attention: Query (Agents) → Key (Positions) → Value (Processed Terrain Features)**
+            attn_output, _ = self.cross_attentions[scale_idx](agent_embed, key_embeds, central_embed)
+            multi_scale_outputs.append(attn_output)
 
-        return attn_output  # Features for policy network
+        # Aggregate multi-scale outputs
+        agent_embed = torch.stack(multi_scale_outputs, dim=0).mean(dim=0)
+
+        # **NEW: Agent-to-Agent Communication**
+        agent_embed, _ = self.agent_self_attention(agent_embed, agent_embed, agent_embed)
+
+        return agent_embed.view(num_steps, num_envs, num_agents, self.embed_dim)
 
 
 class GN2d(nn.Module):

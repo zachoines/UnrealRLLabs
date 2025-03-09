@@ -298,8 +298,9 @@ private:
     static constexpr bool bUseCradleReward = false;
 
     // Velocity-to-goal constants
-    static constexpr float VelAlign_Scale = 1.0f;
-    static constexpr float VelAlign_Min = 1.0f;
+    static constexpr float VelAlign_Scale = .1f;
+    static constexpr float VelAlign_Threshold_Punishment = -0.1;
+    static constexpr float VelAlign_Min = 0.1f;
     static constexpr float VelAlign_Max = 100.0f;
 
     // XY distance improvement constants (units relative to platform (1m by 1m depending on PlatformScale))

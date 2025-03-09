@@ -164,11 +164,7 @@ class MAPOCAAgent(Agent):
         Build embeddings => pass to self.policy_net => reshape
         Return => actions, (log_probs, entropies)
         """
-        common_emb = self.embedding_network.attend_for_common(
-            self.embedding_network.g(
-                self.embedding_network.get_base_embedding(states)
-            )
-        )
+        common_emb = self.embedding_network.get_base_embedding(states)
         S,E,NA,H = common_emb.shape
         emb_2d   = common_emb.reshape(S*E*NA, H)
 
@@ -226,22 +222,18 @@ class MAPOCAAgent(Agent):
         # ------------------------------------------------
         with torch.no_grad():
             base_emb = self.embedding_network.get_base_embedding(states)
-            comm_emb, base_emb_ = self.embedding_network.get_common_and_baseline_embeddings(base_emb, actions)
-            comm_att = self.embedding_network.attend_for_common(comm_emb)
-            base_att = self.embedding_network.attend_for_baselines(base_emb_)
+            baseline_emb = self.embedding_network.get_baseline_embeddings(base_emb, actions)
 
             # old values, old baselines
-            old_vals  = self.shared_critic.values(comm_att)      # => (NS,NE,1)
-            old_bases = self.shared_critic.baselines(base_att)   # => (NS,NE,NA,1)
+            old_vals  = self.shared_critic.values(base_emb)      # => (NS,NE,1)
+            old_bases = self.shared_critic.baselines(baseline_emb)   # => (NS,NE,NA,1)
 
             # old log_probs
-            old_lp, _ = self._recompute_log_probs(comm_att, actions)
+            old_lp, _ = self._recompute_log_probs(base_emb, actions)
 
             # next states => next_values
-            next_base = self.embedding_network.get_base_embedding(next_states)
-            next_comm, _ = self.embedding_network.get_common_and_baseline_embeddings(next_base)
-            next_comm_att = self.embedding_network.attend_for_common(next_comm)
-            next_vals     = self.shared_critic.values(next_comm_att)
+            next_base_emb = self.embedding_network.get_base_embedding(next_states)
+            next_vals     = self.shared_critic.values(next_base_emb)
 
             # compute returns
             returns = self._compute_td_lambda_returns(
@@ -299,13 +291,11 @@ class MAPOCAAgent(Agent):
                 obase_mb= old_bases[mb_idx]      # => (MB,NE,NA,1)
 
                 # forward pass on new states
-                base_mb = self.embedding_network.get_base_embedding(st_mb)
-                comm_mb, bas_mb = self.embedding_network.get_common_and_baseline_embeddings(base_mb, act_mb)
-                comm_att_mb = self.embedding_network.attend_for_common(comm_mb)
-                bas_att_mb  = self.embedding_network.attend_for_baselines(bas_mb)
+                base_emb_mb = self.embedding_network.get_base_embedding(st_mb)
+                baseline_emb_mb = self.embedding_network.get_baseline_embeddings(base_emb_mb, act_mb)
 
                 # new log_probs
-                new_lp_mb, ent_mb = self._recompute_log_probs(comm_att_mb, act_mb)
+                new_lp_mb, ent_mb = self._recompute_log_probs(base_emb_mb, act_mb)
 
                 # Log-prob stats
                 lp_det = new_lp_mb.detach()
@@ -314,8 +304,8 @@ class MAPOCAAgent(Agent):
                 logprob_maxs.append(lp_det.max().cpu())
 
                 # new V, baseline
-                new_vals_mb   = self.shared_critic.values(comm_att_mb)     # => (MB,NE,1)
-                new_base_mb   = self.shared_critic.baselines(bas_att_mb)   # => (MB,NE,NA,1)
+                new_vals_mb   = self.shared_critic.values(base_emb_mb)     # => (MB,NE,1)
+                new_base_mb   = self.shared_critic.baselines(baseline_emb_mb)   # => (MB,NE,NA,1)
 
                 # advantage => returns - new_base
                 ret_mb_exp    = ret_mb.unsqueeze(2).expand(MB, NE, NA, 1)

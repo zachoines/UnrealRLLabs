@@ -747,7 +747,7 @@ float ATerraShiftEnvironment::Reward()
         StepReward += subReward;
     }
 
-    return StepReward / (float) CurrentAgents;
+    return StepReward;
 }
 
 AMainPlatform* ATerraShiftEnvironment::SpawnPlatform(FVector Location)
@@ -1139,7 +1139,7 @@ float ATerraShiftEnvironment::ThresholdAndClamp(float value, float minVal, float
     // 1) If abs(value) < minVal => return 0
     if (FMath::Abs(value) < minVal)
     {
-        return 0.0f;
+        return VelAlign_Threshold_Punishment;
     }
 
     // 2) Clamp magnitude to maxVal
