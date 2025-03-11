@@ -88,7 +88,9 @@ class MAPOCAAgent(Agent):
             agent_cfg["networks"]["MultiAgentEmbeddingNetwork"]
         ).to(device)
 
-        self.shared_critic = SharedCritic(config).to(device)
+        self.shared_critic = SharedCritic(
+            agent_cfg["networks"]['critic_network']
+        ).to(device)
 
         # policy net
         pol_cfg = agent_cfg["networks"]["policy_network"]
@@ -115,14 +117,14 @@ class MAPOCAAgent(Agent):
         lr_sched_cfg = agent_cfg["schedulers"].get("lr", None)
         self.lr_scheduler = None
         if lr_sched_cfg:
-            self.lr_scheduler = OneCycleLRWithMin(self.optimizer, **lr_sched_cfg)
-            # self.lr_scheduler = LinearLR(self.optimizer, **lr_sched_cfg)
+            # self.lr_scheduler = OneCycleLRWithMin(self.optimizer, **lr_sched_cfg)
+            self.lr_scheduler = LinearLR(self.optimizer, **lr_sched_cfg)
 
         ent_sched_cfg = agent_cfg["schedulers"].get("entropy_coeff", None)
         self.entropy_scheduler = None
         if ent_sched_cfg:
-            # self.entropy_scheduler = LinearValueScheduler(**ent_sched_cfg)
-            self.entropy_scheduler = OneCycleCosineScheduler(**ent_sched_cfg)
+            self.entropy_scheduler = LinearValueScheduler(**ent_sched_cfg)
+            # self.entropy_scheduler = OneCycleCosineScheduler(**ent_sched_cfg)
 
         policy_clip_sched_cfg = agent_cfg["schedulers"].get("policy_clip", None)
         self.policy_clip_scheduler = None
@@ -164,7 +166,7 @@ class MAPOCAAgent(Agent):
         Build embeddings => pass to self.policy_net => reshape
         Return => actions, (log_probs, entropies)
         """
-        common_emb = self.embedding_network.get_base_embedding(states)
+        common_emb, _ = self.embedding_network.get_base_embedding(states)
         S,E,NA,H = common_emb.shape
         emb_2d   = common_emb.reshape(S*E*NA, H)
 
@@ -191,17 +193,17 @@ class MAPOCAAgent(Agent):
     #  update()
     # ------------------------------------------------------------
     def update(self,
-               states: dict,
-               next_states: dict,
-               actions: torch.Tensor,
-               rewards: torch.Tensor,
-               dones: torch.Tensor,
-               truncs: torch.Tensor):
+           states: dict,
+           next_states: dict,
+           actions: torch.Tensor,
+           rewards: torch.Tensor,
+           dones: torch.Tensor,
+           truncs: torch.Tensor):
         """
         1) Possibly normalize rewards
         2) Gather old values/baselines/log_probs
-        3) compute returns
-        4) mini-batch => compute new => clipped losses => step
+        3) Compute returns
+        4) Mini-batch => Compute new => Clipped losses => Step
         5) Return logs
         """
         # shape check
@@ -211,31 +213,32 @@ class MAPOCAAgent(Agent):
             NS, NE, _ = states["central"].shape
             NA = 1
 
-        # maybe norm rewards
+        # Maybe normalize rewards
         rewards_mean = rewards.mean()
         if self.rewards_normalizer:
             self.rewards_normalizer.update(rewards)
             self.rewards_normalizer.normalize(rewards)
 
         # ------------------------------------------------
-        # 1) gather old data
+        # 1) Gather old data
         # ------------------------------------------------
         with torch.no_grad():
-            base_emb = self.embedding_network.get_base_embedding(states)
+            # Get base embeddings and attention weights
+            base_emb, attn_weights = self.embedding_network.get_base_embedding(states)
             baseline_emb = self.embedding_network.get_baseline_embeddings(base_emb, actions)
 
-            # old values, old baselines
-            old_vals  = self.shared_critic.values(base_emb)      # => (NS,NE,1)
-            old_bases = self.shared_critic.baselines(baseline_emb)   # => (NS,NE,NA,1)
+            # Compute old values, baselines using attention weights
+            old_vals = self.shared_critic.values(base_emb, attn_weights)  # => (NS,NE,1)
+            old_bases = self.shared_critic.baselines(baseline_emb)  # => (NS,NE,NA,1)
 
-            # old log_probs
+            # Compute old log_probs
             old_lp, _ = self._recompute_log_probs(base_emb, actions)
 
-            # next states => next_values
-            next_base_emb = self.embedding_network.get_base_embedding(next_states)
-            next_vals     = self.shared_critic.values(next_base_emb)
+            # Compute next state embeddings and values
+            next_base_emb, next_attn_weights = self.embedding_network.get_base_embedding(next_states)
+            next_vals = self.shared_critic.values(next_base_emb, next_attn_weights)
 
-            # compute returns
+            # Compute returns using TD(lambda)
             returns = self._compute_td_lambda_returns(
                 rewards, old_vals, next_vals, dones, truncs
             )
@@ -252,11 +255,11 @@ class MAPOCAAgent(Agent):
         # For debugging log-prob
         logprob_means, logprob_mins, logprob_maxs = [], [], []
 
-        # We'll store layer-wise gradient sums for averaging
+        # Track layer-wise gradient norms for averaging
         grad_norms_sum_per_layer = {}
         grad_norms_count = 0
 
-        # single pass stats
+        # Single pass stats
         returns_list.append(returns.mean().detach().cpu())
 
         # ------------------------------------------------
@@ -264,10 +267,9 @@ class MAPOCAAgent(Agent):
         # ------------------------------------------------
         for _ in range(self.epochs):
             np.random.shuffle(idxes)
-            nB = (NS + self.mini_batch_size - 1)//self.mini_batch_size
+            nB = (NS + self.mini_batch_size - 1) // self.mini_batch_size
 
             for b in range(nB):
-
                 # Step schedulers
                 if self.entropy_scheduler:
                     self.entropy_coeff = self.entropy_scheduler.step()
@@ -278,23 +280,23 @@ class MAPOCAAgent(Agent):
                 if self.max_grad_norm_scheduler:
                     self.max_grad_norm = self.max_grad_norm_scheduler.step()
 
-                start = b*self.mini_batch_size
-                end   = min((b+1)*self.mini_batch_size, NS)
-                mb_idx= idxes[start:end]
-                MB    = len(mb_idx)
+                start = b * self.mini_batch_size
+                end = min((b + 1) * self.mini_batch_size, NS)
+                mb_idx = idxes[start:end]
+                MB = len(mb_idx)
 
-                st_mb   = self._slice_state_dict(states, mb_idx)
-                act_mb  = actions[mb_idx]
-                ret_mb  = returns[mb_idx]        # => (MB,NE,1)
-                olp_mb  = old_lp[mb_idx]         # => (MB,NE,NA)
-                oval_mb = old_vals[mb_idx]       # => (MB,NE,1)
-                obase_mb= old_bases[mb_idx]      # => (MB,NE,NA,1)
+                st_mb = self._slice_state_dict(states, mb_idx)
+                act_mb = actions[mb_idx]
+                ret_mb = returns[mb_idx]  # => (MB,NE,1)
+                olp_mb = old_lp[mb_idx]  # => (MB,NE,NA)
+                oval_mb = old_vals[mb_idx]  # => (MB,NE,1)
+                obase_mb = old_bases[mb_idx]  # => (MB,NE,NA,1)
 
-                # forward pass on new states
-                base_emb_mb = self.embedding_network.get_base_embedding(st_mb)
+                # Forward pass on new states
+                base_emb_mb, attn_weights_mb = self.embedding_network.get_base_embedding(st_mb)
                 baseline_emb_mb = self.embedding_network.get_baseline_embeddings(base_emb_mb, act_mb)
 
-                # new log_probs
+                # Compute new log_probs
                 new_lp_mb, ent_mb = self._recompute_log_probs(base_emb_mb, act_mb)
 
                 # Log-prob stats
@@ -303,60 +305,51 @@ class MAPOCAAgent(Agent):
                 logprob_mins.append(lp_det.min().cpu())
                 logprob_maxs.append(lp_det.max().cpu())
 
-                # new V, baseline
-                new_vals_mb   = self.shared_critic.values(base_emb_mb)     # => (MB,NE,1)
-                new_base_mb   = self.shared_critic.baselines(baseline_emb_mb)   # => (MB,NE,NA,1)
+                # Compute new values, baselines using new attention weights
+                new_vals_mb = self.shared_critic.values(base_emb_mb, attn_weights_mb)  # => (MB,NE,1)
+                new_base_mb = self.shared_critic.baselines(baseline_emb_mb)  # => (MB,NE,NA,1)
 
-                # advantage => returns - new_base
-                ret_mb_exp    = ret_mb.unsqueeze(2).expand(MB, NE, NA, 1)
-                adv_mb        = (ret_mb_exp - new_base_mb).squeeze(-1)  # => (MB,NE,NA)
+                # Advantage Calculation
+                ret_mb_exp = ret_mb.unsqueeze(2).expand(MB, NE, NA, 1)
+                adv_mb = (ret_mb_exp - new_base_mb).squeeze(-1)  # => (MB,NE,NA)
 
-                # advantage stats
+                # Advantage stats
                 adv_mean = adv_mb.mean()
-                adv_std  = adv_mb.std() + 1e-8
+                adv_std = adv_mb.std() + 1e-8
                 advantages_mean_list.append(adv_mean.detach().cpu())
                 advantages_std_list.append(adv_std.detach().cpu())
                 if self.normalize_adv:
-                    adv_mb = (adv_mb - adv_mean)/adv_std
-                    adv_clip_factor = 5.0 # 5 stds
+                    adv_mb = (adv_mb - adv_mean) / adv_std
+                    adv_clip_factor = 5.0  # 5 stds
                     adv_mb = adv_mb.clamp(-adv_clip_factor, adv_clip_factor)
 
-                # detach advantage for policy gradient
+                # Detach advantage for policy gradient
                 detached_adv = adv_mb.detach()
                 advantages_list.append(detached_adv.mean().cpu())
 
-                # policy ppo clip
-                pol_loss = self._ppo_clip_loss(
-                    new_lp_mb, olp_mb, detached_adv, self.ppo_clip_range
-                )
+                # Policy PPO Clip Loss
+                pol_loss = self._ppo_clip_loss(new_lp_mb, olp_mb, detached_adv, self.ppo_clip_range)
 
-                # value => possibly clipped
+                # Value Function Loss (with optional clipping)
                 if self.clipped_value_loss:
-                    val_loss = self._clipped_value_loss(
-                        oval_mb, new_vals_mb, ret_mb, self.value_clip_range
-                    )
+                    val_loss = self._clipped_value_loss(oval_mb, new_vals_mb, ret_mb, self.value_clip_range)
                 else:
                     val_loss = 0.5 * F.mse_loss(new_vals_mb, ret_mb)
 
-                # baseline => possibly clipped
+                # Baseline Loss (with optional clipping)
                 if self.clipped_value_loss:
-                    base_loss = self._clipped_value_loss(
-                        obase_mb, new_base_mb, ret_mb_exp, self.value_clip_range
-                    )
+                    base_loss = self._clipped_value_loss(obase_mb, new_base_mb, ret_mb_exp, self.value_clip_range)
                 else:
                     base_loss = 0.5 * F.mse_loss(new_base_mb, ret_mb_exp)
 
-                # final loss
+                # Final loss
                 ent_mean = ent_mb.mean()
-                total_loss = pol_loss \
-                           + self.value_loss_coeff*val_loss \
-                           + self.baseline_loss_coeff*base_loss \
-                           - self.entropy_coeff*ent_mean
+                total_loss = pol_loss + self.value_loss_coeff * val_loss + self.baseline_loss_coeff * base_loss - self.entropy_coeff * ent_mean
 
                 self.optimizer.zero_grad()
                 total_loss.backward()
 
-                # measure per-layer grad norms before clipping
+                # Measure per-layer grad norms before clipping
                 self._accumulate_per_layer_grad_norms(grad_norms_sum_per_layer)
 
                 gn = clip_grad_norm_(self.parameters(), self.max_grad_norm)
@@ -373,37 +366,19 @@ class MAPOCAAgent(Agent):
 
                 grad_norms_count += 1
 
-        # ------------------------------------------------
-        # final logs
-        # ------------------------------------------------
-        # average the per-layer grad norms over all mini-batches
-        layer_grad_norm_logs = {}
-        for pname, accum in grad_norms_sum_per_layer.items():
-            mean_norm = accum / float(grad_norms_count)
-            layer_grad_norm_logs[f"GradNorm/{pname}"] = mean_norm
-
+        # Final logs
         logs = {
-            "Policy Loss":    torch.stack(pol_losses).mean(),
-            "Value Loss":     torch.stack(val_losses).mean(),
-            "Baseline Loss":  torch.stack(base_losses).mean(),
-            "Entropy":        torch.stack(entropies).mean(),
-            "Entropy coeff":  torch.tensor(self.entropy_coeff),
-            "Avg. Adv":       torch.stack(advantages_list).mean(),
-            "Avg. Adv Mean":  torch.stack(advantages_mean_list).mean(),
-            "Avg. Adv Std":   torch.stack(advantages_std_list).mean(),
-            "Avg. Returns":   torch.stack(returns_list).mean(),
-            "Avg. Rewards":   rewards_mean,
+            "Policy Loss": torch.stack(pol_losses).mean(),
+            "Value Loss": torch.stack(val_losses).mean(),
+            "Baseline Loss": torch.stack(base_losses).mean(),
+            "Entropy": torch.stack(entropies).mean(),
+            "Entropy coeff": torch.tensor(self.entropy_coeff),
+            "Avg. Adv": torch.stack(advantages_list).mean(),
+            "Avg. Returns": torch.stack(returns_list).mean(),
             "Avg. Grad Norm": torch.stack(grad_norm_list).mean(),
-            "Learning Rate":  torch.stack(lrs_list).mean(),
-
-            # log-prob stats
-            "Avg. LogProb":   torch.stack(logprob_means).mean(),
-            "Min. LogProb":   torch.stack(logprob_mins).mean(),
-            "Max. LogProb":   torch.stack(logprob_maxs).mean(),
+            "Ave. Rewards": rewards_mean,
+            "Learning Rate": torch.stack(lrs_list).mean(),
         }
-
-        # add per-layer grad norms to logs
-        logs.update(layer_grad_norm_logs)
         return logs
 
     # ------------------------------------------------------------

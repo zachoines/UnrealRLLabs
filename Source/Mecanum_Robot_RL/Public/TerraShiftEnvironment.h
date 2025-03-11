@@ -292,8 +292,8 @@ private:
     float ThresholdAndClamp(float value, float minVal, float maxVal);
 
     // Toggles to enable/disable sub-rewards
-    static constexpr bool bUseVelAlignment = true;
-    static constexpr bool bUseXYDistanceImprovement = false;
+    static constexpr bool bUseVelAlignment = false;
+    static constexpr bool bUseXYDistanceImprovement = true;
     static constexpr bool bUseZAccelerationPenalty = false;
     static constexpr bool bUseCradleReward = false;
 
@@ -304,7 +304,7 @@ private:
     static constexpr float VelAlign_Max = 100.0f;
 
     // XY distance improvement constants (units relative to platform (1m by 1m depending on PlatformScale))
-    static constexpr float DistImprove_Scale = 1.0f;
+    static constexpr float DistImprove_Scale = .01f;
     static constexpr float DistImprove_Min = 0.0f;
     static constexpr float DistImprove_Max = 1.0f;
 
@@ -321,7 +321,7 @@ private:
     static constexpr float CradleRadiusMultiplier = 1.5f;
 
     // Event-based
-    static constexpr float REACH_GOAL_REWARD = 1.0f;
-    static constexpr float FALL_OFF_PENALTY = -0.1f;
+    static constexpr float REACH_GOAL_REWARD = 0.1f;
+    static constexpr float FALL_OFF_PENALTY = -0.01f;
 
 };

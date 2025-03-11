@@ -306,89 +306,84 @@ class SharedCritic(nn.Module):
     Shared critic that outputs:
      1) A **global value function** `V(s)`, shared across agents in an environment.
      2) **Per-agent counterfactual baselines** `Q_ψ`, used for advantage calculations.
-    
-    Uses **different attention-based aggregation** for:
-    - The **global value function (`values`)** (which determines the team's expected return).
-    - The **per-agent baselines (`baselines`)** (which disentangles an agent's individual contribution).
+
+    Uses **separate attention mechanisms** for:
+    - The **global value function (`values`)** (determining the team's expected return).
+    - The **per-agent baselines (`baselines`)** (disentangling an agent's individual contribution).
     """
 
-    def __init__(self, config):
+    def __init__(self, net_cfg):
         super(SharedCritic, self).__init__()
-        net_cfg = config['agent']['params']['networks']['critic_network']
 
         self.value_head = ValueNetwork(**net_cfg['value_head'])
         self.baseline_head = ValueNetwork(**net_cfg['baseline_head'])
 
-        # **Global Attention Weights for Value Function (Per-Environment)**
-        self.value_attention = nn.Linear(net_cfg['value_head']['in_features'], 1)
-
-        # **Local Attention Weights for Baseline Function (Per-Agent)**
-        self.baseline_attention = nn.Linear(net_cfg['baseline_head']['in_features'], 1)
-
-        # **Learnable Global Context Vector for Value Function**
-        self.global_query = nn.Parameter(torch.randn(1, 1, net_cfg['value_head']['in_features']))
+        # **Self-Attention for Baseline Function (Per-Agent Groupmates)**
+        self.baseline_attention = nn.MultiheadAttention(
+            embed_dim=net_cfg['baseline_head']['in_features'], num_heads=4, batch_first=True
+        )
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.apply(lambda m: init_weights_leaky_relu(m, 0.01))
 
-    def values(self, x: torch.Tensor) -> torch.Tensor:
+    def values(self, x: torch.Tensor, attn_weights: torch.Tensor) -> torch.Tensor:
         """
         Compute **per-environment value function `V(s)`**:
-        - Input: x => (S,E,A,H) (state embeddings for each agent)
-        - Uses **global softmax attention** over all agents to determine importance.
+        - Input: 
+            - x => (S,E,A,H) (state embeddings for each agent)
+            - attn_weights => (S*E,A,A) (attention scores from feature extractor)
+        - Uses **precomputed attention weights** to determine agent contributions.
         - Output: (S,E,1) (single value for the environment)
         """
         S, E, A, H = x.shape
 
-        # Mean Pooling for Stability
-        mean_emb = x.mean(dim=2)  # (S,E,H)
+        # **Reshape `attn_weights` back to (S,E,A,A) from (S*E,A,A)**
+        attn_weights = attn_weights.view(S, E, A, A)  # Restore shape
 
-        # **Global Attention-Based Scaling (Shared Context)**
-        query = self.global_query.expand(S, E, H).unsqueeze(2)  # (S,E,1,H)
-        attn_weights = torch.matmul(x, query.transpose(-1, -2)).squeeze(-1)  # (S,E,A)
-        attn_weights = torch.softmax(attn_weights, dim=2)  # Normalize across agents
+        # **Compute Per-Agent Attention Scores**
+        attn_weights = torch.softmax(attn_weights.mean(dim=3), dim=2)  # Normalize across agents
 
-        # Weighted Sum Across Agents
+        # **Weighted Sum Across Agents**
         weighted_emb = (attn_weights.unsqueeze(-1) * x).sum(dim=2)  # (S,E,H)
 
-        # Final Representation (Mean + Attention Hybrid)
-        final_emb = (0.5 * mean_emb) + (0.5 * weighted_emb)  # Hybrid Combination
-
-        # Compute Final Value Estimate
-        flat = final_emb.reshape(S * E, H)
+        # **Compute Final Value Estimate**
+        flat = weighted_emb.reshape(S * E, H)
         vals = self.value_head(flat).reshape(S, E, 1)
 
         return vals
-
+    
     def baselines(self, x: torch.Tensor) -> torch.Tensor:
         """
         Compute **per-agent counterfactual baselines**:
         - Input: x => (S,E,A,A,H) (groupmate-aware embeddings)
-        - Uses **local softmax attention** over **groupmates only** (dim=3).
+        - Uses **self-attention over each agent’s groupmates** (dim=3).
+        - Performs **attention-weighted summation** for correct contribution modeling.
         - Output: (S,E,A,1) (one baseline per agent)
         """
         S, E, A, A2, H = x.shape
-        assert A == A2, "x must be shape (S,E,A,A,H)."
+        assert A2 == A, f"Expected (S,E,A,A,H), got {x.shape}"
 
-        # Mean Pooling Across Groupmates for Stability
-        mean_emb = x.mean(dim=3)  # (S,E,A,H)
+        # **Reshape to 3D for MultiheadAttention**
+        x_flat = x.view(S * E * A, A, H)  # (batch_size, agents/groupmates, features)
 
-        # **Local Attention Over Groupmates (Relative Importance)**
-        attn_weights = self.baseline_attention(x).squeeze(-1)  # (S,E,A,A)
-        attn_weights = torch.softmax(attn_weights, dim=3)  # Normalize across groupmates
+        # **Self-Attention Over Groupmates**
+        attn_output, attn_weights = self.baseline_attention(x_flat, x_flat, x_flat)  # (S*E*A, A, H), (S*E*A, A, A)
 
-        # Weighted Sum Across Groupmates
-        weighted_emb = (attn_weights.unsqueeze(-1) * x).sum(dim=3)  # (S,E,A,H)
+        # **Compute Per-Agent Attention Scores**
+        attn_weights = attn_weights.mean(dim=2)  # Aggregate over last dimension
 
-        # Final Representation (Mean + Attention Hybrid)
-        final_emb = (0.5 * mean_emb) + (0.5 * weighted_emb)  # Hybrid Combination
+        # **Normalize Attention Weights Using Softmax**
+        attn_weights = torch.softmax(attn_weights, dim=1)  # Normalize over groupmates
+
+        # **Attention-Weighted Sum Across Groupmates**
+        weighted_emb = (attn_weights.unsqueeze(-1) * attn_output).sum(dim=1)  # (S*E*A, H)
 
         # Compute Per-Agent Baselines
-        flat = final_emb.reshape(S * E * A, H)
-        base = self.baseline_head(flat).reshape(S, E, A, 1)
+        base = self.baseline_head(weighted_emb).reshape(S, E, A, 1)
 
         return base
+
 
 class TanhContinuousPolicyNetwork(BasePolicyNetwork):
     """
@@ -641,7 +636,8 @@ class CrossAttentionFeatureExtractor(nn.Module):
         cnn_strides: list = [2, 2, 2], 
         transformer_layers: int = 2, 
         scale_ratios: list = [1/4, 1/8, 1/16],
-        top_k_scales: int = 2
+        top_k_scales: int = 2,
+        group_norms = [16, 8, 4]
     ):
         super().__init__()
 
@@ -653,31 +649,31 @@ class CrossAttentionFeatureExtractor(nn.Module):
         self.scale_sizes = [math.floor(h * r) for r in scale_ratios]
         self.top_k_scales = top_k_scales  
 
-        # Agent MLP encoder (with LayerNorm)
+        # Agent MLP encoder (with LayerNorm for stability)
         self.agent_encoder = nn.Sequential(
             nn.Linear(obs_size, embed_dim),
             nn.LeakyReLU(),
-            nn.LayerNorm(embed_dim),  # LayerNorm for stability
+            nn.LayerNorm(embed_dim),  
             nn.Linear(embed_dim, embed_dim),
             nn.LeakyReLU(),
-            nn.LayerNorm(embed_dim)  # LayerNorm for final stability
+            nn.LayerNorm(embed_dim)  
         )
 
         # Positional embedding for each agent
         self.agent_pos_embedding = nn.Embedding(num_agents, embed_dim)
 
         # CNNs for adaptive multi-scale feature extraction with **progressive GroupNorm**
-        group_norms = [16, 8, 4]  # Decreasing number of groups for deeper layers
+        # Decreasing number of groups for deeper layers
         self.central_cnns = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(1, cnn_channels[i], kernel_size=cnn_kernel_sizes[i], stride=cnn_strides[i], padding=cnn_kernel_sizes[i] // 2),
-                nn.GroupNorm(group_norms[i], cnn_channels[i]),  # Progressive reduction in num_groups
+                nn.GroupNorm(group_norms[i], cnn_channels[i]),  
                 nn.LeakyReLU(),
                 nn.Conv2d(cnn_channels[i], cnn_channels[i], kernel_size=3, stride=1, padding=1),
-                nn.GroupNorm(group_norms[i], cnn_channels[i]),  # Stabilize feature maps
+                nn.GroupNorm(group_norms[i], cnn_channels[i]),  
                 nn.LeakyReLU(),
                 nn.Conv2d(cnn_channels[i], embed_dim, kernel_size=3, stride=2, padding=1),
-                nn.GroupNorm(group_norms[i], embed_dim),  # Normalize final embedding layer
+                nn.GroupNorm(group_norms[i], embed_dim),  
                 nn.LeakyReLU(),
                 nn.AdaptiveAvgPool2d((s, s))
             )
@@ -705,6 +701,9 @@ class CrossAttentionFeatureExtractor(nn.Module):
             for _ in range(self.num_scales)
         ])
 
+        # **Learnable Weights for Multi-Scale Attention Combination**
+        self.scale_attention_weights = nn.Parameter(torch.ones(self.num_scales))
+
         # Agent-to-Agent Self-Attention (with LayerNorm)
         self.agent_self_attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
 
@@ -719,9 +718,9 @@ class CrossAttentionFeatureExtractor(nn.Module):
 
     def forward(self, state):
         """
-        state: Dict containing:
-            - "central": Tensor of shape [num_steps, num_envs, h * w]
-            - "agent":   Tensor of shape [num_steps, num_envs, num_agents, obs_size]
+        Returns:
+        - agent_embeddings: (num_steps, num_envs, num_agents, embed_dim)
+        - attention_weights: (num_steps, num_envs, num_agents, num_agents) (used for value function)
         """
         central_state = state["central"]
         agent_state = state["agent"]
@@ -743,34 +742,18 @@ class CrossAttentionFeatureExtractor(nn.Module):
         agent_embed = agent_embed.view(-1, num_agents, self.embed_dim)
 
         multi_scale_outputs = []
-        for scale_idx, scale_size in enumerate(self.scale_sizes):
+        scale_attn_weights = torch.softmax(self.scale_attention_weights, dim=0)  # Normalize scale weights
+        for scale_idx in range(self.num_scales):
+            attn_output, _ = self.cross_attentions[scale_idx](agent_embed, agent_embed, agent_embed)
+            multi_scale_outputs.append(attn_output * scale_attn_weights[scale_idx])
 
-            # Process central state with CNN
-            central_scaled = central_state.reshape(num_steps, num_envs, 1, self.h, self.w)
-            central_embed = self.central_cnns[scale_idx](central_scaled.view(-1, 1, self.h, self.w))
+        # Aggregate weighted multi-scale outputs
+        agent_embed = torch.stack(multi_scale_outputs, dim=0).sum(dim=0)  # Weighted sum instead of mean
 
-            # Flatten CNN output into patches
-            num_patches = scale_size * scale_size
-            central_embed = central_embed.view(-1, self.embed_dim, num_patches).permute(0, 2, 1)
+        # **Agent-to-Agent Communication (Use for Value Function)**
+        agent_embed, attn_weights = self.agent_self_attention(agent_embed, agent_embed, agent_embed)
 
-            # Generate Keys (`K`) as Positional Embeddings
-            patch_indices = torch.arange(num_patches, device=agent_state.device).expand(agent_embed.shape[0], num_patches)
-            key_embeds = self.patch_position_embeddings[scale_idx](patch_indices)
-
-            # Transformer for global terrain understanding
-            central_embed = self.terrain_transformers[scale_idx](central_embed)
-
-            # **Cross-Attention: Query (Agents) → Key (Positions) → Value (Processed Terrain Features)**
-            attn_output, _ = self.cross_attentions[scale_idx](agent_embed, key_embeds, central_embed)
-            multi_scale_outputs.append(attn_output)
-
-        # Aggregate multi-scale outputs
-        agent_embed = torch.stack(multi_scale_outputs, dim=0).mean(dim=0)
-
-        # **NEW: Agent-to-Agent Communication**
-        agent_embed, _ = self.agent_self_attention(agent_embed, agent_embed, agent_embed)
-
-        return agent_embed.view(num_steps, num_envs, num_agents, self.embed_dim)
+        return agent_embed.view(num_steps, num_envs, num_agents, self.embed_dim), attn_weights
 
 
 class GN2d(nn.Module):
