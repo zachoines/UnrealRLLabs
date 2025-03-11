@@ -622,13 +622,13 @@ class MultiAgentEmbeddingNetwork(nn.Module):
 
         return group_obs.contiguous(), group_act.contiguous()
 
-
 class CrossAttentionFeatureExtractor(nn.Module):
     def __init__(
-        self, 
-        obs_size: int = 28,   # Agent state size (28 elements)
-        num_agents: int = 5,  # Number of agents
-        h: int = 50, w: int = 50,  # Terrain dimensions (50x50)
+        self,
+        obs_size: int = 28,          # Agent state size
+        num_agents: int = 5,        # Number of agents
+        h: int = 50, 
+        w: int = 50,                # Terrain dimensions
         embed_dim: int = 64, 
         num_heads: int = 4, 
         cnn_channels: list = [32, 64, 128],
@@ -636,124 +636,257 @@ class CrossAttentionFeatureExtractor(nn.Module):
         cnn_strides: list = [2, 2, 2], 
         transformer_layers: int = 2, 
         scale_ratios: list = [1/4, 1/8, 1/16],
-        top_k_scales: int = 2,
         group_norms = [16, 8, 4]
     ):
         super().__init__()
 
         self.num_agents = num_agents
         self.embed_dim = embed_dim
-        self.h, self.w = h, w
+        self.h = h
+        self.w = w
+
+        # Compute number of multi-scale levels
         self.scale_ratios = scale_ratios
         self.num_scales = len(scale_ratios)
         self.scale_sizes = [math.floor(h * r) for r in scale_ratios]
-        self.top_k_scales = top_k_scales  
 
-        # Agent MLP encoder (with LayerNorm for stability)
+        # ------------------------------------------------
+        # 1) Agent MLP encoder (with LayerNorm)
+        # ------------------------------------------------
         self.agent_encoder = nn.Sequential(
             nn.Linear(obs_size, embed_dim),
             nn.LeakyReLU(),
-            nn.LayerNorm(embed_dim),  
+            nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, embed_dim),
             nn.LeakyReLU(),
-            nn.LayerNorm(embed_dim)  
+            nn.LayerNorm(embed_dim)
         )
 
-        # Positional embedding for each agent
+        # Agent index embedding (positional)
         self.agent_pos_embedding = nn.Embedding(num_agents, embed_dim)
 
-        # CNNs for adaptive multi-scale feature extraction with **progressive GroupNorm**
-        # Decreasing number of groups for deeper layers
-        self.central_cnns = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(1, cnn_channels[i], kernel_size=cnn_kernel_sizes[i], stride=cnn_strides[i], padding=cnn_kernel_sizes[i] // 2),
-                nn.GroupNorm(group_norms[i], cnn_channels[i]),  
+        # ------------------------------------------------
+        # 2) Multi-scale CNN feature extractors
+        #    Each scale i uses:
+        #    - CNN with progressive GroupNorm
+        #    - Output dimension = embed_dim
+        #    - Then AdaptiveAvgPool2d -> (scale_sizes[i], scale_sizes[i])
+        # ------------------------------------------------
+        self.central_cnns = nn.ModuleList()
+        for i, s in enumerate(self.scale_sizes):
+            cnn = nn.Sequential(
+                nn.Conv2d(
+                    in_channels=1,
+                    out_channels=cnn_channels[i],
+                    kernel_size=cnn_kernel_sizes[i],
+                    stride=cnn_strides[i],
+                    padding=cnn_kernel_sizes[i] // 2
+                ),
+                nn.GroupNorm(group_norms[i], cnn_channels[i]),
                 nn.LeakyReLU(),
-                nn.Conv2d(cnn_channels[i], cnn_channels[i], kernel_size=3, stride=1, padding=1),
-                nn.GroupNorm(group_norms[i], cnn_channels[i]),  
-                nn.LeakyReLU(),
-                nn.Conv2d(cnn_channels[i], embed_dim, kernel_size=3, stride=2, padding=1),
-                nn.GroupNorm(group_norms[i], embed_dim),  
-                nn.LeakyReLU(),
-                nn.AdaptiveAvgPool2d((s, s))
-            )
-            for i, s in enumerate(self.scale_sizes)
-        ])
 
-        # Transformer for each scale (LayerNorm inside Transformer layers)
+                nn.Conv2d(
+                    in_channels=cnn_channels[i],
+                    out_channels=cnn_channels[i],
+                    kernel_size=3,
+                    stride=1,
+                    padding=1
+                ),
+                nn.GroupNorm(group_norms[i], cnn_channels[i]),
+                nn.LeakyReLU(),
+
+                nn.Conv2d(
+                    in_channels=cnn_channels[i],
+                    out_channels=embed_dim,
+                    kernel_size=3,
+                    stride=2,
+                    padding=1
+                ),
+                nn.GroupNorm(group_norms[i], embed_dim),
+                nn.LeakyReLU(),
+
+                nn.AdaptiveAvgPool2d((s, s))  # final spatial size: (s, s)
+            )
+            self.central_cnns.append(cnn)
+
+        # ------------------------------------------------
+        # 3) Transformer for each scale (over the extracted feature patches)
+        # ------------------------------------------------
         self.terrain_transformers = nn.ModuleList([
             nn.TransformerEncoder(
-                nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, batch_first=True, norm_first=True),
+                nn.TransformerEncoderLayer(
+                    d_model=embed_dim,
+                    nhead=num_heads,
+                    batch_first=True,
+                    norm_first=True
+                ),
                 num_layers=transformer_layers
-            )
+            ) 
             for _ in range(self.num_scales)
         ])
 
-        # Positional embeddings for adaptive patches
+        # ------------------------------------------------
+        # 4) Positional embeddings for each patch in (s*s)
+        # ------------------------------------------------
         self.patch_position_embeddings = nn.ModuleList([
-            nn.Embedding(s * s, embed_dim)
+            nn.Embedding(s * s, embed_dim) 
             for s in self.scale_sizes
         ])
 
-        # Cross-Attention for Agent-Terrain interaction at each scale
+        # ------------------------------------------------
+        # 5) Cross-attention for each scale:
+        #    - Agents are Query
+        #    - Map patches are Key/Value
+        # ------------------------------------------------
         self.cross_attentions = nn.ModuleList([
             nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
             for _ in range(self.num_scales)
         ])
 
-        # **Learnable Weights for Multi-Scale Attention Combination**
+        # ------------------------------------------------
+        # 6) Learnable weights for combining multi-scale outputs
+        # ------------------------------------------------
         self.scale_attention_weights = nn.Parameter(torch.ones(self.num_scales))
 
-        # Agent-to-Agent Self-Attention (with LayerNorm)
-        self.agent_self_attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+        # ------------------------------------------------
+        # 7) Agent-to-Agent Self-Attention
+        # ------------------------------------------------
+        self.agent_self_attention = nn.MultiheadAttention(
+            embed_dim, 
+            num_heads, 
+            batch_first=True
+        )
 
-        # Hierarchical Transformer for Merging Multi-Scale Representations
+        # ------------------------------------------------
+        # 8) Hierarchical Transformer for merging multi-scale
+        #    (Optionally used instead of a raw sum)
+        # ------------------------------------------------
         self.scale_merging_transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, batch_first=True, norm_first=True),
+            nn.TransformerEncoderLayer(
+                d_model=embed_dim, 
+                nhead=num_heads, 
+                batch_first=True, 
+                norm_first=True
+            ),
             num_layers=2
         )
 
+        # Optionally initialize weights
         self.apply(lambda m: init_weights_leaky_relu_conv(m, 0.01))
         self.apply(lambda m: init_weights_leaky_relu(m, 0.01))
 
     def forward(self, state):
         """
+        Expects:
+          state["agent"]  with shape (num_steps, num_envs, num_agents, obs_size)
+          state["central"] with shape (num_steps, num_envs, h*w)  (flattened map)
+        
         Returns:
-        - agent_embeddings: (num_steps, num_envs, num_agents, embed_dim)
-        - attention_weights: (num_steps, num_envs, num_agents, num_agents) (used for value function)
+          agent_embeddings (num_steps, num_envs, num_agents, embed_dim)
+          attn_weights     (num_steps, num_envs, num_agents, num_agents)
         """
-        central_state = state["central"]
-        agent_state = state["agent"]
+        central_state = state["central"]  # (num_steps, num_envs, h*w)
+        agent_state   = state["agent"]    # (num_steps, num_envs, num_agents, obs_size)
 
         num_steps, num_envs, num_agents, obs_size = agent_state.shape
+        assert num_agents == self.num_agents, \
+            f"Mismatch in agent count, got {num_agents}, expected {self.num_agents}"
 
-        assert num_agents == self.num_agents, "Mismatch in agent count and model config"
-
-        # Process agent states (MLP)
-        agent_state_flat = agent_state.reshape(-1, obs_size)
+        # ------------------------------------------------
+        # A) Encode agent states with MLP
+        # ------------------------------------------------
+        # Flatten to (num_steps * num_envs * num_agents, obs_size)
+        agent_state_flat = agent_state.reshape(-1, obs_size)  
         agent_embed = self.agent_encoder(agent_state_flat)
+        # Reshape back to (num_steps, num_envs, num_agents, embed_dim)
         agent_embed = agent_embed.view(num_steps, num_envs, num_agents, self.embed_dim)
 
-        # Add unique agent positional embeddings
-        agent_indices = torch.arange(num_agents, device=agent_state.device).expand(num_steps, num_envs, num_agents)
-        agent_pos_embeds = self.agent_pos_embedding(agent_indices)
-        agent_embed = agent_embed + agent_pos_embeds  
+        # Add agent positional embedding
+        agent_indices = torch.arange(num_agents, device=agent_state.device) \
+                             .unsqueeze(0).unsqueeze(0) \
+                             .expand(num_steps, num_envs, num_agents)
+        agent_pos_emb = self.agent_pos_embedding(agent_indices)
+        agent_embed = agent_embed + agent_pos_emb
 
-        agent_embed = agent_embed.view(-1, num_agents, self.embed_dim)
+        # Merge (num_steps, num_envs) into a single "batch" dimension
+        # agent_embed -> (batch, num_agents, embed_dim)
+        batch = num_steps * num_envs
+        agent_embed = agent_embed.view(batch, num_agents, self.embed_dim)
 
+        # ------------------------------------------------
+        # B) Reshape central_state to (batch, 1, h, w)
+        # ------------------------------------------------
+        # original shape = (num_steps, num_envs, h*w)
+        central_state = central_state.view(num_steps, num_envs, self.h, self.w)
+        central_state = central_state.view(batch, 1, self.h, self.w)
+
+        # ------------------------------------------------
+        # C) Multi-scale map -> cross-attention
+        # ------------------------------------------------
         multi_scale_outputs = []
-        scale_attn_weights = torch.softmax(self.scale_attention_weights, dim=0)  # Normalize scale weights
-        for scale_idx in range(self.num_scales):
-            attn_output, _ = self.cross_attentions[scale_idx](agent_embed, agent_embed, agent_embed)
-            multi_scale_outputs.append(attn_output * scale_attn_weights[scale_idx])
+        scale_weights = torch.softmax(self.scale_attention_weights, dim=0)
 
-        # Aggregate weighted multi-scale outputs
-        agent_embed = torch.stack(multi_scale_outputs, dim=0).sum(dim=0)  # Weighted sum instead of mean
+        for i in range(self.num_scales):
+            # 1) CNN for scale i
+            #    Output shape: (batch, embed_dim, s, s)
+            feat = self.central_cnns[i](central_state)
+            # 2) Flatten to patches: (batch, s*s, embed_dim)
+            b, d, s_h, s_w = feat.shape  # s_h == s_w == self.scale_sizes[i]
+            feat = feat.view(b, d, s_h * s_w).transpose(1, 2)  # (b, s*s, d)
 
-        # **Agent-to-Agent Communication (Use for Value Function)**
+            # 3) Add patch positional embeddings
+            patch_indices = torch.arange(s_h * s_w, device=feat.device).unsqueeze(0).expand(b, -1)
+            feat = feat + self.patch_position_embeddings[i](patch_indices)
+
+            # 4) Transformer over patches
+            #    shape remains (b, s*s, d)
+            feat = self.terrain_transformers[i](feat)
+
+            # 5) Cross-attention (Agents as Query, Patches as Key/Value)
+            attn_out, _ = self.cross_attentions[i](
+                query=agent_embed,  # (b, num_agents, d)
+                key=feat,           # (b, s*s, d)
+                value=feat          # (b, s*s, d)
+            )
+
+            # Weighted by the scale-specific learned weight
+            multi_scale_outputs.append(attn_out * scale_weights[i])
+
+        # ------------------------------------------------
+        # D) Merge multi-scale outputs
+        # ------------------------------------------------
+        # Option 1: simple sum
+        # agent_embed = torch.stack(multi_scale_outputs, dim=0).sum(dim=0)
+
+        # Option 2: use the scale_merging_transformer to learn how to merge
+        # Stack to (batch, num_scales, num_agents, d)
+        multi_scale_stack = torch.stack(multi_scale_outputs, dim=1)
+        # Flatten scales + agents into one "sequence" dimension:
+        # => shape (batch, num_scales*num_agents, d)
+        b, n_scales, n_agents, d = multi_scale_stack.shape
+        multi_scale_stack = multi_scale_stack.view(b, n_scales*n_agents, d)
+
+        # pass to merging transformer
+        merged = self.scale_merging_transformer(multi_scale_stack)  # same shape
+
+        # reshape back to (batch, num_scales, num_agents, d)
+        merged = merged.view(b, n_scales, n_agents, d)
+        # e.g. average across scales (or other pooling):
+        agent_embed = merged.mean(dim=1)  # now (batch, num_agents, d)
+
+        # ------------------------------------------------
+        # E) Agent-to-Agent Self-Attention
+        # ------------------------------------------------
         agent_embed, attn_weights = self.agent_self_attention(agent_embed, agent_embed, agent_embed)
+        # attn_weights shape: (batch, num_agents, num_agents)
 
-        return agent_embed.view(num_steps, num_envs, num_agents, self.embed_dim), attn_weights
+        # ------------------------------------------------
+        # F) Reshape back to (num_steps, num_envs, num_agents, embed_dim)
+        # ------------------------------------------------
+        agent_embed = agent_embed.view(num_steps, num_envs, num_agents, d)
+        attn_weights = attn_weights.view(num_steps, num_envs, num_agents, num_agents)
+
+        return agent_embed, attn_weights
 
 
 class GN2d(nn.Module):
