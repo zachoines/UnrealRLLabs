@@ -93,12 +93,12 @@
   "agent": {
     "type": "MA_POCA",
     "params": {
-      "learning_rate": 0.00005,
+      "learning_rate": 0.00002,
       "gamma": 0.99,
       "lambda": 0.95,
       "value_loss_coeff": 0.5,
       "baseline_loss_coeff": 0.25,
-      "normalize_advantages": true,
+      "normalize_advantages": false,
       "clipped_value_loss": true,
       "max_grad_norm": 0.5,
       "ppo_clip_range": 0.1,
@@ -192,7 +192,7 @@
 
   "train": {
     "num_environments": 6,
-    "epochs": 8,
+    "epochs": 6,
     "mini_batch_size": 32,
     "buffer_size": 256,
     "batch_size": 256,

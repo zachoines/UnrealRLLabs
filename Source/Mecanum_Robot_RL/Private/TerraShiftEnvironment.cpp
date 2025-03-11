@@ -612,12 +612,12 @@ float ATerraShiftEnvironment::Reward()
             FVector toGoal3D = GoalLocalPos - ObjLocalPos;
             float dist3D = toGoal3D.Size();
 
+            float speed3D = VelLocal.Size();
+
             // Only do alignment calc if we're not basically at the goal
             if (dist3D > KINDA_SMALL_NUMBER)
             {
-                float speed3D = VelLocal.Size();
-
-                if (speed3D < VelAlign_Threshold)
+                if (speed3D < VelAlign_Threshold) // Dont punish zero velociy on firs spawn
                 {
                     subReward += (VelAlign_Threshold_Punishment * LastDeltaTime);
                 }

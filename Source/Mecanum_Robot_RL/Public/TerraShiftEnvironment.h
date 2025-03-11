@@ -299,15 +299,15 @@ private:
 
     // Velocity-to-goal constants
     static constexpr float VelAlign_Scale = 0.01f;   // main multiplier
-    static constexpr float VelAlign_Threshold = 0.1f;    // speed below which we punish
-    static constexpr float VelAlign_Threshold_Punishment = -0.001f; // small negative, scaled by dt
-    static constexpr float VelAlign_Min = -2.0f;   // clamp “away” speed
-    static constexpr float VelAlign_Max = 2.0f;   // clamp “toward” speed
+    static constexpr float VelAlign_Threshold = 0.0f;    // speed below which we punish
+    static constexpr float VelAlign_Threshold_Punishment = 0.00f; // small negative, scaled by dt
+    static constexpr float VelAlign_Min = -20.0f;   // clamp “away” speed
+    static constexpr float VelAlign_Max = 20.0f;   // clamp “toward” speed
 
     // Distance-improvement constants (XY only)
     static constexpr float DistImprove_Scale = 0.01f;   // main multiplier
-    static constexpr float DistImprove_Threshold = 0.001f;  // minimal improvement each step
-    static constexpr float DistImprove_Threshold_Punishment = -0.001f; // punish tiny/no improvement
+    static constexpr float DistImprove_Threshold = 0.00f;  // minimal improvement each step
+    static constexpr float DistImprove_Threshold_Punishment = 0.0f; // punish tiny/no improvement
     static constexpr float DistImprove_Min = -1.0f;   // clamp negative delta
     static constexpr float DistImprove_Max = 1.0f;   // clamp positive delta
 
@@ -318,7 +318,7 @@ private:
 
 
     // Event-based
-    static constexpr float REACH_GOAL_REWARD = 0.1f;
-    static constexpr float FALL_OFF_PENALTY = -0.01f;
+    static constexpr float REACH_GOAL_REWARD = 0.001f;
+    static constexpr float FALL_OFF_PENALTY = -0.0001f;
 
 };
