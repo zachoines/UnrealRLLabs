@@ -573,16 +573,15 @@ float ATerraShiftEnvironment::Reward()
         {
             StepReward += FALL_OFF_PENALTY;
             GridObjectShouldCollectEventReward[AgentIndex] = false;
-            continue; // skip sub-rewards
+            continue;
         }
         else if (GridObjectShouldCollectEventReward[AgentIndex] && GridObjectHasReachedGoal[AgentIndex])
         {
             StepReward += REACH_GOAL_REWARD;
             GridObjectShouldCollectEventReward[AgentIndex] = false;
-            continue; // skip sub-rewards
+            continue;
         }
 
-        // If object is not active, skip
         if (!AgentHasActiveGridObject[AgentIndex]) {
             continue;
         }
@@ -594,51 +593,71 @@ float ATerraShiftEnvironment::Reward()
             continue;
         }
 
-        // Current location & velocity
         FVector ObjectWorldPos = GridObject->GetObjectLocation();
         FVector ObjectWorldVel = GridObject->MeshComponent->GetPhysicsLinearVelocity();
         FVector ObjLocalPos = Platform->GetActorTransform().InverseTransformPosition(ObjectWorldPos);
         FVector VelLocal = Platform->GetActorTransform().InverseTransformVector(ObjectWorldVel);
 
-        // Next, the goal local pos
         FVector GoalLocalPos = Platform->GetActorTransform().InverseTransformPosition(
             AssignedGoal->GetActorLocation()
         );
 
-        float subReward = 0.0f; // sum of sub-rewards for this agent
+        float subReward = 0.0f;
 
         // ------------------------------------------------------------
-        // 0) Velocity To Goal (XY) 
+        // Velocity to Goal (3D alignment)
         // ------------------------------------------------------------
         if (bUseVelAlignment)
         {
-            FVector toGoalXY = (GoalLocalPos - ObjLocalPos);
-            toGoalXY.Z = 0.0f;
-            float distXY = toGoalXY.Size();
-            if (distXY > KINDA_SMALL_NUMBER)
-            {
-                toGoalXY.Normalize();
-                float speedAlongGoal = FVector::DotProduct(VelLocal, toGoalXY);
-                float clampedSpeed = ThresholdAndClamp(speedAlongGoal, VelAlign_Min, VelAlign_Max);
+            FVector toGoal3D = GoalLocalPos - ObjLocalPos;
+            float dist3D = toGoal3D.Size();
 
-                // scale * DeltaTime
-                subReward += VelAlign_Scale * clampedSpeed * LastDeltaTime;
+            // Only do alignment calc if we're not basically at the goal
+            if (dist3D > KINDA_SMALL_NUMBER)
+            {
+                float speed3D = VelLocal.Size();
+
+                if (speed3D < VelAlign_Threshold)
+                {
+                    subReward += (VelAlign_Threshold_Punishment * LastDeltaTime);
+                }
+                else
+                {
+                    const FVector goalDir = toGoal3D.GetSafeNormal();
+
+                    // Dot product => "speed along the goal direction"
+                    float speedAlongGoal = FVector::DotProduct(VelLocal, goalDir);
+
+                    float clampedSpeed = FMath::Clamp(speedAlongGoal, VelAlign_Min, VelAlign_Max);
+
+                    float velReward = VelAlign_Scale * clampedSpeed * LastDeltaTime;
+                    subReward += velReward;
+                }
             }
         }
 
         // ------------------------------------------------------------
-        // 1) XY Distance Improvement
+        // Distance Improvement (XY)
         // ------------------------------------------------------------
-        if (bUseXYDistanceImprovement && PreviousDistances[AgentIndex] > 0)
+        if (bUseXYDistanceImprovement && PreviousDistances[AgentIndex] > 0.0f)
         {
-            float prevDistXY = PreviousDistances[AgentIndex]; // stored somewhere each step
-            float currDistXY = FVector::Distance(ObjLocalPos, GoalLocalPos);
+            float prevDist = PreviousDistances[AgentIndex];  // stored from last step
+            float currDist = FVector::Distance(ObjLocalPos, GoalLocalPos);
 
-            if (prevDistXY > 0.f && currDistXY > 0.f)
+            if (prevDist > 0.f && currDist > 0.f)
             {
-                float distDelta = (prevDistXY - currDistXY) / PlatformWorldSize.X;
-                float clampedDelta = ThresholdAndClamp(distDelta, DistImprove_Min, DistImprove_Max);
-                subReward += DistImprove_Scale * clampedDelta;
+                float distDelta = (prevDist - currDist);
+                float clampedDelta = FMath::Clamp(distDelta, DistImprove_Min, DistImprove_Max);
+
+                if (FMath::Abs(clampedDelta) < DistImprove_Threshold)
+                {
+                    subReward += (DistImprove_Threshold_Punishment * LastDeltaTime);
+                }
+                else
+                {
+                    float distReward = DistImprove_Scale * clampedDelta * LastDeltaTime;
+                    subReward += distReward;
+                }
             }
         }
 
@@ -657,90 +676,6 @@ float ATerraShiftEnvironment::Reward()
             // penalty => subtract
             subReward -= (ZAccel_Scale * clampedZ * LastDeltaTime);
         }
-
-        // ------------------------------------------------------------
-        // 3) Cradle Reward
-        // ------------------------------------------------------------
-        if (bUseCradleReward)
-        {
-            // We'll do the bounding approach, similar to "GetActiveColumnsInProximity"
-            // 1) get the object's bounding sphere from calc bounds
-            FBoxSphereBounds ObjectBounds = GridObject->MeshComponent->CalcBounds(
-                GridObject->MeshComponent->GetComponentTransform()
-            );
-            float SphereRadius = ObjectBounds.SphereRadius; // The bounding sphere radius
-
-            float EffectiveRadius = SphereRadius * CradleRadiusMultiplier;
-
-            // 2) bounding box corners in world coords
-            float MinX = ObjectWorldPos.X - EffectiveRadius;
-            float MaxX = ObjectWorldPos.X + EffectiveRadius;
-            float MinY = ObjectWorldPos.Y - EffectiveRadius;
-            float MaxY = ObjectWorldPos.Y + EffectiveRadius;
-
-            // 3) convert to grid indices
-            // We have the platform size, grid size, cell size, etc. 
-            // from environment init or members
-            float HalfPlatformSize = PlatformWorldSize.X * 0.5f;
-            float GridOriginX = PlatformCenter.X - HalfPlatformSize;
-            float GridOriginY = PlatformCenter.Y - HalfPlatformSize;
-
-            int32 MinXIndex = FMath::FloorToInt((MinX - GridOriginX) / CellSize);
-            int32 MaxXIndex = FMath::FloorToInt((MaxX - GridOriginX) / CellSize);
-            int32 MinYIndex = FMath::FloorToInt((MinY - GridOriginY) / CellSize);
-            int32 MaxYIndex = FMath::FloorToInt((MaxY - GridOriginY) / CellSize);
-
-            // clamp indices
-            MinXIndex = FMath::Clamp(MinXIndex, 0, GridSize - 1);
-            MaxXIndex = FMath::Clamp(MaxXIndex, 0, GridSize - 1);
-            MinYIndex = FMath::Clamp(MinYIndex, 0, GridSize - 1);
-            MaxYIndex = FMath::Clamp(MaxYIndex, 0, GridSize - 1);
-
-            // 4) accumulate cradle measure
-            float sumGap = 0.0f;
-            int   numColumns = 0;
-
-            // object "bottom" => sphere centerZ - radius
-            float objectBottomZ = ObjectWorldPos.Z - SphereRadius;
-
-            for (int32 X = MinXIndex; X <= MaxXIndex; ++X)
-            {
-                for (int32 Y = MinYIndex; Y <= MaxYIndex; ++Y)
-                {
-                    int32 ColumnIndex = X * GridSize + Y;
-                    const FVector& colCenter = GridCenterPoints[ColumnIndex];
-
-                    // check 2D distance
-                    float dist2D = FVector::Dist2D(colCenter, ObjectWorldPos);
-                    if (dist2D > EffectiveRadius) {
-                        continue; // skip if out of range
-                    }
-
-                    // wave top => colCenter.Z + Grid->GetColumnHeight(ColumnIndex)
-                    float waveTopZ = colCenter.Z + Grid->GetColumnHeight(ColumnIndex);
-
-                    // gap => how far the object's bottom is from the wave top
-                    float gap = FMath::Abs(objectBottomZ - waveTopZ);
-
-                    sumGap += gap;
-                    numColumns++;
-                }
-            }
-
-            if (numColumns > 0)
-            {
-                float avgGap = sumGap / float(numColumns);
-
-                // Option: penalize large gap => negative => smaller => better
-                // cradleRaw = -avgGap, so small gap => near zero, large gap => more negative
-                float cradleRaw = -avgGap;
-                float cradleClamped = ThresholdAndClamp(cradleRaw, Cradle_DistMin, Cradle_DistMax);
-
-                // add to subReward
-                subReward += (Cradle_Scale * cradleClamped);
-            }
-        }
-
 
         // accumulate subReward to global StepReward
         StepReward += subReward;
@@ -1138,7 +1073,7 @@ float ATerraShiftEnvironment::ThresholdAndClamp(float value, float minVal, float
     // 1) If abs(value) < minVal => return 0
     if (FMath::Abs(value) < minVal)
     {
-        return VelAlign_Threshold_Punishment;
+        return 0.0;
     }
 
     // 2) Clamp magnitude to maxVal

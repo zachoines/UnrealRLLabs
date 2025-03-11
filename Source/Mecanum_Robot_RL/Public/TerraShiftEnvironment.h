@@ -292,33 +292,30 @@ private:
     float ThresholdAndClamp(float value, float minVal, float maxVal);
 
     // Toggles to enable/disable sub-rewards
-    static constexpr bool bUseVelAlignment = false;
+    static constexpr bool bUseVelAlignment = true;
     static constexpr bool bUseXYDistanceImprovement = true;
     static constexpr bool bUseZAccelerationPenalty = false;
     static constexpr bool bUseCradleReward = false;
 
     // Velocity-to-goal constants
-    static constexpr float VelAlign_Scale = .1f;
-    static constexpr float VelAlign_Threshold_Punishment = -0.1;
-    static constexpr float VelAlign_Min = 0.1f;
-    static constexpr float VelAlign_Max = 100.0f;
+    static constexpr float VelAlign_Scale = 0.01f;   // main multiplier
+    static constexpr float VelAlign_Threshold = 0.1f;    // speed below which we punish
+    static constexpr float VelAlign_Threshold_Punishment = -0.001f; // small negative, scaled by dt
+    static constexpr float VelAlign_Min = -2.0f;   // clamp “away” speed
+    static constexpr float VelAlign_Max = 2.0f;   // clamp “toward” speed
 
-    // XY distance improvement constants (units relative to platform (1m by 1m depending on PlatformScale))
-    static constexpr float DistImprove_Scale = .01f;
-    static constexpr float DistImprove_Min = 0.0f;
-    static constexpr float DistImprove_Max = 1.0f;
+    // Distance-improvement constants (XY only)
+    static constexpr float DistImprove_Scale = 0.01f;   // main multiplier
+    static constexpr float DistImprove_Threshold = 0.001f;  // minimal improvement each step
+    static constexpr float DistImprove_Threshold_Punishment = -0.001f; // punish tiny/no improvement
+    static constexpr float DistImprove_Min = -1.0f;   // clamp negative delta
+    static constexpr float DistImprove_Max = 1.0f;   // clamp positive delta
 
     // Z-acceleration penalty (gravity is 980cm.t^2 )
     static constexpr float ZAccel_Scale = 0.0001f;
     static constexpr float ZAccel_Min = .1;
     static constexpr float ZAccel_Max = 2000.0f;
 
-    // Cradle constants
-    static constexpr float Cradle_Scale = 0.01f;
-    static constexpr float Cradle_DistMin = 0.0f;
-    static constexpr float Cradle_DistMax = 200.0f;
-    // We'll multiply the sphere radius from the GridObject by 1.5 for the bounding radius
-    static constexpr float CradleRadiusMultiplier = 1.5f;
 
     // Event-based
     static constexpr float REACH_GOAL_REWARD = 0.1f;
