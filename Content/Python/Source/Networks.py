@@ -320,7 +320,7 @@ class SharedCritic(nn.Module):
 
         # **Self-Attention for Baseline Function (Per-Agent Groupmates)**
         self.baseline_attention = nn.MultiheadAttention(
-            embed_dim=net_cfg['baseline_head']['in_features'], num_heads=4, batch_first=True
+            **net_cfg['baseline_attention']
         )
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -583,6 +583,7 @@ float ATerraShiftEnvironment::Reward()
         }
 
         if (!AgentHasActiveGridObject[AgentIndex]) {
+            StepReward += STEP_PENALTY;
             continue;
         }
 

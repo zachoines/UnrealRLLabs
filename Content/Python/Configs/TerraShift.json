@@ -8,7 +8,7 @@
       "ObjectSize": [0.1, 0.1, 0.1],
       "ObjectMass": 0.1,
       "GridSize": 50,
-      "MaxSteps": 512,
+      "MaxSteps": 1024,
       "NumGoals": 4,
       "SpawnDelay": 0.25,
       "MaxAgents": 5,
@@ -93,12 +93,12 @@
   "agent": {
     "type": "MA_POCA",
     "params": {
-      "learning_rate": 0.00002,
+      "learning_rate": 0.00001,
       "gamma": 0.99,
       "lambda": 0.95,
-      "value_loss_coeff": 0.5,
-      "baseline_loss_coeff": 0.25,
-      "normalize_advantages": false,
+      "value_loss_coeff": 0.1,
+      "baseline_loss_coeff": 0.01,
+      "normalize_advantages": true,
       "clipped_value_loss": true,
       "max_grad_norm": 0.5,
       "ppo_clip_range": 0.1,
@@ -107,8 +107,8 @@
       "schedulers": {
         "lr": {
           "start_factor": 1,
-          "end_factor": 0.001,
-          "total_iters": 10000
+          "end_factor": 0.0001,
+          "total_iters": 100000
         },
         "lr_cos_disabled": {
           "max_lr": 0.0001, 
@@ -119,10 +119,10 @@
           "final_div_factor": 100
         },
         "entropy_coeff_cos_disabled": {
-          "max_value": 0.01, 
-          "total_steps": 30000, 
-          "pct_start": 0.3, 
-          "div_factor": 10, 
+          "max_value": 0.01,
+          "total_steps": 30000,
+          "pct_start": 0.3,
+          "div_factor": 10,
           "final_div_factor": 100
         },
         "entropy_coeff_linear_disabled": {
@@ -138,8 +138,8 @@
             "num_agents": 5, 
             "h": 50,
             "w": 50, 
-            "embed_dim": 64, 
-            "num_heads": 4, 
+            "embed_dim": 128, 
+            "num_heads": 8, 
             "cnn_channels": [32, 64, 128], 
             "cnn_kernel_sizes": [5, 3, 3], 
             "cnn_strides": [2, 2, 2], 
@@ -148,27 +148,27 @@
             "group_norms": [16, 8, 4]
           },
           "obs_encoder": {
-            "state_dim": 64,
-            "hidden_size": 64,
-            "output_size": 64,
+            "state_dim": 128,
+            "hidden_size": 128,
+            "output_size": 128,
             "dropout_rate": 0,
             "activation": true,
             "layer_norm": false
           },
           "obs_actions_encoder": {
-            "state_dim": 64,
+            "state_dim": 128,
             "action_dim": 7,
-            "hidden_size": 64,
-            "output_size": 64,
+            "hidden_size": 128,
+            "output_size": 128,
             "dropout_rate": 0,
             "activation": true,
             "layer_norm": false
           }
         },
         "policy_network": {
-          "in_features": 64,
-          "hidden_size": 64,
-          "log_std_min": -8,
+          "in_features": 128,
+          "hidden_size": 128,
+          "log_std_min": -6,
           "log_std_max": 2,
           "entropy_method": "mc",
           "n_entropy_samples": 10,
@@ -176,14 +176,19 @@
         },
         "critic_network": {
           "value_head": {
-            "in_features": 64,
-            "hidden_size": 64,
+            "in_features": 128,
+            "hidden_size": 128,
             "dropout_rate": 0
           },
           "baseline_head": {
-            "in_features": 64,
-            "hidden_size": 64,
+            "in_features": 128,
+            "hidden_size": 128,
             "dropout_rate": 0
+          },
+          "baseline_attention": {
+            "embed_dim" : 128,
+            "num_heads" : 8,
+            "batch_first" : true
           }
         }
       }
@@ -191,11 +196,14 @@
   },
 
   "train": {
-    "num_environments": 6,
-    "epochs": 6,
-    "mini_batch_size": 32,
-    "buffer_size": 256,
-    "batch_size": 256,
+    "states_normalizer": {
+      "warmup_steps" : 10000
+    },
+    "num_environments": 3,
+    "epochs": 8,
+    "mini_batch_size": 64,
+    "buffer_size": 512,
+    "batch_size": 512,
     "AgentsResetFrequency": 0,
     "ActionRepeat": 3,
     "saveFrequency": 20

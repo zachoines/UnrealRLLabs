@@ -366,7 +366,15 @@ class MAPOCAAgent(Agent):
 
                 grad_norms_count += 1
 
-        # Final logs
+        # ------------------------------------------------
+        # final logs
+        # ------------------------------------------------
+        # average the per-layer grad norms over all mini-batches
+        layer_grad_norm_logs = {}
+        for pname, accum in grad_norms_sum_per_layer.items():
+            mean_norm = accum / float(grad_norms_count)
+            layer_grad_norm_logs[f"GradNorm/{pname}"] = mean_norm
+
         logs = {
             "Policy Loss": torch.stack(pol_losses).mean(),
             "Value Loss": torch.stack(val_losses).mean(),
@@ -379,6 +387,7 @@ class MAPOCAAgent(Agent):
             "Ave. Rewards": rewards_mean,
             "Learning Rate": torch.stack(lrs_list).mean(),
         }
+        logs.update(layer_grad_norm_logs)
         return logs
 
     # ------------------------------------------------------------
