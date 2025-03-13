@@ -93,12 +93,12 @@
   "agent": {
     "type": "MA_POCA",
     "params": {
-      "learning_rate": 0.00001,
+      "learning_rate": 0.00005,
       "gamma": 0.99,
       "lambda": 0.95,
       "value_loss_coeff": 0.1,
-      "baseline_loss_coeff": 0.01,
-      "normalize_advantages": true,
+      "baseline_loss_coeff": 0.1,
+      "normalize_advantages": false,
       "clipped_value_loss": true,
       "max_grad_norm": 0.5,
       "ppo_clip_range": 0.1,
@@ -107,7 +107,7 @@
       "schedulers": {
         "lr": {
           "start_factor": 1,
-          "end_factor": 0.0001,
+          "end_factor": 0.001,
           "total_iters": 100000
         },
         "lr_cos_disabled": {
@@ -134,18 +134,21 @@
       "networks": {
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor" : {
-            "obs_size": 26, 
-            "num_agents": 5, 
+            "obs_size": 26,
+            "num_agents": 5,
             "h": 50,
-            "w": 50, 
-            "embed_dim": 128, 
-            "num_heads": 8, 
-            "cnn_channels": [32, 64, 128], 
-            "cnn_kernel_sizes": [5, 3, 3], 
-            "cnn_strides": [2, 2, 2], 
-            "transformer_layers": 2, 
+            "w": 50,
+            "embed_dim": 128,
+            "num_heads": 8,
+            "cnn_channels": [32, 64, 128],
+            "cnn_kernel_sizes": [5, 3, 3],
+            "cnn_strides": [2, 2, 2],
+            "transformer_layers": 2,
             "scale_ratios": [0.25, 0.125, 0.0625],
-            "group_norms": [16, 8, 4]
+            "group_norms": [16, 8, 4],
+            "num_agent_id_freqs": 8,
+            "num_patch_pos_freqs": 4,
+            "use_scale_attention_weights": false
           },
           "obs_encoder": {
             "state_dim": 128,
@@ -197,13 +200,13 @@
 
   "train": {
     "states_normalizer": {
-      "warmup_steps" : 10000
+      "warmup_steps" : 1000
     },
-    "num_environments": 3,
-    "epochs": 8,
-    "mini_batch_size": 64,
-    "buffer_size": 512,
-    "batch_size": 512,
+    "num_environments": 6,
+    "epochs": 4,
+    "mini_batch_size": 32,
+    "buffer_size": 256,
+    "batch_size": 256,
     "AgentsResetFrequency": 0,
     "ActionRepeat": 3,
     "saveFrequency": 20

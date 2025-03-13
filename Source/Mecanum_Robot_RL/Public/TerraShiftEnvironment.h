@@ -293,7 +293,7 @@ private:
 
     // Toggles to enable/disable sub-rewards
     static constexpr bool bUseVelAlignment = false;
-    static constexpr bool bUseXYDistanceImprovement = false;
+    static constexpr bool bUseXYDistanceImprovement = true;
     static constexpr bool bUseZAccelerationPenalty = false;
     static constexpr bool bUseCradleReward = false;
 
@@ -305,7 +305,7 @@ private:
     static constexpr float VelAlign_Max = 20.0f;   // clamp “toward” speed
 
     // Distance-improvement constants (XY only)
-    static constexpr float DistImprove_Scale = 0.1; // main multiplier
+    static constexpr float DistImprove_Scale = 0.01; // main multiplier
     static constexpr float DistImprove_Threshold = 0.0f;  // minimal improvement each step
     static constexpr float DistImprove_Threshold_Punishment = 0.0f; // punish tiny/no improvement
     static constexpr float DistImprove_Min = -1.0f;   // clamp negative delta
@@ -319,7 +319,7 @@ private:
 
     // Event-based
     static constexpr float REACH_GOAL_REWARD = 0.001f;
-    static constexpr float FALL_OFF_PENALTY = -0.0001f;
+    static constexpr float FALL_OFF_PENALTY = -0.001f;
     static constexpr float STEP_PENALTY = -0.0000001f;
 
 };
