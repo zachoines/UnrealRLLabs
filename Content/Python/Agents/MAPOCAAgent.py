@@ -215,9 +215,11 @@ class MAPOCAAgent(Agent):
 
         # Maybe normalize rewards
         rewards_mean = rewards.mean()
+        rewards_norm_mean = rewards_mean
         if self.rewards_normalizer:
             self.rewards_normalizer.update(rewards)
-            self.rewards_normalizer.normalize(rewards)
+            rewards = self.rewards_normalizer.normalize(rewards)
+            rewards_norm_mean = rewards.mean()
 
         # ------------------------------------------------
         # 1) Gather old data
@@ -315,13 +317,13 @@ class MAPOCAAgent(Agent):
 
                 # Advantage stats
                 adv_mean = adv_mb.mean()
-                adv_std = adv_mb.std() + 1e-8
+                adv_std = adv_mb.std() 
                 advantages_mean_list.append(adv_mean.detach().cpu())
                 advantages_std_list.append(adv_std.detach().cpu())
                 if self.normalize_adv:
-                    adv_mb = (adv_mb - adv_mean) / adv_std
-                    adv_clip_factor = 5.0  # 5 stds
-                    adv_mb = adv_mb.clamp(-adv_clip_factor, adv_clip_factor)
+                    adv_mb = (adv_mb - adv_mean) / (adv_std + 1e-8)
+                    # adv_clip_factor = 5.0  # 5 stds
+                    # adv_mb = adv_mb.clamp(-adv_clip_factor, adv_clip_factor)
 
                 # Detach advantage for policy gradient
                 detached_adv = adv_mb.detach()
@@ -385,6 +387,7 @@ class MAPOCAAgent(Agent):
             "Avg. Returns": torch.stack(returns_list).mean(),
             "Avg. Grad Norm": torch.stack(grad_norm_list).mean(),
             "Ave. Rewards": rewards_mean,
+            "Ave. Rewards norm": rewards_norm_mean,
             "Learning Rate": torch.stack(lrs_list).mean(),
         }
         logs.update(layer_grad_norm_logs)

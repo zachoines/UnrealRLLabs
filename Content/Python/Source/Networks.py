@@ -387,18 +387,10 @@ class SharedCritic(nn.Module):
 
 class TanhContinuousPolicyNetwork(BasePolicyNetwork):
     """
-    A Tanh-squashed Normal distribution. Typical usage:
-      1) 'forward(x)' => produce unbounded mean + clamped log_std in [log_std_min, log_std_max].
-      2) 'get_actions(emb)' => 
-         - sample raw_action ~ Normal(mean, std)
-         - a = tanh(raw_action)
-         - compute log_probs (with tanh correction) and approximate entropies
-      3) 'recompute_log_probs(emb, actions)':
-         - invert actions => raw_action = atanh(actions)
-         - re-calc log_probs & entropies with factorized Normal + correction
-      4) For entropies, we support:
-         - 'analytic' => single-sample correction
-         - 'mc' => sample-based approach for more accurate integral
+    A Tanh-squashed Normal distribution with measures to prevent extreme log probs:
+      - Mean is clamped in [-5, 5]
+      - final tanh outputs are clamped to [-1+eps, 1-eps]
+      - log_std is in [log_std_min, log_std_max] via tanh
     """
 
     def __init__(
@@ -440,9 +432,12 @@ class TanhContinuousPolicyNetwork(BasePolicyNetwork):
         self.mean_head.apply(lambda m: init_weights_leaky_relu(m, 0.01))
         self.log_std_head.apply(lambda m: init_weights_leaky_relu(m, 0.01))
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
         feats = self.shared(x)
-        mean  = self.mean_head(feats)
+        mean = self.mean_head(feats)
+        mean = torch.clamp(mean, -5.0, 5.0) # Clamp the mean to avoid huge raw_action
+        
+        # Tanh-rescale log_std into [log_std_min, log_std_max]
         raw_log_std = self.log_std_head(feats)
         clamped_log_std = self.log_std_min + 0.5 * (self.log_std_max - self.log_std_min) * (
             torch.tanh(raw_log_std) + 1.0
@@ -453,8 +448,9 @@ class TanhContinuousPolicyNetwork(BasePolicyNetwork):
         """
         1) sample or return mean from Normal(mean, std)
         2) tanh-squash => a
-        3) compute log_probs & approximate entropies
-        Return => (actions, log_probs, entropies) => shape => (B, outDim), (B,), (B,)
+        3) clamp actions to [-1+eps, 1-eps]
+        4) compute log_probs & approximate entropies
+        Return => (actions, log_probs, entropies)
         """
         mean, log_std = self.forward(emb)
         std = torch.exp(log_std)
@@ -463,14 +459,16 @@ class TanhContinuousPolicyNetwork(BasePolicyNetwork):
         if eval:
             raw_action = mean
         else:
-            raw_action = dist.rsample()  # reparameterized sample
+            raw_action = dist.rsample()
 
+        # Tanh + clamp
         actions = torch.tanh(raw_action)
+        eps = 1e-6
+        actions = torch.clamp(actions, -1.0 + eps, 1.0 - eps)
 
         # log_probs with tanh correction
         logp_raw = dist.log_prob(raw_action).sum(dim=-1)
-        eps = 1e-6
-        correction = torch.sum(torch.log(1 - actions.pow(2) + eps), dim=-1)
+        correction = torch.sum(torch.log(1.0 - actions.pow(2) + eps), dim=-1)
         log_probs = logp_raw - correction
 
         # approximate ent
@@ -480,34 +478,28 @@ class TanhContinuousPolicyNetwork(BasePolicyNetwork):
     def recompute_log_probs(self, emb: torch.Tensor, actions: torch.Tensor):
         """
         For already-squashed 'actions' in [-1,1], invert => raw_action=atanh(a_clamped),
-        then compute log_probs & ent. Return => (log_probs, entropies) => shape => (B,).
+        then compute log_probs & ent. Return => (log_probs, entropies).
         """
-
-        # 1) Forward pass => (mean, log_std) => dist=Normal(mean, std)
         mean, log_std = self.forward(emb)
         std = torch.exp(log_std)
         dist = Normal(mean, std)
 
-        # 2) clamp final actions inside safe [-1..1]
         eps = 1e-8
-        a_clamped = torch.clamp(actions, -1+eps, 1-eps)
+        a_clamped = torch.clamp(actions, -1+eps, 1-eps)  # ensures we don't take log(0) below
 
-        # 3) stable atanh => raw_action = 0.5 * log( (1+a)/(1-a) )
-        # clamp ratio => max
         ratio = (1 + a_clamped).clamp_min(eps) / (1 - a_clamped).clamp_min(eps)
         raw_action = 0.5 * torch.log(ratio)
 
-        # 4) Normal log-prob => sum across action dims
+        # Normal log-prob => sum across action dims
         logp_raw = dist.log_prob(raw_action).sum(dim=-1)
 
-        # 5) Tanh correction => sum(log(1 - a^2 + eps)) across dims
+        # Tanh correction => sum(log(1 - a^2 + eps)) across dims
         correction = torch.sum(torch.log(1 - a_clamped.pow(2) + eps), dim=-1)
         log_probs = logp_raw - correction
 
-        # 6) approximate ent => same as in get_actions
+        # Approximate ent
         entropies = self._approx_entropy(dist, a_clamped, raw_action)
         return log_probs, entropies
-
 
     def _approx_entropy(self, dist: Normal, actions: torch.Tensor, raw_action: torch.Tensor) -> torch.Tensor:
         """
@@ -529,8 +521,10 @@ class TanhContinuousPolicyNetwork(BasePolicyNetwork):
         n = self.n_entropy_samples
         raw_samps = dist.rsample([n])  # => (n,B,outDim)
         a_samps   = torch.tanh(raw_samps)
-        logp_raw  = dist.log_prob(raw_samps).sum(dim=-1) # => (n,B)
         eps = 1e-6
+        a_samps   = torch.clamp(a_samps, -1+eps, 1-eps)  # <--- same clamp as get_actions
+
+        logp_raw  = dist.log_prob(raw_samps).sum(dim=-1)  # => (n,B)
         corr = torch.sum(torch.log(1 - a_samps.pow(2) + eps), dim=-1)
         logp_all = logp_raw - corr
         return - logp_all.mean(dim=0)  # => (B,)
@@ -539,15 +533,13 @@ class TanhContinuousPolicyNetwork(BasePolicyNetwork):
         """
         'analytic'/naive approach:
         ent_raw = factorized normal entropy => dist.entropy().sum(dim=-1)
-        correction = sum(log(1 - actions^2))
+        correction = sum(log(1 - actions^2 + eps))
         => ent = ent_raw - correction
         """
         ent_raw = dist.entropy().sum(dim=-1)
         eps = 1e-6
         corr = torch.sum(torch.log(1 - actions.pow(2) + eps), dim=-1)
         return ent_raw - corr
-
-
 class MultiAgentEmbeddingNetwork(nn.Module):
     def __init__(self, net_cfg: Dict[str, Any]):
         super(MultiAgentEmbeddingNetwork, self).__init__()
@@ -848,7 +840,7 @@ class CrossAttentionFeatureExtractor(nn.Module):
             row = idx // ww
             col = idx %  ww
             row = row.view(1, -1).expand(b, -1).contiguous()  # => (B, s*s)
-            col = col.view(1, -1).expand(b, -1).contiguous()  # => (B, s*s)
+            col = col.view(1, -1).expand(b, -1)  # => (B, s*s)
 
             patch_pos = self.patch_pos_encoder(row, col) # => (B, s*s, d)
             patches = patches + patch_pos
