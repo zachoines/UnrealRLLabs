@@ -276,9 +276,6 @@ class ValueNetwork(nn.Module):
         return self.value_net(x)
 
 
-############################################################
-# Updated SharedCritic
-############################################################
 class SharedCritic(nn.Module):
     """
     A "global" critic that outputs:
@@ -337,15 +334,9 @@ class SharedCritic(nn.Module):
         return base
 
 
-class TanhContinuousPolicyNetwork(BasePolicyNetwork):
+class TanhContinuousPolicyNetwork(nn.Module):
     """
     A Tanh-squashed Normal distribution using PyTorch's TransformedDistribution.
-
-    IMPORTANT CHANGES:
-      - We now output *raw* actions in `get_actions()`.
-      - The environment should do `torch.tanh(raw_action)` if it needs actions in [-1,1].
-      - We rely on `TransformedDistribution(..., TanhTransform())` for stable log_prob computation,
-        so we do *not* manually subtract log(1 - a^2).
     """
 
     def __init__(
@@ -358,7 +349,7 @@ class TanhContinuousPolicyNetwork(BasePolicyNetwork):
         log_std_max: float,
         entropy_method: str = "analytic",
         n_entropy_samples: int = 5,
-        linear_init_scale: float = 1.0
+        linear_init_scale: float = 1.0,
     ):
         super().__init__()
         self.mean_scale = mean_scale
@@ -386,80 +377,53 @@ class TanhContinuousPolicyNetwork(BasePolicyNetwork):
             nn.Linear(hidden_size, out_features),
         )
 
-        # Initialize
-        self.shared.apply(lambda m: init_weights_gelu_linear(m, linear_init_scale))
-        self.mean_head.apply(lambda m: init_weights_gelu_linear(m, linear_init_scale))
-        self.log_std_head.apply(lambda m: init_weights_gelu_linear(m, linear_init_scale))
+        self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale))
 
-        # final layers for mean & log_std
-        with torch.no_grad():
-
-            self.mean_head[-1].bias.fill_(0.0)  # or a small offset if you prefer
-            self.log_std_head[-1].bias.fill_(0.0)
 
     def forward(self, x: torch.Tensor):
-        """
-        Returns the mean and clamped log_std for the base Normal.
-        """
         feats = self.shared(x)
 
-        # Mean, scaled to mean_scale
-        mean = self.mean_scale * torch.tanh(self.mean_head(feats))
+        # Mean in [-mean_scale, +mean_scale]
+        raw_mean = self.mean_head(feats)
+        mean = self.mean_scale * torch.tanh(raw_mean)
 
-        # log_std in [log_std_min, log_std_max] via tanh
+        # log_std in [log_std_min, log_std_max]
         raw_log_std = self.log_std_head(feats)
         clamped_log_std = self.log_std_min + 0.5 * (self.log_std_max - self.log_std_min) * (
             torch.tanh(raw_log_std) + 1.0
         )
+
         return mean, clamped_log_std
 
     def get_actions(self, emb: torch.Tensor, eval: bool=False):
         """
-        1) Construct Normal(mean, std).
-        2) Sample *raw* actions in (-∞, ∞) if not eval, else use mean.
-        3) We'll compute log_prob *as if* we applied tanh to these raw actions,
-           by using TransformedDistribution(..., TanhTransform()) internally.
-        4) Return => (raw_actions, log_probs, entropies).
-
-        NOTE: The environment can do `torch.tanh(raw_actions)` to get actions in [-1,1].
+        Return final_action in [-1,1], plus log_probs & entropies
         """
         mean, log_std = self.forward(emb)
         std = torch.exp(log_std)
 
         # Base Normal
         base_dist = Normal(mean, std)
-        # Tanh transformation for stable log_prob
-        transform = TanhTransform(cache_size=1)  # cache for stable inverse
+        transform = TanhTransform(cache_size=1)
         tanh_dist = TransformedDistribution(base_dist, transform)
 
         if eval:
-            # deterministic raw action = mean
-            raw_action = mean
+            # deterministic => we can do transform(mean), or use tanh_dist.mean
+            actions = tanh_dist.mean  # shape => (B, out_features)
         else:
-            # reparameterized sample of raw action
-            raw_action = base_dist.rsample()
+            # sample in [-1,1]
+            actions = tanh_dist.rsample()  # => (B, out_features)
 
-        # Because we are returning *raw* actions, we manually do the transform to compute log_prob:
-        squashed_action = transform(raw_action)
+        action_clamped = actions.clamp(-1+1e-6, 1-1e-6)
+        log_probs = tanh_dist.log_prob(action_clamped).sum(dim=-1)  # sum across action dims
+        entropies = self._compute_entropy(tanh_dist)
 
-        # sum log_prob across the action dimensions
-        log_probs = tanh_dist.log_prob(squashed_action).sum(dim=-1)
+        return action_clamped, log_probs, entropies
 
-        # entropies
-        entropies = self._compute_entropy(tanh_dist, base_dist, raw_action)
-
-        return raw_action, log_probs, entropies
-
-    def recompute_log_probs(self, emb: torch.Tensor, raw_actions: torch.Tensor):
+    def recompute_log_probs(self, emb: torch.Tensor, stored_actions: torch.Tensor):
         """
-        Re-compute log_probs & entropies given stored *raw* actions in [-∞,∞].
-        (The environment does the final tanh, but we only need raw actions for stable log_prob.)
-
-        1) Forward => get mean, std => base Normal
-        2) Build TanhTransform => TanhDist
-        3) squashed = tanh(raw_actions)
-        4) log_probs = TanhDist.log_prob(squashed).sum(...)
-        5) entropies => either from TanhDist or MC approximation
+        'stored_actions' are the final actions in [-1,1].
+        We invert them internally (via transform.inv) for stable log_prob calculation.
         """
         mean, log_std = self.forward(emb)
         std = torch.exp(log_std)
@@ -468,50 +432,31 @@ class TanhContinuousPolicyNetwork(BasePolicyNetwork):
         transform = TanhTransform(cache_size=1)
         tanh_dist = TransformedDistribution(base_dist, transform)
 
-        # If environment is storing raw actions, we just transform them:
-        squashed_action = transform(raw_actions)
-
-        # sum log_prob across dims
-        log_probs = tanh_dist.log_prob(squashed_action).sum(dim=-1)
-
-        # entropies
-        entropies = self._compute_entropy(tanh_dist, base_dist, raw_actions)
+        # We do *not* have raw actions. Instead, we have [-1,1] actions => invert via TanhTransform
+        log_probs = tanh_dist.log_prob(stored_actions).sum(dim=-1)
+        entropies = self._compute_entropy(tanh_dist)
         return log_probs, entropies
 
-    def _compute_entropy(self, tanh_dist: TransformedDistribution, base_dist: Normal, raw_action: torch.Tensor):
+    def _compute_entropy(self, tanh_dist: TransformedDistribution) -> torch.Tensor:
         """
-        We handle the 'mc' or 'analytic' approach for entropy. If the underlying
-        TanhTransform does not provide a built-in `entropy()`, we can do a fallback.
+        We rely on .entropy() or do an MC fallback for TanhDist.
         """
         if self.entropy_method == "mc":
             return self._mc_entropy(tanh_dist)
         else:
-            # Try to use .entropy() if it's implemented
-            # If TanhTransform doesn't implement a closed-form, we do a fallback
             try:
-                # shape => (batch, outDim)
-                # Usually, .entropy() might return shape (batch, outDim),
-                # but it could also raise NotImplementedError.
-                ent = tanh_dist.entropy()  # per-dimension
+                ent = tanh_dist.entropy()  # shape => (B, out_features)
                 return ent.sum(dim=-1)
             except NotImplementedError:
-                # fallback to MC
                 return self._mc_entropy(tanh_dist)
 
     def _mc_entropy(self, tanh_dist: TransformedDistribution) -> torch.Tensor:
-        """
-        Draw n samples from the TanhDist, approximate -E[log_prob].
-        shape => (n, batch, outDim)
-        """
         n = self.n_entropy_samples
-        # (n, B, outDim)
-        samps = tanh_dist.rsample([n])
-        # log_probs => (n, B, outDim) => sum over outDim => (n,B)
-        lp = tanh_dist.log_prob(samps).sum(dim=-1)
-        # average over samples => negative is the entropy
-        return -lp.mean(dim=0)
-    
+        samps = tanh_dist.rsample([n])    # => (n, B, out_features)
+        lp = tanh_dist.log_prob(samps).sum(dim=-1)  # => (n,B)
+        return -lp.mean(dim=0)  # => (B,)
 
+   
 class MultiAgentEmbeddingNetwork(nn.Module):
     def __init__(self, net_cfg: Dict[str, Any]):
         super(MultiAgentEmbeddingNetwork, self).__init__()

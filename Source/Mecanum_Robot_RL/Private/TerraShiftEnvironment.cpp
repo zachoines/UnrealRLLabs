@@ -373,13 +373,13 @@ void ATerraShiftEnvironment::Act(FAction Action)
         float dBlendWeight = Action.Values[BaseIndex + 6];
 
         FFractalAgentAction& FA = FractalActions[i];
-        FA.dPitch = FMath::Tanh(dPitch);
-        FA.dYaw = FMath::Tanh(dYaw);
-        FA.dRoll = FMath::Tanh(dRoll);
-        FA.dBaseFreq = FMath::Tanh(dBaseFreq);
-        FA.dLacunarity = FMath::Tanh(dLacunarity);
-        FA.dGain = FMath::Tanh(dGain);
-        FA.dBlendWeight = FMath::Tanh(dBlendWeight);
+        FA.dPitch = FMath::Clamp(dPitch, -1.0f, 1.0f);
+        FA.dYaw = FMath::Clamp(dYaw, -1.0f, 1.0f);
+        FA.dRoll = FMath::Clamp(dRoll, - 1.0f, 1.0f);
+        FA.dBaseFreq = FMath::Clamp(dBaseFreq, -1.0f, 1.0f);
+        FA.dLacunarity = FMath::Clamp(dLacunarity, -1.0f, 1.0f);
+        FA.dGain = FMath::Clamp(dGain, -1.0f, 1.0f);
+        FA.dBlendWeight = FMath::Clamp(dBlendWeight, -1.0f, 1.0f);
     }
 
     // Step fractal wave environment

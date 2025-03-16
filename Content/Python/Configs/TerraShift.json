@@ -107,7 +107,7 @@
       "max_grad_norm": 1.0,
       "ppo_clip_range": 0.1,
       "value_clip_range": 0.2,
-      "entropy_coeff": 0.001,
+      "entropy_coeff": 0.01,
       "schedulers": {
         "lr": {
           "start_factor": 1,
@@ -155,7 +155,7 @@
             "ff_hidden_factor": 4,
             "id_num_freqs": 8,
             "conv_init_scale": 0.1,
-            "linear_init_scale": 1.0 
+            "linear_init_scale": 0.1 
           },
           "obs_encoder": {
             "state_dim": 128,
@@ -163,7 +163,8 @@
             "output_size": 128,
             "dropout_rate": 0,
             "activation": true,
-            "layer_norm": true
+            "layer_norm": true,
+            "linear_init_scale" : 0.1
           },
           "obs_actions_encoder": {
             "state_dim": 128,
@@ -172,18 +173,20 @@
             "output_size": 128,
             "dropout_rate": 0,
             "activation": true,
-            "layer_norm": true
+            "layer_norm": true,
+            "linear_init_scale" : 0.1
           }
         },
         "policy_network": {
           "in_features": 128,
           "hidden_size": 128,
-          "log_std_min": -8,
-          "log_std_max": 2,
-          "mean_scale" : 3,
+          "log_std_min": -4.0,
+          "log_std_max": 2.0,
+          "mean_scale" : 1.0,
           "entropy_method": "mc",
-          "n_entropy_samples": 32,
-          "num_agents": 5
+          "n_entropy_samples": 10,
+          "num_agents": 5,
+          "linear_init_scale": 0.1
         },
         "critic_network": {
           "value_head": {
@@ -202,7 +205,7 @@
             "dropout": 0.0,
             "self_attention" : true
           },
-          "linear_init_scale" : 1.0
+          "linear_init_scale" : 0.1
         }
       }
     }
@@ -213,12 +216,12 @@
       "warmup_steps" : 1000
     },
     "num_environments": 8,
-    "epochs": 4,
-    "mini_batch_size": 8,
-    "buffer_size": 64,
-    "batch_size": 64,
+    "epochs": 6,
+    "mini_batch_size": 16,
+    "buffer_size": 128,
+    "batch_size": 128,
     "AgentsResetFrequency": 0,
-    "ActionRepeat": 2,
+    "ActionRepeat": 1,
     "saveFrequency": 20
   }
 }
