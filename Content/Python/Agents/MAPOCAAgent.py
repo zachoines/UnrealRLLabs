@@ -99,6 +99,7 @@ class MAPOCAAgent(Agent):
                 in_features=pol_cfg["in_features"],
                 out_features=self.action_dim,
                 hidden_size=pol_cfg["hidden_size"],
+                mean_scale=pol_cfg.get("mean_scale", -4.0),
                 log_std_min=pol_cfg.get("log_std_min", -20.0),
                 log_std_max=pol_cfg.get("log_std_max", 2.0),
                 entropy_method=pol_cfg.get("entropy_method", "analytic"),
@@ -226,19 +227,19 @@ class MAPOCAAgent(Agent):
         # ------------------------------------------------
         with torch.no_grad():
             # Get base embeddings and attention weights
-            base_emb, attn_weights = self.embedding_network.get_base_embedding(states)
+            base_emb, _ = self.embedding_network.get_base_embedding(states)
             baseline_emb = self.embedding_network.get_baseline_embeddings(base_emb, actions)
 
             # Compute old values, baselines using attention weights
-            old_vals = self.shared_critic.values(base_emb, attn_weights)  # => (NS,NE,1)
+            old_vals = self.shared_critic.values(base_emb)  # => (NS,NE,1)
             old_bases = self.shared_critic.baselines(baseline_emb)  # => (NS,NE,NA,1)
 
             # Compute old log_probs
             old_lp, _ = self._recompute_log_probs(base_emb, actions)
 
             # Compute next state embeddings and values
-            next_base_emb, next_attn_weights = self.embedding_network.get_base_embedding(next_states)
-            next_vals = self.shared_critic.values(next_base_emb, next_attn_weights)
+            next_base_emb, _ = self.embedding_network.get_base_embedding(next_states)
+            next_vals = self.shared_critic.values(next_base_emb)
 
             # Compute returns using TD(lambda)
             returns = self._compute_td_lambda_returns(
@@ -295,7 +296,7 @@ class MAPOCAAgent(Agent):
                 obase_mb = old_bases[mb_idx]  # => (MB,NE,NA,1)
 
                 # Forward pass on new states
-                base_emb_mb, attn_weights_mb = self.embedding_network.get_base_embedding(st_mb)
+                base_emb_mb, _ = self.embedding_network.get_base_embedding(st_mb)
                 baseline_emb_mb = self.embedding_network.get_baseline_embeddings(base_emb_mb, act_mb)
 
                 # Compute new log_probs
@@ -308,7 +309,7 @@ class MAPOCAAgent(Agent):
                 logprob_maxs.append(lp_det.max().cpu())
 
                 # Compute new values, baselines using new attention weights
-                new_vals_mb = self.shared_critic.values(base_emb_mb, attn_weights_mb)  # => (MB,NE,1)
+                new_vals_mb = self.shared_critic.values(base_emb_mb)  # => (MB,NE,1)
                 new_base_mb = self.shared_critic.baselines(baseline_emb_mb)  # => (MB,NE,NA,1)
 
                 # Advantage Calculation
@@ -322,8 +323,8 @@ class MAPOCAAgent(Agent):
                 advantages_std_list.append(adv_std.detach().cpu())
                 if self.normalize_adv:
                     adv_mb = (adv_mb - adv_mean) / (adv_std + 1e-8)
-                    # adv_clip_factor = 5.0  # 5 stds
-                    # adv_mb = adv_mb.clamp(-adv_clip_factor, adv_clip_factor)
+                    adv_clip_factor = 5.0
+                    adv_mb = adv_mb.clamp(-adv_clip_factor, adv_clip_factor)
 
                 # Detach advantage for policy gradient
                 detached_adv = adv_mb.detach()
@@ -389,6 +390,8 @@ class MAPOCAAgent(Agent):
             "Ave. Rewards": rewards_mean,
             "Ave. Rewards norm": rewards_norm_mean,
             "Learning Rate": torch.stack(lrs_list).mean(),
+            "Logprob Min": torch.stack(logprob_mins).mean(),
+            "Logprob Max": torch.stack(logprob_maxs).mean()
         }
         logs.update(layer_grad_norm_logs)
         return logs
@@ -420,7 +423,7 @@ class MAPOCAAgent(Agent):
         return out_rets
 
     def _ppo_clip_loss(self, new_lp, old_lp, adv, clip_range):
-        diff = (new_lp - old_lp).clamp(-10, 10) # to avoid extreme exponent
+        diff = (new_lp - old_lp).clamp(-10.0, 10.0) # to avoid extreme exponent
         ratio = torch.exp(diff)
         clipped = torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range)
         obj1 = ratio * adv

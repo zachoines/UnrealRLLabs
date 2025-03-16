@@ -5,6 +5,76 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Union, Dict
 
+def create_2d_sin_cos_pos_emb(h: int, w: int, embed_dim: int, device: torch.device):
+    """
+    Create a 2D sine-cosine positional encoding => shape (h*w, embed_dim),
+    splitting embed_dim in half for row, half for col.
+    """
+    half_dim = embed_dim // 2  # We'll use half for row, half for col
+
+    def position_encoding_1d(n: int, half_d: int):
+        """
+        Returns shape (n, half_d), standard Transformer approach for 1D pos encoding.
+        """
+        pos = torch.arange(n, device=device, dtype=torch.float).unsqueeze(1)  # (n,1)
+        i = torch.arange(half_d, device=device, dtype=torch.float).unsqueeze(0)  # (1, half_d)
+        exponent = 2.0 * i / float(half_d)
+        div_term = torch.pow(10000.0, -exponent)  # (1, half_d)
+
+        angles = pos * div_term  # => (n, half_d)
+        pe = torch.zeros_like(angles, device=device)
+        pe[:, 0::2] = torch.sin(angles[:, 0::2])
+        pe[:, 1::2] = torch.cos(angles[:, 1::2])
+        return pe
+
+    row_emb = position_encoding_1d(h, half_dim)  # (h, half_dim)
+    col_emb = position_encoding_1d(w, half_dim)  # (w, half_dim)
+
+    # Combine into (h, w, embed_dim)
+    row_emb = row_emb.unsqueeze(1).expand(h, w, half_dim)  # (h,w,half_dim)
+    col_emb = col_emb.unsqueeze(0).expand(h, w, half_dim)  # (h,w,half_dim)
+
+    pos_2d = torch.cat([row_emb, col_emb], dim=2)  # (h, w, embed_dim)
+    pos_2d = pos_2d.reshape(h*w, embed_dim)        # => (h*w, embed_dim)
+    return pos_2d
+
+def init_weights_gelu_conv(m: nn.Module, scale: float = 1.0):
+    """
+    Kaiming init for Conv2d, treating GELU similar to ReLU (nonlinearity='relu'),
+    then manually scaling by `scale`.
+    """
+    if isinstance(m, nn.Conv2d):
+        # Use a=0.0 => ReLU approximation
+        nn.init.kaiming_normal_(
+            m.weight,
+            a=0.0,  # ~ ReLU
+            mode='fan_in',
+            nonlinearity='relu'
+        )
+        if scale != 1.0:
+            m.weight.data.mul_(scale)
+
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0.0)
+
+def init_weights_gelu_linear(m: nn.Module, scale: float = 1.0):
+    """
+    Kaiming init for Linear, also treating GELU as ReLU,
+    then manually scaling by `scale`.
+    """
+    if isinstance(m, nn.Linear):
+        nn.init.kaiming_normal_(
+            m.weight,
+            a=0.0,  # ~ ReLU
+            mode='fan_in',
+            nonlinearity='relu'
+        )
+        if scale != 1.0:
+            m.weight.data.mul_(scale)
+
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0.0)
+
 def init_weights_leaky_relu_conv(m: nn.Module, negative_slope: float = 0.01):
     """
     Applies Kaiming initialization to nn.Conv2d layers,
