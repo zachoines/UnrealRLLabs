@@ -264,3 +264,128 @@ bool UEnvironmentConfig::HasPath(const FString& Path)
     TSharedPtr<FJsonValue> SubValue = ResolvePath(InternalJsonValue, Keys, 0);
     return SubValue.IsValid();
 }
+
+
+float UEnvironmentConfig::GetOrDefaultNumber(const FString& Path, float DefaultVal)
+{
+    // If missing or invalid path => return default
+    if (!HasPath(Path))
+    {
+        return DefaultVal;
+    }
+
+    // Otherwise, attempt to interpret
+    UEnvironmentConfig* Sub = const_cast<UEnvironmentConfig*>(this)->Get(Path);
+    if (!Sub || !Sub->IsValid())
+    {
+        return DefaultVal;
+    }
+
+    // If it's not a number, your existing code will log an error => fallback to default
+    if (Sub->InternalJsonValue->Type != EJson::Number)
+    {
+        return DefaultVal;
+    }
+
+    return Sub->AsNumber(); // Or cast directly if you prefer
+}
+
+int32 UEnvironmentConfig::GetOrDefaultInt(const FString& Path, int32 DefaultVal)
+{
+    if (!HasPath(Path))
+    {
+        return DefaultVal;
+    }
+
+    UEnvironmentConfig* Sub = const_cast<UEnvironmentConfig*>(this)->Get(Path);
+    if (!Sub || !Sub->IsValid())
+    {
+        return DefaultVal;
+    }
+
+    if (Sub->InternalJsonValue->Type != EJson::Number)
+    {
+        return DefaultVal;
+    }
+
+    return Sub->AsInt();
+}
+
+bool UEnvironmentConfig::GetOrDefaultBool(const FString& Path, bool DefaultVal)
+{
+    if (!HasPath(Path))
+    {
+        return DefaultVal;
+    }
+
+    UEnvironmentConfig* Sub = const_cast<UEnvironmentConfig*>(this)->Get(Path);
+    if (!Sub || !Sub->IsValid())
+    {
+        return DefaultVal;
+    }
+
+    if (Sub->InternalJsonValue->Type != EJson::Boolean)
+    {
+        return DefaultVal;
+    }
+
+    return Sub->AsBool();
+}
+
+TArray<float> UEnvironmentConfig::GetArrayOrDefault(const FString& Path, const TArray<float>& DefaultVal)
+{
+    if (!HasPath(Path))
+    {
+        return DefaultVal;
+    }
+
+    UEnvironmentConfig* Sub = const_cast<UEnvironmentConfig*>(this)->Get(Path);
+    if (!Sub || !Sub->IsValid())
+    {
+        return DefaultVal;
+    }
+
+    if (Sub->InternalJsonValue->Type != EJson::Array)
+    {
+        return DefaultVal;
+    }
+
+    // Inside AsArrayOfNumbers(), if any element isn't numeric, it logs & returns an empty array. 
+    // We'll interpret an empty array as "fallback" if you like, or just return that empty array:
+    TArray<float> MaybeNums = Sub->AsArrayOfNumbers();
+    if (MaybeNums.Num() == 0)
+    {
+        // optionally fallback to default
+        return DefaultVal;
+    }
+    return MaybeNums;
+}
+
+FVector2D UEnvironmentConfig::GetVector2DOrDefault(const FString& Path, const FVector2D& DefaultVal)
+{
+    // Check path
+    if (!HasPath(Path))
+    {
+        return DefaultVal;
+    }
+
+    UEnvironmentConfig* Sub = const_cast<UEnvironmentConfig*>(this)->Get(Path);
+    if (!Sub || !Sub->IsValid())
+    {
+        return DefaultVal;
+    }
+
+    // Must be array, attempt to parse array of numbers
+    if (Sub->InternalJsonValue->Type != EJson::Array)
+    {
+        return DefaultVal;
+    }
+
+    TArray<float> arr = Sub->AsArrayOfNumbers();
+    if (arr.Num() != 2)
+    {
+        return DefaultVal;
+    }
+
+    return FVector2D(arr[0], arr[1]);
+}

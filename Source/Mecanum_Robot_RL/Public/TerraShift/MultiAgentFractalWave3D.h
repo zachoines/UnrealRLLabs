@@ -8,10 +8,11 @@
 #include "MultiAgentFractalWave3D.generated.h"
 
 /**
- * Each agent's action: 7 degrees of freedom, each in [-1..1].
+ * Each agent's action now: 9 degrees of freedom, each in [-1..1].
  *
- * We interpret them as deltas for pitch, yaw, roll, fractal freq,
- * lacunarity, gain, and blend weight.
+ * We interpret them as deltas for orientation (pitch, yaw, roll),
+ * fractal freq, lacunarity, gain, blend weight,
+ * plus sample distance and FOV.
  */
 USTRUCT(BlueprintType)
 struct FFractalAgentAction
@@ -19,7 +20,7 @@ struct FFractalAgentAction
     GENERATED_BODY()
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float dPitch;        // [-1..1]
+    float dPitch;        // [-1..1], used to build a small rotation delta
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float dYaw;          // [-1..1]
@@ -39,6 +40,12 @@ struct FFractalAgentAction
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float dBlendWeight;  // [-1..1]
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    float dSampleDist;   // [-1..1]
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    float dFOV;          // [-1..1]
+
     FFractalAgentAction()
     {
         dPitch = 0.f;
@@ -48,14 +55,17 @@ struct FFractalAgentAction
         dLacunarity = 0.f;
         dGain = 0.f;
         dBlendWeight = 0.f;
+        dSampleDist = 0.f;
+        dFOV = 0.f;
     }
 };
 
+
 /**
  * Each agent's internal state:
- *  - (Pitch, Yaw, Roll) => orientation angles in radians
- *  - FOVDegrees & SampleDist => constants (not changed by actions)
- *  - (BaseFreq, Lacunarity, Gain, BlendWeight) => fractal params
+ *  - Orientation: stored as a quaternion (no longer storing separate pitch, yaw, roll)
+ *  - FOVDegrees & SampleDist => fractal camera parameters
+ *  - BaseFreq, Lacunarity, Gain, BlendWeight => fractal params
  *  - Octaves => fractal octaves
  *  - FractalImage => the rendered fractal for each step
  */
@@ -64,16 +74,18 @@ struct FFractalAgentState
 {
     GENERATED_BODY()
 
+    /** Current orientation of the fractal "camera." */
     UPROPERTY()
-    float Pitch;
-    UPROPERTY()
-    float Yaw;
-    UPROPERTY()
-    float Roll;
+    FQuat Orientation;
 
+    /** Camera intrinsics. */
     UPROPERTY()
     float FOVDegrees;
 
+    UPROPERTY()
+    float SampleDist;
+
+    /** Fractal parameters. */
     UPROPERTY()
     float BaseFreq;
     UPROPERTY()
@@ -81,40 +93,36 @@ struct FFractalAgentState
     UPROPERTY()
     float Gain;
     UPROPERTY()
-    int32 Octaves;
-    UPROPERTY()
     float BlendWeight;
 
     UPROPERTY()
-    int32 ImageSize;
+    int32 Octaves;
     UPROPERTY()
-    float SampleDist;
+    int32 ImageSize;
 
+    /** The agent's rendered fractal image (size = ImageSize^2). */
     UPROPERTY()
     TArray<float> FractalImage;
 
     FFractalAgentState()
     {
-        Pitch = 0.f;
-        Yaw = 0.f;
-        Roll = 0.f;
-
+        Orientation = FQuat::Identity; // Default looking along +Z
         FOVDegrees = 60.f;
+        SampleDist = 10.f;
         BaseFreq = 0.15f;
         Lacunarity = 2.f;
         Gain = 0.6f;
-        Octaves = 3;
         BlendWeight = 1.f;
-
+        Octaves = 3;
         ImageSize = 50;
-        SampleDist = 10.f;
     }
 };
+
 
 /**
  * UMultiAgentFractalWave3D:
  *  - Manages multiple agents
- *  - Each agent has rotation + fractal parameters
+ *  - Each agent has a quaternion orientation + fractal params
  *  - Renders fractal images from origin
  *  - Weighted sum => final wave in [-1..1]
  */
@@ -133,7 +141,8 @@ public:
 
     /**
      * Step environment with multi-agent actions:
-     *  - scale & apply each delta (pitch, yaw, roll, fractal params)
+     *  - scale & apply deltas (pitch, yaw, roll => small orientation delta)
+     *  - fractal params (freq, lac, gain, blend, sampleDist, FOV)
      *  - re-render each agent's fractal
      *  - combine wave
      */
@@ -141,7 +150,7 @@ public:
     void Step(const TArray<FFractalAgentAction>& Actions, float DeltaTime = 0.1f);
 
     UFUNCTION(BlueprintCallable, Category = "FractalWave")
-    const FMatrix2D& GetWave() const;
+    const FMatrix2D& GetWave() const { return FinalWave; }
 
     UFUNCTION(BlueprintCallable, Category = "FractalWave")
     int32 GetNumAgents() const { return Agents.Num(); }
@@ -151,42 +160,25 @@ public:
 
     /**
      * Returns agent's state variables in [-1..1].
-     *
-     * pitchNorm, yawNorm, rollNorm,
-     * freqNorm, lacNorm, gainNorm, blendNorm
+     * The orientation is omitted from this example;
+     * we just return fractal parameters & possibly
+     * a converted "pitch/yaw/roll" if you wish.
      */
     UFUNCTION(BlueprintCallable, Category = "FractalWave")
     TArray<float> GetAgentStateVariables(int32 AgentIndex) const;
 
-    // -------------------
-    //   Wrap Toggles
-    // -------------------
+public:
+    /** Whether to initialize agent parameters uniformly at random
+     *  or use midpoints for everything. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bWrapPitch = true;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bWrapYaw = true;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bWrapRoll = true;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bWrapFreq = true;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bWrapLacunarity = true;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bWrapGain = true;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    bool bWrapBlendWeight = true;
+    bool bUniformRandomInit = false;
 
 private:
-
+    /** The final NxN wave after combining all agents' fractal images. */
     UPROPERTY()
-    FMatrix2D FinalWave;     // NxN final image
+    FMatrix2D FinalWave;
 
+    /** Per-agent state array. */
     UPROPERTY()
     TArray<FFractalAgentState> Agents;
 
@@ -195,21 +187,18 @@ private:
     UPROPERTY()
     int32 ImageSize;
 
-    // -------------------
-    //  Initialization Ranges
-    // -------------------
     UPROPERTY()
-    FVector2D PitchRange;
-    UPROPERTY()
-    FVector2D YawRange;
-    UPROPERTY()
-    FVector2D RollRange;
+    int32 Octaves;
 
-    UPROPERTY()
-    float DefaultFOVDeg;
-    UPROPERTY()
-    float DefaultSampleDist;
+    // Fractal parameter wrap toggles
+    bool bWrapFreq = false;
+    bool bWrapLacunarity = false;
+    bool bWrapGain = false;
+    bool bWrapBlendWeight = false;
+    bool bWrapSampleDist = false;
+    bool bWrapFOV = false;
 
+    // Ranges for fractal params & new camera params
     UPROPERTY()
     FVector2D BaseFreqRange;
     UPROPERTY()
@@ -219,11 +208,11 @@ private:
     UPROPERTY()
     FVector2D BlendWeightRange;
     UPROPERTY()
-    int32 Octaves;
+    FVector2D SampleDistRange;
+    UPROPERTY()
+    FVector2D FOVRange;
 
-    // -------------------
-    //  Action Ranges => Delta
-    // -------------------
+    // Action scaling (delta) ranges for the 9D action
     UPROPERTY()
     FVector2D ActionPitchRange;
     UPROPERTY()
@@ -238,41 +227,30 @@ private:
     FVector2D ActionGainRange;
     UPROPERTY()
     FVector2D ActionBlendWeightRange;
-
-    // -------------------
-    //  State Normalization Ranges
-    // -------------------
     UPROPERTY()
-    FVector2D StatePitchRange;
+    FVector2D ActionSampleDistRange;
     UPROPERTY()
-    FVector2D StateYawRange;
-    UPROPERTY()
-    FVector2D StateRollRange;
-    UPROPERTY()
-    FVector2D StateBaseFreqRange;
-    UPROPERTY()
-    FVector2D StateLacunarityRange;
-    UPROPERTY()
-    FVector2D StateGainRange;
-    UPROPERTY()
-    FVector2D StateBlendWeightRange;
+    FVector2D ActionFOVRange;
 
 private:
     void InitializeAgents();
     void RenderFractalForAgent(FFractalAgentState& Agent);
+
+    /** Build a small rotation quaternion from dPitch, dYaw, dRoll. */
+    FQuat BuildDeltaOrientation(float dPitch, float dYaw, float dRoll) const;
+
+    /** Multi-octave Perlin. */
     float FractalSample3D(float X, float Y, float Z,
         float BaseFreq, int32 Octs,
         float Lacun, float Gn) const;
 
-    // random generation
-    static std::mt19937& GetNormalGenerator();
-    float SampleNormalInRange(const FVector2D& Range);
+    // Random generation
+    static std::mt19937& GetGenerator();
+    float UniformInRange(const FVector2D& Range);
 
-    // mapping
-    float Map(float x, float in_min, float in_max, float out_min, float out_max) const;
-    float ActionScaled(float InputN11, float MinVal, float MaxVal) const;
-    float NormalizeValue(float Value, float MinVal, float MaxVal) const;
-
-    // modular wrap
+    // Helpers
+    float ActionScaled(float InputN11, const FVector2D& MinMax) const;
     float WrapValue(float val, float MinVal, float MaxVal) const;
+    float ClampInRange(float val, const FVector2D& range) const;
+    float NormalizeValue(float val, const FVector2D& range) const;
 };

@@ -263,11 +263,12 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
     FVector ObjectRelativeVelocity = CurrentObjectVelocities[AgentIndex];
     FVector ObjectRelativeAcceleration = CurrentObjectAcceleration[AgentIndex];
 
-    /*FVector PreviousObjectRelativePosition = PreviousPositions[AgentIndex];
-    FVector PreviousObjectRelativeVelocity = PreviousObjectVelocities[AgentIndex];*/
+    FVector PreviousObjectRelativePosition = PreviousPositions[AgentIndex];
+    FVector PreviousObjectRelativeVelocity = PreviousObjectVelocities[AgentIndex];
     FVector PreviousObjectRelativeAcceleration = PreviousObjectAcceleration[AgentIndex];
 
     float DistanceToGoal = CurrentDistances[AgentIndex];
+    float PreviousDistanceToGoal = PreviousDistances[AgentIndex];
 
     // 2) Retrieve the goal platform's position in relative coords
     int32 AgentGoalIndex = AgentGoalIndices[AgentIndex];
@@ -282,7 +283,12 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
     GoalRelativePosition /= PlatformWorldSize.X;
     ObjectRelativeVelocity /= PlatformWorldSize.X;
     ObjectRelativeAcceleration /= 980.0; // Scale by gravity
+    
+    PreviousDistanceToGoal /= PlatformWorldSize.X;
+    PreviousObjectRelativePosition /= PlatformWorldSize.X;
+    PreviousObjectRelativeVelocity /= PlatformWorldSize.X;
     PreviousObjectRelativeAcceleration /= 980.0; // Scale by gravity
+
 
     // 4) Add object and goal positions (X,Y,Z)
     State.Add(ObjectRelativePosition.X);
@@ -303,23 +309,23 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
     State.Add(ObjectRelativeAcceleration.Y);
     State.Add(ObjectRelativeAcceleration.Z);
 
-    //// 7) Add previous object velocity (X, Y, Z)
-    //State.Add(PreviousObjectVelocities[AgentIndex].X);
-    //State.Add(PreviousObjectVelocities[AgentIndex].Y);
-    //State.Add(PreviousObjectVelocities[AgentIndex].Z);
+    // 7) Add previous object velocity (X, Y, Z)
+    State.Add(PreviousObjectRelativeVelocity.X);
+    State.Add(PreviousObjectRelativeVelocity.Y);
+    State.Add(PreviousObjectRelativeVelocity.Z);
 
     // 9.) Add previous object acceleration (X, Y, Z)
-    State.Add(PreviousObjectAcceleration[AgentIndex].X);
-    State.Add(PreviousObjectAcceleration[AgentIndex].Y);
-    State.Add(PreviousObjectAcceleration[AgentIndex].Z);
+    State.Add(PreviousObjectRelativeAcceleration.X);
+    State.Add(PreviousObjectRelativeAcceleration.Y);
+    State.Add(PreviousObjectRelativeAcceleration.Z);
 
-    //// 10)  Add previous object distance to the assigned goal
-    //State.Add(PreviousDistances[AgentIndex]);
+    // 10)  Add previous object distance to the assigned goal
+    State.Add(PreviousDistanceToGoal);
 
-    //// 11) Add previous object position (X,Y,Z)
-    //State.Add(PreviousPositions[AgentIndex].X);
-    //State.Add(PreviousPositions[AgentIndex].Y);
-    //State.Add(PreviousPositions[AgentIndex].Z);
+    // 11) Add previous object position (X,Y,Z)
+    State.Add(PreviousObjectRelativePosition.X);
+    State.Add(PreviousObjectRelativePosition.Y);
+    State.Add(PreviousObjectRelativePosition.Z);
 
     // 7) Flag: is the GridObject active?
     State.Add(AgentHasActiveGridObject[AgentIndex] ? 1.0f : 0.0f);
@@ -331,7 +337,9 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
 
     // 9) Agent Wave State
     State.Append(WaveSimulator->GetAgentStateVariables(AgentIndex));
+    
     // State.Append(WaveSimulator->GetAgentFractalImage(AgentIndex));
+    
     return State;
 }
 
@@ -345,8 +353,10 @@ void ATerraShiftEnvironment::Act(FAction Action)
     //   [4] => dLacunarity
     //   [5] => dGain
     //   [6] => dBlendWeight
+    //   [7] => dFov
+    //   [8] => dSampleDist
 
-    const int32 ValuesPerAgent = 7;
+    const int32 ValuesPerAgent = 9;
 
     if (Action.Values.Num() != CurrentAgents * ValuesPerAgent)
     {
@@ -371,6 +381,8 @@ void ATerraShiftEnvironment::Act(FAction Action)
         float dLacunarity = Action.Values[BaseIndex + 4];
         float dGain = Action.Values[BaseIndex + 5];
         float dBlendWeight = Action.Values[BaseIndex + 6];
+        float dFov = Action.Values[BaseIndex + 7];
+        float dSampleDist = Action.Values[BaseIndex + 8];
 
         FFractalAgentAction& FA = FractalActions[i];
         FA.dPitch = FMath::Clamp(dPitch, -1.0f, 1.0f);
@@ -380,6 +392,8 @@ void ATerraShiftEnvironment::Act(FAction Action)
         FA.dLacunarity = FMath::Clamp(dLacunarity, -1.0f, 1.0f);
         FA.dGain = FMath::Clamp(dGain, -1.0f, 1.0f);
         FA.dBlendWeight = FMath::Clamp(dBlendWeight, -1.0f, 1.0f);
+        FA.dFOV = FMath::Clamp(dFov, -1.0f, 1.0f);
+        FA.dSampleDist = FMath::Clamp(dSampleDist, -1.0f, 1.0f);
     }
 
     // Step fractal wave environment
@@ -487,11 +501,11 @@ void ATerraShiftEnvironment::UpdateColumnGoalObjectColors()
 
     for (int32 ColumnIndex = 0; ColumnIndex < Grid->GetTotalColumns(); ++ColumnIndex)
     {
-        if (ActiveColumns.Contains(ColumnIndex))
-        {
-            // Already colored active columns black
-            continue;
-        }
+        //if (ActiveColumns.Contains(ColumnIndex))
+        //{
+        //    // Already colored active columns black
+        //    continue;
+        //}
         float Height = Grid->GetColumnHeight(ColumnIndex);
         float HeightRatio = FMath::GetMappedRangeValueClamped(FVector2D(MinHeight, MaxHeight), FVector2D(0.0f, 1.0f), Height);
         FLinearColor Color = FLinearColor::LerpUsingHSV(FLinearColor::Black, FLinearColor::White, HeightRatio);
@@ -612,28 +626,18 @@ float ATerraShiftEnvironment::Reward()
         {
             FVector toGoal3D = GoalLocalPos - ObjLocalPos;
             float dist3D = toGoal3D.Size();
-
             float speed3D = VelLocal.Size();
 
             // Only do alignment calc if we're not basically at the goal
             if (dist3D > KINDA_SMALL_NUMBER)
             {
-                if (speed3D < VelAlign_Threshold) // Dont punish zero velociy on firs spawn
-                {
-                    subReward += (VelAlign_Threshold_Punishment * LastDeltaTime);
-                }
-                else
-                {
-                    const FVector goalDir = toGoal3D.GetSafeNormal();
+                const FVector goalDir = toGoal3D.GetSafeNormal();
 
-                    // Dot product => "speed along the goal direction"
-                    float speedAlongGoal = FVector::DotProduct(VelLocal, goalDir);
-
-                    float clampedSpeed = FMath::Clamp(speedAlongGoal, VelAlign_Min, VelAlign_Max);
-
-                    float velReward = VelAlign_Scale * clampedSpeed * LastDeltaTime;
-                    subReward += velReward;
-                }
+                // Dot product => "speed along the goal direction"
+                float speedAlongGoal = FVector::DotProduct(VelLocal, goalDir);
+                float clampedSpeed = FMath::Clamp(speedAlongGoal, VelAlign_Min, VelAlign_Max) / VelAlign_Max;
+                float velReward = VelAlign_Scale * clampedSpeed;
+                subReward += velReward;
             }
         }
 
@@ -647,18 +651,11 @@ float ATerraShiftEnvironment::Reward()
 
             if (prevDist > 0.f && currDist > 0.f)
             {
-                float distDelta = (prevDist - currDist);
+                float distDelta = (prevDist - currDist) / PlatformWorldSize.X;
                 float clampedDelta = FMath::Clamp(distDelta, DistImprove_Min, DistImprove_Max);
 
-                if (FMath::Abs(clampedDelta) < DistImprove_Threshold)
-                {
-                    subReward += (DistImprove_Threshold_Punishment * LastDeltaTime);
-                }
-                else
-                {
-                    float distReward = DistImprove_Scale * clampedDelta * LastDeltaTime;
-                    subReward += distReward;
-                }
+                float distReward = DistImprove_Scale * clampedDelta;
+                subReward += distReward;
             }
         }
 
@@ -675,14 +672,14 @@ float ATerraShiftEnvironment::Reward()
             float clampedZ = ThresholdAndClamp(positiveZ, ZAccel_Min, ZAccel_Max);
 
             // penalty => subtract
-            subReward -= (ZAccel_Scale * clampedZ * LastDeltaTime);
+            subReward -= (ZAccel_Scale * clampedZ);
         }
 
         // accumulate subReward to global StepReward
         StepReward += subReward;
     }
 
-    return StepReward;
+    return StepReward * LastDeltaTime;
 }
 
 AMainPlatform* ATerraShiftEnvironment::SpawnPlatform(FVector Location)

@@ -292,6 +292,10 @@ class SharedCritic(nn.Module):
             **net_cfg['baseline_attention']
         )
 
+        self.value_attention = ResidualAttention(
+            **net_cfg['baseline_attention']
+        )
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.apply(lambda m: init_weights_gelu_linear(m, scale=net_cfg["linear_init_scale"]))
 
@@ -300,11 +304,14 @@ class SharedCritic(nn.Module):
         Compute per-environment value function V(s).
         """
 
-        # Mean over agent dimension
-        env_emb = x.mean(dim=2)  # (S,E,H)
+        S, E, A, H = x.shape
+        
+        # Self-Attention Over agents
+        x_flat = x.view(S * E, A, H)
+        x_attn, _ = self.value_attention(x_flat, x_flat, x_flat)
+        env_emb = x_attn.mean(dim=1)  # (S,E,H)
 
         # Feed value_head
-        S, E, H = env_emb.shape
         flat = env_emb.reshape(S * E, H)  # (S*E,H)
         vals = self.value_head(flat)      # (S*E,1)
 
@@ -414,7 +421,7 @@ class TanhContinuousPolicyNetwork(nn.Module):
             # sample in [-1,1]
             actions = tanh_dist.rsample()  # => (B, out_features)
 
-        action_clamped = actions.clamp(-1+1e-6, 1-1e-6)
+        action_clamped = actions.clamp(-1+1e-6, 1-1e-6) # To avoid NAN's caused by tahn saturation
         log_probs = tanh_dist.log_prob(action_clamped).sum(dim=-1)  # sum across action dims
         entropies = self._compute_entropy(tanh_dist)
 
@@ -479,9 +486,6 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         return self.base_encoder(obs_dict)
 
 
-    # --------------------------------------------------------------------
-    #  Step 2c: embed_for_baseline
-    # --------------------------------------------------------------------
     def get_baseline_embeddings(self,
                            common_emb: torch.Tensor,
                            actions: torch.Tensor=None) -> torch.Tensor:
@@ -489,15 +493,18 @@ class MultiAgentEmbeddingNetwork(nn.Module):
             self._split_agent_and_groupmates(common_emb, actions)
 
 
-        agent_obs_emb = self.g(common_emb) # => shape (S,E,A,1,H)
-        groupmates_obs_actions_emb= self.f(groupmates_emb, groupmates_actions) # => (S,E,A,(A-1),H)
+        agent_obs_emb = self.get_state_embeddings(common_emb) # => shape (S,E,A,H)
+        groupmates_obs_actions_emb= self.get_state_action_embeddings(groupmates_emb, groupmates_actions) # => (S,E,A,(A-1),H)
         
-        # (S,E,A,H) and (S,E,A,A,H2)
-        return torch.cat([agent_obs_emb.unsqueeze(dim=3), groupmates_obs_actions_emb], dim=3)
+        # (S,E,A,1, H) and (S,E,A,A-1,H)
+        return torch.cat([agent_obs_emb.unsqueeze(dim=3), groupmates_obs_actions_emb], dim=3), agent_obs_emb
+    
+    def get_state_embeddings(self, common_emb: torch.Tensor) -> torch.Tensor:
+        return self.g(common_emb)
 
-    # --------------------------------------------------------------------
-    #  Helper: _split_agent_and_groupmates
-    # --------------------------------------------------------------------
+    def get_state_action_embeddings(self, common_emb: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        return self.f(common_emb, actions)
+
     def _split_agent_and_groupmates(self,
                                     obs_4d: torch.Tensor,
                                     actions: torch.Tensor):

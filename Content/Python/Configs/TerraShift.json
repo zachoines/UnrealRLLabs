@@ -17,48 +17,35 @@
         "num_agents": 5,
         "image_size": 50,
         "octaves": 3,
-    
-        "wrap_pitch": true,
-        "wrap_yaw": true,
-        "wrap_roll": true,
-        "wrap_freq": true,
-        "wrap_lacunarity": true,
-        "wrap_gain": true,
-        "wrap_blend_weight": true,
-    
-        "agent_init": {
-          "pitch_range": [-1.57, 1.57],
-          "yaw_range": [0, 6.28318],
-          "roll_range": [0, 6.28318],
-          "fov_deg": 60,
-          "sample_dist": 10
-        },
-    
+        "random_init": true,
+
+        "wrap_freq": false,
+        "wrap_lacunarity": false,
+        "wrap_gain": false,
+        "wrap_blend_weight": false,
+        "wrap_sampledist": false,
+        "wrap_fov": false,
+
         "fractal_init": {
-          "base_freq_range": [0.01, 2.0],
-          "lacunarity_range": [1, 2],
-          "gain_range": [0, 1],
-          "blend_weight_range": [0, 5]
+          "base_freq_range":      [0.01, 2.0],
+          "lacunarity_range":     [1.0,  2.0],
+          "gain_range":           [0,    1],
+          "blend_weight_range":   [0,    5],
+          "sample_dist_range":    [1,    20],
+          "fov_range":            [30,   120]
         },
-    
+
         "action_ranges": {
-          "pitch_minmax": [-0.39, 0.39],
-          "yaw_minmax":   [-0.39, 0.39],
-          "roll_minmax":  [-0.39, 0.39],
-          "base_freq_minmax":    [-0.02, 0.02],
-          "lacunarity_minmax":   [-0.02, 0.02],
-          "gain_minmax":         [-0.15, 0.15],
-          "blend_weight_minmax": [-0.15, 0.15]
-        },
-    
-        "state_ranges": {
-          "pitch_range": [-1.57, 1.57],
-          "yaw_range":   [0, 6.28318],
-          "roll_range":  [0, 6.28318],
-          "base_freq_range":  [0.01, 2],
-          "lacunarity_range": [1, 2],
-          "gain_range":       [0, 1],
-          "blend_weight_range": [0, 5]
+          "pitch_minmax":       [-0.2, 0.2],
+          "yaw_minmax":         [-0.2, 0.2],
+          "roll_minmax":        [-0.2, 0.2],
+
+          "base_freq_minmax":   [-0.02, 0.02],
+          "lacunarity_minmax":  [-0.02, 0.02],
+          "gain_minmax":        [-0.15, 0.15],
+          "blend_weight_minmax":[-0.15, 0.15],
+          "sampledist_minmax":  [-1, 1],
+          "fov_minmax":         [-5, 5]
         }
       }
     },
@@ -69,7 +56,7 @@
           "obs_size": 2500
         },
         "agent": {
-          "obs_size": 26,
+          "obs_size": 36,
           "min": 5,
           "max": 5
         }
@@ -77,6 +64,8 @@
       "action": {
         "agent": {
           "continuous": [
+            { "min": -1, "max": 1 },
+            { "min": -1, "max": 1 },
             { "min": -1, "max": 1 },
             { "min": -1, "max": 1 },
             { "min": -1, "max": 1 },
@@ -93,25 +82,29 @@
   "agent": {
     "type": "MA_POCA",
     "params": {
-      "learning_rate": 0.00005,
+      "learning_rate": 0.0001,
       "gamma": 0.97,
       "lambda": 0.95,
-      "value_loss_coeff": 0.5,
-      "baseline_loss_coeff": 0.25,
+      "value_loss_coeff": 0.1,
+      "baseline_loss_coeff": 0.05,
       "normalize_advantages": true,
       "rewards_normalizer_disabled" : {
-        "warmup_steps": 1000, 
-        "epsilon": 1e-4
+        "warmup_steps": 1000
       },
-      "clipped_value_loss": false,
-      "max_grad_norm": 1.0,
+      "clipped_value_loss": true,
+      "max_grad_norm": 2.0,
       "ppo_clip_range": 0.1,
       "value_clip_range": 0.2,
       "entropy_coeff": 0.01,
       "schedulers": {
         "lr": {
           "start_factor": 1,
-          "end_factor": 0.001,
+          "end_factor": 0.01,
+          "total_iters": 100000
+        },
+        "entropy_coeff": {
+          "start_value": 0.01,
+          "end_value": 0.0001,
           "total_iters": 100000
         },
         "lr_cos_disabled": {
@@ -128,17 +121,12 @@
           "pct_start": 0.3,
           "div_factor": 10,
           "final_div_factor": 100
-        },
-        "entropy_coeff_linear_disabled": {
-          "start_value": 0.01,
-          "end_value": 0.001,
-          "total_iters": 10000
         }
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
-            "obs_size": 26,
+            "obs_size": 36,
             "num_agents": 5,
             "h": 50,
             "w": 50,
@@ -168,7 +156,7 @@
           },
           "obs_actions_encoder": {
             "state_dim": 128,
-            "action_dim": 7,
+            "action_dim": 9,
             "hidden_size": 128,
             "output_size": 128,
             "dropout_rate": 0,
@@ -213,13 +201,13 @@
 
   "train": {
     "states_normalizer": {
-      "warmup_steps" : 1000
+      "warmup_steps" : 10000
     },
-    "num_environments": 8,
+    "num_environments": 4,
     "epochs": 6,
-    "mini_batch_size": 16,
-    "buffer_size": 128,
-    "batch_size": 128,
+    "mini_batch_size": 32,
+    "buffer_size": 256,
+    "batch_size": 256,
     "AgentsResetFrequency": 0,
     "ActionRepeat": 1,
     "saveFrequency": 20

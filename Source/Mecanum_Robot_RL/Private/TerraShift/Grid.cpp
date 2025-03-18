@@ -34,7 +34,6 @@ void AGrid::UpdateColumnHeights(const FMatrix2D& HeightMap) {
         for (int32 Y = 0; Y < GridSize; ++Y) {
             int32 Index = X * GridSize + Y;
             if (Columns.IsValidIndex(Index)) {
-                // float NewHeight = FMath::Clamp(HeightMap[X][Y], MinHeight, MaxHeight);
                 Columns[Index]->SetColumnHeight(HeightMap[X][Y]);
             }
         }

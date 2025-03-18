@@ -228,10 +228,10 @@ class MAPOCAAgent(Agent):
         with torch.no_grad():
             # Get base embeddings and attention weights
             base_emb, _ = self.embedding_network.get_base_embedding(states)
-            baseline_emb = self.embedding_network.get_baseline_embeddings(base_emb, actions)
+            baseline_emb, value_emb = self.embedding_network.get_baseline_embeddings(base_emb, actions)
 
             # Compute old values, baselines using attention weights
-            old_vals = self.shared_critic.values(base_emb)  # => (NS,NE,1)
+            old_vals = self.shared_critic.values(value_emb)  # => (NS,NE,1)
             old_bases = self.shared_critic.baselines(baseline_emb)  # => (NS,NE,NA,1)
 
             # Compute old log_probs
@@ -239,7 +239,9 @@ class MAPOCAAgent(Agent):
 
             # Compute next state embeddings and values
             next_base_emb, _ = self.embedding_network.get_base_embedding(next_states)
-            next_vals = self.shared_critic.values(next_base_emb)
+            next_vals = self.shared_critic.values(
+                self.embedding_network.get_state_embeddings(next_base_emb)
+            )
 
             # Compute returns using TD(lambda)
             returns = self._compute_td_lambda_returns(
@@ -297,7 +299,7 @@ class MAPOCAAgent(Agent):
 
                 # Forward pass on new states
                 base_emb_mb, _ = self.embedding_network.get_base_embedding(st_mb)
-                baseline_emb_mb = self.embedding_network.get_baseline_embeddings(base_emb_mb, act_mb)
+                baseline_emb_mb, value_emb_mb = self.embedding_network.get_baseline_embeddings(base_emb_mb, act_mb)
 
                 # Compute new log_probs
                 new_lp_mb, ent_mb = self._recompute_log_probs(base_emb_mb, act_mb)
@@ -309,7 +311,7 @@ class MAPOCAAgent(Agent):
                 logprob_maxs.append(lp_det.max().cpu())
 
                 # Compute new values, baselines using new attention weights
-                new_vals_mb = self.shared_critic.values(base_emb_mb)  # => (MB,NE,1)
+                new_vals_mb = self.shared_critic.values(value_emb_mb)  # => (MB,NE,1)
                 new_base_mb = self.shared_critic.baselines(baseline_emb_mb)  # => (MB,NE,NA,1)
 
                 # Advantage Calculation
