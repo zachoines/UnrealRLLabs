@@ -497,7 +497,7 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         groupmates_obs_actions_emb= self.get_state_action_embeddings(groupmates_emb, groupmates_actions) # => (S,E,A,(A-1),H)
         
         # (S,E,A,1, H) and (S,E,A,A-1,H)
-        return torch.cat([agent_obs_emb.unsqueeze(dim=3), groupmates_obs_actions_emb], dim=3), agent_obs_emb
+        return torch.cat([agent_obs_emb.unsqueeze(dim=3), groupmates_obs_actions_emb], dim=3)
     
     def get_state_embeddings(self, common_emb: torch.Tensor) -> torch.Tensor:
         return self.g(common_emb)
