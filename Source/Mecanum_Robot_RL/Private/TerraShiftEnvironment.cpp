@@ -310,17 +310,17 @@ TArray<float> ATerraShiftEnvironment::AgentGetState(int AgentIndex)
     State.Add(ObjectRelativeAcceleration.Z);
 
     // 7) Add previous object velocity (X, Y, Z)
-    State.Add(PreviousObjectRelativeVelocity.X);
+    /*State.Add(PreviousObjectRelativeVelocity.X);
     State.Add(PreviousObjectRelativeVelocity.Y);
-    State.Add(PreviousObjectRelativeVelocity.Z);
+    State.Add(PreviousObjectRelativeVelocity.Z);*/
 
     // 9.) Add previous object acceleration (X, Y, Z)
-    State.Add(PreviousObjectRelativeAcceleration.X);
+    /*State.Add(PreviousObjectRelativeAcceleration.X);
     State.Add(PreviousObjectRelativeAcceleration.Y);
-    State.Add(PreviousObjectRelativeAcceleration.Z);
+    State.Add(PreviousObjectRelativeAcceleration.Z);*/
 
     // 10)  Add previous object distance to the assigned goal
-    State.Add(PreviousDistanceToGoal);
+    // State.Add(PreviousDistanceToGoal);
 
     // 11) Add previous object position (X,Y,Z)
     State.Add(PreviousObjectRelativePosition.X);
@@ -356,7 +356,7 @@ void ATerraShiftEnvironment::Act(FAction Action)
     //   [7] => dFov
     //   [8] => dSampleDist
 
-    const int32 ValuesPerAgent = 9;
+    const int32 ValuesPerAgent = 7;
 
     if (Action.Values.Num() != CurrentAgents * ValuesPerAgent)
     {
@@ -378,22 +378,25 @@ void ATerraShiftEnvironment::Act(FAction Action)
         float dYaw = Action.Values[BaseIndex + 1];
         float dRoll = Action.Values[BaseIndex + 2];
         float dBaseFreq = Action.Values[BaseIndex + 3];
-        float dLacunarity = Action.Values[BaseIndex + 4];
-        float dGain = Action.Values[BaseIndex + 5];
-        float dBlendWeight = Action.Values[BaseIndex + 6];
-        float dFov = Action.Values[BaseIndex + 7];
-        float dSampleDist = Action.Values[BaseIndex + 8];
+        float dBlendWeight = Action.Values[BaseIndex + 4];
+        float dSampleDist = Action.Values[BaseIndex + 5];
+        float dFov = Action.Values[BaseIndex + 6];
+        // float dLacunarity = Action.Values[BaseIndex + 6];
+        // float dGain = Action.Values[BaseIndex + 7];
+        
 
         FFractalAgentAction& FA = FractalActions[i];
         FA.dPitch = FMath::Clamp(dPitch, -1.0f, 1.0f);
         FA.dYaw = FMath::Clamp(dYaw, -1.0f, 1.0f);
         FA.dRoll = FMath::Clamp(dRoll, - 1.0f, 1.0f);
         FA.dBaseFreq = FMath::Clamp(dBaseFreq, -1.0f, 1.0f);
-        FA.dLacunarity = FMath::Clamp(dLacunarity, -1.0f, 1.0f);
-        FA.dGain = FMath::Clamp(dGain, -1.0f, 1.0f);
         FA.dBlendWeight = FMath::Clamp(dBlendWeight, -1.0f, 1.0f);
-        FA.dFOV = FMath::Clamp(dFov, -1.0f, 1.0f);
         FA.dSampleDist = FMath::Clamp(dSampleDist, -1.0f, 1.0f);
+        FA.dFOV = FMath::Clamp(dFov, -1.0f, 1.0f);
+        // FA.dLacunarity = FMath::Clamp(dLacunarity, -1.0f, 1.0f);
+        // FA.dGain = FMath::Clamp(dGain, -1.0f, 1.0f);
+        
+        
     }
 
     // Step fractal wave environment

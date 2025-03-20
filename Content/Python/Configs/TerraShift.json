@@ -16,7 +16,7 @@
       "MultiAgentFractalWave": {
         "num_agents": 5,
         "image_size": 50,
-        "octaves": 3,
+        "octaves": 1,
         "random_init": true,
 
         "wrap_freq": false,
@@ -27,25 +27,26 @@
         "wrap_fov": false,
 
         "fractal_init": {
-          "base_freq_range":      [0.01, 2.0],
-          "lacunarity_range":     [1.0,  2.0],
-          "gain_range":           [0,    1],
-          "blend_weight_range":   [0,    5],
-          "sample_dist_range":    [1,    20],
-          "fov_range":            [30,   120]
+          "base_freq_range":      [0.01, 4],
+          "blend_weight_range":   [0, 2],
+          "sample_dist_range":    [0.1, 10],
+          "fov_range":            [20, 120],
+
+          "lacunarity_range":     [1.0, 2.0],
+          "gain_range":           [0, 1]
         },
 
         "action_ranges": {
-          "pitch_minmax":       [-0.2, 0.2],
-          "yaw_minmax":         [-0.2, 0.2],
-          "roll_minmax":        [-0.2, 0.2],
-
-          "base_freq_minmax":   [-0.02, 0.02],
-          "lacunarity_minmax":  [-0.02, 0.02],
-          "gain_minmax":        [-0.15, 0.15],
-          "blend_weight_minmax":[-0.15, 0.15],
+          "pitch_minmax":       [-0.31, 0.31],
+          "yaw_minmax":         [-0.31, 0.31],
+          "roll_minmax":        [-0.31, 0.31],
+          "base_freq_minmax":   [-0.4, 0.5],
+          "blend_weight_minmax":[-0.2, 0.2],
           "sampledist_minmax":  [-1, 1],
-          "fov_minmax":         [-5, 5]
+          "fov_minmax":         [-10, 10],
+
+          "lacunarity_minmax":  [-0.1, 0.1],
+          "gain_minmax":        [-0.15, 0.15]
         }
       }
     },
@@ -56,7 +57,7 @@
           "obs_size": 2500
         },
         "agent": {
-          "obs_size": 36,
+          "obs_size": 27,
           "min": 5,
           "max": 5
         }
@@ -64,8 +65,6 @@
       "action": {
         "agent": {
           "continuous": [
-            { "min": -1, "max": 1 },
-            { "min": -1, "max": 1 },
             { "min": -1, "max": 1 },
             { "min": -1, "max": 1 },
             { "min": -1, "max": 1 },
@@ -85,9 +84,9 @@
       "learning_rate": 0.00002,
       "gamma": 0.99,
       "lambda": 0.95,
-      "value_loss_coeff": 0.1,
-      "baseline_loss_coeff": 0.1,
-      "normalize_advantages": true,
+      "value_loss_coeff": 0.5,
+      "baseline_loss_coeff": 0.25,
+      "normalize_advantages": false,
       "clipped_value_loss": true,
       "max_grad_norm": 0.5,
       "ppo_clip_range": 0.1,
@@ -126,11 +125,11 @@
       "networks": {
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
-            "obs_size": 36,
+            "obs_size": 27,
             "num_agents": 5,
             "h": 50,
             "w": 50,
-            "embed_dim": 128,
+            "embed_dim": 64,
             "num_heads": 8,
             "cnn_channels": [32, 64, 128],
             "cnn_kernel_sizes": [5, 3, 3],
@@ -146,19 +145,19 @@
             "linear_init_scale": 0.1 
           },
           "obs_encoder": {
-            "state_dim": 128,
-            "hidden_size": 128,
-            "output_size": 128,
+            "state_dim": 64,
+            "hidden_size": 64,
+            "output_size": 64,
             "dropout_rate": 0,
             "activation": true,
             "layer_norm": true,
             "linear_init_scale" : 0.1
           },
           "obs_actions_encoder": {
-            "state_dim": 128,
-            "action_dim": 9,
-            "hidden_size": 128,
-            "output_size": 128,
+            "state_dim": 64,
+            "action_dim": 7,
+            "hidden_size": 64,
+            "output_size": 64,
             "dropout_rate": 0,
             "activation": true,
             "layer_norm": true,
@@ -166,9 +165,9 @@
           }
         },
         "policy_network": {
-          "in_features": 128,
-          "hidden_size": 128,
-          "log_std_min": -4.0,
+          "in_features": 64,
+          "hidden_size": 64,
+          "log_std_min": -8.0,
           "log_std_max": 2.0,
           "mean_scale" : 1.0,
           "entropy_method": "mc",
@@ -178,17 +177,17 @@
         },
         "critic_network": {
           "value_head": {
-            "in_features": 128,
-            "hidden_size": 128,
+            "in_features": 64,
+            "hidden_size": 64,
             "dropout_rate": 0
           },
           "baseline_head": {
-            "in_features": 128,
-            "hidden_size": 128,
+            "in_features": 64,
+            "hidden_size": 64,
             "dropout_rate": 0
           },
           "baseline_attention": {
-            "embed_dim" : 128,
+            "embed_dim" : 64,
             "num_heads" : 8,
             "dropout": 0.0,
             "self_attention" : true
@@ -203,11 +202,11 @@
     "states_normalizer": {
       "warmup_steps" : 10000
     },
-    "num_environments": 32,
+    "num_environments": 16,
     "epochs": 8,
-    "mini_batch_size": 16,
-    "buffer_size": 128,
-    "batch_size": 128,
+    "mini_batch_size": 64,
+    "buffer_size": 512,
+    "batch_size": 512,
     "AgentsResetFrequency": 0,
     "ActionRepeat": 1,
     "saveFrequency": 20
