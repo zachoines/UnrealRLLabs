@@ -292,7 +292,7 @@ private:
     float ThresholdAndClamp(float value, float minVal, float maxVal);
 
     // Toggles to enable/disable sub-rewards
-    static constexpr bool bUseVelAlignment = true;
+    static constexpr bool bUseVelAlignment = false;
     static constexpr bool bUseXYDistanceImprovement = true;
     static constexpr bool bUseZAccelerationPenalty = false;
     static constexpr bool bUseCradleReward = false;

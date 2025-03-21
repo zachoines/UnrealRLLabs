@@ -301,8 +301,8 @@ TArray<float> UMultiAgentFractalWave3D::GetAgentStateVariables(int32 AgentIndex)
     // 2) Add fractal/camera params to result
     //    e.g. { freqNorm, lacNorm, gainNorm, bwNorm, distNorm, fovNorm }
     Result.Add(freqNorm);
-    // Result.Add(lacNorm);
-    // Result.Add(gainNorm);
+    Result.Add(lacNorm);
+    Result.Add(gainNorm);
     Result.Add(bwNorm);
     Result.Add(distNorm);
     Result.Add(fovNorm);
@@ -392,7 +392,7 @@ float UMultiAgentFractalWave3D::FractalSample3D(
     float Lacun, float Gn
 ) const
 {
-    /*float total = 0.f;
+    float total = 0.f;
     float amplitude = 1.f;
     float freq = BaseFreq;
     for (int32 i = 0; i < Octs; i++)
@@ -401,10 +401,12 @@ float UMultiAgentFractalWave3D::FractalSample3D(
         total += amplitude * noiseVal;
         freq *= Lacun;
         amplitude *= Gn;
-    }*/
-    return FMath::Clamp(
+    }
+
+    return total;
+    /*return FMath::Clamp(
         FMath::PerlinNoise3D(FVector(X * BaseFreq, Y * BaseFreq, Z * BaseFreq))
-    , -1.f, 1.f);
+    , -1.f, 1.f);*/
 }
 
 // -------------------------------------

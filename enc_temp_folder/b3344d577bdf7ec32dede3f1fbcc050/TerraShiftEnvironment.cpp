@@ -356,7 +356,7 @@ void ATerraShiftEnvironment::Act(FAction Action)
     //   [7] => dFov
     //   [8] => dSampleDist
 
-    const int32 ValuesPerAgent = 9;
+    const int32 ValuesPerAgent = 7;
 
     if (Action.Values.Num() != CurrentAgents * ValuesPerAgent)
     {

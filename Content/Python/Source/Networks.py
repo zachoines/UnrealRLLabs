@@ -291,11 +291,7 @@ class SharedCritic(nn.Module):
         self.baseline_attention = ResidualAttention(
             **net_cfg['baseline_attention']
         )
-
-        self.value_attention = ResidualAttention(
-            **net_cfg['baseline_attention']
-        )
-
+        
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.apply(lambda m: init_weights_gelu_linear(m, scale=net_cfg["linear_init_scale"]))
 
@@ -306,16 +302,9 @@ class SharedCritic(nn.Module):
 
         S, E, A, H = x.shape
         
-        # Self-Attention Over agents
         x_flat = x.view(S * E, A, H)
-        x_attn, _ = self.value_attention(x_flat, x_flat, x_flat)
-        env_emb = x_attn.mean(dim=1)  # (S,E,H)
-
-        # Feed value_head
-        flat = env_emb.reshape(S * E, H)  # (S*E,H)
-        vals = self.value_head(flat)      # (S*E,1)
-
-        # Reshape back
+        x_flat = x_flat.mean(dim=1)  # (S,E,H)
+        vals = self.value_head(x_flat) # (S*E,1)
         vals = vals.view(S, E, 1)
         return vals
 

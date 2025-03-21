@@ -33,7 +33,7 @@ void AGrid::UpdateColumnHeights(const FMatrix2D& HeightMap) {
     for (int32 X = 0; X < GridSize; ++X) {
         for (int32 Y = 0; Y < GridSize; ++Y) {
             int32 Index = X * GridSize + Y;
-            if (Columns.IsValidIndex(Index) && Columns[Index]->ColumnMesh->IsCollisionEnabled()) {
+            if (Columns.IsValidIndex(Index)) { // && Columns[Index]->ColumnMesh->IsCollisionEnabled()) {
                 Columns[Index]->SetColumnHeight(HeightMap[X][Y]);
             }
         }
