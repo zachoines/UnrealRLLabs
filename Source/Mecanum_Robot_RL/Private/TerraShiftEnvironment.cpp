@@ -381,8 +381,8 @@ void ATerraShiftEnvironment::Act(FAction Action)
         float dBlendWeight = Action.Values[BaseIndex + 4];
         float dSampleDist = Action.Values[BaseIndex + 5];
         float dFov = Action.Values[BaseIndex + 6];
-        // float dLacunarity = Action.Values[BaseIndex + 6];
-        // float dGain = Action.Values[BaseIndex + 7];
+        float dLacunarity = Action.Values[BaseIndex + 7];
+        float dGain = Action.Values[BaseIndex + 8];
         
 
         FFractalAgentAction& FA = FractalActions[i];
@@ -393,8 +393,8 @@ void ATerraShiftEnvironment::Act(FAction Action)
         FA.dBlendWeight = FMath::Clamp(dBlendWeight, -1.0f, 1.0f);
         FA.dSampleDist = FMath::Clamp(dSampleDist, -1.0f, 1.0f);
         FA.dFOV = FMath::Clamp(dFov, -1.0f, 1.0f);
-        // FA.dLacunarity = FMath::Clamp(dLacunarity, -1.0f, 1.0f);
-        // FA.dGain = FMath::Clamp(dGain, -1.0f, 1.0f);
+        FA.dLacunarity = FMath::Clamp(dLacunarity, -1.0f, 1.0f);
+        FA.dGain = FMath::Clamp(dGain, -1.0f, 1.0f);
         
         
     }

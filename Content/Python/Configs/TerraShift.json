@@ -16,8 +16,8 @@
       "MultiAgentFractalWave": {
         "num_agents": 5,
         "image_size": 50,
-        "octaves": 5,
-        "random_init": true,
+        "octaves": 3,
+        "random_init": false,
 
         "wrap_freq": false,
         "wrap_lacunarity": false,
@@ -57,7 +57,7 @@
           "obs_size": 2500
         },
         "agent": {
-          "obs_size": 27,
+          "obs_size": 29,
           "min": 5,
           "max": 5
         }
@@ -83,13 +83,13 @@
   "agent": {
     "type": "MA_POCA",
     "params": {
-      "learning_rate": 0.0001,
+      "learning_rate": 0.00002,
       "gamma": 0.99,
       "lambda": 0.95,
       "value_loss_coeff": 0.5,
       "baseline_loss_coeff": 0.25,
       "normalize_advantages": false,
-      "clipped_value_loss": false,
+      "clipped_value_loss": true,
       "max_grad_norm": 0.5,
       "ppo_clip_range": 0.1,
       "value_clip_range": 0.2,
@@ -127,7 +127,7 @@
       "networks": {
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
-            "obs_size": 27,
+            "obs_size": 29,
             "num_agents": 5,
             "h": 50,
             "w": 50,
@@ -169,7 +169,7 @@
         "policy_network": {
           "in_features": 128,
           "hidden_size": 128,
-          "log_std_min": -8.0,
+          "log_std_min": -4.0,
           "log_std_max": 2.0,
           "mean_scale" : 1.0,
           "entropy_method": "mc",
@@ -205,7 +205,7 @@
       "warmup_steps" : 10000
     },
     "num_environments": 4,
-    "epochs": 6,
+    "epochs": 8,
     "mini_batch_size": 128,
     "buffer_size": 1024,
     "batch_size": 1024,
