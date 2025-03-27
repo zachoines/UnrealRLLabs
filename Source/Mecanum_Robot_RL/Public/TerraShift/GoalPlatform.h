@@ -31,9 +31,14 @@ public:
     // Checks if the Goal Platform is active
     bool IsGoalPlatformActive() const;
 
+    // Returns material color
+    FLinearColor GetGoalColor() const;
+
 private:
     bool IsActive;
 
     // Dynamic material instance for changing colors
     UMaterialInstanceDynamic* DynMaterial;
+
+    FLinearColor CurrentColor;
 };

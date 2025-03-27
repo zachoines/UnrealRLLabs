@@ -29,6 +29,7 @@ void AGoalPlatform::InitializeGoalPlatform(FVector Location, FVector Scale, FLin
         UMaterial* BaseMaterial = LoadObject<UMaterial>(nullptr, TEXT("/Game/StarterContent/Materials/M_Basic_Floor.M_Basic_Floor"));
         if (BaseMaterial)
         {
+            CurrentColor = Color;
             DynMaterial = UMaterialInstanceDynamic::Create(BaseMaterial, this);
             DynMaterial->SetVectorParameterValue("Color", Color);
             MeshComponent->SetMaterial(0, DynMaterial);
@@ -60,4 +61,9 @@ void AGoalPlatform::SetGoalPlatformActive(bool bIsActive)
 bool AGoalPlatform::IsGoalPlatformActive() const
 {
     return IsActive;
+}
+
+FLinearColor AGoalPlatform::GetGoalColor() const
+{
+    return CurrentColor;
 }

@@ -3,6 +3,40 @@
     "name": "TerraShift",
     "id": "3",
     "params": {
+      "MultiAgentGaussianWaveHeightMap": {
+        "num_agents": 5,
+        "grid_size": 50,
+        "min_height": -2.0,
+        "max_height": 2.0,
+
+        "velocity_minmax":   [-1.0, 1.0],
+        "amplitude_minmax":  [0.0, 5.0],
+        "sigma_minmax":      [0.2, 5.0],
+        "angular_vel_minmax":[-0.5, 0.5],
+
+        "action_dim": 6,
+        "bUseActionDelta": true,
+        
+        "delta_velocity_scale": 0.5,
+        "delta_amp_scale":      0.2,
+        "delta_sigma_scale":    0.05,
+        "delta_angvel_scale":   0.3
+      },
+      "StateManager": {
+        "max_grid_objects": 50,
+        "GoalThreshold": 1.75,
+        "MarginXY": 1.5,
+        "MinZ": 0.0,
+        "MaxZ": 300.0,
+        "SpawnCollisionRadius": 120.0,
+        "MarginCells": 4,
+        "BoundingSphereScale": 1.5,
+        "ObjectScale": 0.1,
+        "ObjectMass": 0.1,
+        "max_column_height": 4.0,
+        "bUseRaycastForHeight": true,
+        "base_respawn_delay": 0.0
+      },
       "PlatformSize": 1,
       "MaxColumnHeight": 4,
       "ObjectSize": [0.1, 0.1, 0.1],
