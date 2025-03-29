@@ -10,24 +10,21 @@
       "GridSize": 50,
       "MaxSteps": 512,
       "NumGoals": 4,
-      "SpawnDelay": 0.0,
-      "MaxAgents": 225,
+      "SpawnDelay": 0.25,
+      "MaxAgents": 100,
       "GoalThreshold": 1.75,
 
       "MultiAgentGaussianWaveHeightMap": {
-        "num_agents": 225,
+        "num_agents": 100,
         "grid_size": 50,
-        "min_height": -1.0,
-        "max_height": 1.0,
-
+        "min_height": -4.0,
+        "max_height": 4.0,
         "velocity_minmax":   [-1.0, 1.0],
         "amplitude_minmax":  [0.0, 5.0],
         "sigma_minmax":      [0.2, 5.0],
         "angular_vel_minmax":[-0.5, 0.5],
-
         "action_dim": 6,
         "bUseActionDelta": true,
-
         "delta_velocity_scale": 0.5,
         "delta_amp_scale":      0.2,
         "delta_sigma_scale":    0.05,
@@ -58,8 +55,8 @@
         },
         "agent": {
           "obs_size": 9,
-          "min": 225,
-          "max": 225
+          "min": 50,
+          "max": 50
         }
       },
       "action": {
@@ -83,11 +80,11 @@
       "learning_rate": 0.00002,
       "gamma": 0.99,
       "lambda": 0.95,
-      "value_loss_coeff": 0.5,
-      "baseline_loss_coeff": 0.25,
+      "value_loss_coeff": 0.1,
+      "baseline_loss_coeff": 0.1,
       "normalize_advantages": false,
       "clipped_value_loss": true,
-      "max_grad_norm": 0.5,
+      "max_grad_norm": 0.1,
       "ppo_clip_range": 0.1,
       "value_clip_range": 0.2,
       "entropy_coeff": 0.001,
@@ -109,11 +106,10 @@
       "networks": {
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
-            "obs_size": 9,
-            "num_agents": 225,
+            "in_channels": 10,
             "h": 50,
             "w": 50,
-            "embed_dim": 128,
+            "embed_dim": 64,
             "num_heads": 8,
             "cnn_channels": [32, 64, 128],
             "cnn_kernel_sizes": [5, 3, 3],
@@ -124,24 +120,24 @@
             "dropout_rate": 0.0,
             "use_agent_id": true,
             "ff_hidden_factor": 4,
-            "id_num_freqs": 8,
+            "id_num_freqs": 256,
             "conv_init_scale": 0.1,
             "linear_init_scale": 0.1
           },
           "obs_encoder": {
-            "state_dim": 128,
-            "hidden_size": 128,
-            "output_size": 128,
+            "state_dim": 64,
+            "hidden_size": 64,
+            "output_size": 64,
             "dropout_rate": 0,
             "activation": true,
             "layer_norm": true,
             "linear_init_scale": 0.1
           },
           "obs_actions_encoder": {
-            "state_dim": 128,
+            "state_dim": 64,
             "action_dim": 6,
-            "hidden_size": 128,
-            "output_size": 128,
+            "hidden_size": 64,
+            "output_size": 64,
             "dropout_rate": 0,
             "activation": true,
             "layer_norm": true,
@@ -149,29 +145,29 @@
           }
         },
         "policy_network": {
-          "in_features": 128,
-          "hidden_size": 128,
+          "in_features": 64,
+          "hidden_size": 256,
           "log_std_min": -8.0,
           "log_std_max": 2.0,
           "mean_scale": 1.0,
           "entropy_method": "mc",
           "n_entropy_samples": 10,
-          "num_agents": 225,
+          "num_agents": 50,
           "linear_init_scale": 0.1
         },
         "critic_network": {
           "value_head": {
-            "in_features": 128,
-            "hidden_size": 128,
+            "in_features": 64,
+            "hidden_size": 256,
             "dropout_rate": 0
           },
           "baseline_head": {
-            "in_features": 128,
-            "hidden_size": 128,
+            "in_features": 64,
+            "hidden_size": 256,
             "dropout_rate": 0
           },
           "baseline_attention": {
-            "embed_dim": 128,
+            "embed_dim": 64,
             "num_heads": 8,
             "dropout": 0.0,
             "self_attention": true
@@ -187,12 +183,12 @@
       "warmup_steps": 10000
     },
     "num_environments": 2,
-    "epochs": 8,
-    "mini_batch_size": 128,
-    "buffer_size": 1024,
-    "batch_size": 1024,
+    "epochs": 4,
+    "mini_batch_size": 8,
+    "buffer_size": 64,
+    "batch_size": 64,
     "AgentsResetFrequency": 0,
-    "ActionRepeat": 1,
+    "ActionRepeat": 3,
     "saveFrequency": 20
   }
 }

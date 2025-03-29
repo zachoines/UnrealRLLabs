@@ -29,13 +29,7 @@ void UMultiAgentGaussianWaveHeightMap::InitializeFromConfig(UEnvironmentConfig* 
         return;
     }
 
-    // We read from environment/params/MultiAgentGaussianWaveHeightMap
-    UEnvironmentConfig* WaveCfg = EnvConfig->Get(TEXT("environment/params/MultiAgentGaussianWaveHeightMap"));
-    if (!WaveCfg || !WaveCfg->IsValid())
-    {
-        UE_LOG(LogTemp, Error, TEXT("Cannot find environment/params/MultiAgentGaussianWaveHeightMap block in config!"));
-        return;
-    }
+    UEnvironmentConfig* WaveCfg = EnvConfig;
 
     // read core params
     NumAgents = WaveCfg->GetOrDefaultInt(TEXT("num_agents"), 5);

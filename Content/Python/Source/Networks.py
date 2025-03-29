@@ -653,19 +653,19 @@ class FeedForwardBlock(nn.Module):
 class CrossAttentionFeatureExtractor(nn.Module):
     """
     Multi-scale architecture with:
-      - CNN feature extraction using GELU
-      - 2D sin-cos positional encodings for map patches
+      - CNN feature extraction from multi-channel wave data
+      - 2D sin-cos positional encodings for CNN patches
       - Multiple cross-attn blocks per scale
       - Interleaved agent self-attn
       - Final LN + MLP on agent embeddings
       - Discrete category embedding + sinusoidal ID encoding for each agent
-      - Weight initialization with manual scaling
     """
 
     def __init__(
         self,
-        obs_size: int = 26,
-        num_agents: int = 5,
+        # -------------
+        # NEW: Instead of 'obs_size', we explicitly define 'in_channels'
+        in_channels: int = 10,   # e.g. 10 wave channels
         h: int = 50,
         w: int = 50,
         embed_dim: int = 128,
@@ -679,57 +679,66 @@ class CrossAttentionFeatureExtractor(nn.Module):
         dropout_rate: float = 0.0,
         use_agent_id: bool = True,
         ff_hidden_factor: int = 4,
-        # Extra: For ID pos enc
         id_num_freqs: int = 8,
-        # scale factors for init
         conv_init_scale: float = 0.1,
         linear_init_scale: float = 1.0
     ):
         super().__init__()
-        self.num_agents = num_agents
-        self.embed_dim = embed_dim
+        self.in_channels = in_channels
         self.h = h
         self.w = w
-        self.block_scales = block_scales
-        self.use_agent_id = use_agent_id
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
         self.transformer_layers = transformer_layers
         self.ff_hidden_factor = ff_hidden_factor
+        self.use_agent_id = use_agent_id
+        self.block_scales = block_scales
         self.num_scales = len(block_scales)
 
-        ####################################################
-        # (A) Agent MLP (GELU)
-        ####################################################
+        # ---------------------------------------------------------
+        # A) Simple Agent MLP to embed agent states
+        # ---------------------------------------------------------
         self.agent_encoder = nn.Sequential(
-            nn.Linear(obs_size, embed_dim),
+            nn.Linear(   # Typically was: obs_size -> embed_dim
+                # e.g. 9 floats from wave agent state
+                9,  # <== This can be updated or config-driven
+                embed_dim
+            ),
             nn.GELU(),
             nn.Linear(embed_dim, embed_dim),
-            nn.GELU(),
+            nn.GELU()
         )
 
-        ####################################################
-        # (B) Agent ID Embeddings + sinusoidal ID pos enc
-        ####################################################
+        # ---------------------------------------------------------
+        # B) Agent ID Embedding + Sinusoidal
+        # ---------------------------------------------------------
         if use_agent_id:
-            self.agent_id_embedding = nn.Embedding(num_agents, embed_dim)
+            self.agent_id_embedding = nn.Embedding(225, embed_dim)  # e.g. up to 225 wave agents
             nn.init.normal_(self.agent_id_embedding.weight, mean=0.0, std=0.01)
             
-            self.agent_id_pos_enc = AgentIDPosEnc(num_freqs=id_num_freqs, id_embed_dim=embed_dim)
+            self.agent_id_pos_enc = AgentIDPosEnc(
+                num_freqs=id_num_freqs, 
+                id_embed_dim=embed_dim
+            )
             self.agent_id_sum_ln = nn.LayerNorm(embed_dim)
         else:
             self.agent_id_embedding = None
             self.agent_id_pos_enc = None
 
-        ####################################################
-        # (C) CNN blocks (CoordConv) + 1x1 conv => embed_dim
-        #     with GELU
-        ####################################################
+        # ---------------------------------------------------------
+        # C) CNN Blocks
+        # We have self.in_channels wave channels, plus we will add 2
+        # coordinate channels in forward().
+        # ---------------------------------------------------------
+        total_in_c = self.in_channels + 2  # wave + (row, col)
+
         self.blocks = nn.ModuleList()
-        in_channels = 3  # 1 for heightmap + 2 for coords
-        prev_c = in_channels
+        prev_c = total_in_c
         for i, out_c in enumerate(cnn_channels):
             block = nn.Sequential(
                 nn.Conv2d(prev_c, out_c, kernel_size=cnn_kernel_sizes[i],
-                          stride=cnn_strides[i], padding=cnn_kernel_sizes[i] // 2),
+                          stride=cnn_strides[i],
+                          padding=cnn_kernel_sizes[i] // 2),
                 nn.GroupNorm(group_norms[i], out_c),
                 nn.GELU(),
 
@@ -740,173 +749,181 @@ class CrossAttentionFeatureExtractor(nn.Module):
             self.blocks.append(block)
             prev_c = out_c
 
-        # 1x1 conv => embed_dim
+        # 1x1 conv => embed_dim for each scale
         self.block_embeds = nn.ModuleList()
         self.block_lns = nn.ModuleList()
         for c_out in cnn_channels:
-            emb_conv = nn.Conv2d(c_out, embed_dim, kernel_size=1, stride=1, padding=0)
+            emb_conv = nn.Conv2d(c_out, embed_dim, kernel_size=1, stride=1)
             ln = nn.LayerNorm(embed_dim)
             self.block_embeds.append(emb_conv)
             self.block_lns.append(ln)
 
-        ####################################################
-        # (D) Cross-Attn blocks per scale, repeated for each layer
-        ####################################################
+        # ---------------------------------------------------------
+        # D) Cross-Attn blocks (per scale) repeated for each layer
+        # ---------------------------------------------------------
         self.cross_attn_blocks = nn.ModuleList()
         for layer_idx in range(transformer_layers):
-            blocks_for_this_layer = nn.ModuleList()
+            blocks_per_scale = nn.ModuleList()
             for scale_idx in range(self.num_scales):
                 cross_attn = ResidualAttention(embed_dim, num_heads, dropout=dropout_rate, self_attention=False)
-                ff_cross   = FeedForwardBlock(embed_dim, hidden_dim=embed_dim*self.ff_hidden_factor, dropout=dropout_rate)
-                pair = nn.ModuleDict({
+                ff_cross   = FeedForwardBlock(embed_dim, hidden_dim=embed_dim * ff_hidden_factor, dropout=dropout_rate)
+                scale_mod  = nn.ModuleDict({
                     "attn": cross_attn,
                     "ffn": ff_cross
                 })
-                blocks_for_this_layer.append(pair)
-            self.cross_attn_blocks.append(blocks_for_this_layer)
+                blocks_per_scale.append(scale_mod)
+            self.cross_attn_blocks.append(blocks_per_scale)
 
-        ####################################################
-        # (E) Agent Self-Attn (1 per transformer layer)
-        ####################################################
+        # ---------------------------------------------------------
+        # E) Agent Self-Attn for each transformer layer
+        # ---------------------------------------------------------
         self.agent_self_attn = nn.ModuleList()
         self.agent_self_ffn  = nn.ModuleList()
         for layer_idx in range(transformer_layers):
             self_attn = ResidualAttention(embed_dim, num_heads, dropout=dropout_rate, self_attention=True)
-            ff_self   = FeedForwardBlock(embed_dim, hidden_dim=embed_dim*self.ff_hidden_factor, dropout=dropout_rate)
+            ff_self   = FeedForwardBlock(embed_dim, hidden_dim=embed_dim * ff_hidden_factor, dropout=dropout_rate)
             self.agent_self_attn.append(self_attn)
             self.agent_self_ffn.append(ff_self)
 
-        ####################################################
-        # (F) Final LN + MLP (GELU)
-        ####################################################
+        # ---------------------------------------------------------
+        # F) Final LN + MLP
+        # ---------------------------------------------------------
         self.final_agent_ln = nn.LayerNorm(embed_dim)
         self.post_cross_mlp = nn.Sequential(
             nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
-            nn.Linear(embed_dim, embed_dim),
+            nn.Linear(embed_dim, embed_dim)
         )
 
-        ####################################################
-        # Initialization with manual scaling
-        ####################################################
-        # 1) For CNN conv layers, we use 'conv_init_scale' (e.g. 0.1)
+        # ---------------------------------------------------------
+        # Initialization
+        # ---------------------------------------------------------
+        # CNN conv layers => conv_init_scale
         self.blocks.apply(lambda m: init_weights_gelu_conv(m, scale=conv_init_scale))
-        # Also for the block_embeds 1x1 conv:
         self.block_embeds.apply(lambda m: init_weights_gelu_conv(m, scale=conv_init_scale))
 
-        # 2) For all linear layers (agent MLP, attention Q/K/V, feed-forward, etc.)
-        #    we use 'linear_init_scale' (default 1.0)
+        # All linear layers => linear_init_scale
         self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale))
 
-
-    def forward(self, state):
+    def forward(self, state_dict: Dict[str, torch.Tensor]):
         """
         Inputs:
-          state["agent"]   => (S,E,A, obs_size)
-          state["central"] => (S,E, h*w)
-
+          state_dict["agent"]   => shape (S,E,A, 9)   (example wave agent state)
+          state_dict["central"] => shape (S,E, in_channels*h*w)
         Returns:
           agent_embed => (S,E,A, embed_dim)
-          attn_weights => (S,E,A,A) from last self-attn
+          attn_weights => (S,E,A,A) from last agent self-attn
         """
-        agent_state   = state["agent"]
-        central_state = state["central"]
+        agent_state = state_dict["agent"]
+        central_data= state_dict["central"]  # => shape (S,E, in_channels*h*w)
         device = agent_state.device
-        S, E, A, obs_dim = agent_state.shape
-        batch = S * E
 
-        ####################################
-        # 1) Agent MLP
-        ####################################
-        flat = agent_state.view(-1, obs_dim)
-        agent_embed = self.agent_encoder(flat)  # => (S*E*A, embed_dim)
-        agent_embed = agent_embed.view(batch, A, self.embed_dim)  # (B,A,d)
+        S, E, A, obs_dim = agent_state.shape  # (S,E,A,9)
+        B = S * E
 
-        ####################################
-        # 2) Discrete ID embed + sinusoidal ID pos enc
-        ####################################
+        # ------------------------------------------
+        # 1) Encode agent-state with agent_encoder
+        # ------------------------------------------
+        flat_agents = agent_state.view(-1, obs_dim)  # => (S*E*A, 9)
+        agent_embed = self.agent_encoder(flat_agents)
+        agent_embed = agent_embed.view(B, A, self.embed_dim)  # => (B,A,d)
+
+        # 2) Optionally add agent ID embeddings
         if self.use_agent_id:
             agent_ids = torch.arange(A, device=device).view(1,1,A).expand(S,E,A)
-            # discrete embedding => (S,E,A, d)
-            discrete_emb = self.agent_id_embedding(agent_ids)
-            # sinusoidal ID pos => (S,E,A, d)
-            pos_enc = self.agent_id_pos_enc(agent_ids)
+            discrete_emb = self.agent_id_embedding(agent_ids)  # => (S,E,A,d)
+            pos_enc      = self.agent_id_pos_enc(agent_ids)    # => (S,E,A,d)
 
-            agent_embed_4d = agent_embed.view(S, E, A, self.embed_dim)
+            agent_embed_4d = agent_embed.view(S,E,A,self.embed_dim)
             agent_embed_4d = agent_embed_4d + discrete_emb + pos_enc
             agent_embed_4d = self.agent_id_sum_ln(agent_embed_4d)
+            agent_embed    = agent_embed_4d.view(B,A,self.embed_dim)
 
-            agent_embed = agent_embed_4d.view(batch, A, self.embed_dim)
+        # ------------------------------------------
+        # 3) Reshape central => (B, in_channels, H, W)
+        # Then add row/col => => (B, in_channels+2, H, W)
+        # ------------------------------------------
+        # central_data => (S,E, in_channels*h*w)
+        # => shape => (B, in_channels*h*w)
+        central_data = central_data.view(B, self.in_channels, self.h, self.w)
 
-        ####################################
-        # 3) Reshape central_state => CNN
-        ####################################
-        central_state = central_state.view(S, E, self.h, self.w)
-        central_state = central_state.view(batch, 1, self.h, self.w)  # => (B,1,H,W)
-
-        # Add coordinate channels
-        B, _, H, W = central_state.shape
+        _, _, H, W = central_data.shape  # => should be (B, in_channels, 50, 50)
         row_coords = torch.linspace(-1, 1, steps=H, device=device).view(1,1,H,1).expand(B,1,H,W)
         col_coords = torch.linspace(-1, 1, steps=W, device=device).view(1,1,1,W).expand(B,1,H,W)
-        cnn_input = torch.cat([central_state, row_coords, col_coords], dim=1)  # (B,3,H,W)
 
-        # Pass through each CNN block => multi-scale feats
+        cnn_input = torch.cat([central_data, row_coords, col_coords], dim=1)
+        # => (B, in_channels+2, H, W)
+
+        # ------------------------------------------
+        # 4) Pass through CNN blocks => multi-scale feats
+        # ------------------------------------------
         feats = []
-        out = cnn_input
+        out_cnn = cnn_input
         for block in self.blocks:
-            out = block(out)
-            feats.append(out)
+            out_cnn = block(out_cnn)
+            feats.append(out_cnn)
 
-        ####################################
-        # 4) Flatten CNN outputs => patch sequences + 2D pos enc
-        ####################################
+        # ------------------------------------------
+        # 5) Flatten each scale => patch seq => add 2D pos enc
+        # ------------------------------------------
         patch_seqs = []
         for i, f in enumerate(feats):
             sH = sW = self.block_scales[i]
-            pooled = F.adaptive_avg_pool2d(f, (sH, sW))  # (B, c_out, sH, sW)
-            f_emb = self.block_embeds[i](pooled)         # => (B, d, sH, sW)
+            # adaptive pool to shape (sH, sW)
+            pooled = F.adaptive_avg_pool2d(f, (sH, sW))  # => (B, c_out, sH, sW)
+            emb_2d = self.block_embeds[i](pooled)        # => (B, embed_dim, sH, sW)
 
-            B_, D_, HH_, WW_ = f_emb.shape
-            patches = f_emb.view(B_, D_, HH_*WW_).transpose(1,2)  # => (B, #patches, d)
+            # reshape => (B, #patches, embed_dim)
+            B_, D_, HH_, WW_ = emb_2d.shape
+            patches = emb_2d.view(B_, D_, HH_*WW_).transpose(1,2)  # => (B, patches, d)
             patches = self.block_lns[i](patches)
 
+            # Add a 2D sinusoidal pos emb to these patches
             pos_2d = create_2d_sin_cos_pos_emb(HH_, WW_, self.embed_dim, device)
             patches = patches + pos_2d.unsqueeze(0)
 
             patch_seqs.append(patches)
 
-        ####################################
-        # 5) Transformer Layers:
-        #    (Cross-attn blocks per scale) => agent self-attn
-        ####################################
+        # ------------------------------------------
+        # 6) Transformer Layers:
+        #    - CrossAttn blocks per scale
+        #    - Agent self-attn
+        # ------------------------------------------
         attn_weights_final = None
+
         for layer_idx in range(self.transformer_layers):
-            blocks_for_this_layer = self.cross_attn_blocks[layer_idx]
+            scale_blocks = self.cross_attn_blocks[layer_idx]  # => nn.ModuleList
 
-            for scale_idx in range(self.num_scales):
-                scale_block = blocks_for_this_layer[scale_idx]
-                cross_attn = scale_block["attn"]
-                ff_cross   = scale_block["ffn"]
+            # CROSS-ATTN to each scale
+            for scale_idx, block_dict in enumerate(scale_blocks):
+                cross_attn = block_dict["attn"]
+                ff_cross   = block_dict["ffn"]
 
-                scale_patches = patch_seqs[scale_idx]  # (B, #patches, d)
-                agent_embed, _ = cross_attn(agent_embed, scale_patches, scale_patches)
+                scale_patches = patch_seqs[scale_idx]  # => (B, nPatches, d)
+                agent_embed, _ = cross_attn(
+                    x_q=agent_embed,
+                    x_k=scale_patches,
+                    x_v=scale_patches
+                )
                 agent_embed = ff_cross(agent_embed)
 
+            # Agent Self-Attn
             self_attn_block = self.agent_self_attn[layer_idx]
-            self_ff = self.agent_self_ffn[layer_idx]
+            self_ff         = self.agent_self_ffn[layer_idx]
 
             agent_embed, attn_weights_final = self_attn_block(agent_embed)
             agent_embed = self_ff(agent_embed)
 
-        ####################################
-        # 6) Final LN + MLP
-        ####################################
+        # ------------------------------------------
+        # 7) Final LN + MLP
+        # ------------------------------------------
         agent_embed = self.final_agent_ln(agent_embed)
         agent_embed = self.post_cross_mlp(agent_embed) + agent_embed
 
-        # (B,A,d) => (S,E,A,d)
+        # Reshape => (S,E,A,d)
         agent_embed = agent_embed.view(S, E, A, self.embed_dim)
-        attn_weights_final = attn_weights_final.view(S, E, A, A)
+        if attn_weights_final is not None:
+            attn_weights_final = attn_weights_final.view(S, E, A, A)
 
         return agent_embed, attn_weights_final
