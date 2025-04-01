@@ -88,7 +88,7 @@ public:
     void BuildCentralState();
 
     UFUNCTION(BlueprintCallable)
-    TArray<float> GetCentralState() const;
+    TArray<float> GetCentralState();
 
     /** Returns wave-sim agent’s 9-float state (orientation, sigma, etc.) from the UMultiAgentGaussianWaveHeightMap. */
     UFUNCTION(BlueprintCallable)
@@ -239,27 +239,13 @@ private:
     UPROPERTY()
     FVector PlatformCenter;
 
-    // NxN => 10 channels
     UPROPERTY()
-    FMatrix2D ChannelHeight;
-    UPROPERTY()
-    FMatrix2D ChannelVelX;
-    UPROPERTY()
-    FMatrix2D ChannelVelY;
-    UPROPERTY()
-    FMatrix2D ChannelVelZ;
-    UPROPERTY()
-    FMatrix2D ChannelAccX;
-    UPROPERTY()
-    FMatrix2D ChannelAccY;
-    UPROPERTY()
-    FMatrix2D ChannelAccZ;
-    UPROPERTY()
-    FMatrix2D ChannelDirX;
-    UPROPERTY()
-    FMatrix2D ChannelDirY;
-    UPROPERTY()
-    FMatrix2D ChannelDirZ;
+    FMatrix2D SecondOrderDeltaHeight;
+    FMatrix2D PreviousDeltaHeight;
+    FMatrix2D CurrentDeltaHeight;
+    FMatrix2D PreviousHeight;
+    FMatrix2D CurrentHeight;
+    unsigned long Step = 0;
 
     // object states
     UPROPERTY()

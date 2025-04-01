@@ -5,6 +5,7 @@ import torch.optim as optim
 import numpy as np
 from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import LinearLR
+from Source.StateRecorder import StateRecorder
 
 from Source.Agent import Agent
 from Source.Utility import RunningMeanStdNormalizer, LinearValueScheduler, OneCycleLRWithMin,OneCycleCosineScheduler
@@ -30,6 +31,7 @@ class MAPOCAAgent(Agent):
         train_cfg = config["train"]
         shape_cfg = config["environment"]["shape"]
         action_cfg= shape_cfg["action"]
+        rec_cfg = config.get("StateRecorder", None)
 
         # PPO / GAE Hyperparams
         self.gamma   = agent_cfg.get("gamma", 0.99)
@@ -49,6 +51,11 @@ class MAPOCAAgent(Agent):
         # training
         self.epochs         = train_cfg.get("epochs", 4)
         self.mini_batch_size= train_cfg.get("mini_batch_size", 128)
+
+        # Recording
+        self.state_recorder = None
+        if rec_cfg:
+            self.state_recorder = StateRecorder(rec_cfg)
 
         # Determine action space
         if "agent" in action_cfg:
@@ -162,7 +169,7 @@ class MAPOCAAgent(Agent):
     #  get_actions()
     # ------------------------------------------------------------
     @torch.no_grad()
-    def get_actions(self, states: dict, dones: torch.Tensor, truncs: torch.Tensor, eval: bool=False):
+    def get_actions(self, states: dict, dones: torch.Tensor, truncs: torch.Tensor, eval: bool=False, record: bool=True):
         """
         Build embeddings => pass to self.policy_net => reshape
         Return => actions, (log_probs, entropies)
@@ -188,6 +195,13 @@ class MAPOCAAgent(Agent):
 
         log_probs = lp_flat.reshape(S,E,NA)
         entropies = ent_flat.reshape(S,E,NA)
+
+
+        # 2) If we want to record the central state for the "first environment":
+        if self.state_recorder is not None:
+            c_1d = states["central"][0,0,:].cpu().numpy()
+            self.state_recorder.record_frame(c_1d)
+
         return actions, (log_probs, entropies)
 
     # ------------------------------------------------------------
@@ -207,6 +221,7 @@ class MAPOCAAgent(Agent):
         4) Mini-batch => Compute new => Clipped losses => Step
         5) Return logs
         """
+
         # shape check
         if "agent" in states:
             NS, NE, NA, _ = states["agent"].shape

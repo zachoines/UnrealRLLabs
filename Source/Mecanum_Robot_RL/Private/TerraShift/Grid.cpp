@@ -57,6 +57,7 @@ void AGrid::ResetGrid() {
     for (AColumn* Column : Columns) {
         if (Column) {
             Column->ResetColumn(0.0);
+            Column->SetSimulatePhysics(true);
         }
     }
 }

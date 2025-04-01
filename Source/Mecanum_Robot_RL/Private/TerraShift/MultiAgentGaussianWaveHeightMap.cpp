@@ -222,22 +222,28 @@ void UMultiAgentGaussianWaveHeightMap::Step(const TArray<float>& Actions, float 
 
 void UMultiAgentGaussianWaveHeightMap::ComputeFinalWave()
 {
+    // 1) Zero out the NxN matrix
     FinalWave.Init(0.f);
 
-    for (const FGaussianWaveAgent& A : Agents)
+    // 2) Sum the Gaussian contributions from each agent
+    for (const FGaussianWaveAgent& Agent : Agents)
     {
-        for (int32 r = 0; r < GridSize; r++)
+        for (int32 row = 0; row < GridSize; row++)
         {
-            for (int32 c = 0; c < GridSize; c++)
+            for (int32 col = 0; col < GridSize; col++)
             {
-                float oldVal = FinalWave[r][c];
-                float gVal = Gauss2D(r, c, A);
-                FinalWave[r][c] = oldVal + gVal;
+                float oldVal = FinalWave[row][col];
+                float waveVal = Gauss2D(row, col, Agent);
+                FinalWave[row][col] = oldVal + waveVal;
             }
         }
     }
 
+    // 3) Clip final wave to [MinHeight .. MaxHeight]
     FinalWave.Clip(MinHeight, MaxHeight);
+
+    // Optional: If you want the wave in centimeters and your min/max are in meters:
+    // FinalWave *= 100.0f; // for example
 }
 
 float UMultiAgentGaussianWaveHeightMap::Gauss2D(float row, float col, const FGaussianWaveAgent& A) const

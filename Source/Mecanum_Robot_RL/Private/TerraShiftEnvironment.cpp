@@ -41,7 +41,7 @@ void ATerraShiftEnvironment::Tick(float DeltaTime)
 
     if (Initialized)
     {
-        UpdateActiveColumns();
+        // UpdateActiveColumns();
         UpdateColumnColors();
     }
 }
@@ -256,7 +256,7 @@ void ATerraShiftEnvironment::Act(FAction Action)
     const FMatrix2D& wave = WaveSimulator->GetHeightMap();
     if (Grid)
     {
-        Grid->UpdateColumnHeights(wave * MaxColumnHeight);
+        Grid->UpdateColumnHeights(wave);
     }
 }
 
@@ -292,16 +292,14 @@ FState ATerraShiftEnvironment::State()
     // combine central state + wave-agent states
     if (StateManager)
     {
-        // add central NxN * 10
+        // add central furst
         TArray<float> c = StateManager->GetCentralState();
         st.Values.Append(c);
 
-        // Then each wave agent's 9 floats, from 0..(CurrentAgents -1)
-        // (We do not return grid-object states; that’s separate. The RLRunner sees wave agents.)
+        // then each wave agent state
         for (int32 i = 0; i < CurrentAgents; i++)
         {
             TArray<float> waveAgentArr = StateManager->GetAgentState(i);
-            // under the hood => waveSim->GetAgentState(i)
             st.Values.Append(waveAgentArr);
         }
     }

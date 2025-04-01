@@ -140,16 +140,11 @@ void UStateManager::Reset(int32 NumObjects)
     }
 
     // NxN channels => init to 0
-    ChannelHeight = FMatrix2D(GridSize, GridSize, 0.f);
-    ChannelVelX = FMatrix2D(GridSize, GridSize, 0.f);
-    ChannelVelY = FMatrix2D(GridSize, GridSize, 0.f);
-    ChannelVelZ = FMatrix2D(GridSize, GridSize, 0.f);
-    ChannelAccX = FMatrix2D(GridSize, GridSize, 0.f);
-    ChannelAccY = FMatrix2D(GridSize, GridSize, 0.f);
-    ChannelAccZ = FMatrix2D(GridSize, GridSize, 0.f);
-    ChannelDirX = FMatrix2D(GridSize, GridSize, 0.f);
-    ChannelDirY = FMatrix2D(GridSize, GridSize, 0.f);
-    ChannelDirZ = FMatrix2D(GridSize, GridSize, 0.f);
+    PreviousDeltaHeight = FMatrix2D(GridSize, GridSize, 0.f);
+    CurrentDeltaHeight = FMatrix2D(GridSize, GridSize, 0.f);
+    PreviousHeight = FMatrix2D(GridSize, GridSize, 0.f);
+    CurrentHeight = FMatrix2D(GridSize, GridSize, 0.f);
+    int CurrentStep = 0;
 }
 
 int32 UStateManager::GetMaxGridObjects() const
@@ -365,119 +360,81 @@ bool UStateManager::AllGridObjectsHandled() const
 
 void UStateManager::BuildCentralState()
 {
-    if (!WaveSim || !Grid)
+    if (!Grid || !WaveSim)
     {
-        UE_LOG(LogTemp, Error, TEXT("BuildCentralState => missing wave or grid!"));
+        UE_LOG(LogTemp, Warning, TEXT("BuildCentralState => Missing Grid or WaveSim."));
         return;
     }
-    const FMatrix2D& wave = WaveSim->GetHeightMap();
-    if (wave.GetNumRows() != GridSize || wave.GetNumColumns() != GridSize)
+    UWorld* WorldPtr = Grid->GetWorld();
+    if (!WorldPtr)
     {
-        UE_LOG(LogTemp, Warning, TEXT("Wave size mismatch => cannot build central."));
+        UE_LOG(LogTemp, Warning, TEXT("BuildCentralState => No valid UWorld."));
         return;
     }
-    // base height = wave
-    ChannelHeight = wave;
 
-    // zero velocity/acc/dir
-    ChannelVelX.Init(0.f);
-    ChannelVelY.Init(0.f);
-    ChannelVelZ.Init(0.f);
+    // For reference:
+    //   float HalfPlatformSize = PlatformSize * 0.5f;
+    //   float cell = CellSize;
 
-    ChannelAccX.Init(0.f);
-    ChannelAccY.Init(0.f);
-    ChannelAccZ.Init(0.f);
+    float HalfPlatformSize = (GridSize > 0) ? (PlatformWorldSize.X * 0.5f) : 0.f;
+    float PlatformZPosWorld = Platform->GetActorLocation().Z;
 
-    ChannelDirX.Init(0.f);
-    ChannelDirY.Init(0.f);
-    ChannelDirZ.Init(0.f);
+    FMatrix2D ChannelHeightTmp = FMatrix2D(GridSize, GridSize, 0.f);
 
-    // For each active object => overlay velocity,acc,dir, possibly raise height
-    for (int32 i = 0; i < bHasActive.Num(); i++)
+    // 2) For each row,col
+    for (int32 row = 0; row < GridSize; row++)
     {
-        if (!bHasActive[i])
-            continue;
-
-        AGridObject* Obj = ObjectMgr->GetGridObject(i);
-        if (!Obj)
-            continue;
-
-        FVector wPos = Obj->GetObjectLocation();
-        FVector wVel = Obj->MeshComponent->GetPhysicsLinearVelocity();
-        float rad = Obj->MeshComponent->Bounds.SphereRadius * ObjectScale;
-
-        // local to grid
-        FVector localPos = Grid->GetActorTransform().InverseTransformPosition(wPos);
-        FVector localVel = Grid->GetActorTransform().InverseTransformVector(wVel);
-        FVector localAcc = CurrAcc.IsValidIndex(i) ? CurrAcc[i] : FVector::ZeroVector;
-
-        int32 gIdx = ObjectGoalIndices[i];
-        FVector wGoal = (GoalPlatforms.IsValidIndex(gIdx)
-            ? GoalPlatforms[gIdx]->GetActorLocation()
-            : FVector::ZeroVector);
-        FVector localGoal = Grid->GetActorTransform().InverseTransformPosition(wGoal);
-        FVector dir = (localGoal - localPos).GetSafeNormal();
-
-        // bounding box in grid coords
-        int32 minX = FMath::FloorToInt((localPos.X - rad) / CellSize);
-        int32 maxX = FMath::FloorToInt((localPos.X + rad) / CellSize);
-        int32 minY = FMath::FloorToInt((localPos.Y - rad) / CellSize);
-        int32 maxY = FMath::FloorToInt((localPos.Y + rad) / CellSize);
-
-        minX = FMath::Clamp(minX, 0, GridSize - 1);
-        maxX = FMath::Clamp(maxX, 0, GridSize - 1);
-        minY = FMath::Clamp(minY, 0, GridSize - 1);
-        maxY = FMath::Clamp(maxY, 0, GridSize - 1);
-
-        for (int32 rx = minX; rx <= maxX; rx++)
+        for (int32 col = 0; col < GridSize; col++)
         {
-            for (int32 ry = minY; ry <= maxY; ry++)
+            /* Perform height channel calculations */
+            // (A) local X,Y => consistent with AGrid
+            float localX = (col + 0.5f) * CellSize - HalfPlatformSize;
+            float localY = (row + 0.5f) * CellSize - HalfPlatformSize;
+
+            // Above the plafrom by MaxZ, centered on the GridCell
+            FVector localRayStartPos(localX, localY, PlatformZPosWorld + MaxZ);
+            FVector startWorldPos = Grid->GetActorTransform().TransformPosition(localRayStartPos);
+
+            // Downward all the way to the plaform
+            FVector localRayEndPos(localX, localY, PlatformZPosWorld - MaxZ);
+            FVector endWorldPos = Grid->GetActorTransform().TransformPosition(localRayEndPos);
+
+            // (B) line trace
+            FHitResult hit;
+            FCollisionQueryParams traceParams(FName(TEXT("TopDownRay")), true);
+
+            bool bHit = WorldPtr->LineTraceSingleByChannel(
+                hit,
+                startWorldPos,
+                endWorldPos,
+                ECC_Visibility,
+                traceParams
+            );
+
+            float finalZ = 0.f;
+            if (bHit)
             {
-                float ccx = (rx + 0.5f) * CellSize;
-                float ccy = (ry + 0.5f) * CellSize;
-                float dx = ccx - localPos.X;
-                float dy = ccy - localPos.Y;
-                float dist2 = (dx * dx + dy * dy);
-                if (dist2 > rad * rad)
-                    continue;
-
-                // overlay velocity,acc,dir
-                ChannelVelX[rx][ry] = localVel.X;
-                ChannelVelY[rx][ry] = localVel.Y;
-                ChannelVelZ[rx][ry] = localVel.Z;
-
-                ChannelAccX[rx][ry] = localAcc.X;
-                ChannelAccY[rx][ry] = localAcc.Y;
-                ChannelAccZ[rx][ry] = localAcc.Z;
-
-                ChannelDirX[rx][ry] = dir.X;
-                ChannelDirY[rx][ry] = dir.Y;
-                ChannelDirZ[rx][ry] = dir.Z;
-
-                float oldH = ChannelHeight[rx][ry];
-                float newH = oldH;
-
-                // if bUseRaycastForHeight => line trace from above
-                if (bUseRaycastForHeight)
-                {
-                    float cellWX = Grid->GetActorLocation().X + (ccx * Grid->GetActorScale3D().X);
-                    float cellWY = Grid->GetActorLocation().Y + (ccy * Grid->GetActorScale3D().Y);
-                    float cellWZ = Grid->GetActorLocation().Z + (MaxColumnHeight * 2.f);
-
-                    FVector cellWorld(cellWX, cellWY, cellWZ);
-                    newH = RaycastColumnTopWorld(cellWorld, oldH);
-                }
-                else
-                {
-                    // approximate top => localPos.Z + sqrt(r^2 - dist2)
-                    float sphereTopZ = localPos.Z + FMath::Sqrt(FMath::Max(0.f, rad * rad - dist2));
-                    newH = FMath::Max(oldH, sphereTopZ);
-                }
-
-                ChannelHeight[rx][ry] = newH;
+                // Convert to local coords
+                FVector localHit = Grid->GetActorTransform().InverseTransformPosition(hit.ImpactPoint);
+                finalZ = localHit.Z;
             }
+
+            ChannelHeightTmp[row][col] = finalZ;
+
         }
     }
+
+    float dt = GetWorld()->GetDeltaSeconds();
+    if (dt < KINDA_SMALL_NUMBER)
+        return;
+
+    PreviousHeight = CurrentHeight;
+    CurrentHeight = ChannelHeightTmp;
+
+    PreviousDeltaHeight = CurrentDeltaHeight;
+    CurrentDeltaHeight = Step > 0 ? (ChannelHeightTmp - CurrentHeight) / dt : FMatrix2D(GridSize, GridSize, 0.f);
+    SecondOrderDeltaHeight = Step > 1 ? (CurrentDeltaHeight - PreviousDeltaHeight) / dt : FMatrix2D(GridSize, GridSize, 0.f);
+    Step += 1;
 }
 
 float UStateManager::RaycastColumnTopWorld(const FVector& CellWorldCenter, float waveVal) const
@@ -505,27 +462,13 @@ float UStateManager::RaycastColumnTopWorld(const FVector& CellWorldCenter, float
     return FMath::Max(waveVal, localHit.Z);
 }
 
-TArray<float> UStateManager::GetCentralState() const
+TArray<float> UStateManager::GetCentralState()
 {
     TArray<float> outArr;
-    outArr.Reserve(GridSize * GridSize * 10);
+    outArr += CurrentHeight.Data;
+    outArr += CurrentDeltaHeight.Data;
+    outArr += SecondOrderDeltaHeight.Data;
 
-    for (int32 r = 0; r < GridSize; r++)
-    {
-        for (int32 c = 0; c < GridSize; c++)
-        {
-            outArr.Add(ChannelHeight[r][c]);
-            outArr.Add(ChannelVelX[r][c]);
-            outArr.Add(ChannelVelY[r][c]);
-            outArr.Add(ChannelVelZ[r][c]);
-            outArr.Add(ChannelAccX[r][c]);
-            outArr.Add(ChannelAccY[r][c]);
-            outArr.Add(ChannelAccZ[r][c]);
-            outArr.Add(ChannelDirX[r][c]);
-            outArr.Add(ChannelDirY[r][c]);
-            outArr.Add(ChannelDirZ[r][c]);
-        }
-    }
     return outArr;
 }
 
