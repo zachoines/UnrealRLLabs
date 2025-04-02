@@ -663,8 +663,8 @@ class CrossAttentionFeatureExtractor(nn.Module):
 
     def __init__(
         self,
-        # -------------
-        # NEW: Instead of 'obs_size', we explicitly define 'in_channels'
+        agent_obs_size: int = 9,
+        num_agents: int = 10,
         in_channels: int = 10,   # e.g. 10 wave channels
         h: int = 50,
         w: int = 50,
@@ -699,9 +699,8 @@ class CrossAttentionFeatureExtractor(nn.Module):
         # A) Simple Agent MLP to embed agent states
         # ---------------------------------------------------------
         self.agent_encoder = nn.Sequential(
-            nn.Linear(   # Typically was: obs_size -> embed_dim
-                # e.g. 9 floats from wave agent state
-                9,  # <== This can be updated or config-driven
+            nn.Linear(
+                agent_obs_size,
                 embed_dim
             ),
             nn.GELU(),
@@ -713,7 +712,7 @@ class CrossAttentionFeatureExtractor(nn.Module):
         # B) Agent ID Embedding + Sinusoidal
         # ---------------------------------------------------------
         if use_agent_id:
-            self.agent_id_embedding = nn.Embedding(225, embed_dim)  # e.g. up to 225 wave agents
+            self.agent_id_embedding = nn.Embedding(num_agents, embed_dim)  # e.g. up to 225 wave agents
             nn.init.normal_(self.agent_id_embedding.weight, mean=0.0, std=0.01)
             
             self.agent_id_pos_enc = AgentIDPosEnc(

@@ -15,24 +15,24 @@
       "GoalThreshold": 1.75,
 
       "MultiAgentGaussianWaveHeightMap": {
-        "num_agents": 4,
-        "grid_size": 50,
-        "min_height": -4.0,
-        "max_height": 4.0,
-        "velocity_minmax":   [-1.0, 1.0],
-        "amplitude_minmax":  [0.0, 5.0],
-        "sigma_minmax":      [0.2, 5.0],
-        "angular_vel_minmax":[-0.5, 0.5],
-        "action_dim": 6,
+        "NumAgents": 4,
+        "GridSize": 50,
+        "MinHeight": -4.0,
+        "MaxHeight": 4.0,
+        "VelMinMax": [-1.0, 1.0],
+        "AmpMinMax": [0.0, 5.0],
+        "SigMinMax": [0.2, 5.0],
+        "AngVelRange": [-0.5, 0.5],
+        "NumActions": 6,
         "bUseActionDelta": true,
-        "delta_velocity_scale": 0.1,
-        "delta_amp_scale":      1.0,
-        "delta_sigma_scale":    1.0,
-        "delta_angvel_scale":   0.1
+        "DeltaVelScale": 0.1,
+        "DeltaAmpScale": 1.0,
+        "DeltaSigmaScale": 1.0,
+        "DeltaAngVelScale": 0.1
       },
 
       "StateManager": {
-        "max_grid_objects": 5,
+        "MaxGridObjects": 5,
         "GoalThreshold": 1.75,
         "MarginXY": 1.5,
         "MinZ": -4.0,
@@ -42,10 +42,9 @@
         "BoundingSphereScale": 1.0,
         "ObjectScale": 0.1,
         "ObjectMass": 0.1,
-        "max_column_height": 4.0,
+        "MaxColumnHeight": 4.0,
         "bUseRaycastForHeight": true,
-        "base_respawn_delay": 0.0,
-
+        "BaseRespawnDelay": 0.0,
         "OverheadCameraDistance": 100.0,
         "OverheadCameraFOV": 70.0,
         "OverheadCameraResX": 50,
@@ -56,12 +55,12 @@
     "shape": {
       "state": {
         "central": {
-          "obs_size": 10000
+          "obs_size": 12500
         },
         "agent": {
           "obs_size": 9,
-          "min": 50,
-          "max": 50
+          "min": 4,
+          "max": 4
         }
       },
       "action": {
@@ -78,11 +77,11 @@
       }
     }
   },
-  "StateRecorder": {
+  "StateRecorderDisabled": {
     "height_map": {
       "grid_h": 50,
       "grid_w": 50,
-      "num_channels": 4,
+      "num_channels": 5,
       "height_channel_index": 0,
       "clip_value": 1.0
     },
@@ -124,7 +123,9 @@
       "networks": {
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
-            "in_channels": 4,
+            "agent_obs_size": 9,
+            "num_agents" : 4,
+            "in_channels": 5,
             "h": 50,
             "w": 50,
             "embed_dim": 64,
@@ -199,7 +200,7 @@
     "states_normalizer_disabled": {
       "warmup_steps": 10000
     },
-    "num_environments": 2,
+    "num_environments": 8,
     "epochs": 4,
     "mini_batch_size": 64,
     "buffer_size": 512,

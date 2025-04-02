@@ -204,11 +204,8 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
 FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
 {
     CurrentStep = 0;
-    CurrentAgents = NumAgents; // wave-sim agent count
-
-    // (1) read the manager’s max_grid_objects or keep existing
-    int32 ManagerMax = (StateManager ? StateManager->GetMaxGridObjects() : 5);
-    CurrentGridObjects = ManagerMax; // or some logic if you want fewer
+    CurrentAgents = NumAgents; 
+    CurrentGridObjects = StateManager->GetMaxGridObjects();
 
     // reset columns & objects
     if (Grid) Grid->ResetGrid();

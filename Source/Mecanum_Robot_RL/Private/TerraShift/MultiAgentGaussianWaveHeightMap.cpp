@@ -32,14 +32,14 @@ void UMultiAgentGaussianWaveHeightMap::InitializeFromConfig(UEnvironmentConfig* 
     UEnvironmentConfig* WaveCfg = EnvConfig;
 
     // read core params
-    NumAgents = WaveCfg->GetOrDefaultInt(TEXT("num_agents"), 5);
-    GridSize = WaveCfg->GetOrDefaultInt(TEXT("grid_size"), 50);
+    NumAgents = WaveCfg->GetOrDefaultInt(TEXT("NumAgents"), 5);
+    GridSize = WaveCfg->GetOrDefaultInt(TEXT("GridSize"), 50);
 
-    MinHeight = WaveCfg->GetOrDefaultNumber(TEXT("min_height"), -2.f);
-    MaxHeight = WaveCfg->GetOrDefaultNumber(TEXT("max_height"), 2.f);
+    MinHeight = WaveCfg->GetOrDefaultNumber(TEXT("MinHeight"), -2.f);
+    MaxHeight = WaveCfg->GetOrDefaultNumber(TEXT("MaxHeight"), 2.f);
 
     // velocity
-    TArray<float> VelMinMax = WaveCfg->GetArrayOrDefault(TEXT("velocity_minmax"), { -1.f, 1.f });
+    TArray<float> VelMinMax = WaveCfg->GetArrayOrDefault(TEXT("VelMinMax"), { -1.f, 1.f });
     if (VelMinMax.Num() >= 2)
     {
         MinVel = VelMinMax[0];
@@ -47,12 +47,12 @@ void UMultiAgentGaussianWaveHeightMap::InitializeFromConfig(UEnvironmentConfig* 
     }
     else
     {
-        UE_LOG(LogTemp, Error, TEXT("velocity_minmax must have 2 floats, defaulting to [-1,1]!"));
+        UE_LOG(LogTemp, Error, TEXT("VelMinMax must have 2 floats, defaulting to [-1,1]!"));
         MinVel = -1.f; MaxVel = 1.f;
     }
 
     // amplitude
-    TArray<float> AmpMinMax = WaveCfg->GetArrayOrDefault(TEXT("amplitude_minmax"), { 0.f,5.f });
+    TArray<float> AmpMinMax = WaveCfg->GetArrayOrDefault(TEXT("AmpMinMax"), { 0.f,5.f });
     if (AmpMinMax.Num() >= 2)
     {
         MinAmp = AmpMinMax[0];
@@ -60,12 +60,12 @@ void UMultiAgentGaussianWaveHeightMap::InitializeFromConfig(UEnvironmentConfig* 
     }
     else
     {
-        UE_LOG(LogTemp, Error, TEXT("amplitude_minmax must have 2 floats, default => [0..5]!"));
+        UE_LOG(LogTemp, Error, TEXT("AmpMinMax must have 2 floats, default => [0..5]!"));
         MinAmp = 0; MaxAmp = 5;
     }
 
     // sigma
-    TArray<float> SigMinMax = WaveCfg->GetArrayOrDefault(TEXT("sigma_minmax"), { 0.2f,5.f });
+    TArray<float> SigMinMax = WaveCfg->GetArrayOrDefault(TEXT("SigMinMax"), { 0.2f,5.f });
     if (SigMinMax.Num() >= 2)
     {
         MinSigma = SigMinMax[0];
@@ -73,12 +73,12 @@ void UMultiAgentGaussianWaveHeightMap::InitializeFromConfig(UEnvironmentConfig* 
     }
     else
     {
-        UE_LOG(LogTemp, Error, TEXT("sigma_minmax must have 2 floats => default= [0.2..5]"));
+        UE_LOG(LogTemp, Error, TEXT("SigMinMax must have 2 floats => default= [0.2..5]"));
         MinSigma = 0.2f; MaxSigma = 5.f;
     }
 
     // angular velocity
-    TArray<float> AngVelRange = WaveCfg->GetArrayOrDefault(TEXT("angular_vel_minmax"), { -0.5f, 0.5f });
+    TArray<float> AngVelRange = WaveCfg->GetArrayOrDefault(TEXT("AngVelRange"), { -0.5f, 0.5f });
     if (AngVelRange.Num() >= 2)
     {
         MinAngVel = AngVelRange[0];
@@ -86,20 +86,20 @@ void UMultiAgentGaussianWaveHeightMap::InitializeFromConfig(UEnvironmentConfig* 
     }
     else
     {
-        UE_LOG(LogTemp, Error, TEXT("angular_vel_minmax must have 2 floats => default= [-0.5..0.5]"));
+        UE_LOG(LogTemp, Error, TEXT("AngVelRange must have 2 floats => default= [-0.5..0.5]"));
         MinAngVel = -0.5f; MaxAngVel = 0.5f;
     }
 
-    ValuesPerAgent = WaveCfg->GetOrDefaultInt(TEXT("action_dim"), 6);
+    ValuesPerAgent = WaveCfg->GetOrDefaultInt(TEXT("NumActions"), 6);
 
     // read whether we interpret actions as deltas
     bUseActionDelta = WaveCfg->GetOrDefaultBool(TEXT("bUseActionDelta"), true);
 
     // read delta scales
-    DeltaVelScale = WaveCfg->GetOrDefaultNumber(TEXT("delta_velocity_scale"), 0.5f);
-    DeltaAmpScale = WaveCfg->GetOrDefaultNumber(TEXT("delta_amp_scale"), 0.2f);
-    DeltaSigmaScale = WaveCfg->GetOrDefaultNumber(TEXT("delta_sigma_scale"), 0.05f);
-    DeltaAngVelScale = WaveCfg->GetOrDefaultNumber(TEXT("delta_angvel_scale"), 0.3f);
+    DeltaVelScale = WaveCfg->GetOrDefaultNumber(TEXT("DeltaVelScale"), 0.5f);
+    DeltaAmpScale = WaveCfg->GetOrDefaultNumber(TEXT("DeltaAmpScale"), 0.2f);
+    DeltaSigmaScale = WaveCfg->GetOrDefaultNumber(TEXT("DeltaSigmaScale"), 0.05f);
+    DeltaAngVelScale = WaveCfg->GetOrDefaultNumber(TEXT("DeltaAngVelScale"), 0.3f);
 
     // build NxN wave
     FinalWave = FMatrix2D(GridSize, GridSize, 0.f);

@@ -36,7 +36,7 @@ void UStateManager::InitializeFromConfig(UEnvironmentConfig* SMConfig)
 
 void UStateManager::LoadConfig(UEnvironmentConfig* Config)
 {
-    MaxGridObjects = Config->GetOrDefaultInt(TEXT("max_grid_objects"), 50);
+    MaxGridObjects = Config->GetOrDefaultInt(TEXT("MaxGridObjects"), 5);
     GoalThreshold = Config->GetOrDefaultNumber(TEXT("GoalThreshold"), 1.75f);
     MarginXY = Config->GetOrDefaultNumber(TEXT("MarginXY"), 1.5f);
     MinZ = Config->GetOrDefaultNumber(TEXT("MinZ"), 0.f);
@@ -46,9 +46,9 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     BoundingSphereScale = Config->GetOrDefaultNumber(TEXT("BoundingSphereScale"), 1.5f);
     ObjectScale = Config->GetOrDefaultNumber(TEXT("ObjectScale"), 0.1f);
     ObjectMass = Config->GetOrDefaultNumber(TEXT("ObjectMass"), 0.1f);
-    MaxColumnHeight = Config->GetOrDefaultNumber(TEXT("max_column_height"), 4.f);
+    MaxColumnHeight = Config->GetOrDefaultNumber(TEXT("MaxColumnHeight"), 4.f);
     bUseRaycastForHeight = Config->GetOrDefaultBool(TEXT("bUseRaycastForHeight"), false);
-    BaseRespawnDelay = Config->GetOrDefaultNumber(TEXT("base_respawn_delay"), 0.f);
+    BaseRespawnDelay = Config->GetOrDefaultNumber(TEXT("BaseRespawnDelay"), 0.f);
 
     OverheadCamDistance = Config->GetOrDefaultNumber(TEXT("OverheadCameraDistance"), 500.f);
     OverheadCamFOV = Config->GetOrDefaultNumber(TEXT("OverheadCameraFOV"), 90.f);
@@ -147,8 +147,6 @@ void UStateManager::Reset(int32 NumObjects)
     }
 
     // NxN channels => init to 0
-    PreviousDeltaHeight = FMatrix2D(GridSize, GridSize, 0.f);
-    CurrentDeltaHeight = FMatrix2D(GridSize, GridSize, 0.f);
     PreviousHeight = FMatrix2D(GridSize, GridSize, 0.f);
     CurrentHeight = FMatrix2D(GridSize, GridSize, 0.f);
     int CurrentStep = 0;
@@ -434,16 +432,9 @@ void UStateManager::BuildCentralState()
 
         }
     }
-
-
-    float dt = GetWorld()->GetDeltaSeconds();
     
+    PreviousHeight = CurrentHeight;
     CurrentHeight = ChannelHeightTmp;
-
-    // PreviousHeight = CurrentHeight;
-    // PreviousDeltaHeight = CurrentDeltaHeight;
-    // CurrentDeltaHeight = Step > 0 ? (ChannelHeightTmp - CurrentHeight) / dt : FMatrix2D(GridSize, GridSize, 0.f);
-    // SecondOrderDeltaHeight = Step > 1 ? (CurrentDeltaHeight - PreviousDeltaHeight) / dt : FMatrix2D(GridSize, GridSize, 0.f);
     OverheadCaptureActor->GetCaptureComponent2D()->CaptureScene();
     Step += 1;
 }
@@ -475,8 +466,13 @@ float UStateManager::RaycastColumnTopWorld(const FVector& CellWorldCenter, float
 
 TArray<float> UStateManager::GetCentralState()
 {
+    // 1) Get current height map
     TArray<float> outArr;
     outArr += CurrentHeight.Data;
+
+    // 2) get delta height if available
+    float dt = GetWorld()->GetDeltaSeconds();
+    outArr += Step > 1 ? ((CurrentHeight - PreviousHeight) / dt).Data : PreviousHeight.Data;
 
     // 2) read overhead image => flatten
     TArray<float> overheadPixels = CaptureOverheadImage();
@@ -799,6 +795,8 @@ void UStateManager::SetupOverheadCamera()
 
     capComp->bCaptureEveryFrame = false;
     capComp->bCaptureOnMovement = false;
+
+    capComp->MaxViewDistanceOverride = OverheadCamDistance * 1.25;  // Adjust as needed
 }
 
 TArray<float> UStateManager::CaptureOverheadImage() const
@@ -828,26 +826,12 @@ TArray<float> UStateManager::CaptureOverheadImage() const
     {
         // each color channel => [0..1]
         float r = pixels[i].R / 255.f;
-
-        // store in the flattened array
-        RChannel.Add(r);
-    }
-
-    for (int32 i = 0; i < pixels.Num(); i++)
-    {
-        // each color channel => [0..1]
         float g = pixels[i].G / 255.f;
-
-        // store in the flattened array
-        GChannel.Add(g);
-    }
-
-    for (int32 i = 0; i < pixels.Num(); i++)
-    {
-        // each color channel => [0..1]
         float b = pixels[i].B / 255.f;
 
         // store in the flattened array
+        RChannel.Add(r);
+        GChannel.Add(g);
         BChannel.Add(b);
     }
 

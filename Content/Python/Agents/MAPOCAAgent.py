@@ -199,7 +199,7 @@ class MAPOCAAgent(Agent):
 
         # 2) If we want to record the central state for the "first environment":
         if self.state_recorder is not None:
-            c_1d = states["central"][0,0,:].cpu().numpy()
+            c_1d = states["central"][0,-1,:].cpu().numpy()
             self.state_recorder.record_frame(c_1d)
 
         return actions, (log_probs, entropies)
