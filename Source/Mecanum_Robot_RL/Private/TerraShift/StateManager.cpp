@@ -49,6 +49,11 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     MaxColumnHeight = Config->GetOrDefaultNumber(TEXT("max_column_height"), 4.f);
     bUseRaycastForHeight = Config->GetOrDefaultBool(TEXT("bUseRaycastForHeight"), false);
     BaseRespawnDelay = Config->GetOrDefaultNumber(TEXT("base_respawn_delay"), 0.f);
+
+    OverheadCamDistance = Config->GetOrDefaultNumber(TEXT("OverheadCameraDistance"), 500.f);
+    OverheadCamFOV = Config->GetOrDefaultNumber(TEXT("OverheadCameraFOV"), 90.f);
+    OverheadCamResX = Config->GetOrDefaultInt(TEXT("OverheadCameraResX"), 50);
+    OverheadCamResY = Config->GetOrDefaultInt(TEXT("OverheadCameraResY"), 50);
 }
 
 void UStateManager::SetReferences(
@@ -82,6 +87,8 @@ void UStateManager::SetReferences(
 
     PlatformCenter = Platform->GetActorLocation();
     CellSize = (float)PlatformWorldSize.X / (float)GridSize;
+
+    SetupOverheadCamera();
 }
 
 void UStateManager::Reset(int32 NumObjects)
@@ -419,21 +426,25 @@ void UStateManager::BuildCentralState()
                 finalZ = localHit.Z;
             }
 
-            ChannelHeightTmp[row][col] = finalZ;
+            float clamped = FMath::Clamp(finalZ, MinZ, MaxZ);
+            float norm01 = (clamped - MinZ) / (MaxZ - MinZ);
+            float mapped = (norm01 * 2.f) - 1.f;
+
+            ChannelHeightTmp[row][col] = mapped;
 
         }
     }
 
-    float dt = GetWorld()->GetDeltaSeconds();
-    if (dt < KINDA_SMALL_NUMBER)
-        return;
 
-    PreviousHeight = CurrentHeight;
+    float dt = GetWorld()->GetDeltaSeconds();
+    
     CurrentHeight = ChannelHeightTmp;
 
-    PreviousDeltaHeight = CurrentDeltaHeight;
-    CurrentDeltaHeight = Step > 0 ? (ChannelHeightTmp - CurrentHeight) / dt : FMatrix2D(GridSize, GridSize, 0.f);
-    SecondOrderDeltaHeight = Step > 1 ? (CurrentDeltaHeight - PreviousDeltaHeight) / dt : FMatrix2D(GridSize, GridSize, 0.f);
+    // PreviousHeight = CurrentHeight;
+    // PreviousDeltaHeight = CurrentDeltaHeight;
+    // CurrentDeltaHeight = Step > 0 ? (ChannelHeightTmp - CurrentHeight) / dt : FMatrix2D(GridSize, GridSize, 0.f);
+    // SecondOrderDeltaHeight = Step > 1 ? (CurrentDeltaHeight - PreviousDeltaHeight) / dt : FMatrix2D(GridSize, GridSize, 0.f);
+    OverheadCaptureActor->GetCaptureComponent2D()->CaptureScene();
     Step += 1;
 }
 
@@ -466,8 +477,10 @@ TArray<float> UStateManager::GetCentralState()
 {
     TArray<float> outArr;
     outArr += CurrentHeight.Data;
-    outArr += CurrentDeltaHeight.Data;
-    outArr += SecondOrderDeltaHeight.Data;
+
+    // 2) read overhead image => flatten
+    TArray<float> overheadPixels = CaptureOverheadImage();
+    outArr += overheadPixels;
 
     return outArr;
 }
@@ -743,4 +756,104 @@ FMatrix2D UStateManager::ComputeCollisionDistanceMatrix() const
         }
     }
     return distMat;
+}
+
+void UStateManager::SetupOverheadCamera()
+{
+    if (!Platform)
+    {
+        UE_LOG(LogTemp, Error, TEXT("SetupOverheadCamera => Missing platform."));
+        return;
+    }
+    UWorld* w = Platform->GetWorld();
+    if (!w) return;
+
+    // If already spawned, do nothing
+    if (OverheadCaptureActor)
+        return;
+
+    // 1) spawn SceneCapture2D actor
+    FVector spawnLoc = PlatformCenter + FVector(0.f, 0.f, OverheadCamDistance);
+    FRotator spawnRot = FRotator(-90.f, 0.f, 0.f); // look straight down
+
+    FActorSpawnParameters sp;
+    sp.Owner = Platform; // optional
+    OverheadCaptureActor = w->SpawnActor<ASceneCapture2D>(spawnLoc, spawnRot, sp);
+    if (!OverheadCaptureActor)
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to spawn overhead camera actor."));
+        return;
+    }
+
+    OverheadRenderTarget = NewObject<UTextureRenderTarget2D>();
+    OverheadRenderTarget->RenderTargetFormat = RTF_RGBA8;   // or RTF_RGBA16f
+    OverheadRenderTarget->InitAutoFormat(OverheadCamResX, OverheadCamResY);
+
+    USceneCaptureComponent2D* capComp = OverheadCaptureActor->GetCaptureComponent2D();
+    capComp->ProjectionType = ECameraProjectionMode::Perspective;
+    capComp->FOVAngle = OverheadCamFOV;
+    capComp->TextureTarget = OverheadRenderTarget;
+
+    // **Change** capture source to base color
+    capComp->CaptureSource = ESceneCaptureSource::SCS_BaseColor;
+
+    capComp->bCaptureEveryFrame = false;
+    capComp->bCaptureOnMovement = false;
+}
+
+TArray<float> UStateManager::CaptureOverheadImage() const
+{
+    TArray<float> outImage;
+    if (!OverheadCaptureActor || !OverheadRenderTarget) return outImage;
+
+    UWorld* w = OverheadCaptureActor->GetWorld();
+    if (!w) return outImage;
+
+    // read the pixels
+    TArray<FColor> pixels;
+    bool bSuccess = UKismetRenderingLibrary::ReadRenderTarget(
+        w,
+        OverheadRenderTarget,
+        pixels
+    );
+    if (!bSuccess || pixels.Num() == 0) return outImage;
+
+
+    // 1) We now need 3 floats per pixel => R, G, B
+    TArray<float> RChannel;
+    TArray<float> GChannel;
+    TArray<float> BChannel;
+
+    for (int32 i = 0; i < pixels.Num(); i++)
+    {
+        // each color channel => [0..1]
+        float r = pixels[i].R / 255.f;
+
+        // store in the flattened array
+        RChannel.Add(r);
+    }
+
+    for (int32 i = 0; i < pixels.Num(); i++)
+    {
+        // each color channel => [0..1]
+        float g = pixels[i].G / 255.f;
+
+        // store in the flattened array
+        GChannel.Add(g);
+    }
+
+    for (int32 i = 0; i < pixels.Num(); i++)
+    {
+        // each color channel => [0..1]
+        float b = pixels[i].B / 255.f;
+
+        // store in the flattened array
+        BChannel.Add(b);
+    }
+
+    outImage += RChannel;
+    outImage += GChannel;
+    outImage += BChannel;
+
+    return outImage;
 }

@@ -1,5 +1,4 @@
 import win32event
-from ctypes import sizeof, c_float
 import win32api
 import numpy as np
 import time
@@ -8,7 +7,6 @@ from multiprocessing import shared_memory
 from enum import Enum
 from typing import Tuple, Dict, Any
 import torch
-import json
 
 MUTEX_ALL_ACCESS = 0x1F0001
 SLEEP_INTERVAL = 1.0  # seconds

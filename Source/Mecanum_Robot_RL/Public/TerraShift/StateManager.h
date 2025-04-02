@@ -9,6 +9,13 @@
 #include "TerraShift/GoalPlatform.h"
 #include "TerraShift/Matrix2D.h"
 #include "TerraShift/MultiAgentGaussianWaveHeightMap.h"
+
+#include "Engine/World.h"
+#include "Camera/CameraActor.h"
+#include "Engine/SceneCapture2D.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "Kismet/KismetRenderingLibrary.h"
+
 #include "StateManager.generated.h"
 
 /**
@@ -283,4 +290,29 @@ private:
     TArray<float> RespawnTimer;
     UPROPERTY()
     TArray<float> RespawnDelays;
+
+    UPROPERTY()
+    float OverheadCamDistance;
+
+    UPROPERTY()
+    float OverheadCamFOV;
+
+    UPROPERTY()
+    int32 OverheadCamResX;
+
+    UPROPERTY()
+    int32 OverheadCamResY;
+
+    // We store the capture actor + render target
+    UPROPERTY()
+    class ASceneCapture2D* OverheadCaptureActor;
+
+    UPROPERTY()
+    class UTextureRenderTarget2D* OverheadRenderTarget;
+
+    // Helper that spawns the overhead camera if not yet spawned
+    void SetupOverheadCamera();
+
+    // Helper to read the overhead camera’s RT data, flatten it, return as float array
+    TArray<float> CaptureOverheadImage() const;
 };

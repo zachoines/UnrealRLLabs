@@ -44,7 +44,12 @@
         "ObjectMass": 0.1,
         "max_column_height": 4.0,
         "bUseRaycastForHeight": true,
-        "base_respawn_delay": 0.0
+        "base_respawn_delay": 0.0,
+
+        "OverheadCameraDistance": 100.0,
+        "OverheadCameraFOV": 70.0,
+        "OverheadCameraResX": 50,
+        "OverheadCameraResY": 50
       }
     },
 
@@ -73,21 +78,20 @@
       }
     }
   },
-
-  "StateRecorder_Disabled": {
+  "StateRecorder": {
     "height_map": {
       "grid_h": 50,
       "grid_w": 50,
       "num_channels": 4,
       "height_channel_index": 0,
-      "clip_value": 10.0
+      "clip_value": 1.0
     },
     "video": {
       "fps": 8,
       "output_path": "height_auto.mp4"
     },
-    "auto_save_every": 256
-  },  
+    "auto_save_every": 128
+  }, 
   "agent": {
     "type": "MA_POCA",
     "params": {
