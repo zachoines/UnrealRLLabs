@@ -60,6 +60,10 @@ public:
     // Get the maximum column height
     float GetMaxHeight() const;
 
+    // Array of column actors
+    UPROPERTY()
+    TArray<AColumn*> Columns;
+
 private:
 
     // Min local space movement of columns
@@ -76,10 +80,6 @@ private:
 
     // Platform size
     float PlatformSize;
-
-    // Array of column actors
-    UPROPERTY()
-    TArray<AColumn*> Columns;
 
     // Helper function to convert a 1D index to a 2D grid point
     FIntPoint Get2DIndexFrom1D(int32 Index) const;

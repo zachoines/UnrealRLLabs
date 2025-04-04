@@ -181,10 +181,16 @@ private:
     /** Attempt to generate a random location inside the grid that is collision-free. */
     FVector GenerateRandomGridLocation() const;
 
-    FMatrix2D ComputeCollisionDistanceMatrix() const;
     float RaycastColumnTopWorld(const FVector& CellWorldCenter, float waveVal) const;
 
-private:
+    // Helper that spawns the overhead camera if not yet spawned
+    void SetupOverheadCamera();
+
+    // Helper to read the overhead camera’s RT data, flatten it, return as float array
+    TArray<float> CaptureOverheadImage() const;
+
+    FVector GetColumnTopWorldLocation(int32 GridX, int32 GridY) const;
+
     UPROPERTY()
     AMainPlatform* Platform;
 
@@ -239,9 +245,6 @@ private:
 
     UPROPERTY()
     float CellSize;
-
-    UPROPERTY()
-    float BaseSphereRadius;
 
     UPROPERTY()
     FVector PlatformWorldSize;
@@ -312,10 +315,4 @@ private:
 
     UPROPERTY()
     class UTextureRenderTarget2D* OverheadRenderTarget;
-
-    // Helper that spawns the overhead camera if not yet spawned
-    void SetupOverheadCamera();
-
-    // Helper to read the overhead camera’s RT data, flatten it, return as float array
-    TArray<float> CaptureOverheadImage() const;
 };

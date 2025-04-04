@@ -18,7 +18,7 @@ struct FGaussianWaveAgent
     FVector2D Position;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
-    float Orientation;    // radians
+    float Orientation;    // Radians
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     float Amplitude;
@@ -36,15 +36,14 @@ struct FGaussianWaveAgent
     float AngularVelocity;
 
     FGaussianWaveAgent()
-    {
-        Position = FVector2D::ZeroVector;
-        Orientation = 0.f;
-        Amplitude = 0.f;
-        SigmaX = 1.f;
-        SigmaY = 1.f;
-        Velocity = FVector2D::ZeroVector;
-        AngularVelocity = 0.f;
-    }
+        : Position(FVector2D::ZeroVector)
+        , Orientation(0.f)
+        , Amplitude(0.f)
+        , SigmaX(1.f)
+        , SigmaY(1.f)
+        , Velocity(FVector2D::ZeroVector)
+        , AngularVelocity(0.f)
+    {}
 };
 
 /**
@@ -76,7 +75,7 @@ public:
     UFUNCTION(BlueprintCallable)
     void Step(const TArray<float>& Actions, float DeltaTime = 0.1f);
 
-    /** Returns the final NxN wave. */
+    /** Returns the final NxN wave matrix. */
     UFUNCTION(BlueprintCallable)
     const FMatrix2D& GetHeightMap() const { return FinalWave; }
 
@@ -84,17 +83,21 @@ public:
     UFUNCTION(BlueprintCallable)
     int32 GetNumAgents() const { return Agents.Num(); }
 
-    /** Returns agent's wave parameters as [-1..1] array. */
+    /** Returns agent's wave parameters as a 9-float array in [-1..1]. */
     UFUNCTION(BlueprintCallable)
     TArray<float> GetAgentState(int32 AgentIndex) const;
 
 protected:
-    // internal
-    void InitializeAgents();
+    /** Build NxN wave from each agent, sum them into FinalWave, then clip. */
     void ComputeFinalWave();
-    float Gauss2D(float row, float col, const FGaussianWaveAgent& A) const;
 
-    // utility for normalizing in agent state
+    /** Creates an NxN matrix for the given agent's Gaussian wave via matrix ops. */
+    FMatrix2D ComputeAgentWave(const FGaussianWaveAgent& Agent) const;
+
+    /** Initialize default agent positions, orientations, etc. */
+    void InitializeAgents();
+
+    // Utility for normalizing in agent state
     float MapRange(float x, float inMin, float inMax, float outMin, float outMax) const;
     float MapToN11(float x, float mn, float mx) const;
 
@@ -132,7 +135,7 @@ private:
     UPROPERTY()
     float MaxAngVel;
 
-    /** # floats per agent action. e.g. 6 => [ velocity.x, velocity.y, angVel, amplitude, sigmaX, sigmaY ] */
+    /** # floats per agent action. e.g. 6 => [ vx, vy, angVel, amplitude, sigmaX, sigmaY ] */
     UPROPERTY()
     int32 ValuesPerAgent;
 
@@ -150,9 +153,11 @@ private:
     UPROPERTY()
     float DeltaAngVelScale;
 
+    /** The NxN wave matrix. */
     UPROPERTY()
     FMatrix2D FinalWave;
 
+    /** The array of wave agents. */
     UPROPERTY()
     TArray<FGaussianWaveAgent> Agents;
 };

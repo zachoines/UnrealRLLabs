@@ -112,7 +112,6 @@ private:
     int GridSize;
     int MaxSteps;
     int NumGoals;
-    float SpawnDelay;
     int MaxAgents;
     float GoalThreshold;
 

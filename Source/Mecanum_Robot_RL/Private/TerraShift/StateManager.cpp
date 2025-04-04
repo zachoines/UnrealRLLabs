@@ -54,10 +54,6 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     OverheadCamFOV = Config->GetOrDefaultNumber(TEXT("OverheadCameraFOV"), 90.f);
     OverheadCamResX = Config->GetOrDefaultInt(TEXT("OverheadCameraResX"), 50);
     OverheadCamResY = Config->GetOrDefaultInt(TEXT("OverheadCameraResY"), 50);
-
-    UStaticMesh* DefaultMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
-    FBoxSphereBounds DefaultBounds = DefaultMesh->GetBounds();
-    BaseSphereRadius = DefaultBounds.SphereRadius;
 }
 
 void UStateManager::SetReferences(
@@ -147,7 +143,7 @@ void UStateManager::Reset(int32 NumObjects)
         CurrPos[i] = FVector::ZeroVector;
 
         RespawnTimer[i] = 0.f;
-        RespawnDelays[i] = BaseRespawnDelay;
+        RespawnDelays[i] = BaseRespawnDelay * i; // Spawn one after another.
     }
 
     // NxN channels => init to 0
@@ -639,136 +635,179 @@ void UStateManager::SetPreviousPosition(int32 i, FVector val)
 // --------------------------------------------------
 //   Collision-based random spawn
 // --------------------------------------------------
+#include "TerraShift/StateManager.h"
+#include "TerraShift/GridObject.h"
+#include "TerraShift/Grid.h"
+#include "TerraShift/GridObjectManager.h"
+#include "Engine/World.h"
+
 FVector UStateManager::GenerateRandomGridLocation() const
 {
     if (!Grid)
     {
-        UE_LOG(LogTemp, Error, TEXT("GenerateRandomGridLocation => no Grid => fallback center."));
+        UE_LOG(LogTemp, Error, TEXT("GenerateRandomGridLocation => Grid is null => fallback center."));
         return PlatformCenter + FVector(0, 0, 100.f);
     }
 
-    static const int32 MaxSpawnAttempts = 5;
+    static const int32 MaxSpawnAttempts = 3;
 
+    // Check if we have any active objects
+    bool bAnyActive = false;
+    for (int32 i = 0; i < bHasActive.Num(); i++)
+    {
+        if (bHasActive[i])
+        {
+            bAnyActive = true;
+            break;
+        }
+    }
+
+    // We'll try a few attempts to find a free cell
     for (int32 attempt = 0; attempt < MaxSpawnAttempts; attempt++)
     {
-        // 1) Build collision distance matrix
-        FMatrix2D distMat = ComputeCollisionDistanceMatrix();
-
-        TArray<int32> freeCells;
-        freeCells.Reserve(GridSize * GridSize);
-
-        // 2) Skip margin cells
-        int32 xStart = FMath::Clamp(MarginCells, 0, GridSize - 1);
-        int32 xEnd = FMath::Clamp(GridSize - MarginCells, 0, GridSize - 1);
-        int32 yStart = xStart;
-        int32 yEnd = xEnd;
-
-        // 3) Collect any cell with enough clearance
-        for (int32 X = xStart; X <= xEnd; X++)
+        // If NO active objects => pick random cell in margin
+        if (!bAnyActive)
         {
-            for (int32 Y = yStart; Y <= yEnd; Y++)
+            int32 xStart = FMath::Clamp(MarginCells, 0, GridSize - 1);
+            int32 xEnd = FMath::Clamp(GridSize - MarginCells, 0, GridSize - 1);
+            if (xStart > xEnd)
             {
-                float dd = distMat[X][Y];
-                if (dd > SpawnCollisionRadius)
+                // margin is too large => fallback
+                return PlatformCenter + FVector(0, 0, 100.f);
+            }
+
+            int32 chosenX = FMath::RandRange(xStart, xEnd);
+            int32 chosenY = FMath::RandRange(xStart, xEnd);
+
+            // Return top of that random column
+            return GetColumnTopWorldLocation(chosenX, chosenY);
+        }
+        else
+        {
+            // 1) Create occupancy NxN => 0 = free
+            FMatrix2D occupancy(GridSize, GridSize, 0.f);
+
+            // 2) For each active object => mark occupancy=1 for cells in bounding radius
+            for (int32 iObj = 0; iObj < bHasActive.Num(); iObj++)
+            {
+                if (!bHasActive[iObj])
+                    continue;
+
+                AGridObject* Obj = ObjectMgr->GetGridObject(iObj);
+                if (!Obj)
+                    continue;
+
+                // bounding radius in XY
+                float sphereRadius = Obj->MeshComponent->Bounds.SphereRadius
+                    * Obj->GetActorScale3D().GetMax();
+
+                FVector objLocWS = Obj->GetObjectLocation();
+
+                // Grid bounding
+                float halfPlatform = PlatformWorldSize.X * 0.5f;
+                float gridOx = PlatformCenter.X - halfPlatform;
+                float gridOy = PlatformCenter.Y - halfPlatform;
+
+                // bounding box in grid coords
+                FVector minPt = objLocWS - FVector(sphereRadius, sphereRadius, 0.f);
+                FVector maxPt = objLocWS + FVector(sphereRadius, sphereRadius, 0.f);
+
+                int32 minX = FMath::FloorToInt((minPt.X - gridOx) / CellSize);
+                int32 maxX = FMath::FloorToInt((maxPt.X - gridOx) / CellSize);
+                int32 minY = FMath::FloorToInt((minPt.Y - gridOy) / CellSize);
+                int32 maxY = FMath::FloorToInt((maxPt.Y - gridOy) / CellSize);
+
+                minX = FMath::Clamp(minX, 0, GridSize - 1);
+                maxX = FMath::Clamp(maxX, 0, GridSize - 1);
+                minY = FMath::Clamp(minY, 0, GridSize - 1);
+                maxY = FMath::Clamp(maxY, 0, GridSize - 1);
+
+                // Mark occupancy=1 if dist2D <= sphereRadius
+                for (int32 gx = minX; gx <= maxX; gx++)
                 {
-                    freeCells.Add(X * GridSize + Y);
+                    for (int32 gy = minY; gy <= maxY; gy++)
+                    {
+                        float cellWX = gridOx + (gx + 0.5f) * CellSize;
+                        float cellWY = gridOy + (gy + 0.5f) * CellSize;
+                        float dist2d = FVector::Dist2D(objLocWS, FVector(cellWX, cellWY, objLocWS.Z));
+                        if (dist2d <= sphereRadius)
+                        {
+                            occupancy[gx][gy] = 1.f;
+                        }
+                    }
+                }
+            } // end for each object
+
+            // 3) Collect free cells => occupancy==0 => within margin
+            TArray<int32> freeCells;
+            freeCells.Reserve(GridSize * GridSize);
+
+            int32 xStart = FMath::Clamp(MarginCells, 0, GridSize - 1);
+            int32 xEnd = FMath::Clamp(GridSize - MarginCells, 0, GridSize - 1);
+
+            if (xStart > xEnd)
+            {
+                // margin is too large => fallback
+                UE_LOG(LogTemp, Warning, TEXT("Margin is larger than grid => fallback center"));
+                return PlatformCenter + FVector(0, 0, 100.f);
+            }
+
+            for (int32 gx = xStart; gx <= xEnd; gx++)
+            {
+                for (int32 gy = xStart; gy <= xEnd; gy++)
+                {
+                    if (occupancy[gx][gy] < 0.5f) // i.e. 0 => free
+                    {
+                        freeCells.Add(gx * GridSize + gy);
+                    }
                 }
             }
+
+            if (freeCells.Num() == 0)
+            {
+                // no free cells => try next attempt
+                continue;
+            }
+
+            // 4) pick random free cell
+            int32 chosen = freeCells[FMath::RandRange(0, freeCells.Num() - 1)];
+            int32 chosenX = chosen / GridSize;
+            int32 chosenY = chosen % GridSize;
+
+            return GetColumnTopWorldLocation(chosenX, chosenY);
         }
-
-        if (freeCells.Num() == 0)
-        {
-            // No free cell found => try next attempt
-            continue;
-        }
-
-        // 4) Randomly pick one cell from the free list
-        int32 chosen = freeCells[FMath::RandRange(0, freeCells.Num() - 1)];
-        int32 cX = chosen / GridSize;
-        int32 cY = chosen % GridSize;
-
-        // 5) Compute (X,Y) in world space
-        float cWX = (cX + 0.5f) * CellSize + (PlatformCenter.X - 0.5f * PlatformWorldSize.X);
-        float cWY = (cY + 0.5f) * CellSize + (PlatformCenter.Y - 0.5f * PlatformWorldSize.Y);
-
-        // 6) Get the column's actual top in world space
-        //    a) Column base location in world
-        FVector columnBaseLoc = Grid->GetColumnWorldLocation(chosen);
-
-        //    b) The column's "height" offset
-        //       (assuming GetColumnHeight() returns how far above base it currently is)
-        float columnHeight = Grid->GetColumnHeight(chosen);
-
-        // 7) Decide an extra offset so the object sits above the column top
-        float ScaledRadius = BaseSphereRadius * ObjectScale;
-
-        float spawnZ = columnBaseLoc.Z + columnHeight + ScaledRadius;
-
-        return FVector(cWX, cWY, spawnZ);
-    }
+    } // end attempts
 
     // If we fail all attempts => fallback
     UE_LOG(LogTemp, Warning, TEXT("No free cell found after multiple attempts => fallback center."));
     return PlatformCenter + FVector(0, 0, 100.f);
 }
 
-// we compute the distance to the nearest active object for each cell
-FMatrix2D UStateManager::ComputeCollisionDistanceMatrix() const
+/**
+ * Helper: returns the top of the column in world space
+ * for the given grid coordinates.
+ */
+FVector UStateManager::GetColumnTopWorldLocation(int32 GridX, int32 GridY) const
 {
-    FMatrix2D distMat(GridSize, GridSize, 1e6f);
-    if (!ObjectMgr)
-        return distMat;
-
-    // for each active => fill
-    for (int32 i = 0; i < bHasActive.Num(); i++)
+    if (!Grid)
     {
-        if (!bHasActive[i])
-            continue;
+        return PlatformCenter + FVector(0, 0, 100.f);
+    }
 
-        AGridObject* Obj = ObjectMgr->GetGridObject(i);
-        if (!Obj)
-            continue;
-
-        FVector wPos = Obj->GetObjectLocation();
-        // incorporate object scale, bounding
-        FVector objScale = Obj->GetActorScale3D();
-        float sphereRadius = Obj->MeshComponent->Bounds.SphereRadius
-            * BoundingSphereScale
-            * objScale.GetAbsMax();
-
-        float half = PlatformWorldSize.X * 0.5f;
-        float gridOx = PlatformCenter.X - half;
-        float gridOy = PlatformCenter.Y - half;
-
-        FVector minC = wPos - FVector(sphereRadius, sphereRadius, 0.f);
-        FVector maxC = wPos + FVector(sphereRadius, sphereRadius, 0.f);
-
-        int32 minX = FMath::FloorToInt((minC.X - gridOx) / CellSize);
-        int32 maxX = FMath::FloorToInt((maxC.X - gridOx) / CellSize);
-        int32 minY = FMath::FloorToInt((minC.Y - gridOy) / CellSize);
-        int32 maxY = FMath::FloorToInt((maxC.Y - gridOy) / CellSize);
-
-        minX = FMath::Clamp(minX, 0, GridSize - 1);
-        maxX = FMath::Clamp(maxX, 0, GridSize - 1);
-        minY = FMath::Clamp(minY, 0, GridSize - 1);
-        maxY = FMath::Clamp(maxY, 0, GridSize - 1);
-
-        // fill matrix
-        for (int32 xx = minX; xx <= maxX; xx++)
+    int32 index = GridX * GridSize + GridY;
+    if (Grid->Columns.IsValidIndex(index))
+    {
+        UStaticMeshComponent* ColumnMesh = Grid->Columns[index]->ColumnMesh;
+        if (ColumnMesh)
         {
-            for (int32 yy = minY; yy <= maxY; yy++)
-            {
-                float cX = gridOx + (xx + 0.5f) * CellSize;
-                float cY = gridOy + (yy + 0.5f) * CellSize;
-                float dd = FVector::Dist2D(wPos, FVector(cX, cY, wPos.Z));
-                if (dd < distMat[xx][yy])
-                {
-                    distMat[xx][yy] = dd;
-                }
-            }
+            FVector centerWS = ColumnMesh->GetComponentLocation();
+            float halfHeight = ColumnMesh->Bounds.BoxExtent.Z;
+            return centerWS + FVector(0.f, 0.f, halfHeight);
         }
     }
-    return distMat;
+
+    // fallback 
+    return PlatformCenter + FVector(0, 0, 100.f);
 }
 
 void UStateManager::SetupOverheadCamera()

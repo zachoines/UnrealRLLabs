@@ -72,6 +72,11 @@ void AGridObjectManager::SpawnGridObjectAtIndex(int32 Index, FVector InWorldLoca
         // Reset and activate the GridObject
         GridObject->ResetGridObject();
 
+        // Get offset before set location
+        float sphereRadius = GridObject->MeshComponent->Bounds.SphereRadius + 0.001; // Avoiding collision wiith grid 
+
+        Location.Z += sphereRadius;
+
         // Set the GridObject's world location
         GridObject->SetActorLocation(Location);
 
@@ -93,6 +98,7 @@ AGridObject* AGridObjectManager::CreateNewGridObjectAtIndex(int32 Index, FVector
             FName GridObjectManagerFolderPath = GetActorFolderPath();
             FName GridObjectFolderPath(*(GridObjectManagerFolderPath.ToString() + "/GridObjects"));
             NewGridObject->SetFolderPath(GridObjectFolderPath);
+            NewGridObject->MeshComponent->UpdateBounds();
 
             // Add the GridObject to the array
             if (GridObjects.Num() <= Index) {

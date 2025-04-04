@@ -110,7 +110,6 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
     GridSize = GetOrErrorInt(TEXT("environment/params/GridSize"), 50);
     MaxSteps = GetOrErrorInt(TEXT("environment/params/MaxSteps"), 512);
     NumGoals = GetOrErrorInt(TEXT("environment/params/NumGoals"), 4);
-    SpawnDelay = GetOrErrorNumber(TEXT("environment/params/SpawnDelay"), 0.25f);
     MaxAgents = GetOrErrorInt(TEXT("environment/params/MaxAgents"), 5);
     GoalThreshold = GetOrErrorNumber(TEXT("environment/params/GoalThreshold"), 1.75f);
 

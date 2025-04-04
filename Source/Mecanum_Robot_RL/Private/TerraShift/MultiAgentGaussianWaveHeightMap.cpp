@@ -1,7 +1,7 @@
 #include "TerraShift/MultiAgentGaussianWaveHeightMap.h"
 #include "Math/UnrealMathUtility.h"
 
-/** Helper macros to read config or log error. */
+// Helper macros for config reading
 static float GAUSS_GetOrErrorNumber(UEnvironmentConfig* Cfg, const FString& Path)
 {
     if (!Cfg->HasPath(*Path))
@@ -11,6 +11,7 @@ static float GAUSS_GetOrErrorNumber(UEnvironmentConfig* Cfg, const FString& Path
     }
     return Cfg->Get(*Path)->AsNumber();
 }
+
 static int32 GAUSS_GetOrErrorInt(UEnvironmentConfig* Cfg, const FString& Path)
 {
     if (!Cfg->HasPath(*Path))
@@ -29,17 +30,15 @@ void UMultiAgentGaussianWaveHeightMap::InitializeFromConfig(UEnvironmentConfig* 
         return;
     }
 
-    UEnvironmentConfig* WaveCfg = EnvConfig;
-
     // read core params
-    NumAgents = WaveCfg->GetOrDefaultInt(TEXT("NumAgents"), 5);
-    GridSize = WaveCfg->GetOrDefaultInt(TEXT("GridSize"), 50);
+    NumAgents = EnvConfig->GetOrDefaultInt(TEXT("NumAgents"), 5);
+    GridSize = EnvConfig->GetOrDefaultInt(TEXT("GridSize"), 50);
 
-    MinHeight = WaveCfg->GetOrDefaultNumber(TEXT("MinHeight"), -2.f);
-    MaxHeight = WaveCfg->GetOrDefaultNumber(TEXT("MaxHeight"), 2.f);
+    MinHeight = EnvConfig->GetOrDefaultNumber(TEXT("MinHeight"), -2.f);
+    MaxHeight = EnvConfig->GetOrDefaultNumber(TEXT("MaxHeight"), 2.f);
 
-    // velocity
-    TArray<float> VelMinMax = WaveCfg->GetArrayOrDefault(TEXT("VelMinMax"), { -1.f, 1.f });
+    // velocity range
+    TArray<float> VelMinMax = EnvConfig->GetArrayOrDefault(TEXT("VelMinMax"), { -1.f, 1.f });
     if (VelMinMax.Num() >= 2)
     {
         MinVel = VelMinMax[0];
@@ -47,12 +46,13 @@ void UMultiAgentGaussianWaveHeightMap::InitializeFromConfig(UEnvironmentConfig* 
     }
     else
     {
-        UE_LOG(LogTemp, Error, TEXT("VelMinMax must have 2 floats, defaulting to [-1,1]!"));
-        MinVel = -1.f; MaxVel = 1.f;
+        UE_LOG(LogTemp, Error, TEXT("VelMinMax must have at least 2 floats => defaulting to [-1..1]."));
+        MinVel = -1.f;
+        MaxVel = 1.f;
     }
 
-    // amplitude
-    TArray<float> AmpMinMax = WaveCfg->GetArrayOrDefault(TEXT("AmpMinMax"), { 0.f,5.f });
+    // amplitude range
+    TArray<float> AmpMinMax = EnvConfig->GetArrayOrDefault(TEXT("AmpMinMax"), { 0.f, 5.f });
     if (AmpMinMax.Num() >= 2)
     {
         MinAmp = AmpMinMax[0];
@@ -60,12 +60,13 @@ void UMultiAgentGaussianWaveHeightMap::InitializeFromConfig(UEnvironmentConfig* 
     }
     else
     {
-        UE_LOG(LogTemp, Error, TEXT("AmpMinMax must have 2 floats, default => [0..5]!"));
-        MinAmp = 0; MaxAmp = 5;
+        UE_LOG(LogTemp, Error, TEXT("AmpMinMax must have 2 floats => defaulting to [0..5]."));
+        MinAmp = 0.f;
+        MaxAmp = 5.f;
     }
 
-    // sigma
-    TArray<float> SigMinMax = WaveCfg->GetArrayOrDefault(TEXT("SigMinMax"), { 0.2f,5.f });
+    // sigma range
+    TArray<float> SigMinMax = EnvConfig->GetArrayOrDefault(TEXT("SigMinMax"), { 0.2f, 5.f });
     if (SigMinMax.Num() >= 2)
     {
         MinSigma = SigMinMax[0];
@@ -73,12 +74,13 @@ void UMultiAgentGaussianWaveHeightMap::InitializeFromConfig(UEnvironmentConfig* 
     }
     else
     {
-        UE_LOG(LogTemp, Error, TEXT("SigMinMax must have 2 floats => default= [0.2..5]"));
-        MinSigma = 0.2f; MaxSigma = 5.f;
+        UE_LOG(LogTemp, Error, TEXT("SigMinMax must have 2 floats => defaulting to [0.2..5]."));
+        MinSigma = 0.2f;
+        MaxSigma = 5.f;
     }
 
-    // angular velocity
-    TArray<float> AngVelRange = WaveCfg->GetArrayOrDefault(TEXT("AngVelRange"), { -0.5f, 0.5f });
+    // angular velocity range
+    TArray<float> AngVelRange = EnvConfig->GetArrayOrDefault(TEXT("AngVelRange"), { -0.5f, 0.5f });
     if (AngVelRange.Num() >= 2)
     {
         MinAngVel = AngVelRange[0];
@@ -86,30 +88,32 @@ void UMultiAgentGaussianWaveHeightMap::InitializeFromConfig(UEnvironmentConfig* 
     }
     else
     {
-        UE_LOG(LogTemp, Error, TEXT("AngVelRange must have 2 floats => default= [-0.5..0.5]"));
-        MinAngVel = -0.5f; MaxAngVel = 0.5f;
+        UE_LOG(LogTemp, Error, TEXT("AngVelRange must have 2 floats => defaulting to [-0.5..0.5]."));
+        MinAngVel = -0.5f;
+        MaxAngVel = 0.5f;
     }
 
-    ValuesPerAgent = WaveCfg->GetOrDefaultInt(TEXT("NumActions"), 6);
+    ValuesPerAgent = EnvConfig->GetOrDefaultInt(TEXT("NumActions"), 6);
+    bUseActionDelta = EnvConfig->GetOrDefaultBool(TEXT("bUseActionDelta"), true);
 
-    // read whether we interpret actions as deltas
-    bUseActionDelta = WaveCfg->GetOrDefaultBool(TEXT("bUseActionDelta"), true);
+    DeltaVelScale = EnvConfig->GetOrDefaultNumber(TEXT("DeltaVelScale"), 0.5f);
+    DeltaAmpScale = EnvConfig->GetOrDefaultNumber(TEXT("DeltaAmpScale"), 0.2f);
+    DeltaSigmaScale = EnvConfig->GetOrDefaultNumber(TEXT("DeltaSigmaScale"), 0.05f);
+    DeltaAngVelScale = EnvConfig->GetOrDefaultNumber(TEXT("DeltaAngVelScale"), 0.3f);
 
-    // read delta scales
-    DeltaVelScale = WaveCfg->GetOrDefaultNumber(TEXT("DeltaVelScale"), 0.5f);
-    DeltaAmpScale = WaveCfg->GetOrDefaultNumber(TEXT("DeltaAmpScale"), 0.2f);
-    DeltaSigmaScale = WaveCfg->GetOrDefaultNumber(TEXT("DeltaSigmaScale"), 0.05f);
-    DeltaAngVelScale = WaveCfg->GetOrDefaultNumber(TEXT("DeltaAngVelScale"), 0.3f);
-
-    // build NxN wave
+    // Initialize the NxN final wave matrix to zero
     FinalWave = FMatrix2D(GridSize, GridSize, 0.f);
+
+    // Build agents
     InitializeAgents();
 }
 
 void UMultiAgentGaussianWaveHeightMap::Reset(int32 NewNumAgents)
 {
     NumAgents = NewNumAgents;
+    // Clear the wave
     FinalWave = FMatrix2D(GridSize, GridSize, 0.f);
+
     InitializeAgents();
 }
 
@@ -120,66 +124,74 @@ void UMultiAgentGaussianWaveHeightMap::InitializeAgents()
     for (int32 i = 0; i < NumAgents; i++)
     {
         FGaussianWaveAgent& A = Agents[i];
+        // Random position in [0..GridSize - 1]
         A.Position.X = FMath::RandRange(0.f, (float)GridSize - 1.f);
         A.Position.Y = FMath::RandRange(0.f, (float)GridSize - 1.f);
-        A.Orientation = FMath::FRandRange(0.f, 2.f * PI);
+        A.Orientation = FMath::RandRange(0.f, 2.f * PI);
+
+        // random amplitude in [MinAmp..MaxAmp]
         A.Amplitude = FMath::FRandRange(MinAmp, MaxAmp);
+        // random sigmas
         A.SigmaX = FMath::FRandRange(MinSigma, MaxSigma);
         A.SigmaY = FMath::FRandRange(MinSigma, MaxSigma);
-        A.Velocity = FVector2D(
-            FMath::FRandRange(MinVel, MaxVel), 
-            FMath::FRandRange(MinVel, MaxVel)
-        );
-        A.AngularVelocity = FMath::FRandRange(MinVel, MaxVel);
+
+        // random velocity
+        A.Velocity.X = FMath::FRandRange(MinVel, MaxVel);
+        A.Velocity.Y = FMath::FRandRange(MinVel, MaxVel);
+        // random angular velocity
+        A.AngularVelocity = FMath::FRandRange(MinAngVel, MaxAngVel);
     }
+
+    // Build the wave from scratch
     ComputeFinalWave();
 }
 
 void UMultiAgentGaussianWaveHeightMap::Step(const TArray<float>& Actions, float DeltaTime)
 {
-    int32 needed = NumAgents * ValuesPerAgent;
+    const int32 needed = NumAgents * ValuesPerAgent;
     if (Actions.Num() != needed)
     {
-        UE_LOG(LogTemp, Error, TEXT("UMultiAgentGaussianWaveHeightMap::Step => mismatch (#=%d, needed=%d)"),
+        UE_LOG(LogTemp, Error,
+            TEXT("UMultiAgentGaussianWaveHeightMap::Step => mismatch (#=%d, needed=%d)"),
             Actions.Num(), needed);
         return;
     }
 
-    // parse
+    // 1) Apply new actions to each agent
     for (int32 i = 0; i < NumAgents; i++)
     {
-        const int32 bIdx = i * ValuesPerAgent;
+        const int32 baseIdx = i * ValuesPerAgent;
         FGaussianWaveAgent& A = Agents[i];
 
-        float inVx = Actions[bIdx + 0];
-        float inVy = Actions[bIdx + 1];
-        float inAng = Actions[bIdx + 2];
-        float inAmp = Actions[bIdx + 3];
-        float inSx = Actions[bIdx + 4];
-        float inSy = Actions[bIdx + 5];
+        float inVx = Actions[baseIdx + 0];
+        float inVy = Actions[baseIdx + 1];
+        float inAng = Actions[baseIdx + 2];
+        float inAmp = Actions[baseIdx + 3];
+        float inSx = Actions[baseIdx + 4];
+        float inSy = Actions[baseIdx + 5];
 
         if (bUseActionDelta)
         {
-            // interpret [inVx..inSx] as deltas in [-1..1], scale, then * DeltaTime if desired
-            float dvx = inVx * DeltaVelScale;
-            float dvy = inVy * DeltaVelScale;
-            float dang = inAng * DeltaAngVelScale;
-            float damp = inAmp * DeltaAmpScale;
-            float dsx = inSx * DeltaSigmaScale;
-            float dsy = inSy * DeltaSigmaScale;
+            // interpret them as deltas in [-1..1] => scale => * DeltaTime
+            float dvx = inVx * DeltaVelScale * DeltaTime;
+            float dvy = inVy * DeltaVelScale * DeltaTime;
+            float dang = inAng * DeltaAngVelScale * DeltaTime;
+            float damp = inAmp * DeltaAmpScale * DeltaTime;
+            float dsx = inSx * DeltaSigmaScale * DeltaTime;
+            float dsy = inSy * DeltaSigmaScale * DeltaTime;
 
-            // apply
-            A.Velocity.X += dvx * DeltaTime;
-            A.Velocity.Y += dvy * DeltaTime;
-            A.AngularVelocity += dang * DeltaTime;
-            A.Amplitude += damp * DeltaTime;
-            A.SigmaX += dsx * DeltaTime;
-            A.SigmaY += dsy * DeltaTime;
+            // apply increments
+            A.Velocity.X += dvx;
+            A.Velocity.Y += dvy;
+            A.AngularVelocity += dang;
+            A.Amplitude += damp;
+            A.SigmaX += dsx;
+            A.SigmaY += dsy;
         }
         else
         {
-            // interpret as "absolutes" in [-1..1], then map them into [MinVel..MaxVel], etc.
-            auto lerp01 = [&](float v) {return (v + 1.f) * 0.5f; };
+            // interpret as "absolutes" => map [-1..1] -> config ranges
+            auto lerp01 = [&](float v) { return 0.5f * (v + 1.f); };
 
             float vxFrac = lerp01(inVx);
             float vyFrac = lerp01(inVy);
@@ -197,71 +209,92 @@ void UMultiAgentGaussianWaveHeightMap::Step(const TArray<float>& Actions, float 
         }
     }
 
-    // integrate
+    // 2) Integrate positions, clamp edges
     for (FGaussianWaveAgent& A : Agents)
     {
+        // update position/orientation
         A.Position += A.Velocity * DeltaTime;
         A.Orientation += A.AngularVelocity * DeltaTime;
 
-        // wrap
-        A.Position.X = FMath::Fmod(A.Position.X, (float)GridSize);
-        if (A.Position.X < 0) A.Position.X += GridSize;
-        A.Position.Y = FMath::Fmod(A.Position.Y, (float)GridSize);
-        if (A.Position.Y < 0) A.Position.Y += GridSize;
+        // clamp (no wrapping):
+        A.Position.X = FMath::Clamp(A.Position.X, 0.f, (float)GridSize - 1.f);
+        A.Position.Y = FMath::Clamp(A.Position.Y, 0.f, (float)GridSize - 1.f);
 
         // clamp amplitude, sigma
         A.Amplitude = FMath::Clamp(A.Amplitude, MinAmp, MaxAmp);
         A.SigmaX = FMath::Clamp(A.SigmaX, MinSigma, MaxSigma);
         A.SigmaY = FMath::Clamp(A.SigmaY, MinSigma, MaxSigma);
 
-        // clamp velocity
+        // clamp velocity & angular velocity
         A.Velocity.X = FMath::Clamp(A.Velocity.X, MinVel, MaxVel);
         A.Velocity.Y = FMath::Clamp(A.Velocity.Y, MinVel, MaxVel);
         A.AngularVelocity = FMath::Clamp(A.AngularVelocity, MinAngVel, MaxAngVel);
     }
 
+    // 3) Recompute wave
     ComputeFinalWave();
 }
 
 void UMultiAgentGaussianWaveHeightMap::ComputeFinalWave()
 {
-    // 1) Zero out the NxN matrix
+    // Start from zero
     FinalWave.Init(0.f);
 
-    // 2) Sum the Gaussian contributions from each agent
+    // Add each agent's wave
     for (const FGaussianWaveAgent& Agent : Agents)
     {
-        for (int32 row = 0; row < GridSize; row++)
+        FMatrix2D waveMat = ComputeAgentWave(Agent);
+        FinalWave += waveMat;
+    }
+
+    // Clip final wave to [MinHeight..MaxHeight]
+    FinalWave.Clip(MinHeight, MaxHeight);
+}
+
+FMatrix2D UMultiAgentGaussianWaveHeightMap::ComputeAgentWave(const FGaussianWaveAgent& Agent) const
+{
+    // Create NxN "row" and "col" index matrices
+    FMatrix2D rowMat(GridSize, GridSize, 0.f);
+    FMatrix2D colMat(GridSize, GridSize, 0.f);
+
+    // Fill rowMat[r][c] = r, colMat[r][c] = c
+    for (int32 r = 0; r < GridSize; r++)
+    {
+        for (int32 c = 0; c < GridSize; c++)
         {
-            for (int32 col = 0; col < GridSize; col++)
-            {
-                float oldVal = FinalWave[row][col];
-                float waveVal = Gauss2D(row, col, Agent);
-                FinalWave[row][col] = oldVal + waveVal;
-            }
+            rowMat[r][c] = static_cast<float>(r);
+            colMat[r][c] = static_cast<float>(c);
         }
     }
 
-    // 3) Clip final wave to [MinHeight .. MaxHeight]
-    FinalWave.Clip(MinHeight, MaxHeight);
+    // Shift by agent's position => (dx, dy)
+    rowMat -= Agent.Position.X; // rowMat = rowMat - Agent.Position.X
+    colMat -= Agent.Position.Y; // colMat = colMat - Agent.Position.Y
 
-    // Optional: If you want the wave in centimeters and your min/max are in meters:
-    // FinalWave *= 100.0f; // for example
-}
+    // Rotate by -Orientation
+    float cosT = FMath::Cos(-Agent.Orientation);
+    float sinT = FMath::Sin(-Agent.Orientation);
 
-float UMultiAgentGaussianWaveHeightMap::Gauss2D(float row, float col, const FGaussianWaveAgent& A) const
-{
-    float dx = row - A.Position.X;
-    float dy = col - A.Position.Y;
+    // rx = rowMat*cosT - colMat*sinT
+    // ry = rowMat*sinT + colMat*cosT
+    FMatrix2D rx = (rowMat * cosT) - (colMat * sinT);
+    FMatrix2D ry = (rowMat * sinT) + (colMat * cosT);
 
-    float cosT = FMath::Cos(-A.Orientation);
-    float sinT = FMath::Sin(-A.Orientation);
+    // exponent = -0.5 * ((rx^2 / SigmaX^2) + (ry^2 / SigmaY^2))
+    FMatrix2D rx2 = rx * rx; // elementwise square
+    rx2 /= (Agent.SigmaX * Agent.SigmaX);
 
-    float rx = dx * cosT - dy * sinT;
-    float ry = dx * sinT + dy * cosT;
+    FMatrix2D ry2 = ry * ry; // elementwise square
+    ry2 /= (Agent.SigmaY * Agent.SigmaY);
 
-    float exponent = -0.5f * ((rx * rx) / (A.SigmaX * A.SigmaX) + (ry * ry) / (A.SigmaY * A.SigmaY));
-    return A.Amplitude * FMath::Exp(exponent);
+    FMatrix2D exponent = rx2 + ry2;
+    exponent *= -0.5f;
+
+    // waveVal = Agent.Amplitude * exp(exponent)
+    FMatrix2D waveMat = exponent.Exp();
+    waveMat *= Agent.Amplitude;
+
+    return waveMat;
 }
 
 // -------------- UTILITY MAPPERS --------------
@@ -280,7 +313,10 @@ float UMultiAgentGaussianWaveHeightMap::MapRange(
 float UMultiAgentGaussianWaveHeightMap::MapToN11(float x, float mn, float mx) const
 {
     // map [mn..mx] => [-1..1]
-    if (mx <= mn + 1e-6f) return 0.f;
+    if (mx <= mn + 1e-6f)
+    {
+        return 0.f;
+    }
     float ratio = (x - mn) / (mx - mn);
     ratio = FMath::Clamp(ratio, 0.f, 1.f);
     return ratio * 2.f - 1.f;
@@ -291,7 +327,10 @@ float UMultiAgentGaussianWaveHeightMap::MapToN11(float x, float mn, float mx) co
 TArray<float> UMultiAgentGaussianWaveHeightMap::GetAgentState(int32 AgentIndex) const
 {
     TArray<float> outArr;
-    if (!Agents.IsValidIndex(AgentIndex)) return outArr;
+    if (!Agents.IsValidIndex(AgentIndex))
+    {
+        return outArr;
+    }
 
     const FGaussianWaveAgent& A = Agents[AgentIndex];
 
@@ -301,12 +340,16 @@ TArray<float> UMultiAgentGaussianWaveHeightMap::GetAgentState(int32 AgentIndex) 
 
     // orientation => [0..2PI] => => [-1..1]
     float ori = FMath::Fmod(A.Orientation, 2.f * PI);
-    if (ori < 0) ori += 2.f * PI;
-    float or01 = ori / (2.f * PI);
-    float orN11 = or01 * 2.f - 1.f;
+    if (ori < 0)
+    {
+        ori += 2.f * PI;
+    }
+    float orFrac = ori / (2.f * PI);
+    float orN11 = orFrac * 2.f - 1.f;
 
-    // amplitude
+    // amplitude => [MinAmp..MaxAmp] => [-1..1]
     float ampN = MapToN11(A.Amplitude, MinAmp, MaxAmp);
+
     // sigma
     float sxN = MapToN11(A.SigmaX, MinSigma, MaxSigma);
     float syN = MapToN11(A.SigmaY, MinSigma, MaxSigma);
