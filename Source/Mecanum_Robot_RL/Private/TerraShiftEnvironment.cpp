@@ -187,7 +187,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
             // read out the max_grid_objects from the manager’s config
             // so we can store an initial guess. The actual usage is in ResetEnv
             int32 MaxGridObjs = smCfg->GetOrDefaultInt(TEXT("max_grid_objects"), 5);
-            CurrentGridObjects = MaxGridObjs;  // default
+            CurrentGridObjects = MaxGridObjs;
         }
     }
 
@@ -241,20 +241,12 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
 
 void ATerraShiftEnvironment::Act(FAction Action)
 {
-    if (!WaveSimulator)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("Act => wave sim is null."));
-        return;
-    }
     // pass to wave sim (the RL wave-agents’ actions)
     WaveSimulator->Step(Action.Values, GetWorld()->GetDeltaSeconds());
 
     // apply final wave to columns
     const FMatrix2D& wave = WaveSimulator->GetHeightMap();
-    if (Grid)
-    {
-        Grid->UpdateColumnHeights(wave);
-    }
+    Grid->UpdateColumnHeights(wave);
 }
 
 void ATerraShiftEnvironment::PostTransition()
@@ -287,24 +279,17 @@ FState ATerraShiftEnvironment::State()
     FState st;
 
     // combine central state + wave-agent states
-    if (StateManager)
-    {
-        // add central furst
-        TArray<float> c = StateManager->GetCentralState();
-        st.Values.Append(c);
+    // add central furst
+    TArray<float> c = StateManager->GetCentralState();
+    st.Values.Append(c);
 
-        // then each wave agent state
-        for (int32 i = 0; i < CurrentAgents; i++)
-        {
-            TArray<float> waveAgentArr = StateManager->GetAgentState(i);
-            st.Values.Append(waveAgentArr);
-        }
-    }
-    else if (WaveSimulator)
+    // then each wave agent state
+    for (int32 i = 0; i < CurrentAgents; i++)
     {
-        // fallback => wave only
-        st.Values.Append(WaveSimulator->GetHeightMap().Data);
+        TArray<float> waveAgentArr = StateManager->GetAgentState(i);
+        st.Values.Append(waveAgentArr);
     }
+
     return st;
 }
 
@@ -312,7 +297,7 @@ bool ATerraShiftEnvironment::Done()
 {
     // We check if state manager says all objects are handled
     // only after at least 1 step
-    if (CurrentStep > 0 && StateManager && StateManager->AllGridObjectsHandled())
+    if (CurrentStep > 0 && StateManager->AllGridObjectsHandled())
     {
         return true;
     }
@@ -330,7 +315,6 @@ float ATerraShiftEnvironment::Reward()
     if (dt < KINDA_SMALL_NUMBER) return 0.f;
 
     float accum = 0.f;
-    if (!StateManager) return accum;
 
     // We must iterate over the grid objects, not the wave-sim agents!
     // So from 0..CurrentGridObjects-1
@@ -390,8 +374,6 @@ float ATerraShiftEnvironment::Reward()
 
 void ATerraShiftEnvironment::UpdateActiveColumns()
 {
-    if (!GridObjectManager || !Grid) return;
-
     TSet<int32> newActive = GridObjectManager->GetActiveColumnsInProximity(
         GridSize,
         Grid->GetColumnCenters(),
@@ -415,8 +397,6 @@ void ATerraShiftEnvironment::UpdateActiveColumns()
 
 void ATerraShiftEnvironment::UpdateColumnColors()
 {
-    if (!Grid) return;
-
     // Color each column by height
     float mn = Grid->GetMinHeight();
     float mx = Grid->GetMaxHeight();

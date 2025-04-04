@@ -241,6 +241,9 @@ private:
     float CellSize;
 
     UPROPERTY()
+    float BaseSphereRadius;
+
+    UPROPERTY()
     FVector PlatformWorldSize;
 
     UPROPERTY()

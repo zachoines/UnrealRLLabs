@@ -22,7 +22,7 @@
         "NumActions": 6,
         "bUseActionDelta": true,
         
-        "VelMinMax": [0.0, 4.0],
+        "VelMinMax": [0.0, 8.0],
         "AngVelRange": [-1.57, 1.57],
         "AmpMinMax": [ -4.0, 4.0],
         "SigMinMax": [ 0.5, 4.0],

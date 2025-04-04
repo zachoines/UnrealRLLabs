@@ -54,6 +54,10 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     OverheadCamFOV = Config->GetOrDefaultNumber(TEXT("OverheadCameraFOV"), 90.f);
     OverheadCamResX = Config->GetOrDefaultInt(TEXT("OverheadCameraResX"), 50);
     OverheadCamResY = Config->GetOrDefaultInt(TEXT("OverheadCameraResY"), 50);
+
+    UStaticMesh* DefaultMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+    FBoxSphereBounds DefaultBounds = DefaultMesh->GetBounds();
+    BaseSphereRadius = DefaultBounds.SphereRadius;
 }
 
 void UStateManager::SetReferences(
@@ -696,10 +700,9 @@ FVector UStateManager::GenerateRandomGridLocation() const
         float columnHeight = Grid->GetColumnHeight(chosen);
 
         // 7) Decide an extra offset so the object sits above the column top
-        //    For example, half the object's bounding height or a small fixed number
-        const float ObjectExtraZ = 7.0f; // tweak as needed
+        float ScaledRadius = BaseSphereRadius * ObjectScale;
 
-        float spawnZ = columnBaseLoc.Z + columnHeight + ObjectExtraZ;
+        float spawnZ = columnBaseLoc.Z + columnHeight + ScaledRadius;
 
         return FVector(cWX, cWY, spawnZ);
     }
