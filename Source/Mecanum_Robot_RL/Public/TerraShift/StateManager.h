@@ -219,8 +219,6 @@ private:
     UPROPERTY()
     float MaxZ;
     UPROPERTY()
-    float SpawnCollisionRadius;
-    UPROPERTY()
     int32 MarginCells;
     UPROPERTY()
     float BoundingSphereScale;

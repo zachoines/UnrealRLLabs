@@ -41,7 +41,6 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     MarginXY = Config->GetOrDefaultNumber(TEXT("MarginXY"), 1.5f);
     MinZ = Config->GetOrDefaultNumber(TEXT("MinZ"), 0.f);
     MaxZ = Config->GetOrDefaultNumber(TEXT("MaxZ"), 1000.f);
-    SpawnCollisionRadius = Config->GetOrDefaultNumber(TEXT("SpawnCollisionRadius"), 100.f);
     MarginCells = Config->GetOrDefaultInt(TEXT("MarginCells"), 4);
     BoundingSphereScale = Config->GetOrDefaultNumber(TEXT("BoundingSphereScale"), 1.5f);
     ObjectScale = Config->GetOrDefaultNumber(TEXT("ObjectScale"), 0.1f);

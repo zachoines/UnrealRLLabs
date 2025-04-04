@@ -10,11 +10,11 @@
       "GridSize": 50,
       "MaxSteps": 512,
       "NumGoals": 4,
-      "MaxAgents": 40,
+      "MaxAgents": 20,
       "GoalThreshold": 1.75,
 
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 40,
+        "NumAgents": 20,
         "GridSize": 50,
         "MinHeight": -4.0,
         "MaxHeight": 4.0,
@@ -24,8 +24,7 @@
         "VelMinMax": [0.0, 8.0],
         "AngVelRange": [-1.57, 1.57],
         "AmpMinMax": [ -4.0, 4.0],
-        "SigMinMax": [ 0.5, 4.0],
-        
+        "SigMinMax": [ 1.0, 4.0],
         
         "DeltaVelScale": 10.0,
         "DeltaAngVelScale": 10.0,
@@ -39,7 +38,6 @@
         "MarginXY": 1.5,
         "MinZ": -4.0,
         "MaxZ": 100.0,
-        "SpawnCollisionRadius": 0.0,
         "MarginCells": 4,
         "BoundingSphereScale": 1.0,
         "ObjectScale": 0.1,
@@ -61,8 +59,8 @@
         },
         "agent": {
           "obs_size": 9,
-          "min": 40,
-          "max": 40
+          "min": 20,
+          "max": 20
         }
       },
       "action": {
@@ -96,7 +94,7 @@
   "agent": {
     "type": "MA_POCA",
     "params": {
-      "learning_rate": 0.00002,
+      "learning_rate": 0.00005,
       "gamma": 0.99,
       "lambda": 0.95,
       "value_loss_coeff": 0.5,
@@ -126,7 +124,7 @@
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents" : 40,
+            "num_agents" : 20,
             "in_channels": 5,
             "h": 50,
             "w": 50,
@@ -202,8 +200,8 @@
     "states_normalizer_disabled": {
       "warmup_steps": 10000
     },
-    "num_environments": 2,
-    "epochs": 6,
+    "num_environments": 4,
+    "epochs": 8,
     "mini_batch_size": 32,
     "buffer_size": 256,
     "batch_size": 256,
