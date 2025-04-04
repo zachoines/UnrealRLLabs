@@ -643,29 +643,28 @@ FVector UStateManager::GenerateRandomGridLocation() const
         return PlatformCenter + FVector(0, 0, 100.f);
     }
 
-    // We do multiple attempts with the collision-dist matrix approach
     static const int32 MaxSpawnAttempts = 5;
 
     for (int32 attempt = 0; attempt < MaxSpawnAttempts; attempt++)
     {
-        // build distance matrix
+        // 1) Build collision distance matrix
         FMatrix2D distMat = ComputeCollisionDistanceMatrix();
 
         TArray<int32> freeCells;
         freeCells.Reserve(GridSize * GridSize);
 
-        // skip margin cells
+        // 2) Skip margin cells
         int32 xStart = FMath::Clamp(MarginCells, 0, GridSize - 1);
         int32 xEnd = FMath::Clamp(GridSize - MarginCells, 0, GridSize - 1);
         int32 yStart = xStart;
         int32 yEnd = xEnd;
 
+        // 3) Collect any cell with enough clearance
         for (int32 X = xStart; X <= xEnd; X++)
         {
             for (int32 Y = yStart; Y <= yEnd; Y++)
             {
                 float dd = distMat[X][Y];
-                // must have enough clearance
                 if (dd > SpawnCollisionRadius)
                 {
                     freeCells.Add(X * GridSize + Y);
@@ -675,22 +674,37 @@ FVector UStateManager::GenerateRandomGridLocation() const
 
         if (freeCells.Num() == 0)
         {
-            // No free cell found => continue to next attempt
+            // No free cell found => try next attempt
             continue;
         }
-        // pick random cell
+
+        // 4) Randomly pick one cell from the free list
         int32 chosen = freeCells[FMath::RandRange(0, freeCells.Num() - 1)];
         int32 cX = chosen / GridSize;
         int32 cY = chosen % GridSize;
 
+        // 5) Compute (X,Y) in world space
         float cWX = (cX + 0.5f) * CellSize + (PlatformCenter.X - 0.5f * PlatformWorldSize.X);
         float cWY = (cY + 0.5f) * CellSize + (PlatformCenter.Y - 0.5f * PlatformWorldSize.Y);
-        float spawnZ = Grid->GetActorLocation().Z + (CellSize * 2) * MaxColumnHeight;
+
+        // 6) Get the column's actual top in world space
+        //    a) Column base location in world
+        FVector columnBaseLoc = Grid->GetColumnWorldLocation(chosen);
+
+        //    b) The column's "height" offset
+        //       (assuming GetColumnHeight() returns how far above base it currently is)
+        float columnHeight = Grid->GetColumnHeight(chosen);
+
+        // 7) Decide an extra offset so the object sits above the column top
+        //    For example, half the object's bounding height or a small fixed number
+        const float ObjectExtraZ = 7.0f; // tweak as needed
+
+        float spawnZ = columnBaseLoc.Z + columnHeight + ObjectExtraZ;
 
         return FVector(cWX, cWY, spawnZ);
     }
 
-    // if we fail all attempts => fallback
+    // If we fail all attempts => fallback
     UE_LOG(LogTemp, Warning, TEXT("No free cell found after multiple attempts => fallback center."));
     return PlatformCenter + FVector(0, 0, 100.f);
 }

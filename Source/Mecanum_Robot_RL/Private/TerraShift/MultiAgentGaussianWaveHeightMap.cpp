@@ -123,11 +123,14 @@ void UMultiAgentGaussianWaveHeightMap::InitializeAgents()
         A.Position.X = FMath::RandRange(0.f, (float)GridSize - 1.f);
         A.Position.Y = FMath::RandRange(0.f, (float)GridSize - 1.f);
         A.Orientation = FMath::FRandRange(0.f, 2.f * PI);
-        A.Amplitude = 0.f;
-        A.SigmaX = 1.f;
-        A.SigmaY = 1.f;
-        A.Velocity = FVector2D::ZeroVector;
-        A.AngularVelocity = 0.f;
+        A.Amplitude = FMath::FRandRange(MinAmp, MaxAmp);
+        A.SigmaX = FMath::FRandRange(MinSigma, MaxSigma);
+        A.SigmaY = FMath::FRandRange(MinSigma, MaxSigma);
+        A.Velocity = FVector2D(
+            FMath::FRandRange(MinVel, MaxVel), 
+            FMath::FRandRange(MinVel, MaxVel)
+        );
+        A.AngularVelocity = FMath::FRandRange(MinVel, MaxVel);
     }
     ComputeFinalWave();
 }
