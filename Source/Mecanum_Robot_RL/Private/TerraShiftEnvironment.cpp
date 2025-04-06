@@ -1,4 +1,6 @@
 #include "TerraShiftEnvironment.h"
+#include "TerraShift/GoalManager.h"
+#include "Kismet/GameplayStatics.h"
 
 ATerraShiftEnvironment::ATerraShiftEnvironment()
 {
@@ -8,27 +10,39 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
     TerraShiftRoot = CreateDefaultSubobject<USceneComponent>(TEXT("TerraShiftRoot"));
     RootComponent = TerraShiftRoot;
 
-    // Our wave simulator (Gaussian wave).
     WaveSimulator = CreateDefaultSubobject<UMultiAgentGaussianWaveHeightMap>(TEXT("WaveSimulator"));
-
-    // Our new State Manager for grid objects & central state.
     StateManager = CreateDefaultSubobject<UStateManager>(TEXT("StateManager"));
 
     CurrentStep = 0;
     Initialized = false;
-
-    // By default, we can guess 1 wave agent; actual is set in ResetEnv.
     CurrentAgents = 1;
-
-    // We'll set this once we parse "max_grid_objects" from the StateManager config:
     CurrentGridObjects = 1;
 
-    GoalColors = {
-        FLinearColor::Red,
-        FLinearColor::Green,
-        FLinearColor::Blue,
-        FLinearColor::Yellow
-    };
+    // default references
+    GoalManager = nullptr;
+
+    // Default reward toggles
+    bUseVelAlignment = false;
+    bUseXYDistanceImprovement = true;
+    bUseZAccelerationPenalty = false;
+    bUseCradleReward = false;
+
+    // Default reward scales
+    VelAlign_Scale = 0.1f;
+    VelAlign_Min = -100.f;
+    VelAlign_Max = 100.f;
+
+    DistImprove_Scale = 10.f;
+    DistImprove_Min = -1.f;
+    DistImprove_Max = 1.f;
+
+    ZAccel_Scale = 0.0001f;
+    ZAccel_Min = 0.1f;
+    ZAccel_Max = 2000.f;
+
+    REACH_GOAL_REWARD = 1.f;
+    FALL_OFF_PENALTY = -1.f;
+    STEP_PENALTY = -0.0001f;
 }
 
 ATerraShiftEnvironment::~ATerraShiftEnvironment()
@@ -38,80 +52,95 @@ ATerraShiftEnvironment::~ATerraShiftEnvironment()
 void ATerraShiftEnvironment::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
-
-    if (Initialized)
-    {
-        // UpdateActiveColumns();
-        UpdateColumnColors();
-    }
 }
 
 void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
 {
-    check(Params);
     TerraShiftParams = static_cast<FTerraShiftEnvironmentInitParams*>(Params);
-    check(TerraShiftParams);
-    check(TerraShiftParams->EnvConfig);
+    check(TerraShiftParams && TerraShiftParams->EnvConfig);
 
     CurrentStep = 0;
-    CurrentAgents = 1;  // wave-sim default
-    CurrentGridObjects = 1; // state manager default (will set properly after config)
+    CurrentAgents = 1;
+    CurrentGridObjects = 1;
+    Initialized = false;
 
     EnvironmentFolderPath = GetName();
     SetFolderPath(*EnvironmentFolderPath);
 
-    // read config
     UEnvironmentConfig* EnvConfig = TerraShiftParams->EnvConfig;
 
-    auto GetOrErrorNumber = [&](const FString& Path, float defaultVal)->float
+    // read TerraShift top-level config
+    auto GetOrDefaultNumber = [&](const FString& Path, float DefVal) -> float
         {
-            if (!EnvConfig->HasPath(*Path))
-            {
-                UE_LOG(LogTemp, Error, TEXT("TerraShift config missing path: %s"), *Path);
-                return defaultVal;
-            }
-            return EnvConfig->Get(*Path)->AsNumber();
+            return EnvConfig->HasPath(*Path)
+                ? EnvConfig->Get(*Path)->AsNumber()
+                : DefVal;
         };
-    auto GetOrErrorInt = [&](const FString& Path, int32 defaultVal)->int32
+    auto GetOrDefaultInt = [&](const FString& Path, int DefVal) -> int
         {
-            if (!EnvConfig->HasPath(*Path))
-            {
-                UE_LOG(LogTemp, Error, TEXT("TerraShift config missing path: %s"), *Path);
-                return defaultVal;
-            }
-            return EnvConfig->Get(*Path)->AsInt();
+            return EnvConfig->HasPath(*Path)
+                ? EnvConfig->Get(*Path)->AsInt()
+                : DefVal;
+        };
+    auto GetOrDefaultBool = [&](const FString& Path, bool DefVal) -> bool
+        {
+            return EnvConfig->HasPath(*Path)
+                ? EnvConfig->Get(*Path)->AsBool()
+                : DefVal;
         };
 
     // environment/params
-    PlatformSize = GetOrErrorNumber(TEXT("environment/params/PlatformSize"), 1.f);
-    MaxColumnHeight = GetOrErrorNumber(TEXT("environment/params/MaxColumnHeight"), 4.f);
+    PlatformSize = GetOrDefaultNumber(TEXT("environment/params/PlatformSize"), 1.f);
+    MaxColumnHeight = GetOrDefaultNumber(TEXT("environment/params/MaxColumnHeight"), 4.f);
+    MaxSteps = GetOrDefaultInt(TEXT("environment/params/MaxSteps"), 512);
+    MaxAgents = GetOrDefaultInt(TEXT("environment/params/MaxAgents"), 5);
 
     // object size
     if (EnvConfig->HasPath(TEXT("environment/params/ObjectSize")))
     {
         TArray<float> arr = EnvConfig->Get(TEXT("environment/params/ObjectSize"))->AsArrayOfNumbers();
-        if (arr.Num() == 3)
-        {
-            ObjectSize = FVector(arr[0], arr[1], arr[2]);
-        }
+        if (arr.Num() == 3) ObjectSize = FVector(arr[0], arr[1], arr[2]);
         else
         {
-            UE_LOG(LogTemp, Error, TEXT("ObjectSize array must have 3 floats => fallback (0.1,0.1,0.1)"));
+            UE_LOG(LogTemp, Warning, TEXT("ObjectSize must have 3 floats => fallback (0.1)"));
             ObjectSize = FVector(0.1f);
         }
     }
     else
     {
-        UE_LOG(LogTemp, Error, TEXT("No path environment/params/ObjectSize => fallback (0.1,0.1,0.1)"));
         ObjectSize = FVector(0.1f);
     }
 
-    ObjectMass = GetOrErrorNumber(TEXT("environment/params/ObjectMass"), 0.1f);
-    GridSize = GetOrErrorInt(TEXT("environment/params/GridSize"), 50);
-    MaxSteps = GetOrErrorInt(TEXT("environment/params/MaxSteps"), 512);
-    NumGoals = GetOrErrorInt(TEXT("environment/params/NumGoals"), 4);
-    MaxAgents = GetOrErrorInt(TEXT("environment/params/MaxAgents"), 5);
-    GoalThreshold = GetOrErrorNumber(TEXT("environment/params/GoalThreshold"), 1.75f);
+    ObjectMass = GetOrDefaultNumber(TEXT("environment/params/ObjectMass"), 0.1f);
+    GridSize = GetOrDefaultInt(TEXT("environment/params/GridSize"), 50);
+
+    // Now read environment/params/TerraShiftEnvironment sub-block for reward toggles
+    UEnvironmentConfig* envCfg2 = EnvConfig->Get(TEXT("environment/params/TerraShiftEnvironment"));
+    if (envCfg2)
+    {
+        // toggles
+        bUseVelAlignment = envCfg2->GetOrDefaultBool(TEXT("bUseVelAlignment"), false);
+        bUseXYDistanceImprovement = envCfg2->GetOrDefaultBool(TEXT("bUseXYDistanceImprovement"), true);
+        bUseZAccelerationPenalty = envCfg2->GetOrDefaultBool(TEXT("bUseZAccelerationPenalty"), false);
+        bUseCradleReward = envCfg2->GetOrDefaultBool(TEXT("bUseCradleReward"), false);
+
+        // scales
+        VelAlign_Scale = envCfg2->GetOrDefaultNumber(TEXT("VelAlign_Scale"), 0.1f);
+        VelAlign_Min = envCfg2->GetOrDefaultNumber(TEXT("VelAlign_Min"), -100.f);
+        VelAlign_Max = envCfg2->GetOrDefaultNumber(TEXT("VelAlign_Max"), 100.f);
+
+        DistImprove_Scale = envCfg2->GetOrDefaultNumber(TEXT("DistImprove_Scale"), 10.f);
+        DistImprove_Min = envCfg2->GetOrDefaultNumber(TEXT("DistImprove_Min"), -1.f);
+        DistImprove_Max = envCfg2->GetOrDefaultNumber(TEXT("DistImprove_Max"), 1.f);
+
+        ZAccel_Scale = envCfg2->GetOrDefaultNumber(TEXT("ZAccel_Scale"), 0.0001f);
+        ZAccel_Min = envCfg2->GetOrDefaultNumber(TEXT("ZAccel_Min"), 0.1f);
+        ZAccel_Max = envCfg2->GetOrDefaultNumber(TEXT("ZAccel_Max"), 2000.f);
+
+        REACH_GOAL_REWARD = envCfg2->GetOrDefaultNumber(TEXT("REACH_GOAL_REWARD"), 1.f);
+        FALL_OFF_PENALTY = envCfg2->GetOrDefaultNumber(TEXT("FALL_OFF_PENALTY"), -1.f);
+        STEP_PENALTY = envCfg2->GetOrDefaultNumber(TEXT("STEP_PENALTY"), -0.0001f);
+    }
 
     // place environment at location
     TerraShiftRoot->SetWorldLocation(TerraShiftParams->Location);
@@ -121,11 +150,14 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
     Platform->SetActorScale3D(FVector(PlatformSize));
 
     // compute geometry
-    PlatformWorldSize = Platform->PlatformMeshComponent->GetStaticMesh()->GetBounds().BoxExtent
-        * 2.f
-        * Platform->GetActorScale3D();
-    PlatformCenter = Platform->GetActorLocation();
-    CellSize = PlatformWorldSize.X / (float)GridSize;
+    if (Platform && Platform->PlatformMeshComponent)
+    {
+        PlatformWorldSize = Platform->PlatformMeshComponent->GetStaticMesh()->GetBounds().BoxExtent
+            * 2.f
+            * Platform->GetActorScale3D();
+        PlatformCenter = Platform->GetActorLocation();
+        CellSize = (GridSize > 0) ? PlatformWorldSize.X / (float)GridSize : 1.f;
+    }
 
     // spawn grid
     {
@@ -138,63 +170,52 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
             Grid->AttachToActor(Platform, FAttachmentTransformRules::KeepRelativeTransform);
             Grid->SetColumnMovementBounds(-MaxColumnHeight, MaxColumnHeight);
             Grid->InitializeGrid(GridSize, PlatformWorldSize.X, GridLocation);
-        }
-        else
-        {
-            UE_LOG(LogTemp, Error, TEXT("Failed to spawn Grid actor!"));
+            // Grid->SetFolderPath(FName(*(EnvironmentFolderPath + "/Grid")));
         }
     }
 
     // spawn object manager
+    GridObjectManager = GetWorld()->SpawnActor<AGridObjectManager>(AGridObjectManager::StaticClass());
+    if (GridObjectManager)
     {
-        GridObjectManager = GetWorld()->SpawnActor<AGridObjectManager>(AGridObjectManager::StaticClass());
-        if (GridObjectManager)
-        {
-            GridObjectManager->SetPlatformActor(Platform);
-            GridObjectManager->SetFolderPath(FName(*(EnvironmentFolderPath + "/GridObjectManager")));
-        }
-        else
-        {
-            UE_LOG(LogTemp, Error, TEXT("Failed to spawn GridObjectManager!"));
-        }
+        GridObjectManager->SetPlatformActor(Platform);
+        GridObjectManager->SetFolderPath(FName(*(EnvironmentFolderPath + "/GridObjectManager")));
     }
 
-    // wave simulator config => environment/params/MultiAgentGaussianWaveHeightMap
+    // wave simulator config
     {
         UEnvironmentConfig* waveCfg = EnvConfig->Get(TEXT("environment/params/MultiAgentGaussianWaveHeightMap"));
-        if (!waveCfg)
-        {
-            UE_LOG(LogTemp, Error, TEXT("Missing environment/params/MultiAgentGaussianWaveHeightMap in config!"));
-        }
-        else if (WaveSimulator)
+        if (waveCfg && WaveSimulator)
         {
             WaveSimulator->InitializeFromConfig(waveCfg);
         }
     }
 
-    // state manager => environment/params/StateManager
+    // state manager
     {
         UEnvironmentConfig* smCfg = EnvConfig->Get(TEXT("environment/params/StateManager"));
-        if (!smCfg)
+        if (smCfg && StateManager)
         {
-            UE_LOG(LogTemp, Error, TEXT("Missing environment/params/StateManager in config!"));
-        }
-        else if (StateManager)
-        {
-            StateManager->InitializeFromConfig(smCfg);
-
-            // read out the max_grid_objects from the manager’s config
-            // so we can store an initial guess. The actual usage is in ResetEnv
-            int32 MaxGridObjs = smCfg->GetOrDefaultInt(TEXT("max_grid_objects"), 5);
+            StateManager->LoadConfig(smCfg);
+            int32 MaxGridObjs = smCfg->GetOrDefaultInt(TEXT("max_grid_objects"), 8);
             CurrentGridObjects = MaxGridObjs;
         }
     }
 
-    // finalize references
+    // spawn + init goal manager
+    {
+        UEnvironmentConfig* gmCfg = EnvConfig->Get(TEXT("environment/params/GoalManager"));
+        GoalManager = GetWorld()->SpawnActor<AGoalManager>();
+        if (GoalManager && gmCfg)
+        {
+            GoalManager->InitializeFromConfig(gmCfg);
+        }
+    }
+
+    // finalize references => pass GoalManager
     if (StateManager)
     {
-        TArray<AGoalPlatform*> tmpGoals; // updated properly in Reset
-        StateManager->SetReferences(Platform, GridObjectManager, Grid, tmpGoals, WaveSimulator);
+        StateManager->SetReferences(Platform, GridObjectManager, Grid, WaveSimulator, GoalManager);
     }
 
     Initialized = true;
@@ -203,36 +224,13 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
 FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
 {
     CurrentStep = 0;
-    CurrentAgents = NumAgents; 
+    CurrentAgents = NumAgents;
     CurrentGridObjects = StateManager->GetMaxGridObjects();
 
-    // reset columns & objects
-    if (Grid) Grid->ResetGrid();
-    if (GridObjectManager) GridObjectManager->ResetGridObjects();
-
-    // wave-sim reset for RL wave agents
-    if (WaveSimulator) WaveSimulator->Reset(CurrentAgents);
-
-    // clear old goals
-    for (AGoalPlatform* gp : GoalPlatforms)
-    {
-        if (gp) gp->Destroy();
-    }
-    GoalPlatforms.Empty();
-
-    // create new goals
-    for (int32 i = 0; i < NumGoals; i++)
-    {
-        UpdateGoal(i);
-    }
-
-    // pass final references to state manager
+    // Let the state manager do the sub resets:
     if (StateManager)
     {
-        StateManager->SetReferences(Platform, GridObjectManager, Grid, GoalPlatforms, WaveSimulator);
-
-        // Here is the big difference: we pass CurrentGridObjects
-        StateManager->Reset(CurrentGridObjects);
+        StateManager->Reset(CurrentGridObjects, CurrentAgents);
     }
 
     return State();
@@ -240,32 +238,38 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
 
 void ATerraShiftEnvironment::Act(FAction Action)
 {
-    // pass to wave sim (the RL wave-agents’ actions)
-    WaveSimulator->Step(Action.Values, GetWorld()->GetDeltaSeconds());
-
-    // apply final wave to columns
-    const FMatrix2D& wave = WaveSimulator->GetHeightMap();
-    Grid->UpdateColumnHeights(wave);
+    if (WaveSimulator)
+    {
+        WaveSimulator->Step(Action.Values, GetWorld()->GetDeltaSeconds());
+        // apply final wave to columns
+        const FMatrix2D& wave = WaveSimulator->GetHeightMap();
+        if (Grid)
+        {
+            Grid->UpdateColumnHeights(wave);
+        }
+    }
 }
 
 void ATerraShiftEnvironment::PostTransition()
 {
-    // optional
+    // optional hook
 }
 
 void ATerraShiftEnvironment::PreStep()
 {
-    // optional
+    // optional hook
 }
 
 void ATerraShiftEnvironment::PreTransition()
 {
     if (!StateManager) return;
 
+    // Let the manager handle objects
     StateManager->UpdateGridObjectFlags();
     StateManager->UpdateObjectStats(GetWorld()->GetDeltaSeconds());
     StateManager->RespawnGridObjects();
     StateManager->BuildCentralState();
+    StateManager->UpdateGridColumnsColors();
 }
 
 void ATerraShiftEnvironment::PostStep()
@@ -276,26 +280,22 @@ void ATerraShiftEnvironment::PostStep()
 FState ATerraShiftEnvironment::State()
 {
     FState st;
-
-    // combine central state + wave-agent states
-    // add central furst
+    // central state
     TArray<float> c = StateManager->GetCentralState();
     st.Values.Append(c);
 
-    // then each wave agent state
+    // wave agent states
     for (int32 i = 0; i < CurrentAgents; i++)
     {
-        TArray<float> waveAgentArr = StateManager->GetAgentState(i);
-        st.Values.Append(waveAgentArr);
+        TArray<float> waveState = StateManager->GetAgentState(i);
+        st.Values.Append(waveState);
     }
-
     return st;
 }
 
 bool ATerraShiftEnvironment::Done()
 {
-    // We check if state manager says all objects are handled
-    // only after at least 1 step
+    // done if StateManager says all handled, after at least 1 step
     if (CurrentStep > 0 && StateManager->AllGridObjectsHandled())
     {
         return true;
@@ -305,6 +305,7 @@ bool ATerraShiftEnvironment::Done()
 
 bool ATerraShiftEnvironment::Trunc()
 {
+    // truncated if max steps reached
     return (CurrentStep >= MaxSteps);
 }
 
@@ -315,54 +316,63 @@ float ATerraShiftEnvironment::Reward()
 
     float accum = 0.f;
 
-    // We must iterate over the grid objects, not the wave-sim agents!
-    // So from 0..CurrentGridObjects-1
+    // For each grid-object
     for (int ObjIndex = 0; ObjIndex < CurrentGridObjects; ObjIndex++)
     {
         bool bActive = StateManager->GetHasActive(ObjIndex);
         bool bReached = StateManager->GetHasReachedGoal(ObjIndex);
-        bool bFallenOff = StateManager->GetHasFallenOff(ObjIndex);
+        bool bFallen = StateManager->GetHasFallenOff(ObjIndex);
         bool bCollect = StateManager->GetShouldCollectReward(ObjIndex);
 
-        if (bCollect && bFallenOff)
+        // handle "collect" flags for falling or reaching
+        if (bCollect)
         {
-            accum += FALL_OFF_PENALTY;
             StateManager->SetShouldCollectReward(ObjIndex, false);
-            continue;
-        }
-        else if (bCollect && bReached)
-        {
-            accum += REACH_GOAL_REWARD;
-            StateManager->SetShouldCollectReward(ObjIndex, false);
-            continue;
+
+            if (bFallen)
+            {
+                accum += FALL_OFF_PENALTY;
+                continue;
+            }
+            if (bReached)
+            {
+                accum += REACH_GOAL_REWARD;
+                continue;
+            }
         }
 
+        // if not active => small step penalty
         if (!bActive)
         {
             accum += STEP_PENALTY;
             continue;
         }
 
-        // distance improvements, etc.
-        FVector vel = StateManager->GetCurrentVelocity(ObjIndex);
-        FVector pvel = StateManager->GetPreviousVelocity(ObjIndex);
-        float dist = StateManager->GetCurrentDistance(ObjIndex);
-        float pdist = StateManager->GetPreviousDistance(ObjIndex);
-
+        // optional distance improvement, z-accel, etc.
         float sub = 0.f;
-
-        if (bUseXYDistanceImprovement && pdist > 0.f && dist > 0.f)
+        if (bUseXYDistanceImprovement)
         {
-            float delta = (pdist - dist) / PlatformWorldSize.X;
-            float clampDelta = FMath::Clamp(delta, DistImprove_Min, DistImprove_Max);
-            sub += DistImprove_Scale * clampDelta;
+            float pdist = StateManager->GetPreviousDistance(ObjIndex);
+            float dist = StateManager->GetCurrentDistance(ObjIndex);
+            if (pdist > 0.f && dist > 0.f)
+            {
+                float delta = (pdist - dist) / PlatformWorldSize.X;
+                float clampDelta = FMath::Clamp(delta, DistImprove_Min, DistImprove_Max);
+                sub += DistImprove_Scale * clampDelta;
+            }
         }
-        if (bUseZAccelerationPenalty && !pvel.IsNearlyZero())
+
+        if (bUseZAccelerationPenalty)
         {
-            FVector aTot = (vel - pvel) / dt;
-            float posZ = (aTot.Z > 0.f) ? aTot.Z : 0.f;
-            float cz = ThresholdAndClamp(posZ, ZAccel_Min, ZAccel_Max);
-            sub -= (ZAccel_Scale * cz);
+            FVector pvel = StateManager->GetPreviousVelocity(ObjIndex);
+            if (!pvel.IsNearlyZero())
+            {
+                FVector vel = StateManager->GetCurrentVelocity(ObjIndex);
+                FVector aTot = (vel - pvel) / dt;
+                float posZ = (aTot.Z > 0.f) ? aTot.Z : 0.f;
+                float cz = ThresholdAndClamp(posZ, ZAccel_Min, ZAccel_Max);
+                sub -= (ZAccel_Scale * cz);
+            }
         }
 
         accum += sub;
@@ -371,47 +381,31 @@ float ATerraShiftEnvironment::Reward()
     return accum * dt;
 }
 
-void ATerraShiftEnvironment::UpdateActiveColumns()
-{
-    TSet<int32> newActive = GridObjectManager->GetActiveColumnsInProximity(
-        GridSize,
-        Grid->GetColumnCenters(),
-        PlatformCenter,
-        PlatformWorldSize.X,
-        CellSize
-    );
-    TSet<int32> en = newActive.Difference(ActiveColumns);
-    TSet<int32> dis = ActiveColumns.Difference(newActive);
-
-    if (en.Num() > 0 || dis.Num() > 0)
-    {
-        TArray<int32> idxs;
-        TArray<bool>   vals;
-        for (int32 c : en) { idxs.Add(c); vals.Add(true); }
-        for (int32 c : dis) { idxs.Add(c); vals.Add(false); }
-        Grid->TogglePhysicsForColumns(idxs, vals);
-    }
-    ActiveColumns = newActive;
-}
-
-void ATerraShiftEnvironment::UpdateColumnColors()
-{
-    // Color each column by height
-    float mn = Grid->GetMinHeight();
-    float mx = Grid->GetMaxHeight();
-    for (int32 c = 0; c < Grid->GetTotalColumns(); c++)
-    {
-        float h = Grid->GetColumnHeight(c);
-        float ratio = FMath::GetMappedRangeValueClamped(FVector2D(mn, mx), FVector2D(0.f, 1.f), h);
-        FLinearColor col = FLinearColor::LerpUsingHSV(FLinearColor::Black, FLinearColor::White, ratio);
-        Grid->SetColumnColor(c, col);
-    }
-}
-
 float ATerraShiftEnvironment::ThresholdAndClamp(float value, float minVal, float maxVal)
 {
     if (FMath::Abs(value) < minVal) return 0.f;
     return FMath::Clamp(value, -maxVal, maxVal);
+}
+
+// ---------- legacy / unused -----------
+FVector ATerraShiftEnvironment::CalculateGoalPlatformLocation(int32 EdgeIndex)
+{
+    // old logic => not used if StateManager & GoalManager handle goals
+    float offset = (PlatformWorldSize.X * 0.5f)
+        + (PlatformWorldSize.X * ObjectSize.X * 0.5f);
+    switch (EdgeIndex)
+    {
+    case 0: return FVector(0.f, +offset, 0.f);
+    case 1: return FVector(0.f, -offset, 0.f);
+    case 2: return FVector(-offset, 0.f, 0.f);
+    case 3: return FVector(+offset, 0.f, 0.f);
+    default:return FVector::ZeroVector;
+    }
+}
+
+void ATerraShiftEnvironment::UpdateGoal(int32 GoalIndex)
+{
+    // no longer used
 }
 
 AMainPlatform* ATerraShiftEnvironment::SpawnPlatform(FVector Location)
@@ -425,15 +419,14 @@ AMainPlatform* ATerraShiftEnvironment::SpawnPlatform(FVector Location)
     UStaticMesh* plane = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
     if (!plane)
     {
-        UE_LOG(LogTemp, Error, TEXT("No plane mesh found => can't spawn platform."));
+        UE_LOG(LogTemp, Error, TEXT("No plane mesh => can't spawn platform."));
         return nullptr;
     }
 
     FActorSpawnParameters sp;
     AMainPlatform* p = w->SpawnActor<AMainPlatform>(
         AMainPlatform::StaticClass(),
-        Location,
-        FRotator::ZeroRotator,
+        Location, FRotator::ZeroRotator,
         sp
     );
     if (!p)
@@ -441,43 +434,11 @@ AMainPlatform* ATerraShiftEnvironment::SpawnPlatform(FVector Location)
         UE_LOG(LogTemp, Error, TEXT("Failed to spawn main platform."));
         return nullptr;
     }
-    UMaterial* mat = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/Material/Platform_Material.Platform_Material'"));
+    UMaterial* mat = LoadObject<UMaterial>(
+        nullptr,
+        TEXT("Material'/Game/Material/Platform_Material.Platform_Material'")
+    );
     p->InitializePlatform(plane, mat);
     p->AttachToActor(this, FAttachmentTransformRules::KeepRelativeTransform);
     return p;
-}
-
-FVector ATerraShiftEnvironment::CalculateGoalPlatformLocation(int32 EdgeIndex)
-{
-    // place them around edges
-    float offset = (PlatformWorldSize.X * 0.5f) + (PlatformWorldSize.X * ObjectSize.X * 0.5f);
-    switch (EdgeIndex)
-    {
-    case 0: return FVector(0, offset, 0);   // top
-    case 1: return FVector(0, -offset, 0);   // bottom
-    case 2: return FVector(-offset, 0, 0);   // left
-    case 3: return FVector(offset, 0, 0);    // right
-    default: return FVector::ZeroVector;
-    }
-}
-
-void ATerraShiftEnvironment::UpdateGoal(int32 GoalIndex)
-{
-    FVector scale = ObjectSize;
-    FVector loc = CalculateGoalPlatformLocation(GoalIndex);
-    FLinearColor col = GoalColors[GoalIndex % GoalColors.Num()];
-
-    FActorSpawnParameters sp;
-    sp.Owner = this;
-    AGoalPlatform* gp = GetWorld()->SpawnActor<AGoalPlatform>(
-        AGoalPlatform::StaticClass(),
-        Platform->GetActorLocation(), // spawn near platform
-        FRotator::ZeroRotator,
-        sp
-    );
-    if (gp)
-    {
-        gp->InitializeGoalPlatform(loc, scale, col, Platform);
-        GoalPlatforms.Add(gp);
-    }
 }

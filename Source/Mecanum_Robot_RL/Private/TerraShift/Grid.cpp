@@ -64,7 +64,7 @@ void AGrid::ResetGrid() {
 
 FVector AGrid::GetColumnWorldLocation(int32 ColumnIndex) const {
     if (Columns.IsValidIndex(ColumnIndex)) {
-        return Columns[ColumnIndex]->GetActorLocation();
+        return Columns[ColumnIndex]->GetRootComponent()->GetComponentLocation();
     }
     return FVector::ZeroVector;
 }

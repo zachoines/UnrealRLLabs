@@ -1,81 +1,102 @@
 #include "TerraShift/StateManager.h"
 #include "TerraShift/GridObject.h"
+#include "TerraShift/Grid.h"
+#include "TerraShift/GridObjectManager.h"
+#include "TerraShift/GoalManager.h"
 #include "TerraShift/GoalPlatform.h"
+#include "TerraShift/Column.h"
+
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet/GameplayStatics.h"
-
-/** Helper static for potential config error logging */
-static float SM_GetOrErrorNumber(UEnvironmentConfig* Cfg, const FString& Path)
-{
-    if (!Cfg || !Cfg->HasPath(*Path))
-    {
-        UE_LOG(LogTemp, Error, TEXT("StateManager config missing path: %s"), *Path);
-        return 0.f;
-    }
-    return Cfg->Get(*Path)->AsNumber();
-}
-static int32 SM_GetOrErrorInt(UEnvironmentConfig* Cfg, const FString& Path)
-{
-    if (!Cfg || !Cfg->HasPath(*Path))
-    {
-        UE_LOG(LogTemp, Error, TEXT("StateManager config missing path: %s"), *Path);
-        return 0;
-    }
-    return Cfg->Get(*Path)->AsInt();
-}
-
-void UStateManager::InitializeFromConfig(UEnvironmentConfig* SMConfig)
-{
-    if (!SMConfig || !SMConfig->IsValid())
-    {
-        UE_LOG(LogTemp, Error, TEXT("UStateManager::InitializeFromConfig => null or invalid config!"));
-        return;
-    }
-    LoadConfig(SMConfig);
-}
+#include "Engine/World.h"
+#include "DrawDebugHelpers.h"
 
 void UStateManager::LoadConfig(UEnvironmentConfig* Config)
 {
-    MaxGridObjects = Config->GetOrDefaultInt(TEXT("MaxGridObjects"), 5);
-    GoalThreshold = Config->GetOrDefaultNumber(TEXT("GoalThreshold"), 1.75f);
-    MarginXY = Config->GetOrDefaultNumber(TEXT("MarginXY"), 1.5f);
-    MinZ = Config->GetOrDefaultNumber(TEXT("MinZ"), 0.f);
-    MaxZ = Config->GetOrDefaultNumber(TEXT("MaxZ"), 1000.f);
-    MarginCells = Config->GetOrDefaultInt(TEXT("MarginCells"), 4);
-    BoundingSphereScale = Config->GetOrDefaultNumber(TEXT("BoundingSphereScale"), 1.5f);
-    ObjectScale = Config->GetOrDefaultNumber(TEXT("ObjectScale"), 0.1f);
-    ObjectMass = Config->GetOrDefaultNumber(TEXT("ObjectMass"), 0.1f);
-    MaxColumnHeight = Config->GetOrDefaultNumber(TEXT("MaxColumnHeight"), 4.f);
-    bUseRaycastForHeight = Config->GetOrDefaultBool(TEXT("bUseRaycastForHeight"), false);
-    BaseRespawnDelay = Config->GetOrDefaultNumber(TEXT("BaseRespawnDelay"), 0.f);
+    if (!Config)
+    {
+        UE_LOG(LogTemp, Error, TEXT("UStateManager::LoadConfig => null config!"));
+        return;
+    }
 
-    OverheadCamDistance = Config->GetOrDefaultNumber(TEXT("OverheadCameraDistance"), 500.f);
-    OverheadCamFOV = Config->GetOrDefaultNumber(TEXT("OverheadCameraFOV"), 90.f);
-    OverheadCamResX = Config->GetOrDefaultInt(TEXT("OverheadCameraResX"), 50);
-    OverheadCamResY = Config->GetOrDefaultInt(TEXT("OverheadCameraResY"), 50);
+    // same usage of GetOrDefault as before
+    MaxGridObjects = Config->GetOrDefaultInt(TEXT("MaxGridObjects"), MaxGridObjects);
+    MarginXY = Config->GetOrDefaultNumber(TEXT("MarginXY"), MarginXY);
+    MinZ = Config->GetOrDefaultNumber(TEXT("MinZ"), MinZ);
+    MaxZ = Config->GetOrDefaultNumber(TEXT("MaxZ"), MaxZ);
+    MarginCells = Config->GetOrDefaultInt(TEXT("MarginCells"), MarginCells);
+    ObjectScale = Config->GetOrDefaultNumber(TEXT("ObjectScale"), ObjectScale);
+    ObjectMass = Config->GetOrDefaultNumber(TEXT("ObjectMass"), ObjectMass);
+    MaxColumnHeight = Config->GetOrDefaultNumber(TEXT("MaxColumnHeight"), MaxColumnHeight);
+    BaseRespawnDelay = Config->GetOrDefaultNumber(TEXT("BaseRespawnDelay"), BaseRespawnDelay);
+
+    OverheadCamDistance = Config->GetOrDefaultNumber(TEXT("OverheadCameraDistance"), OverheadCamDistance);
+    OverheadCamFOV = Config->GetOrDefaultNumber(TEXT("OverheadCameraFOV"), OverheadCamFOV);
+    OverheadCamResX = Config->GetOrDefaultInt(TEXT("OverheadCameraResX"), OverheadCamResX);
+    OverheadCamResY = Config->GetOrDefaultInt(TEXT("OverheadCameraResY"), OverheadCamResY);
+
+    bUseRandomGoals = Config->GetOrDefaultBool(TEXT("bUseRandomGoals"), true);
+    bRemoveGridObjectOnGoalReached = Config->GetOrDefaultBool(TEXT("bRemoveGridObjectOnGoalReached"), false);
+    bRemoveGridObjectOnOOB = Config->GetOrDefaultBool(TEXT("bRemoveGridObjectOnOOB"), false);
+    bRespawnGridObjectOnGoalReached = Config->GetOrDefaultBool(TEXT("bRespawnGridObjectOnGoalReached"), false);
+
+    GoalRadius = Config->GetOrDefaultNumber(TEXT("GoalRadius"), GoalRadius);
+    ColumnRadius = Config->GetOrDefaultNumber(TEXT("ColumnRadius"), ColumnRadius);
+
+    // read GoalColors
+    if (Config->HasPath(TEXT("GoalColors")))
+    {
+        TArray<UEnvironmentConfig*> colorArr = Config->Get(TEXT("GoalColors"))->AsArrayOfConfigs();
+        GoalColors.Empty();
+        for (auto* c : colorArr)
+        {
+            TArray<float> vals = c->AsArrayOfNumbers();
+            if (vals.Num() >= 3)
+            {
+                FLinearColor col(vals[0], vals[1], vals[2], (vals.Num() >= 4 ? vals[3] : 1.f));
+                GoalColors.Add(col);
+            }
+        }
+    }
+
+    // read GridObjectColors
+    if (Config->HasPath(TEXT("GridObjectColors")))
+    {
+        TArray<UEnvironmentConfig*> gridColArr = Config->Get(TEXT("GridObjectColors"))->AsArrayOfConfigs();
+        GridObjectColors.Empty();
+        for (auto* g : gridColArr)
+        {
+            TArray<float> vals = g->AsArrayOfNumbers();
+            if (vals.Num() >= 3)
+            {
+                FLinearColor col(vals[0], vals[1], vals[2], (vals.Num() >= 4 ? vals[3] : 1.f));
+                GridObjectColors.Add(col);
+            }
+        }
+    }
 }
 
 void UStateManager::SetReferences(
     AMainPlatform* InPlatform,
     AGridObjectManager* InObjMgr,
     AGrid* InGrid,
-    const TArray<AGoalPlatform*>& InGoalPlatforms,
-    UMultiAgentGaussianWaveHeightMap* InWaveSim
+    UMultiAgentGaussianWaveHeightMap* InWaveSim,
+    AGoalManager* InGoalManager
 )
 {
     Platform = InPlatform;
     ObjectMgr = InObjMgr;
     Grid = InGrid;
-    GoalPlatforms = InGoalPlatforms;
     WaveSim = InWaveSim;
+    GoalManager = InGoalManager;
 
-    if (!Platform || !ObjectMgr || !Grid || !WaveSim)
-    {
-        UE_LOG(LogTemp, Error, TEXT("SetReferences => some references are null!"));
-        return;
-    }
+    // checkf => crash if null
+    checkf(Platform, TEXT("StateManager::SetReferences => Platform is null!"));
+    checkf(ObjectMgr, TEXT("StateManager::SetReferences => ObjectMgr is null!"));
+    checkf(Grid, TEXT("StateManager::SetReferences => Grid is null!"));
+    checkf(WaveSim, TEXT("StateManager::SetReferences => WaveSim is null!"));
+    checkf(GoalManager, TEXT("StateManager::SetReferences => GoalManager is null!"));
 
-    // infer grid size from # columns
     GridSize = (Grid->GetTotalColumns() > 0)
         ? FMath::FloorToInt(FMath::Sqrt((float)Grid->GetTotalColumns()))
         : 50;
@@ -85,20 +106,25 @@ void UStateManager::SetReferences(
         * Platform->GetActorScale3D();
 
     PlatformCenter = Platform->GetActorLocation();
-    CellSize = (float)PlatformWorldSize.X / (float)GridSize;
+    CellSize = (GridSize > 0) ? (PlatformWorldSize.X / (float)GridSize) : 1.f;
 
     SetupOverheadCamera();
 }
 
-void UStateManager::Reset(int32 NumObjects)
+void UStateManager::Reset(int32 NumObjects, int32 CurrentAgents)
 {
-    if (!Platform || !ObjectMgr || !Grid || !WaveSim)
-    {
-        UE_LOG(LogTemp, Error, TEXT("UStateManager::Reset => references missing!"));
-        return;
-    }
+    checkf(Platform, TEXT("StateManager::Reset => Platform is null!"));
+    checkf(ObjectMgr, TEXT("StateManager::Reset => ObjectMgr is null!"));
+    checkf(Grid, TEXT("StateManager::Reset => Grid is null!"));
+    checkf(WaveSim, TEXT("StateManager::Reset => WaveSim is null!"));
+    checkf(GoalManager, TEXT("StateManager::Reset => GoalManager is null!"));
 
-    // allocate arrays
+    // 0)  reset the main grid, object manager, wave sim
+    Grid->ResetGrid();
+    ObjectMgr->ResetGridObjects();
+    WaveSim->Reset(CurrentAgents);
+
+    // 1) allocate arrays
     bHasActive.SetNum(NumObjects);
     bHasReached.SetNum(NumObjects);
     bFallenOff.SetNum(NumObjects);
@@ -127,10 +153,7 @@ void UStateManager::Reset(int32 NumObjects)
         bShouldCollect[i] = false;
         bShouldResp[i] = true;
 
-        if (GoalPlatforms.Num() > 0)
-            ObjectGoalIndices[i] = FMath::RandRange(0, GoalPlatforms.Num() - 1);
-        else
-            ObjectGoalIndices[i] = -1;
+        ObjectGoalIndices[i] = -1;
 
         PrevVel[i] = FVector::ZeroVector;
         CurrVel[i] = FVector::ZeroVector;
@@ -142,31 +165,134 @@ void UStateManager::Reset(int32 NumObjects)
         CurrPos[i] = FVector::ZeroVector;
 
         RespawnTimer[i] = 0.f;
-        RespawnDelays[i] = BaseRespawnDelay * i; // Spawn one after another.
+        RespawnDelays[i] = BaseRespawnDelay * i;
     }
 
-    // NxN channels => init to 0
+    // NxN => reset
     PreviousHeight = FMatrix2D(GridSize, GridSize, 0.f);
     CurrentHeight = FMatrix2D(GridSize, GridSize, 0.f);
-    int CurrentStep = 0;
+    Step = 0;
+
+    // 3) If random => pick random columns for each goal color
+    //    If not random => spawn AGoalPlatforms along edges
+    TArray<AActor*> goalActors;
+    TArray<FVector> offsets;
+
+    if (bUseRandomGoals)
+    {
+        int32 colTotal = Grid->GetTotalColumns();
+        int32 numGoalCols = GoalColors.Num();
+
+        for (int32 g = 0; g < numGoalCols; g++)
+        {
+            if (colTotal <= 0) break;
+            int32 randIdx = FMath::RandRange(0, colTotal - 1);
+            AColumn* col = (Grid->Columns.IsValidIndex(randIdx) ? Grid->Columns[randIdx] : nullptr);
+            if (col)
+            {
+                float halfZ = col->ColumnMesh->Bounds.BoxExtent.Z;
+                goalActors.Add(col);
+                offsets.Add(FVector(0, 0, halfZ));
+            }
+        }
+    }
+    else
+    {
+        SpawnStationaryGoalPlatforms();
+
+        TArray<AActor*> foundGoalPlatforms;
+        for (TObjectIterator<AGoalPlatform> it; it; ++it)
+        {
+            if (it->GetWorld() == GetWorld())
+            {
+                foundGoalPlatforms.Add(*it);
+            }
+        }
+
+        int32 limit = FMath::Min(GoalColors.Num(), foundGoalPlatforms.Num());
+        for (int32 i = 0; i < limit; i++)
+        {
+            AGoalPlatform* gp = Cast<AGoalPlatform>(foundGoalPlatforms[i]);
+            if (gp)
+            {
+                goalActors.Add(gp);
+                offsets.Add(FVector::ZeroVector);
+            }
+        }
+    }
+    GoalManager->ResetGoals(goalActors, offsets);
+
+    // 4) Each object => goal index
+    int32 numGoals = GoalColors.Num();
+    for (int32 i = 0; i < NumObjects; i++)
+    {
+        ObjectGoalIndices[i] = (numGoals > 0) ? (i % numGoals) : -1;
+    }
 }
 
-int32 UStateManager::GetMaxGridObjects() const
+void UStateManager::SpawnStationaryGoalPlatforms()
 {
-    return MaxGridObjects;
+    checkf(Platform, TEXT("SpawnStationaryGoalPlatforms => Platform is null!"));
+    checkf(GoalManager, TEXT("SpawnStationaryGoalPlatforms => GoalManager is null!"));
+
+    UWorld* w = GetWorld();
+    if (!w) return;
+
+    float offsetExtra = 0.f;
+    {
+        FActorSpawnParameters sp;
+        AGoalPlatform* tempGP = w->SpawnActor<AGoalPlatform>(
+            AGoalPlatform::StaticClass(),
+            FVector::ZeroVector,
+            FRotator::ZeroRotator,
+            sp
+        );
+        if (tempGP)
+        {
+            FVector bExt = tempGP->MeshComponent->Bounds.BoxExtent;
+            offsetExtra = bExt.Y * tempGP->GetActorScale3D().Y + 5.f;
+            tempGP->Destroy();
+        }
+    }
+
+    float half = PlatformWorldSize.X * 0.5f;
+    float offset = half + offsetExtra;
+
+    TArray<FVector> edgeOffsets = {
+        FVector(0.f,+offset, 0.f),
+        FVector(0.f,-offset, 0.f),
+        FVector(-offset,0.f,0.f),
+        FVector(+offset,0.f,0.f)
+    };
+
+    for (int32 i = 0; i < edgeOffsets.Num(); i++)
+    {
+        FVector spawnLoc = PlatformCenter + edgeOffsets[i];
+        FActorSpawnParameters sp;
+        AGoalPlatform* gp = w->SpawnActor<AGoalPlatform>(
+            AGoalPlatform::StaticClass(),
+            spawnLoc,
+            FRotator::ZeroRotator,
+            sp
+        );
+        if (gp && GoalColors.IsValidIndex(i))
+        {
+            FVector s(ObjectScale, ObjectScale, ObjectScale);
+            gp->InitializeGoalPlatform(
+                FVector::ZeroVector,
+                s,
+                GoalColors[i],
+                Platform
+            );
+        }
+    }
 }
 
 void UStateManager::UpdateGridObjectFlags()
 {
-    if (!Platform || !ObjectMgr || !Grid)
-    {
-        UE_LOG(LogTemp, Error, TEXT("UpdateGridObjectFlags => references missing!"));
-        return;
-    }
-
+    // references guaranteed
     float halfX = PlatformWorldSize.X * 0.5f;
     float halfY = PlatformWorldSize.Y * 0.5f;
-
     float minZLocal = PlatformCenter.Z + MinZ;
     float maxZLocal = PlatformCenter.Z + MaxZ;
 
@@ -176,84 +302,85 @@ void UStateManager::UpdateGridObjectFlags()
             continue;
 
         AGridObject* Obj = ObjectMgr->GetGridObject(i);
-        if (!Obj)
-            continue;
-
         FVector wPos = Obj->GetObjectLocation();
-        FVector Ext = Obj->MeshComponent->Bounds.BoxExtent;
 
-        bool ShouldRespawnNow = false;
-
-        // (1) check if object reached its goal
         if (!bHasReached[i])
         {
             int32 gIdx = ObjectGoalIndices[i];
-            if (GoalPlatforms.IsValidIndex(gIdx))
+            if (gIdx >= 0)
             {
-                AGoalPlatform* gp = GoalPlatforms[gIdx];
-                FVector gpPos = gp->GetActorLocation();
-                float dist = FVector::Dist(wPos, gpPos);
-                // if within threshold
-                if (dist <= (Ext.GetAbsMax() * GoalThreshold))
+                bool bInRadius = GoalManager->IsInRadiusOf(gIdx, wPos, GoalRadius);
+                if (bInRadius)
                 {
-                    bHasActive[i] = false;
-                    bHasReached[i] = true;
-                    bShouldCollect[i] = true;
-                    ShouldRespawnNow = false;
-                    ObjectMgr->DisableGridObject(i);
+                    if (bRespawnGridObjectOnGoalReached)
+                    {
+                        bHasReached[i] = true;
+                        bShouldCollect[i] = true;
+                    }
+                    else
+                    {
+                        bHasActive[i] = false;
+                        bHasReached[i] = true;
+                        bShouldCollect[i] = true;
+
+                        if (bRemoveGridObjectOnGoalReached)
+                        {
+                            bShouldResp[i] = false;
+                        }
+                        else
+                        {
+                            bShouldResp[i] = true;
+                        }
+                        ObjectMgr->DisableGridObject(i);
+                    }
                 }
             }
         }
 
-        // (2) check bounding
         if (!bFallenOff[i] && !bHasReached[i])
         {
             float dx = FMath::Abs(wPos.X - PlatformCenter.X);
             float dy = FMath::Abs(wPos.Y - PlatformCenter.Y);
             float zPos = wPos.Z;
 
-            bool bOutOfBounds = false;
+            bool bOOB = false;
             if (dx > (halfX + MarginXY) || dy > (halfY + MarginXY))
             {
-                bOutOfBounds = true;
+                bOOB = true;
             }
-            else if (zPos < minZLocal || zPos > maxZLocal)
+            else if (zPos<minZLocal || zPos>maxZLocal)
             {
-                bOutOfBounds = true;
+                bOOB = true;
             }
 
-            if (bOutOfBounds)
+            if (bOOB)
             {
-                bHasActive[i] = false;
                 bFallenOff[i] = true;
                 bShouldCollect[i] = true;
-                ShouldRespawnNow = false;
-                ObjectMgr->DisableGridObject(i);
-            }
-        }
 
-        // If we flagged "ShouldRespawnNow", we set the array
-        if (ShouldRespawnNow)
-        {
-            bShouldResp[i] = true;
-            ObjectMgr->DisableGridObject(i);
+                if (bRemoveGridObjectOnOOB)
+                {
+                    bHasActive[i] = false;
+                    bShouldResp[i] = false;
+                    ObjectMgr->DisableGridObject(i);
+                }
+                else
+                {
+                    bHasActive[i] = false;
+                    bShouldResp[i] = true;
+                    ObjectMgr->DisableGridObject(i);
+                }
+            }
         }
     }
 }
 
 void UStateManager::UpdateObjectStats(float DeltaTime)
 {
-    if (!Platform || !ObjectMgr)
-    {
-        UE_LOG(LogTemp, Error, TEXT("UpdateObjectStats => references missing!"));
-        return;
-    }
-
     for (int32 i = 0; i < bHasActive.Num(); i++)
     {
         if (!bHasActive[i])
         {
-            // keep them zeroed-out
             PrevVel[i] = FVector::ZeroVector;
             CurrVel[i] = FVector::ZeroVector;
             PrevAcc[i] = FVector::ZeroVector;
@@ -263,7 +390,6 @@ void UStateManager::UpdateObjectStats(float DeltaTime)
             PrevPos[i] = FVector::ZeroVector;
             CurrPos[i] = FVector::ZeroVector;
 
-            // increment timer if we are waiting to respawn
             if (bShouldResp[i])
             {
                 RespawnTimer[i] += DeltaTime;
@@ -271,40 +397,33 @@ void UStateManager::UpdateObjectStats(float DeltaTime)
             continue;
         }
 
-        // get this object
         AGridObject* Obj = ObjectMgr->GetGridObject(i);
-        if (!Obj)
-            continue;
-
         FVector wVel = Obj->MeshComponent->GetPhysicsLinearVelocity();
         FVector wPos = Obj->GetObjectLocation();
 
         int32 gIdx = ObjectGoalIndices[i];
-        FVector wGoal = (GoalPlatforms.IsValidIndex(gIdx)
-            ? GoalPlatforms[gIdx]->GetActorLocation()
-            : FVector::ZeroVector);
+        FVector wGoal(0.f);
+        if (gIdx >= 0)
+        {
+            wGoal = GoalManager->GetGoalLocation(gIdx);
+        }
 
         // localize
         FVector locVel = Platform->GetActorTransform().InverseTransformVector(wVel);
         FVector locPos = Platform->GetActorTransform().InverseTransformPosition(wPos);
         FVector locGoal = Platform->GetActorTransform().InverseTransformPosition(wGoal);
 
-        // shift old => prev
         PrevVel[i] = CurrVel[i];
         PrevAcc[i] = CurrAcc[i];
         PrevDist[i] = CurrDist[i];
         PrevPos[i] = CurrPos[i];
 
-        // set curr
         CurrVel[i] = locVel;
-        CurrAcc[i] = (DeltaTime > 1e-6f)
-            ? (locVel - PrevVel[i]) / DeltaTime
+        CurrAcc[i] = (DeltaTime > SMALL_NUMBER) ? (locVel - PrevVel[i]) / DeltaTime
             : FVector::ZeroVector;
-
         CurrPos[i] = locPos;
         CurrDist[i] = FVector::Dist(locPos, locGoal);
 
-        // increment respawn timer if flagged
         if (bShouldResp[i])
         {
             RespawnTimer[i] += DeltaTime;
@@ -314,37 +433,28 @@ void UStateManager::UpdateObjectStats(float DeltaTime)
 
 void UStateManager::RespawnGridObjects()
 {
-    if (!ObjectMgr)
+    int32 nObjColors = GridObjectColors.Num();
+    if (nObjColors == 0)
     {
-        UE_LOG(LogTemp, Error, TEXT("RespawnGridObjects => no object manager!"));
-        return;
+        GridObjectColors.Add(FLinearColor::White);
+        nObjColors = 1;
     }
 
     for (int32 i = 0; i < bShouldResp.Num(); i++)
     {
         if (bShouldResp[i] && RespawnTimer[i] >= RespawnDelays[i])
         {
-            // Attempt to find a random location
             FVector spawnLoc = GenerateRandomGridLocation();
-            if (GoalPlatforms.Num() > 0)
-            {
-                ObjectGoalIndices[i] = FMath::RandRange(0, GoalPlatforms.Num() - 1);
-            }
-
             ObjectMgr->SpawnGridObjectAtIndex(i, spawnLoc, FVector(ObjectScale), ObjectMass);
 
-            // color to match assigned goal
-            if (GoalPlatforms.IsValidIndex(ObjectGoalIndices[i]))
+            AGridObject* newObj = ObjectMgr->GetGridObject(i);
+            if (newObj)
             {
-                AGridObject* newObj = ObjectMgr->GetGridObject(i);
-                if (newObj)
-                {
-                    FLinearColor col = GoalPlatforms[ObjectGoalIndices[i]]->GetGoalColor();
-                    newObj->SetGridObjectColor(col);
-                }
+                int32 gIdx = ObjectGoalIndices[i];
+                int32 cIdx = (gIdx >= 0 && gIdx < nObjColors) ? gIdx : 0;
+                newObj->SetGridObjectColor(GridObjectColors[cIdx]);
             }
 
-            // reset flags
             bHasActive[i] = true;
             bHasReached[i] = false;
             bFallenOff[i] = false;
@@ -356,406 +466,291 @@ void UStateManager::RespawnGridObjects()
 
 bool UStateManager::AllGridObjectsHandled() const
 {
-    // if any object is active or about to respawn => not done
-    if (bHasActive.Contains(true)) return false;
-    if (bShouldResp.Contains(true)) return false;
-    return true;
+    if (bRemoveGridObjectOnGoalReached || bRemoveGridObjectOnOOB)
+    {
+        if (bHasActive.Contains(true)) return false;
+        if (bShouldResp.Contains(true)) return false;
+        return true;
+    }
+    if (bUseRandomGoals && !bRespawnGridObjectOnGoalReached && !bRemoveGridObjectOnOOB)
+    {
+        return !bHasReached.Contains(false);
+    }
+    return false;
 }
 
 void UStateManager::BuildCentralState()
 {
-    if (!Grid || !WaveSim)
+    UWorld* w = Grid->GetWorld();
+    if (!w)
     {
-        UE_LOG(LogTemp, Warning, TEXT("BuildCentralState => Missing Grid or WaveSim."));
-        return;
-    }
-    UWorld* WorldPtr = Grid->GetWorld();
-    if (!WorldPtr)
-    {
-        UE_LOG(LogTemp, Warning, TEXT("BuildCentralState => No valid UWorld."));
+        UE_LOG(LogTemp, Warning, TEXT("BuildCentralState => no valid UWorld."));
         return;
     }
 
-    // For reference:
-    //   float HalfPlatformSize = PlatformSize * 0.5f;
-    //   float cell = CellSize;
+    float half = (GridSize > 0) ? PlatformWorldSize.X * 0.5f : 0.f;
+    float pZ = Platform->GetActorLocation().Z;
 
-    float HalfPlatformSize = (GridSize > 0) ? (PlatformWorldSize.X * 0.5f) : 0.f;
-    float PlatformZPosWorld = Platform->GetActorLocation().Z;
-
-    FMatrix2D ChannelHeightTmp = FMatrix2D(GridSize, GridSize, 0.f);
-
-    // 2) For each row,col
+    FMatrix2D HeightTmp(GridSize, GridSize, 0.f);
     for (int32 row = 0; row < GridSize; row++)
     {
         for (int32 col = 0; col < GridSize; col++)
         {
-            /* Perform height channel calculations */
-            // (A) local X,Y => consistent with AGrid
-            float localX = (col + 0.5f) * CellSize - HalfPlatformSize;
-            float localY = (row + 0.5f) * CellSize - HalfPlatformSize;
+            float lx = (col + 0.5f) * CellSize - half;
+            float ly = (row + 0.5f) * CellSize - half;
+            FVector startPos(lx, ly, pZ + MaxZ);
+            FVector endPos(lx, ly, pZ - MaxZ);
 
-            // Above the plafrom by MaxZ, centered on the GridCell
-            FVector localRayStartPos(localX, localY, PlatformZPosWorld + MaxZ);
-            FVector startWorldPos = Grid->GetActorTransform().TransformPosition(localRayStartPos);
+            FVector wStart = Grid->GetActorTransform().TransformPosition(startPos);
+            FVector wEnd = Grid->GetActorTransform().TransformPosition(endPos);
 
-            // Downward all the way to the plaform
-            FVector localRayEndPos(localX, localY, PlatformZPosWorld - MaxZ);
-            FVector endWorldPos = Grid->GetActorTransform().TransformPosition(localRayEndPos);
-
-            // (B) line trace
             FHitResult hit;
-            FCollisionQueryParams traceParams(FName(TEXT("TopDownRay")), true);
-
-            bool bHit = WorldPtr->LineTraceSingleByChannel(
-                hit,
-                startWorldPos,
-                endWorldPos,
-                ECC_Visibility,
-                traceParams
-            );
+            FCollisionQueryParams tParams(FName(TEXT("TopDownRay")), true);
+            bool bHit = w->LineTraceSingleByChannel(hit, wStart, wEnd, ECC_Visibility, tParams);
 
             float finalZ = 0.f;
             if (bHit)
             {
-                // Convert to local coords
                 FVector localHit = Grid->GetActorTransform().InverseTransformPosition(hit.ImpactPoint);
                 finalZ = localHit.Z;
             }
-
-            float clamped = FMath::Clamp(finalZ, MinZ, MaxZ);
-            float norm01 = (clamped - MinZ) / (MaxZ - MinZ);
-            float mapped = (norm01 * 2.f) - 1.f;
-
-            ChannelHeightTmp[row][col] = mapped;
-
+            float cVal = FMath::Clamp(finalZ, MinZ, MaxZ);
+            float norm = (cVal - MinZ) / (MaxZ - MinZ);
+            float mapped = (norm * 2.f) - 1.f;
+            HeightTmp[row][col] = mapped;
         }
     }
-    
+
     PreviousHeight = CurrentHeight;
-    CurrentHeight = ChannelHeightTmp;
-    OverheadCaptureActor->GetCaptureComponent2D()->CaptureScene();
-    Step += 1;
-}
+    CurrentHeight = HeightTmp;
 
-float UStateManager::RaycastColumnTopWorld(const FVector& CellWorldCenter, float waveVal) const
-{
-    if (!Grid)
-        return waveVal;
-
-    UWorld* w = Grid->GetWorld();
-    if (!w)
-        return waveVal;
-
-    FVector start = CellWorldCenter;
-    FVector end = start - FVector(0, 0, MaxColumnHeight * 5.f);
-
-    FHitResult hit;
-    FCollisionQueryParams qParams(FName(TEXT("HeightRay")), true);
-
-    bool bHit = w->LineTraceSingleByChannel(hit, start, end, ECC_Visibility, qParams);
-    if (!bHit)
+    if (OverheadCaptureActor)
     {
-        return waveVal; // no collision => fallback
+        OverheadCaptureActor->GetCaptureComponent2D()->CaptureScene();
     }
-    // localize
-    FVector localHit = Grid->GetActorTransform().InverseTransformPosition(hit.Location);
-    return FMath::Max(waveVal, localHit.Z);
+    Step++;
 }
 
 TArray<float> UStateManager::GetCentralState()
 {
-    // 1) Get current height map
+    UWorld* w = (Grid) ? Grid->GetWorld() : nullptr;
+    float dt = (w) ? w->GetDeltaSeconds() : 0.f;
+
     TArray<float> outArr;
-    outArr += CurrentHeight.Data;
+    outArr.Append(CurrentHeight.Data);
 
-    // 2) get delta height if available
-    float dt = GetWorld()->GetDeltaSeconds();
-    outArr += Step > 1 ? ((CurrentHeight - PreviousHeight) / dt).Data : PreviousHeight.Data;
+    if (Step > 1 && dt > SMALL_NUMBER)
+    {
+        FMatrix2D diff = (CurrentHeight - PreviousHeight) / dt;
+        outArr.Append(diff.Data);
+    }
+    else
+    {
+        outArr.Append(PreviousHeight.Data);
+    }
 
-    // 2) read overhead image => flatten
-    TArray<float> overheadPixels = CaptureOverheadImage();
-    outArr += overheadPixels;
+    TArray<float> overhead = CaptureOverheadImage();
+    outArr.Append(overhead);
 
     return outArr;
 }
 
 TArray<float> UStateManager::GetAgentState(int32 AgentIndex) const
 {
-    // simply forward to WaveSim->GetAgentState if valid
     if (!WaveSim)
         return TArray<float>();
 
     return WaveSim->GetAgentState(AgentIndex);
 }
 
-// ----------- Accessors --------------
+void UStateManager::UpdateGridColumnsColors()
+{
+    float mn = Grid->GetMinHeight();
+    float mx = Grid->GetMaxHeight();
 
-bool UStateManager::GetHasActive(int32 i) const
-{
-    return bHasActive.IsValidIndex(i) ? bHasActive[i] : false;
-}
-void UStateManager::SetHasActive(int32 i, bool bVal)
-{
-    if (bHasActive.IsValidIndex(i))
-        bHasActive[i] = bVal;
-}
+    bool bColorByGoal = bUseRandomGoals;
+    int32 numGoals = GoalColors.Num();
 
-bool UStateManager::GetHasReachedGoal(int32 i) const
-{
-    return bHasReached.IsValidIndex(i) ? bHasReached[i] : false;
-}
-void UStateManager::SetHasReachedGoal(int32 i, bool bVal)
-{
-    if (bHasReached.IsValidIndex(i))
-        bHasReached[i] = bVal;
-}
+    for (int32 c = 0; c < Grid->GetTotalColumns(); c++)
+    {
+        float h = Grid->GetColumnHeight(c);
+        float ratio = FMath::GetMappedRangeValueClamped(FVector2D(mn, mx), FVector2D(0.f, 1.f), h);
 
-bool UStateManager::GetHasFallenOff(int32 i) const
-{
-    return bFallenOff.IsValidIndex(i) ? bFallenOff[i] : false;
-}
-void UStateManager::SetHasFallenOff(int32 i, bool bVal)
-{
-    if (bFallenOff.IsValidIndex(i))
-        bFallenOff[i] = bVal;
-}
+        FLinearColor finalCol = FLinearColor::LerpUsingHSV(FLinearColor::Black, FLinearColor::White, ratio);
 
-bool UStateManager::GetShouldCollectReward(int32 i) const
-{
-    return bShouldCollect.IsValidIndex(i) ? bShouldCollect[i] : false;
-}
-void UStateManager::SetShouldCollectReward(int32 i, bool bVal)
-{
-    if (bShouldCollect.IsValidIndex(i))
-        bShouldCollect[i] = bVal;
-}
-
-bool UStateManager::GetShouldRespawn(int32 i) const
-{
-    return bShouldResp.IsValidIndex(i) ? bShouldResp[i] : false;
-}
-void UStateManager::SetShouldRespawn(int32 i, bool bVal)
-{
-    if (bShouldResp.IsValidIndex(i))
-        bShouldResp[i] = bVal;
-}
-
-int32 UStateManager::GetGoalIndex(int32 i) const
-{
-    return ObjectGoalIndices.IsValidIndex(i) ? ObjectGoalIndices[i] : -1;
-}
-void UStateManager::SetGoalIndex(int32 i, int32 Goal)
-{
-    if (ObjectGoalIndices.IsValidIndex(i))
-        ObjectGoalIndices[i] = Goal;
-}
-
-FVector UStateManager::GetCurrentVelocity(int32 i) const
-{
-    return CurrVel.IsValidIndex(i) ? CurrVel[i] : FVector::ZeroVector;
-}
-void UStateManager::SetCurrentVelocity(int32 i, FVector val)
-{
-    if (CurrVel.IsValidIndex(i))
-        CurrVel[i] = val;
-}
-
-FVector UStateManager::GetPreviousVelocity(int32 i) const
-{
-    return PrevVel.IsValidIndex(i) ? PrevVel[i] : FVector::ZeroVector;
-}
-void UStateManager::SetPreviousVelocity(int32 i, FVector val)
-{
-    if (PrevVel.IsValidIndex(i))
-        PrevVel[i] = val;
-}
-
-FVector UStateManager::GetCurrentAcceleration(int32 i) const
-{
-    return CurrAcc.IsValidIndex(i) ? CurrAcc[i] : FVector::ZeroVector;
-}
-void UStateManager::SetCurrentAcceleration(int32 i, FVector val)
-{
-    if (CurrAcc.IsValidIndex(i))
-        CurrAcc[i] = val;
-}
-
-FVector UStateManager::GetPreviousAcceleration(int32 i) const
-{
-    return PrevAcc.IsValidIndex(i) ? PrevAcc[i] : FVector::ZeroVector;
-}
-void UStateManager::SetPreviousAcceleration(int32 i, FVector val)
-{
-    if (PrevAcc.IsValidIndex(i))
-        PrevAcc[i] = val;
-}
-
-float UStateManager::GetCurrentDistance(int32 i) const
-{
-    return CurrDist.IsValidIndex(i) ? CurrDist[i] : -1.f;
-}
-void UStateManager::SetCurrentDistance(int32 i, float val)
-{
-    if (CurrDist.IsValidIndex(i))
-        CurrDist[i] = val;
-}
-
-float UStateManager::GetPreviousDistance(int32 i) const
-{
-    return PrevDist.IsValidIndex(i) ? PrevDist[i] : -1.f;
-}
-void UStateManager::SetPreviousDistance(int32 i, float val)
-{
-    if (PrevDist.IsValidIndex(i))
-        PrevDist[i] = val;
-}
-
-FVector UStateManager::GetCurrentPosition(int32 i) const
-{
-    return CurrPos.IsValidIndex(i) ? CurrPos[i] : FVector::ZeroVector;
-}
-void UStateManager::SetCurrentPosition(int32 i, FVector val)
-{
-    if (CurrPos.IsValidIndex(i))
-        CurrPos[i] = val;
-}
-
-FVector UStateManager::GetPreviousPosition(int32 i) const
-{
-    return PrevPos.IsValidIndex(i) ? PrevPos[i] : FVector::ZeroVector;
-}
-void UStateManager::SetPreviousPosition(int32 i, FVector val)
-{
-    if (PrevPos.IsValidIndex(i))
-        PrevPos[i] = val;
+        if (bColorByGoal)
+        {
+            FVector colCenter = Grid->GetColumnWorldLocation(c);
+            for (int32 g = 0; g < numGoals; g++)
+            {
+                if (GoalManager->IsInRadiusOf(g, colCenter, ColumnRadius))
+                {
+                    finalCol = GoalColors[g];
+                    break;
+                }
+            }
+        }
+        Grid->SetColumnColor(c, finalCol);
+    }
 }
 
 // --------------------------------------------------
-//   Collision-based random spawn
+//  Accessors
 // --------------------------------------------------
-#include "TerraShift/StateManager.h"
-#include "TerraShift/GridObject.h"
-#include "TerraShift/Grid.h"
-#include "TerraShift/GridObjectManager.h"
-#include "Engine/World.h"
+int32 UStateManager::GetMaxGridObjects() const
+{
+    return MaxGridObjects;
+}
+
+bool UStateManager::GetHasActive(int32 ObjIndex) const
+{
+    return bHasActive.IsValidIndex(ObjIndex) ? bHasActive[ObjIndex] : false;
+}
+bool UStateManager::GetHasReachedGoal(int32 ObjIndex) const
+{
+    return bHasReached.IsValidIndex(ObjIndex) ? bHasReached[ObjIndex] : false;
+}
+bool UStateManager::GetHasFallenOff(int32 ObjIndex) const
+{
+    return bFallenOff.IsValidIndex(ObjIndex) ? bFallenOff[ObjIndex] : false;
+}
+bool UStateManager::GetShouldCollectReward(int32 ObjIndex) const
+{
+    return bShouldCollect.IsValidIndex(ObjIndex) ? bShouldCollect[ObjIndex] : false;
+}
+void UStateManager::SetShouldCollectReward(int32 ObjIndex, bool bVal)
+{
+    if (bShouldCollect.IsValidIndex(ObjIndex))
+        bShouldCollect[ObjIndex] = bVal;
+}
+bool UStateManager::GetShouldRespawn(int32 ObjIndex) const
+{
+    return bShouldResp.IsValidIndex(ObjIndex) ? bShouldResp[ObjIndex] : false;
+}
+int32 UStateManager::GetGoalIndex(int32 ObjIndex) const
+{
+    return ObjectGoalIndices.IsValidIndex(ObjIndex) ? ObjectGoalIndices[ObjIndex] : -1;
+}
+
+FVector UStateManager::GetCurrentVelocity(int32 ObjIndex) const
+{
+    return CurrVel.IsValidIndex(ObjIndex) ? CurrVel[ObjIndex] : FVector::ZeroVector;
+}
+FVector UStateManager::GetPreviousVelocity(int32 ObjIndex) const
+{
+    return PrevVel.IsValidIndex(ObjIndex) ? PrevVel[ObjIndex] : FVector::ZeroVector;
+}
+
+float UStateManager::GetCurrentDistance(int32 ObjIndex) const
+{
+    return CurrDist.IsValidIndex(ObjIndex) ? CurrDist[ObjIndex] : -1.f;
+}
+float UStateManager::GetPreviousDistance(int32 ObjIndex) const
+{
+    return PrevDist.IsValidIndex(ObjIndex) ? PrevDist[ObjIndex] : -1.f;
+}
+
+// -------------- Helpers --------------
+FVector UStateManager::GetColumnTopWorldLocation(int32 GridX, int32 GridY) const
+{
+    checkf(Grid, TEXT("GetColumnTopWorldLocation => Grid is null!"));
+
+    int32 idx = GridX * GridSize + GridY;
+    if (Grid->Columns.IsValidIndex(idx))
+    {
+        AColumn* col = Grid->Columns[idx];
+        if (col && col->ColumnMesh)
+        {
+            FVector centerWS = col->ColumnMesh->GetComponentLocation();
+            float halfZ = col->ColumnMesh->Bounds.BoxExtent.Z;
+            return centerWS + FVector(0.f, 0.f, halfZ);
+        }
+    }
+    return PlatformCenter + FVector(0.f, 0.f, 100.f);
+}
 
 FVector UStateManager::GenerateRandomGridLocation() const
 {
-    if (!Grid)
-    {
-        UE_LOG(LogTemp, Error, TEXT("GenerateRandomGridLocation => Grid is null => fallback center."));
-        return PlatformCenter + FVector(0, 0, 100.f);
-    }
+    checkf(Grid, TEXT("GenerateRandomGridLocation => Grid is null!"));
 
     static const int32 MaxSpawnAttempts = 3;
+    bool bAnyActive = bHasActive.Contains(true);
 
-    // Check if we have any active objects
-    bool bAnyActive = false;
-    for (int32 i = 0; i < bHasActive.Num(); i++)
-    {
-        if (bHasActive[i])
-        {
-            bAnyActive = true;
-            break;
-        }
-    }
-
-    // We'll try a few attempts to find a free cell
     for (int32 attempt = 0; attempt < MaxSpawnAttempts; attempt++)
     {
-        // If NO active objects => pick random cell in margin
         if (!bAnyActive)
         {
             int32 xStart = FMath::Clamp(MarginCells, 0, GridSize - 1);
             int32 xEnd = FMath::Clamp(GridSize - MarginCells, 0, GridSize - 1);
             if (xStart > xEnd)
             {
-                // margin is too large => fallback
                 return PlatformCenter + FVector(0, 0, 100.f);
             }
-
             int32 chosenX = FMath::RandRange(xStart, xEnd);
             int32 chosenY = FMath::RandRange(xStart, xEnd);
-
-            // Return top of that random column
             return GetColumnTopWorldLocation(chosenX, chosenY);
         }
         else
         {
-            // 1) Create occupancy NxN => 0 = free
-            FMatrix2D occupancy(GridSize, GridSize, 0.f);
+            // occupancy NxN => 0=free
+            FMatrix2D occ(GridSize, GridSize, 0.f);
 
-            // 2) For each active object => mark occupancy=1 for cells in bounding radius
             for (int32 iObj = 0; iObj < bHasActive.Num(); iObj++)
             {
-                if (!bHasActive[iObj])
-                    continue;
-
+                if (!bHasActive[iObj]) continue;
                 AGridObject* Obj = ObjectMgr->GetGridObject(iObj);
-                if (!Obj)
-                    continue;
 
-                // bounding radius in XY
-                float sphereRadius = Obj->MeshComponent->Bounds.SphereRadius
+                float sphRadius = Obj->MeshComponent->Bounds.SphereRadius
                     * Obj->GetActorScale3D().GetMax();
+                FVector oLoc = Obj->GetObjectLocation();
 
-                FVector objLocWS = Obj->GetObjectLocation();
+                float half = PlatformWorldSize.X * 0.5f;
+                float gx0 = PlatformCenter.X - half;
+                float gy0 = PlatformCenter.Y - half;
 
-                // Grid bounding
-                float halfPlatform = PlatformWorldSize.X * 0.5f;
-                float gridOx = PlatformCenter.X - halfPlatform;
-                float gridOy = PlatformCenter.Y - halfPlatform;
+                FVector minPt = oLoc - FVector(sphRadius, sphRadius, 0.f);
+                FVector maxPt = oLoc + FVector(sphRadius, sphRadius, 0.f);
 
-                // bounding box in grid coords
-                FVector minPt = objLocWS - FVector(sphereRadius, sphereRadius, 0.f);
-                FVector maxPt = objLocWS + FVector(sphereRadius, sphereRadius, 0.f);
-
-                int32 minX = FMath::FloorToInt((minPt.X - gridOx) / CellSize);
-                int32 maxX = FMath::FloorToInt((maxPt.X - gridOx) / CellSize);
-                int32 minY = FMath::FloorToInt((minPt.Y - gridOy) / CellSize);
-                int32 maxY = FMath::FloorToInt((maxPt.Y - gridOy) / CellSize);
+                int32 minX = FMath::FloorToInt((minPt.X - gx0) / CellSize);
+                int32 maxX = FMath::FloorToInt((maxPt.X - gx0) / CellSize);
+                int32 minY = FMath::FloorToInt((minPt.Y - gy0) / CellSize);
+                int32 maxY = FMath::FloorToInt((maxPt.Y - gy0) / CellSize);
 
                 minX = FMath::Clamp(minX, 0, GridSize - 1);
                 maxX = FMath::Clamp(maxX, 0, GridSize - 1);
                 minY = FMath::Clamp(minY, 0, GridSize - 1);
                 maxY = FMath::Clamp(maxY, 0, GridSize - 1);
 
-                // Mark occupancy=1 if dist2D <= sphereRadius
-                for (int32 gx = minX; gx <= maxX; gx++)
+                for (int gx = minX; gx <= maxX; gx++)
                 {
-                    for (int32 gy = minY; gy <= maxY; gy++)
+                    for (int gy = minY; gy <= maxY; gy++)
                     {
-                        float cellWX = gridOx + (gx + 0.5f) * CellSize;
-                        float cellWY = gridOy + (gy + 0.5f) * CellSize;
-                        float dist2d = FVector::Dist2D(objLocWS, FVector(cellWX, cellWY, objLocWS.Z));
-                        if (dist2d <= sphereRadius)
+                        float cellWX = gx0 + (gx + 0.5f) * CellSize;
+                        float cellWY = gy0 + (gy + 0.5f) * CellSize;
+                        float d2d = FVector::Dist2D(oLoc, FVector(cellWX, cellWY, oLoc.Z));
+                        if (d2d <= sphRadius)
                         {
-                            occupancy[gx][gy] = 1.f;
+                            occ[gx][gy] = 1.f;
                         }
                     }
                 }
-            } // end for each object
+            }
 
-            // 3) Collect free cells => occupancy==0 => within margin
             TArray<int32> freeCells;
             freeCells.Reserve(GridSize * GridSize);
-
-            int32 xStart = FMath::Clamp(MarginCells, 0, GridSize - 1);
-            int32 xEnd = FMath::Clamp(GridSize - MarginCells, 0, GridSize - 1);
-
-            if (xStart > xEnd)
+            int32 xs = FMath::Clamp(MarginCells, 0, GridSize - 1);
+            int32 xe = FMath::Clamp(GridSize - MarginCells, 0, GridSize - 1);
+            if (xs > xe)
             {
-                // margin is too large => fallback
-                UE_LOG(LogTemp, Warning, TEXT("Margin is larger than grid => fallback center"));
+                UE_LOG(LogTemp, Warning, TEXT("Margin too large => fallback center."));
                 return PlatformCenter + FVector(0, 0, 100.f);
             }
 
-            for (int32 gx = xStart; gx <= xEnd; gx++)
+            for (int gx = xs; gx <= xe; gx++)
             {
-                for (int32 gy = xStart; gy <= xEnd; gy++)
+                for (int gy = xs; gy <= xe; gy++)
                 {
-                    if (occupancy[gx][gy] < 0.5f) // i.e. 0 => free
+                    if (occ[gx][gy] < 0.5f)
                     {
                         freeCells.Add(gx * GridSize + gy);
                     }
@@ -764,75 +759,35 @@ FVector UStateManager::GenerateRandomGridLocation() const
 
             if (freeCells.Num() == 0)
             {
-                // no free cells => try next attempt
                 continue;
             }
-
-            // 4) pick random free cell
             int32 chosen = freeCells[FMath::RandRange(0, freeCells.Num() - 1)];
-            int32 chosenX = chosen / GridSize;
-            int32 chosenY = chosen % GridSize;
-
-            return GetColumnTopWorldLocation(chosenX, chosenY);
-        }
-    } // end attempts
-
-    // If we fail all attempts => fallback
-    UE_LOG(LogTemp, Warning, TEXT("No free cell found after multiple attempts => fallback center."));
-    return PlatformCenter + FVector(0, 0, 100.f);
-}
-
-/**
- * Helper: returns the top of the column in world space
- * for the given grid coordinates.
- */
-FVector UStateManager::GetColumnTopWorldLocation(int32 GridX, int32 GridY) const
-{
-    if (!Grid)
-    {
-        return PlatformCenter + FVector(0, 0, 100.f);
-    }
-
-    int32 index = GridX * GridSize + GridY;
-    if (Grid->Columns.IsValidIndex(index))
-    {
-        UStaticMeshComponent* ColumnMesh = Grid->Columns[index]->ColumnMesh;
-        if (ColumnMesh)
-        {
-            FVector centerWS = ColumnMesh->GetComponentLocation();
-            float halfHeight = ColumnMesh->Bounds.BoxExtent.Z;
-            return centerWS + FVector(0.f, 0.f, halfHeight);
+            int32 cX = chosen / GridSize;
+            int32 cY = chosen % GridSize;
+            return GetColumnTopWorldLocation(cX, cY);
         }
     }
-
-    // fallback 
+    UE_LOG(LogTemp, Warning, TEXT("No free cell => fallback center."));
     return PlatformCenter + FVector(0, 0, 100.f);
 }
 
 void UStateManager::SetupOverheadCamera()
 {
-    if (!Platform)
-    {
-        UE_LOG(LogTemp, Error, TEXT("SetupOverheadCamera => Missing platform."));
-        return;
-    }
+    checkf(Platform, TEXT("SetupOverheadCamera => Platform is null!"));
+
     UWorld* w = Platform->GetWorld();
     if (!w) return;
+    if (OverheadCaptureActor) return;
 
-    // If already spawned, do nothing
-    if (OverheadCaptureActor)
-        return;
-
-    // 1) spawn SceneCapture2D actor
-    FVector spawnLoc = PlatformCenter + FVector(0.f, 0.f, OverheadCamDistance);
-    FRotator spawnRot = FRotator(-90.f, 0.f, 0.f); // look straight down
+    FVector spawnLoc = PlatformCenter + FVector(0, 0, OverheadCamDistance);
+    FRotator spawnRot = FRotator(-90.f, 0.f, 0.f);
 
     FActorSpawnParameters sp;
-    sp.Owner = Platform; // optional
+    sp.Owner = Platform;
     OverheadCaptureActor = w->SpawnActor<ASceneCapture2D>(spawnLoc, spawnRot, sp);
     if (!OverheadCaptureActor)
     {
-        UE_LOG(LogTemp, Error, TEXT("Failed to spawn overhead camera actor."));
+        UE_LOG(LogTemp, Error, TEXT("Failed spawn overhead camera."));
         return;
     }
 
@@ -840,59 +795,41 @@ void UStateManager::SetupOverheadCamera()
     OverheadRenderTarget->RenderTargetFormat = RTF_RGBA8;   // or RTF_RGBA16f
     OverheadRenderTarget->InitAutoFormat(OverheadCamResX, OverheadCamResY);
 
-    USceneCaptureComponent2D* capComp = OverheadCaptureActor->GetCaptureComponent2D();
-    capComp->ProjectionType = ECameraProjectionMode::Perspective;
-    capComp->FOVAngle = OverheadCamFOV;
-    capComp->TextureTarget = OverheadRenderTarget;
-
-    // **Change** capture source to base color
-    capComp->CaptureSource = ESceneCaptureSource::SCS_BaseColor;
-
-    capComp->bCaptureEveryFrame = false;
-    capComp->bCaptureOnMovement = false;
-
-    capComp->MaxViewDistanceOverride = OverheadCamDistance * 1.25;  // Adjust as needed
+    USceneCaptureComponent2D* comp = OverheadCaptureActor->GetCaptureComponent2D();
+    comp->ProjectionType = ECameraProjectionMode::Perspective;
+    comp->FOVAngle = OverheadCamFOV;
+    comp->TextureTarget = OverheadRenderTarget;
+    comp->CaptureSource = ESceneCaptureSource::SCS_BaseColor;
+    comp->bCaptureEveryFrame = false;
+    comp->bCaptureOnMovement = false;
 }
 
 TArray<float> UStateManager::CaptureOverheadImage() const
 {
-    TArray<float> outImage;
-    if (!OverheadCaptureActor || !OverheadRenderTarget) return outImage;
+    TArray<float> out;
+    if (!OverheadCaptureActor || !OverheadRenderTarget)
+        return out;
 
     UWorld* w = OverheadCaptureActor->GetWorld();
-    if (!w) return outImage;
+    if (!w) return out;
 
-    // read the pixels
     TArray<FColor> pixels;
-    bool bSuccess = UKismetRenderingLibrary::ReadRenderTarget(
-        w,
-        OverheadRenderTarget,
-        pixels
-    );
-    if (!bSuccess || pixels.Num() == 0) return outImage;
+    bool bOk = UKismetRenderingLibrary::ReadRenderTarget(w, OverheadRenderTarget, pixels);
+    if (!bOk || pixels.Num() == 0)
+        return out;
 
+    TArray<float> R; R.Reserve(pixels.Num());
+    TArray<float> G; G.Reserve(pixels.Num());
+    TArray<float> B; B.Reserve(pixels.Num());
 
-    // 1) We now need 3 floats per pixel => R, G, B
-    TArray<float> RChannel;
-    TArray<float> GChannel;
-    TArray<float> BChannel;
-
-    for (int32 i = 0; i < pixels.Num(); i++)
+    for (FColor c : pixels)
     {
-        // each color channel => [0..1]
-        float r = pixels[i].R / 255.f;
-        float g = pixels[i].G / 255.f;
-        float b = pixels[i].B / 255.f;
-
-        // store in the flattened array
-        RChannel.Add(r);
-        GChannel.Add(g);
-        BChannel.Add(b);
+        R.Add(c.R / 255.f);
+        G.Add(c.G / 255.f);
+        B.Add(c.B / 255.f);
     }
-
-    outImage += RChannel;
-    outImage += GChannel;
-    outImage += BChannel;
-
-    return outImage;
+    out.Append(R);
+    out.Append(G);
+    out.Append(B);
+    return out;
 }

@@ -9,7 +9,7 @@
 #include "TerraShift/GridObjectManager.h"
 #include "TerraShift/MultiAgentGaussianWaveHeightMap.h"
 #include "TerraShift/StateManager.h"
-#include "TerraShift/GoalPlatform.h"
+#include "TerraShift/GoalManager.h"
 
 #include "Materials/Material.h"
 #include "UObject/ConstructorHelpers.h"
@@ -90,14 +90,12 @@ private:
     bool Initialized;
 
     /**
-     * Current number of wave-sim RL “agents” (the user’s RLRunner calls ResetEnv(NumAgents)).
-     * But this does NOT necessarily match the number of grid objects, see @CurrentGridObjects.
+     * Current number of wave-sim RL “agents”
      */
     int CurrentAgents;
 
     /**
      * The number of grid objects actually managed by UStateManager.
-     * Typically read from state-manager config: `max_grid_objects`
      */
     int CurrentGridObjects;
 
@@ -120,54 +118,41 @@ private:
     FVector PlatformWorldSize;
     FVector PlatformCenter;
 
-    // -------------- goal platforms --------------
+    // -------------- references to new manager --------------
     UPROPERTY()
-    TArray<AGoalPlatform*> GoalPlatforms;
+    AGoalManager* GoalManager;
 
-    UPROPERTY()
-    TArray<FLinearColor> GoalColors;
+    // -------------- environment-level reward toggles --------------
+    bool bUseVelAlignment;
+    bool bUseXYDistanceImprovement;
+    bool bUseZAccelerationPenalty;
+    bool bUseCradleReward;
 
-    // -------------- active columns --------------
-    TSet<int32> ActiveColumns;
+    float VelAlign_Scale;
+    float VelAlign_Min;
+    float VelAlign_Max;
+
+    float DistImprove_Scale;
+    float DistImprove_Min;
+    float DistImprove_Max;
+
+    float ZAccel_Scale;
+    float ZAccel_Min;
+    float ZAccel_Max;
+
+    float REACH_GOAL_REWARD;
+    float FALL_OFF_PENALTY;
+    float STEP_PENALTY;
 
 private:
     /** Spawns the main platform. */
     AMainPlatform* SpawnPlatform(FVector Location);
 
-    /** Creates a goal platform for each of the 4 edges **/
+    /** Legacy => unused now. */
     void UpdateGoal(int32 GoalIndex);
 
-    /** Locates the platform for a given edge (0=Top,1=Bottom,2=Left,3=Right). */
     FVector CalculateGoalPlatformLocation(int32 EdgeIndex);
 
-    /** Refresh columns' physics based on proximity. */
-    void UpdateActiveColumns();
-
-    /** Color columns based on height, etc. */
-    void UpdateColumnColors();
-
-    /** Helper for Reward() => thresholding. */
+    /** Helper => clamp values */
     float ThresholdAndClamp(float value, float minVal, float maxVal);
-
-    // Reward logic toggles
-    static constexpr bool bUseVelAlignment = false;
-    static constexpr bool bUseXYDistanceImprovement = true;
-    static constexpr bool bUseZAccelerationPenalty = false;
-    static constexpr bool bUseCradleReward = false;
-
-    static constexpr float VelAlign_Scale = 0.1f;
-    static constexpr float VelAlign_Min = -100.f;
-    static constexpr float VelAlign_Max = 100.f;
-
-    static constexpr float DistImprove_Scale = 10.f;
-    static constexpr float DistImprove_Min = -1.f;
-    static constexpr float DistImprove_Max = 1.f;
-
-    static constexpr float ZAccel_Scale = 0.0001f;
-    static constexpr float ZAccel_Min = 0.1f;
-    static constexpr float ZAccel_Max = 2000.f;
-
-    static constexpr float REACH_GOAL_REWARD = 1.0f;
-    static constexpr float FALL_OFF_PENALTY = -1.0f;
-    static constexpr float STEP_PENALTY = -0.0001f;
 };
