@@ -126,7 +126,7 @@ private:
     bool bUseVelAlignment;
     bool bUseXYDistanceImprovement;
     bool bUseZAccelerationPenalty;
-    bool bUseCradleReward;
+    bool bUseAlignedDistanceShaping;
 
     float VelAlign_Scale;
     float VelAlign_Min;

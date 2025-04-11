@@ -10,19 +10,18 @@
       "ObjectMass": 0.1,
       "GridSize": 50,
       "MaxSteps": 512,
-      "MaxAgents": 10,
+      "MaxAgents": 16,
 
       "TerraShiftEnvironment": {
         "bUseVelAlignment": true,
         "bUseXYDistanceImprovement": true,
         "bUseZAccelerationPenalty": false,
-        "bUseCradleReward": false,
 
-        "VelAlign_Scale": 0.1,
+        "VelAlign_Scale": 0.001,
         "VelAlign_Min": -100.0,
         "VelAlign_Max": 100.0,
 
-        "DistImprove_Scale": 10.0,
+        "DistImprove_Scale": 1.0,
         "DistImprove_Min": -1.0,
         "DistImprove_Max": 1.0,
 
@@ -40,7 +39,7 @@
       },
 
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 10,
+        "NumAgents": 16,
         "GridSize": 50,
         "MinHeight": -4.0,
         "MaxHeight": 4.0,
@@ -102,8 +101,8 @@
         },
         "agent": {
           "obs_size": 9,
-          "min": 10,
-          "max": 10
+          "min": 16,
+          "max": 16
         }
       },
       "action": {
@@ -139,17 +138,17 @@
   "agent": {
     "type": "MA_POCA",
     "params": {
-      "learning_rate": 0.00005,
+      "learning_rate": 0.0001,
       "gamma": 0.99,
       "lambda": 0.95,
-      "value_loss_coeff": 0.5,
-      "baseline_loss_coeff": 0.25,
+      "value_loss_coeff": 0.1,
+      "baseline_loss_coeff": 0.01,
       "normalize_advantages": false,
-      "clipped_value_loss": true,
-      "max_grad_norm": 1.0,
+      "clipped_value_loss": false,
+      "max_grad_norm": 0.10,
       "ppo_clip_range": 0.1,
       "value_clip_range": 0.2,
-      "entropy_coeff": 0.01,
+      "entropy_coeff": 0.001,
       "rewards_normalizer_disabled": {
         "warmup_steps": 10000
       },
@@ -157,19 +156,19 @@
         "lr": {
           "start_factor": 1,
           "end_factor": 0.001,
-          "total_iters": 10000
+          "total_iters": 100000
         },
         "entropy_coeff_disabled": {
           "start_value": 0.005,
           "end_value": 0.0001,
-          "total_iters": 10000
+          "total_iters": 100000
         }
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 10,
+            "num_agents": 16,
             "in_channels": 5,
             "h": 50,
             "w": 50,
@@ -245,13 +244,13 @@
     "states_normalizer_disabled": {
       "warmup_steps": 10000
     },
-    "num_environments": 1,
+    "num_environments": 4,
     "epochs": 8,
-    "mini_batch_size": 128,
-    "buffer_size": 1024,
-    "batch_size": 1024,
+    "mini_batch_size": 16,
+    "buffer_size": 128,
+    "batch_size": 128,
     "AgentsResetFrequency": 0,
-    "ActionRepeat": 1,
+    "ActionRepeat": 4,
     "saveFrequency": 20
   }
 }

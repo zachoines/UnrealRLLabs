@@ -22,10 +22,10 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
     GoalManager = nullptr;
 
     // Default reward toggles
+    bUseAlignedDistanceShaping = false;
     bUseVelAlignment = false;
-    bUseXYDistanceImprovement = true;
+    bUseXYDistanceImprovement = false;
     bUseZAccelerationPenalty = false;
-    bUseCradleReward = false;
 
     // Default reward scales
     VelAlign_Scale = 0.1f;
@@ -122,7 +122,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
         bUseVelAlignment = envCfg2->GetOrDefaultBool(TEXT("bUseVelAlignment"), false);
         bUseXYDistanceImprovement = envCfg2->GetOrDefaultBool(TEXT("bUseXYDistanceImprovement"), true);
         bUseZAccelerationPenalty = envCfg2->GetOrDefaultBool(TEXT("bUseZAccelerationPenalty"), false);
-        bUseCradleReward = envCfg2->GetOrDefaultBool(TEXT("bUseCradleReward"), false);
+        bUseAlignedDistanceShaping = envCfg2->GetOrDefaultBool(TEXT("bUseAlignedDistanceShaping"), false);
 
         // scales
         VelAlign_Scale = envCfg2->GetOrDefaultNumber(TEXT("VelAlign_Scale"), 0.1f);
@@ -376,44 +376,37 @@ float ATerraShiftEnvironment::Reward()
             }
         }
 
-        // 3C) **Velocity alignment to the Goal** (the new part)
+
+        // 3C) Velocity alignment to the Goal
         if (bUseVelAlignment && bActive)
         {
-            // We need the object’s current position and the goal position
-            // so we can form a "direction to goal."
-            FVector objPos = StateManager->GetCurrentPosition(ObjIndex);
             int32   gIndex = StateManager->GetGoalIndex(ObjIndex);
-
-            // If no goal (gIndex < 0) => skip
             if (gIndex >= 0)
             {
-                // Get the goal location from GoalManager
-                FVector goalPos = GoalManager->GetGoalLocation(gIndex);
+                FVector goalPos = Platform->GetActorTransform().InverseTransformPosition(
+                    GoalManager->GetGoalLocation(gIndex)
+                );
+                FVector objPos = StateManager->GetCurrentPosition(ObjIndex);
+                FVector vel = StateManager->GetCurrentVelocity(ObjIndex);
 
-                // direction from object to goal
-                FVector dirGoal = (goalPos - objPos);
-                float distGoal = dirGoal.Size();
-
-                if (distGoal > KINDA_SMALL_NUMBER)
+                if (!vel.IsNearlyZero())
                 {
-                    // normalize
-                    dirGoal /= distGoal;
+                    FVector toGoal = goalPos - objPos;
+                    float   distToGoal = toGoal.Size();
 
-                    // get velocity in world space
-                    FVector velWS = StateManager->GetCurrentVelocity(ObjIndex);
-                    float  speed = velWS.Size();
-
-                    if (!velWS.IsNearlyZero())
+                    if (distToGoal > KINDA_SMALL_NUMBER)
                     {
-                        FVector velNorm = velWS / speed;
-                        float dot = FVector::DotProduct(velNorm, dirGoal); // [-1..1]
-                        float rawAlign = (dot + 1) / 2;  // OR "dot * speed;" to keep the agent aligned and punish it for misalignment
+                        FVector dirToGoal = toGoal / distToGoal;
+                        FVector velNorm = vel / vel.Size();
 
-                        // clamp
-                        float alignClamped = FMath::Clamp(rawAlign, VelAlign_Min, VelAlign_Max);
+                        float rawAlign = FVector::DotProduct(velNorm, dirToGoal);
+
+                        // or we could do
+                        // float rawAlign = dot * speed;
+                        // float alignClamped = FMath::Clamp(rawAlign, VelAlign_Min, VelAlign_Max);
 
                         // scale
-                        float alignReward = VelAlign_Scale * alignClamped;
+                        float alignReward = VelAlign_Scale * rawAlign;
                         sub += alignReward;
                     }
                 }
