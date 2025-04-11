@@ -148,11 +148,6 @@ private:
     /** Spawns the main platform. */
     AMainPlatform* SpawnPlatform(FVector Location);
 
-    /** Legacy => unused now. */
-    void UpdateGoal(int32 GoalIndex);
-
-    FVector CalculateGoalPlatformLocation(int32 EdgeIndex);
-
     /** Helper => clamp values */
     float ThresholdAndClamp(float value, float minVal, float maxVal);
 };

@@ -1,4 +1,4 @@
-#include "TerraShiftEnvironment.h"
+﻿#include "TerraShiftEnvironment.h"
 #include "TerraShift/GoalManager.h"
 #include "Kismet/GameplayStatics.h"
 
@@ -268,8 +268,8 @@ void ATerraShiftEnvironment::PreTransition()
     StateManager->UpdateGridObjectFlags();
     StateManager->UpdateObjectStats(GetWorld()->GetDeltaSeconds());
     StateManager->RespawnGridObjects();
-    StateManager->BuildCentralState();
     StateManager->UpdateGridColumnsColors();
+    StateManager->BuildCentralState();
 }
 
 void ATerraShiftEnvironment::PostStep()
@@ -316,7 +316,6 @@ float ATerraShiftEnvironment::Reward()
 
     float accum = 0.f;
 
-    // For each grid-object
     for (int ObjIndex = 0; ObjIndex < CurrentGridObjects; ObjIndex++)
     {
         bool bActive = StateManager->GetHasActive(ObjIndex);
@@ -324,7 +323,7 @@ float ATerraShiftEnvironment::Reward()
         bool bFallen = StateManager->GetHasFallenOff(ObjIndex);
         bool bCollect = StateManager->GetShouldCollectReward(ObjIndex);
 
-        // handle "collect" flags for falling or reaching
+        // 1) if we are set to collect => handle "fallen" or "reached"
         if (bCollect)
         {
             StateManager->SetShouldCollectReward(ObjIndex, false);
@@ -341,15 +340,16 @@ float ATerraShiftEnvironment::Reward()
             }
         }
 
-        // if not active => small step penalty
-        if (!bActive)
+        // 2) step penalty (only if object is active)
+        if (bActive)
         {
             accum += STEP_PENALTY;
-            continue;
         }
 
-        // optional distance improvement, z-accel, etc.
+        // 3) Additional sub‐rewards or penalties
         float sub = 0.f;
+
+        // 3A) XY distance improvement
         if (bUseXYDistanceImprovement)
         {
             float pdist = StateManager->GetPreviousDistance(ObjIndex);
@@ -362,6 +362,7 @@ float ATerraShiftEnvironment::Reward()
             }
         }
 
+        // 3B) Z acceleration penalty
         if (bUseZAccelerationPenalty)
         {
             FVector pvel = StateManager->GetPreviousVelocity(ObjIndex);
@@ -375,37 +376,62 @@ float ATerraShiftEnvironment::Reward()
             }
         }
 
+        // 3C) **Velocity alignment to the Goal** (the new part)
+        if (bUseVelAlignment && bActive)
+        {
+            // We need the object’s current position and the goal position
+            // so we can form a "direction to goal."
+            FVector objPos = StateManager->GetCurrentPosition(ObjIndex);
+            int32   gIndex = StateManager->GetGoalIndex(ObjIndex);
+
+            // If no goal (gIndex < 0) => skip
+            if (gIndex >= 0)
+            {
+                // Get the goal location from GoalManager
+                FVector goalPos = GoalManager->GetGoalLocation(gIndex);
+
+                // direction from object to goal
+                FVector dirGoal = (goalPos - objPos);
+                float distGoal = dirGoal.Size();
+
+                if (distGoal > KINDA_SMALL_NUMBER)
+                {
+                    // normalize
+                    dirGoal /= distGoal;
+
+                    // get velocity in world space
+                    FVector velWS = StateManager->GetCurrentVelocity(ObjIndex);
+                    float  speed = velWS.Size();
+
+                    if (!velWS.IsNearlyZero())
+                    {
+                        FVector velNorm = velWS / speed;
+                        float dot = FVector::DotProduct(velNorm, dirGoal); // [-1..1]
+                        float rawAlign = (dot + 1) / 2;  // OR "dot * speed;" to keep the agent aligned and punish it for misalignment
+
+                        // clamp
+                        float alignClamped = FMath::Clamp(rawAlign, VelAlign_Min, VelAlign_Max);
+
+                        // scale
+                        float alignReward = VelAlign_Scale * alignClamped;
+                        sub += alignReward;
+                    }
+                }
+            }
+        }
+
         accum += sub;
     }
 
-    return accum * dt;
+    // multiply dt
+    return accum;
 }
+
 
 float ATerraShiftEnvironment::ThresholdAndClamp(float value, float minVal, float maxVal)
 {
     if (FMath::Abs(value) < minVal) return 0.f;
     return FMath::Clamp(value, -maxVal, maxVal);
-}
-
-// ---------- legacy / unused -----------
-FVector ATerraShiftEnvironment::CalculateGoalPlatformLocation(int32 EdgeIndex)
-{
-    // old logic => not used if StateManager & GoalManager handle goals
-    float offset = (PlatformWorldSize.X * 0.5f)
-        + (PlatformWorldSize.X * ObjectSize.X * 0.5f);
-    switch (EdgeIndex)
-    {
-    case 0: return FVector(0.f, +offset, 0.f);
-    case 1: return FVector(0.f, -offset, 0.f);
-    case 2: return FVector(-offset, 0.f, 0.f);
-    case 3: return FVector(+offset, 0.f, 0.f);
-    default:return FVector::ZeroVector;
-    }
-}
-
-void ATerraShiftEnvironment::UpdateGoal(int32 GoalIndex)
-{
-    // no longer used
 }
 
 AMainPlatform* ATerraShiftEnvironment::SpawnPlatform(FVector Location)

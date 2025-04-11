@@ -24,7 +24,7 @@ class StateRecorder:
         map_cfg = self.config["height_map"]
         self.H = map_cfg.get("grid_h", 50)
         self.W = map_cfg.get("grid_w", 50)
-        self.num_channels = map_cfg.get("num_channels", 5)  # <--- changed from 4 to 5
+        self.num_channels = map_cfg.get("num_channels", 5)
         self.height_idx = map_cfg.get("height_channel_index", 0)
         self.clip_val = map_cfg.get("clip_value", None)
 
