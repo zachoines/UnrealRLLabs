@@ -652,20 +652,23 @@ class FeedForwardBlock(nn.Module):
 
 class CrossAttentionFeatureExtractor(nn.Module):
     """
-    Multi-scale architecture with:
-      - CNN feature extraction from multi-channel wave data
+    Multi-scale architecture with a SINGLE sequential CNN to handle all input channels,
+    but we capture intermediate outputs at each stage to form multiple scales.
+
+    Steps:
+      - CNN feature extraction from multi-channel input, capturing the output after each block
       - 2D sin-cos positional encodings for CNN patches
-      - Multiple cross-attn blocks per scale
+      - Multiple cross-attn blocks per scale, repeated for each transformer layer
       - Interleaved agent self-attn
       - Final LN + MLP on agent embeddings
-      - Discrete category embedding + sinusoidal ID encoding for each agent
+      - (Optional) Discrete category embedding + sinusoidal ID encoding for each agent
     """
 
     def __init__(
         self,
         agent_obs_size: int = 9,
         num_agents: int = 10,
-        in_channels: int = 10,   # e.g. 10 wave channels
+        in_channels: int = 5,
         h: int = 50,
         w: int = 50,
         embed_dim: int = 128,
@@ -675,7 +678,7 @@ class CrossAttentionFeatureExtractor(nn.Module):
         cnn_strides: list = [2, 2, 2],
         group_norms: list = [16, 8, 4],
         block_scales: list = [12, 6, 3],
-        transformer_layers: int = 1,
+        transformer_layers: int = 2,
         dropout_rate: float = 0.0,
         use_agent_id: bool = True,
         ff_hidden_factor: int = 4,
@@ -694,50 +697,45 @@ class CrossAttentionFeatureExtractor(nn.Module):
         self.use_agent_id = use_agent_id
         self.block_scales = block_scales
         self.num_scales = len(block_scales)
+        assert len(cnn_channels) == len(block_scales), (
+            "cnn_channels and block_scales should have same length, "
+            "so we can pool each stage's output to the corresponding scale."
+        )
 
         # ---------------------------------------------------------
         # A) Simple Agent MLP to embed agent states
         # ---------------------------------------------------------
         self.agent_encoder = nn.Sequential(
-            nn.Linear(
-                agent_obs_size,
-                embed_dim
-            ),
+            nn.Linear(agent_obs_size, embed_dim),
             nn.GELU(),
             nn.Linear(embed_dim, embed_dim),
             nn.GELU()
         )
 
         # ---------------------------------------------------------
-        # B) Agent ID Embedding + Sinusoidal
+        # B) (Optional) Agent ID Embedding + Sinusoidal
         # ---------------------------------------------------------
         if use_agent_id:
-            self.agent_id_embedding = nn.Embedding(num_agents, embed_dim)  # e.g. up to 225 wave agents
+            self.agent_id_embedding = nn.Embedding(num_agents, embed_dim)
             nn.init.normal_(self.agent_id_embedding.weight, mean=0.0, std=0.01)
-            
-            self.agent_id_pos_enc = AgentIDPosEnc(
-                num_freqs=id_num_freqs, 
-                id_embed_dim=embed_dim
-            )
+            self.agent_id_pos_enc = AgentIDPosEnc(num_freqs=id_num_freqs, id_embed_dim=embed_dim)
             self.agent_id_sum_ln = nn.LayerNorm(embed_dim)
         else:
             self.agent_id_embedding = None
             self.agent_id_pos_enc = None
 
         # ---------------------------------------------------------
-        # C) CNN Blocks
-        # We have self.in_channels wave channels, plus we will add 2
-        # coordinate channels in forward().
+        # C) SINGLE CNN with multiple blocks
+        #    We have in_channels + 2 coordinate channels at input
         # ---------------------------------------------------------
-        total_in_c = self.in_channels + 2  # wave + (row, col)
-
-        self.blocks = nn.ModuleList()
+        total_in_c = self.in_channels + 2
+        self.cnn_blocks = nn.ModuleList()
         prev_c = total_in_c
+
         for i, out_c in enumerate(cnn_channels):
             block = nn.Sequential(
                 nn.Conv2d(prev_c, out_c, kernel_size=cnn_kernel_sizes[i],
-                          stride=cnn_strides[i],
-                          padding=cnn_kernel_sizes[i] // 2),
+                          stride=cnn_strides[i], padding=cnn_kernel_sizes[i]//2),
                 nn.GroupNorm(group_norms[i], out_c),
                 nn.GELU(),
 
@@ -745,14 +743,14 @@ class CrossAttentionFeatureExtractor(nn.Module):
                 nn.GroupNorm(group_norms[i], out_c),
                 nn.GELU()
             )
-            self.blocks.append(block)
+            self.cnn_blocks.append(block)
             prev_c = out_c
 
-        # 1x1 conv => embed_dim for each scale
+        # For each scale, we do a 1x1 conv => embed_dim
         self.block_embeds = nn.ModuleList()
         self.block_lns = nn.ModuleList()
-        for c_out in cnn_channels:
-            emb_conv = nn.Conv2d(c_out, embed_dim, kernel_size=1, stride=1)
+        for out_c in cnn_channels:
+            emb_conv = nn.Conv2d(out_c, embed_dim, kernel_size=1, stride=1)
             ln = nn.LayerNorm(embed_dim)
             self.block_embeds.append(emb_conv)
             self.block_lns.append(ln)
@@ -761,7 +759,8 @@ class CrossAttentionFeatureExtractor(nn.Module):
         # D) Cross-Attn blocks (per scale) repeated for each layer
         # ---------------------------------------------------------
         self.cross_attn_blocks = nn.ModuleList()
-        for layer_idx in range(transformer_layers):
+        for _ in range(transformer_layers):
+            # For each layer, we have a set of cross-attn blocks (one per scale).
             blocks_per_scale = nn.ModuleList()
             for scale_idx in range(self.num_scales):
                 cross_attn = ResidualAttention(embed_dim, num_heads, dropout=dropout_rate, self_attention=False)
@@ -778,7 +777,7 @@ class CrossAttentionFeatureExtractor(nn.Module):
         # ---------------------------------------------------------
         self.agent_self_attn = nn.ModuleList()
         self.agent_self_ffn  = nn.ModuleList()
-        for layer_idx in range(transformer_layers):
+        for _ in range(transformer_layers):
             self_attn = ResidualAttention(embed_dim, num_heads, dropout=dropout_rate, self_attention=True)
             ff_self   = FeedForwardBlock(embed_dim, hidden_dim=embed_dim * ff_hidden_factor, dropout=dropout_rate)
             self.agent_self_attn.append(self_attn)
@@ -799,7 +798,7 @@ class CrossAttentionFeatureExtractor(nn.Module):
         # Initialization
         # ---------------------------------------------------------
         # CNN conv layers => conv_init_scale
-        self.blocks.apply(lambda m: init_weights_gelu_conv(m, scale=conv_init_scale))
+        self.cnn_blocks.apply(lambda m: init_weights_gelu_conv(m, scale=conv_init_scale))
         self.block_embeds.apply(lambda m: init_weights_gelu_conv(m, scale=conv_init_scale))
 
         # All linear layers => linear_init_scale
@@ -808,14 +807,14 @@ class CrossAttentionFeatureExtractor(nn.Module):
     def forward(self, state_dict: Dict[str, torch.Tensor]):
         """
         Inputs:
-          state_dict["agent"]   => shape (S,E,A, 9)   (example wave agent state)
+          state_dict["agent"]   => shape (S,E,A, 9)   (agent-specific states)
           state_dict["central"] => shape (S,E, in_channels*h*w)
         Returns:
           agent_embed => (S,E,A, embed_dim)
-          attn_weights => (S,E,A,A) from last agent self-attn
+          attn_weights => (S,E,A,A) from the last agent self-attn (for visualization/analysis)
         """
         agent_state = state_dict["agent"]
-        central_data= state_dict["central"]  # => shape (S,E, in_channels*h*w)
+        central_data= state_dict["central"]
         device = agent_state.device
 
         S, E, A, obs_dim = agent_state.shape  # (S,E,A,9)
@@ -840,26 +839,21 @@ class CrossAttentionFeatureExtractor(nn.Module):
             agent_embed    = agent_embed_4d.view(B,A,self.embed_dim)
 
         # ------------------------------------------
-        # 3) Reshape central => (B, in_channels, H, W)
-        # Then add row/col => => (B, in_channels+2, H, W)
+        # 3) Reshape central => (B, in_channels, H, W) then add row/col
         # ------------------------------------------
-        # central_data => (S,E, in_channels*h*w)
-        # => shape => (B, in_channels*h*w)
         central_data = central_data.view(B, self.in_channels, self.h, self.w)
-
-        _, _, H, W = central_data.shape  # => should be (B, in_channels, 50, 50)
-        row_coords = torch.linspace(-1, 1, steps=H, device=device).view(1,1,H,1).expand(B,1,H,W)
-        col_coords = torch.linspace(-1, 1, steps=W, device=device).view(1,1,1,W).expand(B,1,H,W)
-
+        row_coords = torch.linspace(-1, 1, steps=self.h, device=device).view(1,1,self.h,1).expand(B,1,self.h,self.w)
+        col_coords = torch.linspace(-1, 1, steps=self.w, device=device).view(1,1,1,self.w).expand(B,1,self.h,self.w)
         cnn_input = torch.cat([central_data, row_coords, col_coords], dim=1)
         # => (B, in_channels+2, H, W)
 
         # ------------------------------------------
         # 4) Pass through CNN blocks => multi-scale feats
+        #    We'll store the output of each block in feats[]
         # ------------------------------------------
         feats = []
         out_cnn = cnn_input
-        for block in self.blocks:
+        for block in self.cnn_blocks:
             out_cnn = block(out_cnn)
             feats.append(out_cnn)
 
@@ -869,18 +863,20 @@ class CrossAttentionFeatureExtractor(nn.Module):
         patch_seqs = []
         for i, f in enumerate(feats):
             sH = sW = self.block_scales[i]
-            # adaptive pool to shape (sH, sW)
+            # Adaptive pool to shape (sH, sW)
             pooled = F.adaptive_avg_pool2d(f, (sH, sW))  # => (B, c_out, sH, sW)
-            emb_2d = self.block_embeds[i](pooled)        # => (B, embed_dim, sH, sW)
 
-            # reshape => (B, #patches, embed_dim)
+            # Project to embed_dim
+            emb_2d = self.block_embeds[i](pooled)  # => (B, embed_dim, sH, sW)
+
+            # Flatten => (B, n_patches, embed_dim)
             B_, D_, HH_, WW_ = emb_2d.shape
-            patches = emb_2d.view(B_, D_, HH_*WW_).transpose(1,2)  # => (B, patches, d)
+            patches = emb_2d.view(B_, D_, HH_*WW_).transpose(1,2)  # => (B, #patches, d)
             patches = self.block_lns[i](patches)
 
-            # Add a 2D sinusoidal pos emb to these patches
+            # Add 2D sinusoidal position embedding
             pos_2d = create_2d_sin_cos_pos_emb(HH_, WW_, self.embed_dim, device)
-            patches = patches + pos_2d.unsqueeze(0)
+            patches = patches + pos_2d.unsqueeze(0)  # => (1, #patches, d)
 
             patch_seqs.append(patches)
 
@@ -890,11 +886,10 @@ class CrossAttentionFeatureExtractor(nn.Module):
         #    - Agent self-attn
         # ------------------------------------------
         attn_weights_final = None
-
         for layer_idx in range(self.transformer_layers):
             scale_blocks = self.cross_attn_blocks[layer_idx]  # => nn.ModuleList
 
-            # CROSS-ATTN to each scale
+            # CROSS-ATTN for each scale in sequence
             for scale_idx, block_dict in enumerate(scale_blocks):
                 cross_attn = block_dict["attn"]
                 ff_cross   = block_dict["ffn"]

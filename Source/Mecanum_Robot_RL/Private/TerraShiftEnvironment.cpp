@@ -376,38 +376,103 @@ float ATerraShiftEnvironment::Reward()
             }
         }
 
-
         // 3C) Velocity alignment to the Goal
         if (bUseVelAlignment && bActive)
         {
-            int32   gIndex = StateManager->GetGoalIndex(ObjIndex);
+            int32 gIndex = StateManager->GetGoalIndex(ObjIndex);
             if (gIndex >= 0)
             {
-                FVector goalPos = Platform->GetActorTransform().InverseTransformPosition(
-                    GoalManager->GetGoalLocation(gIndex)
-                );
-                FVector objPos = StateManager->GetCurrentPosition(ObjIndex);
-                FVector vel = StateManager->GetCurrentVelocity(ObjIndex);
+                // 1) get positions in local coords
+                FVector goalPosLocal = Platform->GetActorTransform().InverseTransformPosition(
+                    GoalManager->GetGoalLocation(gIndex));
+                FVector objPosLocal = StateManager->GetCurrentPosition(ObjIndex);
+                FVector velLocal = StateManager->GetCurrentVelocity(ObjIndex);
 
-                if (!vel.IsNearlyZero())
+                // 2) if velocity is not zero
+                if (!velLocal.IsNearlyZero())
                 {
-                    FVector toGoal = goalPos - objPos;
-                    float   distToGoal = toGoal.Size();
+                    // direction from object to goal
+                    FVector toGoal = goalPosLocal - objPosLocal;
+                    float distToGoal = toGoal.Size();
 
                     if (distToGoal > KINDA_SMALL_NUMBER)
                     {
+                        // normalized direction to goal
                         FVector dirToGoal = toGoal / distToGoal;
-                        FVector velNorm = vel / vel.Size();
 
-                        float rawAlign = FVector::DotProduct(velNorm, dirToGoal);
+                        // normalized velocity
+                        float speed = velLocal.Size();
+                        FVector velNorm = velLocal / speed;
 
-                        // or we could do
-                        // float rawAlign = dot * speed;
-                        // float alignClamped = FMath::Clamp(rawAlign, VelAlign_Min, VelAlign_Max);
+                        // dot in [-1..1]; rawAlign * speed => “speed towards (or away) from goal”
+                        float dot = FVector::DotProduct(velNorm, dirToGoal); // -1..+1
+                        float speedTowardsGoal = dot * speed;                // negative if going away
 
-                        // scale
-                        float alignReward = VelAlign_Scale * rawAlign;
+                        // clamp to [VelAlign_Min..VelAlign_Max]
+                        float stgClamped = FMath::Clamp(speedTowardsGoal,
+                            VelAlign_Min,
+                            VelAlign_Max);
+
+                        // multiply by your scale factor
+                        float alignReward = VelAlign_Scale * stgClamped;
                         sub += alignReward;
+                    }
+                }
+            }
+        }
+
+        // 3D) Aligned Distance Shaping Reward
+        if (bUseAlignedDistanceShaping && bActive)
+        {
+            // We combine raw velocity alignment (dot product) with distance improvement,
+            int32 gIndex = StateManager->GetGoalIndex(ObjIndex);
+            if (gIndex >= 0)
+            {
+
+                FVector rawGoalPos = GoalManager->GetGoalLocation(gIndex);
+                FVector goalPosLocal = Platform->GetActorTransform().InverseTransformPosition(rawGoalPos);
+
+                // Get the object position (already stored in StateManager in local coordinates)
+                FVector objPosLocal = StateManager->GetCurrentPosition(ObjIndex);
+
+                // Distance improvement: previous distance minus current distance, normalized by platform size so we get range => [-1, 1]
+                float pdist = StateManager->GetPreviousDistance(ObjIndex);
+                float currDist = StateManager->GetCurrentDistance(ObjIndex);
+                float delta = (pdist - currDist) / PlatformWorldSize.X;
+
+                // Calculate the velocity alignment: normalized_direction @ normalized_velocity => [-1, 1]
+                FVector velLocal = StateManager->GetCurrentVelocity(ObjIndex);
+                if (!velLocal.IsNearlyZero())
+                {
+                    FVector velNorm = velLocal / velLocal.Size();
+                    FVector dirToGoal = goalPosLocal - objPosLocal;
+                    float goalDist = dirToGoal.Size();
+
+                    if (goalDist > KINDA_SMALL_NUMBER)
+                    {
+                        dirToGoal /= goalDist;
+
+                        float dot = FVector::DotProduct(velNorm, dirToGoal);
+
+                        /*
+                        Here we want to use the raw dot (which will be negative if movement is away) and multiply it by the improvement signal.
+                        However, to ensure that positive improvement in distance yields reward and negative improvement yields a penalty, we use a piecewise approach:
+                        */
+
+                        float alignedReward = 0.f;
+                        // Object is moving closer to its goal
+                        if (delta >= 0.f)
+                        {
+                            // Only consider positive velocity alignment
+                            float positiveAlign = FMath::Max(dot, 0.f); // zero out any negative alignment
+                            alignedReward = VelAlign_Scale * positiveAlign * delta;
+                        }
+                        // Object is moving away
+                        else
+                        {
+                            alignedReward = -VelAlign_Scale * FMath::Abs(delta);
+                        }
+                        sub += alignedReward;
                     }
                 }
             }
