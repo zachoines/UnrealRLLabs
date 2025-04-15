@@ -481,7 +481,7 @@ float ATerraShiftEnvironment::Reward()
         accum += sub;
     }
 
-    return accum / static_cast<float>(CurrentGridObjects);
+    return accum;
 }
 
 

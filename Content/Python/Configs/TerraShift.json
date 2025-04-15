@@ -123,7 +123,7 @@
     }
   },
 
-  "StateRecorder": {
+  "StateRecorder_disabled": {
     "height_map": {
       "grid_h": 50,
       "grid_w": 50,
