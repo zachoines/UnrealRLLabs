@@ -143,6 +143,11 @@ private:
     UPROPERTY()
     bool bUseActionDelta;
 
+    UPROPERTY()
+    bool bAccumulatedWave;
+
+    float AccumulatedWaveFadeGamma;
+
     /** Scales for each delta if bUseActionDelta is true. */
     UPROPERTY()
     float DeltaVelScale;

@@ -96,6 +96,9 @@ void UMultiAgentGaussianWaveHeightMap::InitializeFromConfig(UEnvironmentConfig* 
     ValuesPerAgent = EnvConfig->GetOrDefaultInt(TEXT("NumActions"), 6);
     bUseActionDelta = EnvConfig->GetOrDefaultBool(TEXT("bUseActionDelta"), true);
 
+    bAccumulatedWave = EnvConfig->GetOrDefaultBool(TEXT("bAccumulatedWave"), false);
+    AccumulatedWaveFadeGamma = EnvConfig->GetOrDefaultNumber(TEXT("AccumulatedWaveFadeGamma"), 0.99f);
+
     DeltaVelScale = EnvConfig->GetOrDefaultNumber(TEXT("DeltaVelScale"), 0.5f);
     DeltaAmpScale = EnvConfig->GetOrDefaultNumber(TEXT("DeltaAmpScale"), 0.2f);
     DeltaSigmaScale = EnvConfig->GetOrDefaultNumber(TEXT("DeltaSigmaScale"), 0.05f);
@@ -237,9 +240,14 @@ void UMultiAgentGaussianWaveHeightMap::Step(const TArray<float>& Actions, float 
 
 void UMultiAgentGaussianWaveHeightMap::ComputeFinalWave()
 {
-    // Start from zero
-    FinalWave.Init(0.f);
-
+    // Start from zero or build on existing wave map
+    if (bAccumulatedWave) {
+        FinalWave *= AccumulatedWaveFadeGamma;
+    }
+    else {
+        FinalWave.Init(0.f);
+    }
+    
     // Add each agent's wave
     for (const FGaussianWaveAgent& Agent : Agents)
     {

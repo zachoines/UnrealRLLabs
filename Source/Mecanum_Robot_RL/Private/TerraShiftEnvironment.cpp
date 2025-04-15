@@ -406,15 +406,15 @@ float ATerraShiftEnvironment::Reward()
 
                         // dot in [-1..1]; rawAlign * speed => “speed towards (or away) from goal”
                         float dot = FVector::DotProduct(velNorm, dirToGoal); // -1..+1
-                        float speedTowardsGoal = dot * speed;                // negative if going away
+                        //float speedTowardsGoal = dot * speed;                // negative if going away
 
-                        // clamp to [VelAlign_Min..VelAlign_Max]
-                        float stgClamped = FMath::Clamp(speedTowardsGoal,
-                            VelAlign_Min,
-                            VelAlign_Max);
+                        //// clamp to [VelAlign_Min..VelAlign_Max]
+                        //float stgClamped = FMath::Clamp(speedTowardsGoal,
+                        //    VelAlign_Min,
+                        //    VelAlign_Max);
 
                         // multiply by your scale factor
-                        float alignReward = VelAlign_Scale * stgClamped;
+                        float alignReward = VelAlign_Scale * dot;
                         sub += alignReward;
                     }
                 }
@@ -465,13 +465,13 @@ float ATerraShiftEnvironment::Reward()
                         {
                             // Only consider positive velocity alignment
                             float positiveAlign = FMath::Max(dot, 0.f); // zero out any negative alignment
-                            alignedReward = VelAlign_Scale * positiveAlign * delta;
+                            alignedReward = positiveAlign * delta * DistImprove_Scale;
                         }
                         // Object is moving away
-                        else
+                        /*else
                         {
-                            alignedReward = -VelAlign_Scale * FMath::Abs(delta);
-                        }
+                            alignedReward = FMath::Abs(delta);
+                        }*/
                         sub += alignedReward;
                     }
                 }
@@ -481,8 +481,7 @@ float ATerraShiftEnvironment::Reward()
         accum += sub;
     }
 
-    // multiply dt
-    return accum;
+    return accum / static_cast<float>(CurrentGridObjects);
 }
 
 

@@ -10,7 +10,7 @@
       "ObjectMass": 0.1,
       "GridSize": 50,
       "MaxSteps": 512,
-      "MaxAgents": 32,
+      "MaxAgents": 16,
 
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
@@ -18,11 +18,11 @@
         "bUseZAccelerationPenalty": false,
         "bUseAlignedDistanceShaping" : true,
 
-        "VelAlign_Scale": 1.0,
+        "VelAlign_Scale": 0.01,
         "VelAlign_Min": -100.0,
         "VelAlign_Max": 100.0,
 
-        "DistImprove_Scale": 1.0,
+        "DistImprove_Scale": 10.0,
         "DistImprove_Min": -1.0,
         "DistImprove_Max": 1.0,
 
@@ -30,9 +30,9 @@
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
 
-        "REACH_GOAL_REWARD": 1.0,
-        "FALL_OFF_PENALTY": -0.1,
-        "STEP_PENALTY": -0.00005
+        "REACH_GOAL_REWARD": 10.0,
+        "FALL_OFF_PENALTY": 0.0,
+        "STEP_PENALTY": 0.0
       },
 
       "GoalManager": {
@@ -40,26 +40,28 @@
       },
 
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 32,
+        "NumAgents": 16,
         "GridSize": 50,
-        "MinHeight": -4.0,
-        "MaxHeight": 4.0,
+        "MinHeight": -2.0,
+        "MaxHeight": 2.0,
         "NumActions": 6,
         "bUseActionDelta": true,
+        "bAccumulatedWave": true,
+        "bAccumulatedWaveFadeGamma" : 0.95,
         
         "VelMinMax": [-8.0, 8.0],
         "AngVelRange": [-1.57, 1.57],
-        "AmpMinMax": [-4.0, 4.0],
+        "AmpMinMax": [-2.0, 2.0],
         "SigMinMax": [1.0, 4.0],
         
         "DeltaVelScale": 10.0,
         "DeltaAngVelScale": 10.0,
-        "DeltaAmpScale": 10.0,
-        "DeltaSigmaScale": 10.0
+        "DeltaAmpScale": 5.0,
+        "DeltaSigmaScale": 5.0
       },
 
       "StateManager": {
-        "MaxGridObjects": 3,
+        "MaxGridObjects": 8,
         "MarginXY": 1.5,
         "MinZ": -4.0,
         "MaxZ": 100.0,
@@ -102,8 +104,8 @@
         },
         "agent": {
           "obs_size": 9,
-          "min": 32,
-          "max": 32
+          "min": 16,
+          "max": 16
         }
       },
       "action": {
@@ -121,7 +123,7 @@
     }
   },
 
-  "StateRecorder_disabled": {
+  "StateRecorder": {
     "height_map": {
       "grid_h": 50,
       "grid_w": 50,
@@ -169,7 +171,7 @@
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 32,
+            "num_agents": 16,
             "in_channels": 5,
             "h": 50,
             "w": 50,
@@ -215,7 +217,7 @@
         "policy_network": {
           "in_features": 64,
           "hidden_size": 128,
-          "log_std_min": -8.0,
+          "log_std_min": -10.0,
           "log_std_max": 2.0,
           "mean_scale": 1.0,
           "entropy_method": "mc",
@@ -250,10 +252,10 @@
       "warmup_steps": 10000
     },
     "num_environments": 4,
-    "epochs": 4,
-    "mini_batch_size": 32,
-    "buffer_size": 256,
-    "batch_size": 256,
+    "epochs": 6,
+    "mini_batch_size": 64,
+    "buffer_size": 512,
+    "batch_size": 512,
     "AgentsResetFrequency": 0,
     "ActionRepeat": 1,
     "saveFrequency": 20
