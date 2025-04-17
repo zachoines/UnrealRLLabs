@@ -10,13 +10,13 @@
       "ObjectMass": 0.1,
       "GridSize": 50,
       "MaxSteps": 512,
-      "MaxAgents": 16,
+      "MaxAgents": 24,
 
       "TerraShiftEnvironment": {
-        "bUseVelAlignment": false,
-        "bUseXYDistanceImprovement": false,
+        "bUseVelAlignment": true,
+        "bUseXYDistanceImprovement": true,
         "bUseZAccelerationPenalty": false,
-        "bUseAlignedDistanceShaping" : true,
+        "bUseAlignedDistanceShaping" : false,
 
         "VelAlign_Scale": 0.01,
         "VelAlign_Min": -100.0,
@@ -30,9 +30,9 @@
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
 
-        "REACH_GOAL_REWARD": 10.0,
-        "FALL_OFF_PENALTY": 0.0,
-        "STEP_PENALTY": 0.0
+        "REACH_GOAL_REWARD": 1.0,
+        "FALL_OFF_PENALTY": -1.0,
+        "STEP_PENALTY": -0.00001
       },
 
       "GoalManager": {
@@ -40,31 +40,31 @@
       },
 
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 16,
+        "NumAgents": 24,
         "GridSize": 50,
-        "MinHeight": -2.0,
-        "MaxHeight": 2.0,
+        "MinHeight": -4.0,
+        "MaxHeight": 4.0,
         "NumActions": 6,
         "bUseActionDelta": true,
-        "bAccumulatedWave": true,
+        "bAccumulatedWave": false,
         "bAccumulatedWaveFadeGamma" : 0.95,
         
         "VelMinMax": [-8.0, 8.0],
         "AngVelRange": [-1.57, 1.57],
-        "AmpMinMax": [-2.0, 2.0],
+        "AmpMinMax": [-4.0, 4.0],
         "SigMinMax": [1.0, 4.0],
         
         "DeltaVelScale": 10.0,
         "DeltaAngVelScale": 10.0,
-        "DeltaAmpScale": 5.0,
-        "DeltaSigmaScale": 5.0
+        "DeltaAmpScale": 10.0,
+        "DeltaSigmaScale": 10.0
       },
 
       "StateManager": {
-        "MaxGridObjects": 8,
+        "MaxGridObjects": 3,
         "MarginXY": 1.5,
         "MinZ": -4.0,
-        "MaxZ": 100.0,
+        "MaxZ": 20.0,
 
         "ObjectScale": 0.1,
         "ObjectMass": 0.1,
@@ -104,8 +104,8 @@
         },
         "agent": {
           "obs_size": 9,
-          "min": 16,
-          "max": 16
+          "min": 24,
+          "max": 24
         }
       },
       "action": {
@@ -135,7 +135,7 @@
       "fps": 16,
       "output_path": "height_auto.mp4"
     },
-    "auto_save_every": 256
+    "auto_save_every": 128
   },
 
   "agent": {
@@ -148,8 +148,8 @@
       "baseline_loss_coeff": 0.25,
       "normalize_advantages": false,
       "clipped_value_loss": true,
-      "max_grad_norm": 0.50,
-      "ppo_clip_range": 0.1,
+      "max_grad_norm": 10.0,
+      "ppo_clip_range": 0.2,
       "value_clip_range": 0.2,
       "entropy_coeff": 0.001,
       "rewards_normalizer_disabled": {
@@ -162,7 +162,7 @@
           "total_iters": 100000
         },
         "entropy_coeff": {
-          "start_value": 0.005,
+          "start_value": 0.01,
           "end_value": 0.001,
           "total_iters": 100000
         }
@@ -171,7 +171,7 @@
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 16,
+            "num_agents": 24,
             "in_channels": 5,
             "h": 50,
             "w": 50,
@@ -179,11 +179,11 @@
             "embed_dim": 64,
             "num_heads": 4,
 
-            "cnn_channels": [32, 64],
-            "cnn_kernel_sizes": [5, 3],
-            "cnn_strides": [2, 2],
-            "group_norms": [8, 8],
-            "block_scales": [12, 6],
+            "cnn_channels": [64],
+            "cnn_kernel_sizes": [3],
+            "cnn_strides": [2],
+            "group_norms": [8],
+            "block_scales": [6],
             "transformer_layers": 1,
 
             "dropout_rate": 0.0,
@@ -216,8 +216,8 @@
         },
         "policy_network": {
           "in_features": 64,
-          "hidden_size": 128,
-          "log_std_min": -10.0,
+          "hidden_size": 64,
+          "log_std_min": -20.0,
           "log_std_max": 2.0,
           "mean_scale": 1.0,
           "entropy_method": "mc",
@@ -227,12 +227,12 @@
         "critic_network": {
           "value_head": {
             "in_features": 64,
-            "hidden_size": 128,
+            "hidden_size": 64,
             "dropout_rate": 0
           },
           "baseline_head": {
             "in_features": 64,
-            "hidden_size": 128,
+            "hidden_size": 64,
             "dropout_rate": 0
           },
           "baseline_attention": {
@@ -252,7 +252,7 @@
       "warmup_steps": 10000
     },
     "num_environments": 4,
-    "epochs": 6,
+    "epochs": 4,
     "mini_batch_size": 64,
     "buffer_size": 512,
     "batch_size": 512,

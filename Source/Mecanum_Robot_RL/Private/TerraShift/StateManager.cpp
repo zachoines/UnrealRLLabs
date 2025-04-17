@@ -519,6 +519,9 @@ bool UStateManager::AllGridObjectsHandled() const
 // ------------------------------------------
 //   BuildCentralState
 // ------------------------------------------
+// ------------------------------------------
+//   BuildCentralState (Centered Visualization)
+// ------------------------------------------
 void UStateManager::BuildCentralState()
 {
     UWorld* w = (Grid) ? Grid->GetWorld() : nullptr;
@@ -527,41 +530,76 @@ void UStateManager::BuildCentralState()
         UE_LOG(LogTemp, Warning, TEXT("BuildCentralState => no valid UWorld."));
         return;
     }
+    if (!Grid || !Platform)
+    {
+        UE_LOG(LogTemp, Error, TEXT("BuildCentralState => Grid or Platform actor is null."));
+        return;
+    }
 
-    float half = (GridSize > 0) ? (PlatformWorldSize.X * 0.5f) : 0.f;
-    float pZ = Platform->GetActorLocation().Z;
+    // Define the Z range specifically for visualization, centered around 0 local Z
+    // Use half of the configured total range
+    float VisualizationZRange = MaxZ;
+    float halfVisRange = VisualizationZRange * 0.5f;
+    float visMinZ = -halfVisRange;
+    float visMaxZ = halfVisRange;
 
+    // Keep trace distance large enough, independent of visualization range
+    // Use MinZ/MaxZ (OOB limits) or fixed large values to define trace extent
+    float traceDistUp = FMath::Abs(MaxZ) + 100.0f; // Little extra space
+    float traceDistDown = FMath::Abs(visMinZ) + 100.0f;
+
+    float halfPlatformSize = (GridSize > 0) ? (PlatformWorldSize.X * 0.5f) : 0.f;
+    FTransform GridTransform = Grid->GetActorTransform();
     FMatrix2D HeightTmp(GridSize, GridSize, 0.f);
+
     for (int32 row = 0; row < GridSize; row++)
     {
         for (int32 col = 0; col < GridSize; col++)
         {
-            float lx = (col + 0.5f) * CellSize - half;
-            float ly = (row + 0.5f) * CellSize - half;
-            FVector startPos(lx, ly, pZ + MaxZ);
-            FVector endPos(lx, ly, pZ - MaxZ);
+            // 1. Calculate XY center in Grid's local space
+            float lx = (col + 0.5f) * CellSize - halfPlatformSize;
+            float ly = (row + 0.5f) * CellSize - halfPlatformSize;
 
-            FVector wStart = Grid->GetActorTransform().TransformPosition(startPos);
-            FVector wEnd = Grid->GetActorTransform().TransformPosition(endPos);
+            // 2. Define trace start/end in Grid's local space (using robust distances)
+            FVector localStart(lx, ly, traceDistUp);
+            FVector localEnd(lx, ly, -traceDistDown);
+
+            // 3. Transform to world space for trace
+            FVector wStart = GridTransform.TransformPosition(localStart);
+            FVector wEnd = GridTransform.TransformPosition(localEnd);
 
             FHitResult hit;
             bool bHit = w->LineTraceSingleByChannel(hit, wStart, wEnd, ECC_Visibility);
-            float finalZ = 0.f;
+
+            float finalLocalZ = 0.f; // Default to 0 (relative Z) if no hit
             if (bHit)
             {
-                FVector localHit = Grid->GetActorTransform().InverseTransformPosition(hit.ImpactPoint);
-                finalZ = localHit.Z;
+                // 4. Transform hit point back to Grid's local space
+                FVector localHit = GridTransform.InverseTransformPosition(hit.ImpactPoint);
+                finalLocalZ = localHit.Z;
             }
-            float cVal = FMath::Clamp(finalZ, MinZ, MaxZ);
-            float norm = (cVal - MinZ) / (MaxZ - MinZ);
-            float mapped = (norm * 2.f) - 1.f;
+
+            // 5. Clamp the local Z value based on the *visualization* range [visMinZ, visMaxZ]
+            float clampedVisZ = FMath::Clamp(finalLocalZ, visMinZ, visMaxZ);
+
+            // 6. Normalize the clamped *visualization* Z value to the range [-1, 1]
+            float norm = 0.f;
+            // Check if visualization range is valid
+            if (visMaxZ > visMinZ) {
+                // Map [visMinZ, visMaxZ] to [0, 1]
+                norm = (clampedVisZ - visMinZ) / (visMaxZ - visMinZ);
+            }
+            float mapped = (norm * 2.f) - 1.f; // Map [0, 1] to [-1, 1]
             HeightTmp[row][col] = mapped;
         }
     }
 
+    // Update height maps
+    HeightTmp.Clip(-1, 1);
     PreviousHeight = CurrentHeight;
     CurrentHeight = HeightTmp;
 
+    // Capture overhead camera
     if (OverheadCaptureActor)
     {
         OverheadCaptureActor->GetCaptureComponent2D()->CaptureScene();
@@ -584,7 +622,8 @@ TArray<float> UStateManager::GetCentralState()
     // (2) delta height
     if (Step > 1 && dt > SMALL_NUMBER)
     {
-        FMatrix2D diff = (CurrentHeight - PreviousHeight) / dt;
+        FMatrix2D diff = ((CurrentHeight - PreviousHeight) / dt);
+        diff.Clip(-1, 1);
         outArr.Append(diff.Data);
     }
     else
@@ -595,10 +634,6 @@ TArray<float> UStateManager::GetCentralState()
     // (3) overhead camera
     TArray<float> overhead = CaptureOverheadImage();
     outArr.Append(overhead);
-
-    // (4) goals occupancy => new NxN channel if wanted
-    // e.g. FMatrix2D goalOcc = OccupancyGrid->GetOccupancyMatrix({FName("Goals")}, true);
-    // outArr.Append(goalOcc.Data);
 
     return outArr;
 }

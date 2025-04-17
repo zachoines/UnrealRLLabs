@@ -147,7 +147,7 @@ class StateRecorder:
                     self.X, self.Y, height_map,
                     cmap='viridis', edgecolor='none'
                 )
-                ax_surf.set_title(f"Height (frame {i+1}/{len(self.frames)})")
+                ax_surf.set_title(f"Height")
                 ax_surf.view_init(elev=40, azim=(45 + i * 0.3))
 
                 # C) 3D surface => delta
@@ -156,7 +156,7 @@ class StateRecorder:
                         self.X, self.Y, delta_map,
                         cmap='plasma', edgecolor='none'
                     )
-                    ax_delta.set_title(f"Delta (frame {i+1}/{len(self.frames)})")
+                    ax_delta.set_title(f"Delta Height")
                     ax_delta.view_init(elev=40, azim=(45 + i * 0.3))
 
                 # D) overhead RGB => 2D
