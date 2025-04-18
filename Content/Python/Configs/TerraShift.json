@@ -10,7 +10,7 @@
       "ObjectMass": 0.1,
       "GridSize": 50,
       "MaxSteps": 512,
-      "MaxAgents": 24,
+      "MaxAgents": 48,
 
       "TerraShiftEnvironment": {
         "bUseVelAlignment": true,
@@ -18,11 +18,11 @@
         "bUseZAccelerationPenalty": false,
         "bUseAlignedDistanceShaping" : false,
 
-        "VelAlign_Scale": 0.01,
+        "VelAlign_Scale": 0.001,
         "VelAlign_Min": -100.0,
         "VelAlign_Max": 100.0,
 
-        "DistImprove_Scale": 10.0,
+        "DistImprove_Scale": 1.0,
         "DistImprove_Min": -1.0,
         "DistImprove_Max": 1.0,
 
@@ -30,8 +30,8 @@
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
 
-        "REACH_GOAL_REWARD": 1.0,
-        "FALL_OFF_PENALTY": -1.0,
+        "REACH_GOAL_REWARD": 0.10,
+        "FALL_OFF_PENALTY": -0.10,
         "STEP_PENALTY": -0.00001
       },
 
@@ -40,7 +40,7 @@
       },
 
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 24,
+        "NumAgents": 48,
         "GridSize": 50,
         "MinHeight": -4.0,
         "MaxHeight": 4.0,
@@ -104,8 +104,8 @@
         },
         "agent": {
           "obs_size": 9,
-          "min": 24,
-          "max": 24
+          "min": 48,
+          "max": 48
         }
       },
       "action": {
@@ -148,8 +148,8 @@
       "baseline_loss_coeff": 0.25,
       "normalize_advantages": false,
       "clipped_value_loss": true,
-      "max_grad_norm": 10.0,
-      "ppo_clip_range": 0.2,
+      "max_grad_norm": 1.0,
+      "ppo_clip_range": 0.1,
       "value_clip_range": 0.2,
       "entropy_coeff": 0.001,
       "rewards_normalizer_disabled": {
@@ -171,7 +171,7 @@
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 24,
+            "num_agents": 48,
             "in_channels": 5,
             "h": 50,
             "w": 50,
@@ -217,7 +217,7 @@
         "policy_network": {
           "in_features": 64,
           "hidden_size": 64,
-          "log_std_min": -20.0,
+          "log_std_min": -10.0,
           "log_std_max": 2.0,
           "mean_scale": 1.0,
           "entropy_method": "mc",
@@ -253,9 +253,9 @@
     },
     "num_environments": 4,
     "epochs": 4,
-    "mini_batch_size": 64,
-    "buffer_size": 512,
-    "batch_size": 512,
+    "mini_batch_size": 8,
+    "buffer_size": 64,
+    "batch_size": 64,
     "AgentsResetFrequency": 0,
     "ActionRepeat": 1,
     "saveFrequency": 20
