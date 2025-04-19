@@ -1,5 +1,6 @@
 import math
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
@@ -7,7 +8,20 @@ from typing import Dict, Union, List, Any
 from torch.distributions import Normal, TransformedDistribution
 from torch.distributions.transforms import TanhTransform
 from abc import ABC, abstractmethod
+# Ensure Utility is importable, adjust path if necessary
 from .Utility import init_weights_leaky_relu, init_weights_gelu_linear, init_weights_gelu_conv, create_2d_sin_cos_pos_emb
+
+# --- Existing BasePolicyNetwork, DiscretePolicyNetwork, LinearNetwork ---
+# --- StatesEncoder, StatesActionsEncoder, ValueNetwork remain the same ---
+# --- TanhContinuousPolicyNetwork remains the same ---
+# --- MultiAgentEmbeddingNetwork remains the same ---
+# --- AgentIDPosEnc remains the same ---
+# --- ResidualAttention remains the same ---
+# --- FeedForwardBlock remains the same ---
+# --- CrossAttentionFeatureExtractor remains the same ---
+
+# Keep the existing helper classes above this point...
+
 
 class BasePolicyNetwork(nn.Module, ABC):
     """
@@ -240,9 +254,27 @@ class StatesActionsEncoder(nn.Module):
         )
 
     def forward(self, obs: torch.Tensor, act: torch.Tensor) -> torch.Tensor:
-        x = torch.cat([obs, act], dim=-1)
+        # Ensure dimensions are compatible for concatenation
+        # obs shape: (*, state_dim)
+        # act shape: (*, action_dim)
+        # Need to handle cases where action_dim might be a list (multi-discrete)
+        # For now, assume act is already flattened or suitable for cat
+        if act.shape[:-1] != obs.shape[:-1]:
+             # Attempt to broadcast action shape to observation shape if necessary
+             # Example: obs=(B, E, A, H), act=(B, E, A, D) -> cat result=(B, E, A, H+D)
+             # Example: obs=(B, E, A, A-1, H), act=(B, E, A, A-1, D) -> cat result=(B, E, A, A-1, H+D)
+             try:
+                 act_expanded = act.expand(*obs.shape[:-1], act.shape[-1])
+                 x = torch.cat([obs, act_expanded], dim=-1)
+             except RuntimeError as e:
+                 print(f"Error concatenating obs shape {obs.shape} and action shape {act.shape}: {e}")
+                 # Handle error appropriately, maybe raise it again or return an error tensor
+                 raise e
+        else:
+            x = torch.cat([obs, act], dim=-1)
+            
         return self.net(x)
-    
+
 
 class ValueNetwork(nn.Module):
     """
@@ -276,58 +308,72 @@ class ValueNetwork(nn.Module):
         return self.value_net(x)
 
 
-class SharedCritic(nn.Module):
+class ResidualAttention(nn.Module):
     """
-    A "global" critic that outputs:
-      1) A single value V(s) per environment (averaging agent embeddings)
-      2) A per-agent baseline for each agent (averaging over groupmates or neighbors).
+    A flexible residual multi-head attention block with layernorm.
+    Supports:
+      - Self-attention (Q=K=V)
+      - Cross-attention (Q != K,V) if self_attention=False
     """
-
-    def __init__(self, net_cfg):
+    def __init__(self, embed_dim, num_heads, dropout=0.0, self_attention=False):
         super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.self_attention = self_attention
 
-        self.value_head = ValueNetwork(**net_cfg["value_head"])
-        self.baseline_head = ValueNetwork(**net_cfg["baseline_head"])
-        self.baseline_attention = ResidualAttention(
-            **net_cfg['baseline_attention']
+        # Q, K, V transforms
+        self.query_proj = nn.Linear(embed_dim, embed_dim)
+        self.key_proj   = nn.Linear(embed_dim, embed_dim)
+        self.value_proj = nn.Linear(embed_dim, embed_dim)
+
+        # LayerNorms before attention
+        self.norm_q = nn.LayerNorm(embed_dim)
+        self.norm_k = nn.LayerNorm(embed_dim)
+        self.norm_v = nn.LayerNorm(embed_dim)
+
+        self.mha = nn.MultiheadAttention(
+            embed_dim, num_heads, batch_first=True, dropout=dropout
         )
-        
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.apply(lambda m: init_weights_gelu_linear(m, scale=net_cfg["linear_init_scale"]))
 
-    def values(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Compute per-environment value function V(s).
-        """
+        # Output LN
+        self.norm_out = nn.LayerNorm(embed_dim)
 
-        S, E, A, H = x.shape
-        
-        x_flat = x.view(S * E, A, H)
-        x_flat = x_flat.mean(dim=1)  # (S,E,H)
-        vals = self.value_head(x_flat) # (S*E,1)
-        vals = vals.view(S, E, 1)
-        return vals
+    def forward(self, x_q, x_k=None, x_v=None):
+        # Handle self-attention case where K and V are derived from Q
+        if self.self_attention:
+            if x_k is not None or x_v is not None:
+                 print("Warning: x_k and x_v provided to ResidualAttention with self_attention=True. They will be ignored.")
+            x_k = x_q
+            x_v = x_q
+        # Handle cross-attention case where K and V might be missing (use x_q as default)
+        else:
+             if x_k is None:
+                 print("Warning: x_k not provided for cross-attention. Using x_q as key.")
+                 x_k = x_q
+             if x_v is None:
+                 print("Warning: x_v not provided for cross-attention. Using x_k as value.")
+                 # Usually, value source is the same as key source in cross-attention
+                 x_v = x_k 
 
-    def baselines(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Compute per-agent counterfactual baselines
-        """
+        # LN before projections
+        qn = self.norm_q(x_q)
+        kn = self.norm_k(x_k)
+        vn = self.norm_v(x_v)
 
-        S, E, A, A2, H = x.shape
-        
-        # Flatten
-        x_flat = x.view(S * E * A, A, H)
+        # Project Q, K, V
+        q_proj = self.query_proj(qn)
+        k_proj = self.key_proj(kn)
+        v_proj = self.value_proj(vn)
 
-        # Self-Attention Over Groupmates
-        x_attn, _ = self.baseline_attention(x_flat, x_flat, x_flat)
+        # Multi-head attention
+        # Note: MHA expects query, key, value
+        attn_out, attn_weights = self.mha(q_proj, k_proj, v_proj, need_weights=True) # Ensure weights are returned
 
-        # Mean over groupmates dimension
-        agent_emb = x_attn.mean(dim=1)  # (S*E*A, A, H) => (S*E*A, H)
-        base = self.baseline_head(agent_emb) # => (S*E*A,1)
+        # Residual connection (add output of attention to the original query input x_q)
+        out = x_q + attn_out
+        out = self.norm_out(out) # LayerNorm after residual
 
-        # 3) Reshape => (S,E,A,1)
-        base = base.view(S, E, A, 1)
-        return base
+        return out, attn_weights
 
 
 class TanhContinuousPolicyNetwork(nn.Module):
@@ -452,81 +498,80 @@ class TanhContinuousPolicyNetwork(nn.Module):
         lp = tanh_dist.log_prob(samps).sum(dim=-1)  # => (n,B)
         return -lp.mean(dim=0)  # => (B,)
 
-   
-class MultiAgentEmbeddingNetwork(nn.Module):
-    def __init__(self, net_cfg: Dict[str, Any]):
-        super(MultiAgentEmbeddingNetwork, self).__init__()
 
-        # 1) The dictionary based obs embedder
-        self.base_encoder = CrossAttentionFeatureExtractor(**net_cfg["cross_attention_feature_extractor"])
+class FeedForwardBlock(nn.Module):
+    """
+    Transformer-style position-wise feed-forward sublayer, using GELU:
+      x -> LN -> Linear -> GELU -> Linear -> Dropout -> x + residual
+    """
+    def __init__(self, embed_dim, hidden_dim=None, dropout=0.0):
+        super().__init__()
+        if hidden_dim is None:
+            hidden_dim = 4 * embed_dim  # a common choice
+        self.norm = nn.LayerNorm(embed_dim)
+        self.linear1 = nn.Linear(embed_dim, hidden_dim)
+        self.linear2 = nn.Linear(hidden_dim, embed_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.act = nn.GELU()
 
-        # 2) For obs and obs+actions encoding
-        self.f = StatesActionsEncoder(**net_cfg["obs_actions_encoder"])
-        self.g = StatesEncoder(**net_cfg["obs_encoder"])
-
-    # --------------------------------------------------------------------
-    #  Produce "base embedding" from raw dictionary of observarion
-    # --------------------------------------------------------------------
-    def get_base_embedding(self, obs_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """
-        obs_dict => { "central":(S,E,cDim), "agent":(S,E,NA,aDim) }
-        => shape => (S,E,NA, aggregator_out_dim)
-        """
-        return self.base_encoder(obs_dict)
-
-
-    def get_baseline_embeddings(self,
-                           common_emb: torch.Tensor,
-                           actions: torch.Tensor=None) -> torch.Tensor:
-        groupmates_emb, groupmates_actions = \
-            self._split_agent_and_groupmates(common_emb, actions)
-
-
-        agent_obs_emb = self.get_state_embeddings(common_emb) # => shape (S,E,A,H)
-        groupmates_obs_actions_emb= self.get_state_action_embeddings(groupmates_emb, groupmates_actions) # => (S,E,A,(A-1),H)
+    def forward(self, x):
+        out = self.norm(x)
+        out = self.linear1(out)
+        out = self.act(out)
+        out = self.dropout(out)
+        out = self.linear2(out)
+        out = self.dropout(out)
+        return x + out
         
-        # (S,E,A,1, H) and (S,E,A,A-1,H)
-        return torch.cat([agent_obs_emb.unsqueeze(dim=3), groupmates_obs_actions_emb], dim=3)
+
+# ==============================================================================
+# SharedCritic
+# ==============================================================================
+class SharedCritic(nn.Module):
+    def __init__(self, net_cfg):
+        super().__init__()
+        self.value_head = ValueNetwork(**net_cfg["value_head"])
+        self.baseline_head = ValueNetwork(**net_cfg["baseline_head"])
+        self.value_attention = ResidualAttention(**net_cfg["value_attention"])
+        self.baseline_attention = ResidualAttention(**net_cfg['baseline_attention'])
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        init_scale = net_cfg.get("linear_init_scale", 0.1)
+        self.apply(lambda m: init_weights_gelu_linear(m, scale=init_scale))
+
+    def values(self, x: torch.Tensor) -> torch.Tensor:
+        """ Handles 3D (MB, A, H) or 4D (S, E, A, H) input """
+        input_shape = x.shape
+        H = input_shape[-1]
+        A = input_shape[-2]
+        leading_dims = input_shape[:-2]
+        B = int(np.prod(leading_dims)) # S*E or MB
+
+        x_flat = x.reshape(B, A, H)
+        attn_out, _ = self.value_attention(x_flat) # -> (B, A, H)
+        aggregated_emb = attn_out.mean(dim=1) # -> (B, H)
+        vals = self.value_head(aggregated_emb) # -> (B, 1)
+        vals = vals.view(*leading_dims, 1) # Reshape back, e.g. (S, E, 1) or (MB, 1)
+        return vals
+
+    def baselines(self, x: torch.Tensor) -> torch.Tensor:
+        """ Handles 4D (MB, A, A2, H) or 5D (S, E, A, A2, H) input """
+        input_shape = x.shape
+        H = input_shape[-1]
+        A2 = input_shape[-2] # Sequence length for attention (should be A)
+        A = input_shape[-3]  # Agent index dimension
+        leading_dims = input_shape[:-3] # (MB,) or (S, E)
+        B = int(np.prod(leading_dims)) # S*E or MB
+
+        # Flatten for batch processing by attention: (B*A, A2, H)
+        x_flat = x.reshape(B * A, A2, H)
+        x_attn, _ = self.baseline_attention(x_flat) # -> (B*A, A2, H)
+        # Aggregate attention output - mean over the sequence dim (A2)
+        agent_emb = x_attn.mean(dim=1)  # -> (B*A, H)
+        base = self.baseline_head(agent_emb) # -> (B*A, 1)
+        # Reshape back to original leading dims + agent dim + 1
+        base = base.view(*leading_dims, A, 1) # e.g. (S, E, A, 1) or (MB, A, 1)
+        return base
     
-    def get_state_embeddings(self, common_emb: torch.Tensor) -> torch.Tensor:
-        return self.g(common_emb)
-
-    def get_state_action_embeddings(self, common_emb: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
-        return self.f(common_emb, actions)
-
-    def _split_agent_and_groupmates(self,
-                                    obs_4d: torch.Tensor,
-                                    actions: torch.Tensor):
-        """
-        obs_4d => (S,E,A,H)
-        actions=> (S,E,A, act_dim)  [assuming single vector per agent]
-                  or (S,E,A, # branches) for discrete
-        We want:
-          agent_obs => (S,E,A,1,H)
-          groupmates_obs => (S,E,A,A-1,H)
-          groupmates_actions => (S,E,A,A-1, act_dim)
-        """
-        S,E,A,H = obs_4d.shape
-
-        group_obs_list = []
-        group_act_list = []
-
-        for i in range(A):
-            # groupmates => everything but agent i
-            gm_obs = torch.cat([obs_4d[..., :i, :],
-                                obs_4d[..., i+1:, :]], dim=2).unsqueeze(2)
-            gm_act = torch.cat([actions[..., :i, :],
-                                actions[..., i+1:, :]], dim=2).unsqueeze(2)
-
-            group_obs_list.append(gm_obs)
-            group_act_list.append(gm_act)
-
-        # combine
-        group_obs = torch.cat(group_obs_list, dim=2)               # => (S,E,A,A-1,H)
-        group_act = torch.cat(group_act_list, dim=2)               # => (S,E,A,A-1,act_dim)
-
-        return group_obs.contiguous(), group_act.contiguous()
-
 
 class AgentIDPosEnc(nn.Module):
     """
@@ -569,85 +614,91 @@ class AgentIDPosEnc(nn.Module):
         return out_lin
 
 
-class ResidualAttention(nn.Module):
-    """
-    A flexible residual multi-head attention block with layernorm.
-    Supports:
-      - Self-attention (Q=K=V)
-      - Cross-attention (Q != K,V) if self_attention=False
-    """
-    def __init__(self, embed_dim, num_heads, dropout=0.0, self_attention=False):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.self_attention = self_attention
+class MultiAgentEmbeddingNetwork(nn.Module):
+    def __init__(self, net_cfg: Dict[str, Any]):
+        super(MultiAgentEmbeddingNetwork, self).__init__()
+        self.base_encoder = CrossAttentionFeatureExtractor(**net_cfg["cross_attention_feature_extractor"])
+        self.f = StatesActionsEncoder(**net_cfg["obs_actions_encoder"])
+        self.g = StatesEncoder(**net_cfg["obs_encoder"])
 
-        # Q, K, V transforms
-        self.query_proj = nn.Linear(embed_dim, embed_dim)
-        self.key_proj   = nn.Linear(embed_dim, embed_dim)
-        self.value_proj = nn.Linear(embed_dim, embed_dim)
+    def get_base_embedding(self, obs_dict: Dict[str, torch.Tensor]):
+        # base_encoder now handles variable input dimensions and returns matching output shape
+        agent_embeddings, attn_weights = self.base_encoder(obs_dict)
+        return agent_embeddings, attn_weights
 
-        # LayerNorms before attention
-        self.norm_q = nn.LayerNorm(embed_dim)
-        self.norm_k = nn.LayerNorm(embed_dim)
-        self.norm_v = nn.LayerNorm(embed_dim)
+    def get_baseline_embeddings(self, common_emb: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        """ Prepares the input for the baseline critic head. Handles 3D/4D common_emb. """
+        input_shape = common_emb.shape
+        H = input_shape[-1]
+        A = input_shape[-2] # Num Agents
+        leading_dims = input_shape[:-2] # (MB,) or (S, E)
+        B = int(np.prod(leading_dims)) # MB or S*E
 
-        self.mha = nn.MultiheadAttention(
-            embed_dim, num_heads, batch_first=True, dropout=dropout
-        )
+        act_shape = actions.shape
+        act_dim = act_shape[-1]
+        act_leading_dims = act_shape[:-2]
 
-        # Output LN
-        self.norm_out = nn.LayerNorm(embed_dim)
+        # Ensure actions have matching leading dimensions
+        if leading_dims != act_leading_dims:
+             raise ValueError(f"Leading dims mismatch: common_emb {leading_dims} vs actions {act_leading_dims}")
 
-    def forward(self, x_q, x_k=None, x_v=None):
-        if self.self_attention or x_k is None:
-            x_k = x_q
-        if self.self_attention or x_v is None:
-            x_v = x_q
+        baseline_input_list = []
 
-        # LN
-        qn = self.norm_q(x_q)
-        kn = self.norm_k(x_k)
-        vn = self.norm_v(x_v)
+        # Reshape inputs for encoders: (B*A, Dim)
+        common_emb_flat = common_emb.reshape(B*A, H)
+        actions_flat = actions.reshape(B*A, act_dim)
 
-        # Q, K, V
-        q_proj = self.query_proj(qn)
-        k_proj = self.key_proj(kn)
-        v_proj = self.value_proj(vn)
+        # Encode all agent observations using self.g -> (B*A, H)
+        all_agent_obs_emb_flat = self.g(common_emb_flat)
+        # Encode all agent obs-action pairs using self.f -> (B*A, H)
+        all_agent_obs_act_emb_flat = self.f(common_emb_flat, actions_flat)
 
-        # Multi-head attention
-        attn_out, attn_weights = self.mha(q_proj, k_proj, v_proj)
+        # Reshape back to (B, A, H)
+        all_agent_obs_emb = all_agent_obs_emb_flat.view(B, A, H)
+        all_agent_obs_act_emb = all_agent_obs_act_emb_flat.view(B, A, H)
 
-        # Residual
-        out = x_q + attn_out
-        out = self.norm_out(out)
+        # Construct the sequence [agent_j_obs, gm_1_obs_act, ..., gm_A-1_obs_act] for each agent j
+        for j in range(A):
+            agent_j_obs_emb = all_agent_obs_emb[:, j:j+1, :]  # (B, 1, H)
+            groupmates_obs_act_emb_list = []
+            for i in range(A):
+                if i != j:
+                    groupmates_obs_act_emb_list.append(all_agent_obs_act_emb[:, i:i+1, :]) # (B, 1, H)
 
-        return out, attn_weights
+            if A > 1:
+                 groupmates_obs_act_emb = torch.cat(groupmates_obs_act_emb_list, dim=1) # (B, A-1, H)
+                 baseline_j_input = torch.cat([agent_j_obs_emb, groupmates_obs_act_emb], dim=1) # (B, A, H)
+            else: # Handle single agent case
+                 baseline_j_input = agent_j_obs_emb # (B, 1, H) - seq len is 1
 
+            # Append results for agent j, add agent dimension 'A' back later
+            baseline_input_list.append(baseline_j_input.unsqueeze(1)) # (B, 1, A, H) or (B, 1, 1, H)
 
-class FeedForwardBlock(nn.Module):
-    """
-    Transformer-style position-wise feed-forward sublayer, using GELU:
-      x -> LN -> Linear -> GELU -> Linear -> Dropout -> x + residual
-    """
-    def __init__(self, embed_dim, hidden_dim=None, dropout=0.0):
-        super().__init__()
-        if hidden_dim is None:
-            hidden_dim = 4 * embed_dim  # a common choice
-        self.norm = nn.LayerNorm(embed_dim)
-        self.linear1 = nn.Linear(embed_dim, hidden_dim)
-        self.linear2 = nn.Linear(hidden_dim, embed_dim)
-        self.dropout = nn.Dropout(dropout)
-        self.act = nn.GELU()
+        # Concatenate across the agent dimension 'j' which is dim=1 now
+        # Resulting shape: (B, A, A, H) or (B, A, 1, H) if A=1
+        final_baseline_input = torch.cat(baseline_input_list, dim=1)
 
-    def forward(self, x):
-        out = self.norm(x)
-        out = self.linear1(out)
-        out = self.act(out)
-        out = self.dropout(out)
-        out = self.linear2(out)
-        out = self.dropout(out)
-        return x + out
+        # Reshape back to original leading dimensions
+        output_shape = leading_dims + (A, A, H) # e.g., (S, E, A, A, H) or (MB, A, A, H)
+        return final_baseline_input.view(output_shape).contiguous()
+
+    def get_state_embeddings(self, common_emb: torch.Tensor) -> torch.Tensor:
+        input_shape = common_emb.shape
+        H = input_shape[-1]; A = input_shape[-2]; leading_dims = input_shape[:-2]
+        B = int(np.prod(leading_dims))
+        emb_flat = self.g(common_emb.reshape(B*A, H))
+        return emb_flat.view(*leading_dims, A, H) # Use H from output if different
+
+    def get_state_action_embeddings(self, common_emb: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+         emb_shape = common_emb.shape; act_shape = actions.shape
+         H = emb_shape[-1]; D = act_shape[-1]; A = emb_shape[-2]; leading_dims = emb_shape[:-2]
+         B = int(np.prod(leading_dims))
+         common_emb_flat = common_emb.reshape(B*A, H); actions_flat = actions.reshape(B*A, D)
+         encoded_flat = self.f(common_emb_flat, actions_flat); OutputH = encoded_flat.shape[-1]
+         output_shape = leading_dims + (A, OutputH,)
+         return encoded_flat.view(output_shape)
+
+    def _split_agent_and_groupmates(self, obs_4d: torch.Tensor, actions: torch.Tensor): pass
 
 
 class CrossAttentionFeatureExtractor(nn.Module):
@@ -667,7 +718,7 @@ class CrossAttentionFeatureExtractor(nn.Module):
     def __init__(
         self,
         agent_obs_size: int = 9,
-        num_agents: int = 10,
+        num_agents: int = 10, # Max number of agents for ID embedding if used
         in_channels: int = 5,
         h: int = 50,
         w: int = 50,
@@ -676,8 +727,8 @@ class CrossAttentionFeatureExtractor(nn.Module):
         cnn_channels: list = [32, 64, 128],
         cnn_kernel_sizes: list = [5, 3, 3],
         cnn_strides: list = [2, 2, 2],
-        group_norms: list = [16, 8, 4],
-        block_scales: list = [12, 6, 3],
+        group_norms: list = [16, 8, 4], # Ensure group_norms[i] divides cnn_channels[i]
+        block_scales: list = [12, 6, 3], # Target H/W for pooling after each CNN block
         transformer_layers: int = 2,
         dropout_rate: float = 0.0,
         use_agent_id: bool = True,
@@ -697,10 +748,10 @@ class CrossAttentionFeatureExtractor(nn.Module):
         self.use_agent_id = use_agent_id
         self.block_scales = block_scales
         self.num_scales = len(block_scales)
-        assert len(cnn_channels) == len(block_scales), (
-            "cnn_channels and block_scales should have same length, "
-            "so we can pool each stage's output to the corresponding scale."
-        )
+        if len(cnn_channels) != len(block_scales) or len(cnn_channels) != len(cnn_kernel_sizes) or \
+           len(cnn_channels) != len(cnn_strides) or len(cnn_channels) != len(group_norms):
+             raise ValueError("CNN config lists (channels, kernels, strides, group_norms, block_scales) must have the same length.")
+
 
         # ---------------------------------------------------------
         # A) Simple Agent MLP to embed agent states
@@ -733,27 +784,40 @@ class CrossAttentionFeatureExtractor(nn.Module):
         prev_c = total_in_c
 
         for i, out_c in enumerate(cnn_channels):
-            block = nn.Sequential(
-                nn.Conv2d(prev_c, out_c, kernel_size=cnn_kernel_sizes[i],
-                          stride=cnn_strides[i], padding=cnn_kernel_sizes[i]//2),
-                nn.GroupNorm(group_norms[i], out_c),
-                nn.GELU(),
+             # Ensure group_norms[i] divides out_c
+             if out_c % group_norms[i] != 0:
+                 raise ValueError(f"group_norms[{i}] ({group_norms[i]}) must divide cnn_channels[{i}] ({out_c})")
 
-                nn.Conv2d(out_c, out_c, kernel_size=3, stride=1, padding=1),
-                nn.GroupNorm(group_norms[i], out_c),
-                nn.GELU()
+             block = nn.Sequential(
+                 nn.Conv2d(prev_c, out_c, kernel_size=cnn_kernel_sizes[i],
+                           stride=cnn_strides[i], padding=cnn_kernel_sizes[i]//2),
+                 nn.GroupNorm(group_norms[i], out_c),
+                 nn.GELU(),
+
+                 # Added another conv layer per block as suggested by some architectures
+                 nn.Conv2d(out_c, out_c, kernel_size=3, stride=1, padding=1),
+                 nn.GroupNorm(group_norms[i], out_c),
+                 nn.GELU()
             )
-            self.cnn_blocks.append(block)
-            prev_c = out_c
+             self.cnn_blocks.append(block)
+             prev_c = out_c
+
 
         # For each scale, we do a 1x1 conv => embed_dim
         self.block_embeds = nn.ModuleList()
         self.block_lns = nn.ModuleList()
         for out_c in cnn_channels:
             emb_conv = nn.Conv2d(out_c, embed_dim, kernel_size=1, stride=1)
-            ln = nn.LayerNorm(embed_dim)
+            ln = nn.LayerNorm(embed_dim) # LayerNorm applied on the embedding dimension
             self.block_embeds.append(emb_conv)
             self.block_lns.append(ln)
+
+
+        # Precompute positional embeddings for each scale to avoid recomputation
+        self.positional_embeddings = nn.ParameterList()
+        for scale in self.block_scales:
+             pos_emb = create_2d_sin_cos_pos_emb(scale, scale, embed_dim, device=torch.device("cpu")) # Create on CPU first
+             self.positional_embeddings.append(nn.Parameter(pos_emb, requires_grad=False))
 
         # ---------------------------------------------------------
         # D) Cross-Attn blocks (per scale) repeated for each layer
@@ -802,12 +866,133 @@ class CrossAttentionFeatureExtractor(nn.Module):
         self.block_embeds.apply(lambda m: init_weights_gelu_conv(m, scale=conv_init_scale))
 
         # All linear layers => linear_init_scale
-        self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale))
+        # Exclude LayerNorm/GroupNorm biases/weights from scaling if desired
+        self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
+
 
     def forward(self, state_dict: Dict[str, torch.Tensor]):
         """
         Inputs:
-          state_dict["agent"]   => shape (S,E,A, 9)   (agent-specific states)
+          state_dict["agent"]   => shape (..., A, agent_obs_size) e.g., (S,E,A,D) or (MB,A,D)
+          state_dict["central"] => shape (..., in_channels*h*w) e.g., (S,E, flat) or (MB, flat)
+        Returns:
+          agent_embed => (..., A, embed_dim) matching leading dims of input
+          attn_weights => (..., A, A) from the last agent self-attn
+        """
+        agent_state = state_dict["agent"]
+        central_data = state_dict["central"]
+        device = agent_state.device
+
+        # --- Determine Input Shape ---
+        agent_shape = agent_state.shape
+        leading_dims = agent_shape[:-2] # e.g., (S, E) or (MB,)
+        A = agent_shape[-2]          # Number of agents
+        obs_dim = agent_shape[-1]    # Agent observation dim
+        B = int(np.prod(leading_dims)) # Total batch size (S*E or MB)
+
+
+        # --- Move precomputed positional embeddings to the correct device ---
+        if self.positional_embeddings[0].device != device:
+            for i in range(len(self.positional_embeddings)):
+                self.positional_embeddings[i] = nn.Parameter(self.positional_embeddings[i].to(device), requires_grad=False)
+
+        # ------------------------------------------
+        # 1) Encode agent-state with agent_encoder
+        # ------------------------------------------
+        # Reshape to (B*A, obs_dim)
+        flat_agents = agent_state.view(B * A, obs_dim)
+        agent_embed = self.agent_encoder(flat_agents) # (B*A, embed_dim)
+        agent_embed = agent_embed.view(B, A, self.embed_dim)  # (B, A, embed_dim)
+
+        # ------------------------------------------
+        # 2) Optionally add agent ID embeddings
+        # ------------------------------------------
+        if self.use_agent_id:
+            agent_ids = torch.arange(A, device=device).view(1, A).expand(B, A) # (B, A)
+            discrete_emb = self.agent_id_embedding(agent_ids)    # (B, A, embed_dim)
+            pos_enc      = self.agent_id_pos_enc(agent_ids)      # (B, A, embed_dim)
+            agent_embed = agent_embed + discrete_emb + pos_enc # Add embeddings
+            agent_embed = self.agent_id_sum_ln(agent_embed)      # Apply LayerNorm
+
+        # ------------------------------------------
+        # 3) Reshape central => (B, in_channels, H, W) then add coordinate channels
+        # ------------------------------------------
+        expected_central_flat_dim = self.in_channels * self.h * self.w
+        # Reshape central data, assuming leading dims match agent_state
+        central_data = central_data.view(B, expected_central_flat_dim)
+        central_data = central_data.view(B, self.in_channels, self.h, self.w)
+
+        row_coords = torch.linspace(-1, 1, steps=self.h, device=device).view(1, 1, self.h, 1).expand(B, 1, self.h, self.w)
+        col_coords = torch.linspace(-1, 1, steps=self.w, device=device).view(1, 1, 1, self.w).expand(B, 1, self.h, self.w)
+        cnn_input = torch.cat([central_data, row_coords, col_coords], dim=1) # (B, in_channels+2, H, W)
+
+        # ------------------------------------------
+        # 4) Pass through CNN blocks => multi-scale feats
+        # ------------------------------------------
+        feats = []
+        out_cnn = cnn_input
+        for block in self.cnn_blocks:
+            out_cnn = block(out_cnn)
+            feats.append(out_cnn)
+
+        # ------------------------------------------
+        # 5) Process each scale: Pool, Embed, Flatten, Add Positional Encoding
+        # ------------------------------------------
+        patch_seqs = []
+        for i, f in enumerate(feats):
+            sH = sW = self.block_scales[i]
+            pooled = F.adaptive_avg_pool2d(f, (sH, sW)) # (B, c_out, sH, sW)
+            emb_2d = self.block_embeds[i](pooled) # (B, embed_dim, sH, sW)
+            B_, D_, HH_, WW_ = emb_2d.shape
+            patches = emb_2d.view(B_, D_, HH_*WW_).transpose(1, 2).contiguous() # (B, N_patches, embed_dim)
+            patches = self.block_lns[i](patches)
+            pos_2d = self.positional_embeddings[i].unsqueeze(0) # (1, N_patches, embed_dim)
+            patches = patches + pos_2d
+            patch_seqs.append(patches)
+
+        # ------------------------------------------
+        # 6) Transformer Layers: Cross-Attention and Self-Attention
+        # ------------------------------------------
+        attn_weights_final = None
+        for layer_idx in range(self.transformer_layers):
+            scale_blocks = self.cross_attn_blocks[layer_idx]
+            for scale_idx, block_dict in enumerate(scale_blocks):
+                cross_attn = block_dict["attn"]
+                ff_cross   = block_dict["ffn"]
+                scale_patches = patch_seqs[scale_idx]
+                agent_embed, _ = cross_attn(agent_embed, scale_patches, scale_patches)
+                agent_embed = ff_cross(agent_embed)
+
+            self_attn_block = self.agent_self_attn[layer_idx]
+            self_ff         = self.agent_self_ffn[layer_idx]
+            agent_embed, attn_weights = self_attn_block(agent_embed)
+            if layer_idx == self.transformer_layers - 1:
+                 attn_weights_final = attn_weights # (B, A, A)
+            agent_embed = self_ff(agent_embed)
+
+        # ------------------------------------------
+        # 7) Final LN + MLP
+        # ------------------------------------------
+        agent_embed = self.final_agent_ln(agent_embed)
+        residual = agent_embed
+        agent_embed = self.post_cross_mlp(agent_embed)
+        agent_embed = agent_embed + residual
+
+        # --- Reshape Output to Match Input's Leading Dimensions ---
+        # Final agent_embed shape is (B, A, embed_dim)
+        # Reshape back using the original leading_dims, A, and embed_dim
+        output_shape = leading_dims + (A, self.embed_dim)
+        agent_embed = agent_embed.view(output_shape) # e.g., (S, E, A, H) or (MB, A, H)
+
+        # Reshape final attention weights if they exist
+        if attn_weights_final is not None:
+             attn_output_shape = leading_dims + (A, A)
+             attn_weights_final = attn_weights_final.view(attn_output_shape) # e.g., (S, E, A, A) or (MB, A, A)
+
+        return agent_embed, attn_weights_final
+        """
+        Inputs:
+          state_dict["agent"]   => shape (S,E,A, agent_obs_size)
           state_dict["central"] => shape (S,E, in_channels*h*w)
         Returns:
           agent_embed => (S,E,A, embed_dim)
@@ -817,107 +1002,135 @@ class CrossAttentionFeatureExtractor(nn.Module):
         central_data= state_dict["central"]
         device = agent_state.device
 
-        S, E, A, obs_dim = agent_state.shape  # (S,E,A,9)
-        B = S * E
+        # Move precomputed positional embeddings to the correct device if needed
+        if self.positional_embeddings[0].device != device:
+            for i in range(len(self.positional_embeddings)):
+                self.positional_embeddings[i] = nn.Parameter(self.positional_embeddings[i].to(device), requires_grad=False)
+
+
+        S, E, A, obs_dim = agent_state.shape
+        B = S * E # Combined batch dimension
 
         # ------------------------------------------
         # 1) Encode agent-state with agent_encoder
         # ------------------------------------------
-        flat_agents = agent_state.view(-1, obs_dim)  # => (S*E*A, 9)
-        agent_embed = self.agent_encoder(flat_agents)
-        agent_embed = agent_embed.view(B, A, self.embed_dim)  # => (B,A,d)
+        flat_agents = agent_state.view(B * A, obs_dim) # (B*A, obs_dim)
+        agent_embed = self.agent_encoder(flat_agents) # (B*A, embed_dim)
+        agent_embed = agent_embed.view(B, A, self.embed_dim)  # (B, A, embed_dim)
+
 
         # 2) Optionally add agent ID embeddings
         if self.use_agent_id:
-            agent_ids = torch.arange(A, device=device).view(1,1,A).expand(S,E,A)
-            discrete_emb = self.agent_id_embedding(agent_ids)  # => (S,E,A,d)
-            pos_enc      = self.agent_id_pos_enc(agent_ids)    # => (S,E,A,d)
+            # Assuming agent IDs are implicitly 0 to A-1 for each environment in the batch
+            agent_ids = torch.arange(A, device=device).view(1, A).expand(B, A) # (B, A)
+            discrete_emb = self.agent_id_embedding(agent_ids)  # (B, A, embed_dim)
+            pos_enc      = self.agent_id_pos_enc(agent_ids)    # (B, A, embed_dim)
 
-            agent_embed_4d = agent_embed.view(S,E,A,self.embed_dim)
-            agent_embed_4d = agent_embed_4d + discrete_emb + pos_enc
-            agent_embed_4d = self.agent_id_sum_ln(agent_embed_4d)
-            agent_embed    = agent_embed_4d.view(B,A,self.embed_dim)
+            agent_embed = agent_embed + discrete_emb + pos_enc # Add embeddings
+            agent_embed = self.agent_id_sum_ln(agent_embed)    # Apply LayerNorm
 
         # ------------------------------------------
-        # 3) Reshape central => (B, in_channels, H, W) then add row/col
+        # 3) Reshape central => (B, in_channels, H, W) then add coordinate channels
         # ------------------------------------------
+        # Ensure central_data has the correct total size
+        expected_central_flat_dim = self.in_channels * self.h * self.w
+        if central_data.shape[-1] != expected_central_flat_dim:
+            raise ValueError(f"Expected central data flat dim {expected_central_flat_dim}, got {central_data.shape[-1]}")
+        
         central_data = central_data.view(B, self.in_channels, self.h, self.w)
-        row_coords = torch.linspace(-1, 1, steps=self.h, device=device).view(1,1,self.h,1).expand(B,1,self.h,self.w)
-        col_coords = torch.linspace(-1, 1, steps=self.w, device=device).view(1,1,1,self.w).expand(B,1,self.h,self.w)
-        cnn_input = torch.cat([central_data, row_coords, col_coords], dim=1)
-        # => (B, in_channels+2, H, W)
+
+        # Create coordinate channels dynamically on the correct device
+        row_coords = torch.linspace(-1, 1, steps=self.h, device=device).view(1, 1, self.h, 1).expand(B, 1, self.h, self.w)
+        col_coords = torch.linspace(-1, 1, steps=self.w, device=device).view(1, 1, 1, self.w).expand(B, 1, self.h, self.w)
+        cnn_input = torch.cat([central_data, row_coords, col_coords], dim=1) # (B, in_channels+2, H, W)
 
         # ------------------------------------------
         # 4) Pass through CNN blocks => multi-scale feats
-        #    We'll store the output of each block in feats[]
         # ------------------------------------------
         feats = []
         out_cnn = cnn_input
         for block in self.cnn_blocks:
             out_cnn = block(out_cnn)
-            feats.append(out_cnn)
+            feats.append(out_cnn) # Store output of each block
 
         # ------------------------------------------
-        # 5) Flatten each scale => patch seq => add 2D pos enc
+        # 5) Process each scale: Pool, Embed, Flatten, Add Positional Encoding
         # ------------------------------------------
         patch_seqs = []
         for i, f in enumerate(feats):
-            sH = sW = self.block_scales[i]
-            # Adaptive pool to shape (sH, sW)
-            pooled = F.adaptive_avg_pool2d(f, (sH, sW))  # => (B, c_out, sH, sW)
+            sH = sW = self.block_scales[i] # Target size for this scale
 
-            # Project to embed_dim
-            emb_2d = self.block_embeds[i](pooled)  # => (B, embed_dim, sH, sW)
+            # Adaptive average pooling to target size (sH, sW)
+            pooled = F.adaptive_avg_pool2d(f, (sH, sW)) # (B, c_out, sH, sW)
 
-            # Flatten => (B, n_patches, embed_dim)
+            # Project feature channels to embed_dim using 1x1 Conv
+            emb_2d = self.block_embeds[i](pooled) # (B, embed_dim, sH, sW)
+
+            # Flatten spatial dimensions: (B, embed_dim, sH, sW) -> (B, embed_dim, sH*sW) -> (B, sH*sW, embed_dim)
             B_, D_, HH_, WW_ = emb_2d.shape
-            patches = emb_2d.view(B_, D_, HH_*WW_).transpose(1,2)  # => (B, #patches, d)
+            patches = emb_2d.view(B_, D_, HH_*WW_).transpose(1, 2).contiguous() # (B, N_patches, embed_dim)
+
+            # Apply LayerNorm
             patches = self.block_lns[i](patches)
 
-            # Add 2D sinusoidal position embedding
-            pos_2d = create_2d_sin_cos_pos_emb(HH_, WW_, self.embed_dim, device)
-            patches = patches + pos_2d.unsqueeze(0)  # => (1, #patches, d)
+            # Add precomputed 2D sinusoidal positional embedding for this scale
+            # Positional embedding shape is (sH*sW, embed_dim)
+            pos_2d = self.positional_embeddings[i].unsqueeze(0) # Add batch dim -> (1, N_patches, embed_dim)
+            patches = patches + pos_2d # Add to patch embeddings
 
-            patch_seqs.append(patches)
+            patch_seqs.append(patches) # Store sequence of patches for this scale
 
         # ------------------------------------------
-        # 6) Transformer Layers:
-        #    - CrossAttn blocks per scale
-        #    - Agent self-attn
+        # 6) Transformer Layers: Cross-Attention and Self-Attention
         # ------------------------------------------
-        attn_weights_final = None
+        attn_weights_final = None # To store weights from the last self-attention layer
         for layer_idx in range(self.transformer_layers):
-            scale_blocks = self.cross_attn_blocks[layer_idx]  # => nn.ModuleList
+            scale_blocks = self.cross_attn_blocks[layer_idx] # ModuleList of ModuleDicts for this layer
 
-            # CROSS-ATTN for each scale in sequence
+            # CROSS-ATTENTION: Agent embeddings attend to each scale's patches
             for scale_idx, block_dict in enumerate(scale_blocks):
                 cross_attn = block_dict["attn"]
                 ff_cross   = block_dict["ffn"]
 
-                scale_patches = patch_seqs[scale_idx]  # => (B, nPatches, d)
+                scale_patches = patch_seqs[scale_idx] # (B, N_patches_scale, embed_dim)
+
+                # Agent embeddings (queries) attend to patch embeddings (keys, values)
                 agent_embed, _ = cross_attn(
-                    x_q=agent_embed,
-                    x_k=scale_patches,
-                    x_v=scale_patches
+                    x_q=agent_embed,    # (B, A, embed_dim)
+                    x_k=scale_patches,  # (B, N_patches_scale, embed_dim)
+                    x_v=scale_patches   # (B, N_patches_scale, embed_dim)
                 )
+                # Apply feed-forward block after cross-attention
                 agent_embed = ff_cross(agent_embed)
 
-            # Agent Self-Attn
+            # AGENT SELF-ATTENTION: Agents attend to each other
             self_attn_block = self.agent_self_attn[layer_idx]
             self_ff         = self.agent_self_ffn[layer_idx]
 
-            agent_embed, attn_weights_final = self_attn_block(agent_embed)
+            # Agents attend to themselves
+            agent_embed, attn_weights = self_attn_block(agent_embed) # Get weights here
+             # Store weights from the *last* self-attention layer
+            if layer_idx == self.transformer_layers - 1:
+                 attn_weights_final = attn_weights # (B, A, A)
+
+            # Apply feed-forward block after self-attention
             agent_embed = self_ff(agent_embed)
 
         # ------------------------------------------
         # 7) Final LN + MLP
         # ------------------------------------------
-        agent_embed = self.final_agent_ln(agent_embed)
-        agent_embed = self.post_cross_mlp(agent_embed) + agent_embed
+        agent_embed = self.final_agent_ln(agent_embed) # Apply LayerNorm
+        residual = agent_embed # Store pre-MLP value for residual connection
+        agent_embed = self.post_cross_mlp(agent_embed) # Apply MLP
+        agent_embed = agent_embed + residual # Add residual connection
 
-        # Reshape => (S,E,A,d)
+        # Reshape back to (S, E, A, embed_dim)
         agent_embed = agent_embed.view(S, E, A, self.embed_dim)
+
+        # Reshape final attention weights if they exist
         if attn_weights_final is not None:
-            attn_weights_final = attn_weights_final.view(S, E, A, A)
+             # attn_weights_final shape was (B, A, A), where B = S * E
+             attn_weights_final = attn_weights_final.view(S, E, A, A)
+
 
         return agent_embed, attn_weights_final
