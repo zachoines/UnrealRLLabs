@@ -101,7 +101,7 @@
       "ppo_clip_range": 0.2,
       "value_clip_range": 0.2,
       "entropy_coeff": 0.001,
-      "rewards_normalizer": {
+      "rewards_normalizer_disabled": {
         "warmup_steps": 10000
       },
       "schedulers": {
@@ -186,10 +186,10 @@
     "num_environments": 4,
     "epochs": 3,
     "mini_batch_size": 64,
-    "buffer_size": 256,
-    "batch_size": 256,
+    "buffer_size": 512,
+    "batch_size": 512,
     "AgentsResetFrequency": 0,
-    "ActionRepeat": 3,
+    "ActionRepeat": 1,
     "saveFrequency": 100
   }
 }
