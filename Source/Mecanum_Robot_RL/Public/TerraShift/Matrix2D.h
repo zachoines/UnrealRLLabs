@@ -4,140 +4,256 @@
 #include "Math/UnrealMathUtility.h"
 #include "Matrix2D.generated.h"
 
-/**
- * A "row proxy" that allows user-friendly [row][col] access while
- * internally referencing a single TArray<float> storage.
- */
-struct FFMatrix2DRowProxy
-{
-    // Pointer to the parent FMatrix2D's data
-    float* RowData;
-    // Number of columns in the matrix
-    int32 NumCols;
-
-    // Indexing operator gives element reference at col
-    float& operator[](int32 ColIndex)
-    {
-        check(ColIndex >= 0 && ColIndex < NumCols);
-        return RowData[ColIndex];
-    }
-
-    const float& operator[](int32 ColIndex) const
-    {
-        check(ColIndex >= 0 && ColIndex < NumCols);
-        return RowData[ColIndex];
-    }
-};
+// Forward declarations for proxy structs
+struct FFMatrix2DRowProxy;
+struct FFMatrix2DConstRowProxy;
 
 /**
  * A simple 2D matrix struct for storing and operating on float data,
- * implemented via a single TArray<float> to avoid nested TArray issues.
+ * implemented via a single TArray<float> to maintain data locality and avoid nested TArray issues.
+ * Includes checks to maintain consistency between dimensions and data storage size.
  */
 USTRUCT(BlueprintType)
 struct UNREALRLLABS_API FMatrix2D
 {
-    GENERATED_BODY()
+	GENERATED_BODY()
 
 private:
-    UPROPERTY()
-    int32 Rows;
+	/** Number of rows. Should only be modified internally or via Resize. */
+	UPROPERTY()
+	int32 Rows;
 
-    UPROPERTY()
-    int32 Columns;
+	/** Number of columns. Should only be modified internally or via Resize. */
+	UPROPERTY()
+	int32 Columns;
+
+	/** Internal helper to check if the matrix state is consistent (Data.Num() == Rows * Columns). */
+	FORCEINLINE void CheckInvariants(const TCHAR* Context = TEXT("")) const
+	{
+		checkf(Rows >= 0, TEXT("Matrix Invariant Check Failed (%s): Rows (%d) cannot be negative."), Context, Rows);
+		checkf(Columns >= 0, TEXT("Matrix Invariant Check Failed (%s): Columns (%d) cannot be negative."), Context, Columns);
+		const int32 ExpectedSize = Rows * Columns;
+		checkf(Data.Num() == ExpectedSize, TEXT("Matrix Invariant Check Failed (%s): Data.Num() (%d) does not match Rows*Columns (%d * %d = %d)."), Context, Data.Num(), Rows, Columns, ExpectedSize);
+	}
+
+	/** Internal helper to check dimensions match for binary operations */
+	FORCEINLINE void CheckDimensionsMatch(const FMatrix2D& Other, const TCHAR* Context = TEXT("")) const
+	{
+		checkf(Rows == Other.Rows && Columns == Other.Columns, TEXT("Matrix Dimension Mismatch (%s): (%d x %d) vs (%d x %d)"), Context, Rows, Columns, Other.Rows, Other.Columns);
+	}
+
+	/** Helper to get the linear index in the Data array for (row,col). Assumes valid indices. */
+	FORCEINLINE int32 LinearIndex(int32 RowIndex, int32 ColIndex) const
+	{
+		// No bounds check here for performance; should be checked before calling if necessary.
+		return (RowIndex * Columns) + ColIndex;
+	}
 
 public:
-    // Constructors
-    FMatrix2D();
-    FMatrix2D(int32 InRows, int32 InColumns);
-    FMatrix2D(int32 InRows, int32 InColumns, float InitialValue);
-    FMatrix2D(const TArray<TArray<float>>& InData);
+	/** Enum defining how Resize initializes new elements or handles existing ones. */
+	enum class EInitialization { None, Zero, Uninitialized }; // Moved declaration before usage
 
-    // Copy constructor and assignment operator
-    FMatrix2D(const FMatrix2D& Other);
-    FMatrix2D& operator=(const FMatrix2D& Other);
+	//--------------------------------------------------------------------------
+	// Constructors & Initialization
+	//--------------------------------------------------------------------------
 
-    // Element-wise operators
-    FMatrix2D operator+(const FMatrix2D& Other) const;
-    FMatrix2D& operator+=(const FMatrix2D& Other);
-    FMatrix2D operator-(const FMatrix2D& Other) const;
-    FMatrix2D& operator-=(const FMatrix2D& Other);
-    FMatrix2D operator*(const FMatrix2D& Other) const;
-    FMatrix2D& operator*=(const FMatrix2D& Other);
-    FMatrix2D operator/(const FMatrix2D& Other) const;
-    FMatrix2D& operator/=(const FMatrix2D& Other);
+	/** Default constructor: Creates an empty 0x0 matrix. */
+	FMatrix2D();
 
-    // Scalar operations
-    FMatrix2D operator+(float Scalar) const;
-    FMatrix2D& operator+=(float Scalar);
-    FMatrix2D operator-(float Scalar) const;
-    FMatrix2D& operator-=(float Scalar);
-    FMatrix2D operator*(float Scalar) const;
-    FMatrix2D& operator*=(float Scalar);
-    FMatrix2D operator/(float Scalar) const;
-    FMatrix2D& operator/=(float Scalar);
+	/** Constructor: Creates a matrix with specified dimensions, uninitialized elements. */
+	FMatrix2D(int32 InRows, int32 InColumns);
 
-    // **Row indexing**: returns a proxy object so user can do matrix[row][col].
-    FFMatrix2DRowProxy operator[](int32 RowIndex);
-    const FFMatrix2DRowProxy operator[](int32 RowIndex) const;
+	/** Constructor: Creates a matrix with specified dimensions, initialized to a specific value. */
+	FMatrix2D(int32 InRows, int32 InColumns, float InitialValue);
 
-    // Sub-matrix extraction
-    FMatrix2D Sub(int32 RowStart, int32 RowEnd, int32 ColStart, int32 ColEnd) const;
+	/** Constructor: Creates a matrix from a 2D TArray. Input must be rectangular. */
+	explicit FMatrix2D(const TArray<TArray<float>>& InData);
 
-    // Mathematical functions
-    FMatrix2D Exp() const;
-    FMatrix2D Cos() const;
-    FMatrix2D Sin() const;
-    FMatrix2D Tanh() const;
-    
-    // Matrix functions
-    float Dot(const FMatrix2D& Other) const;
-    float Norm() const;
-    void Clip(float MinValue, float MaxValue);
-    void Init(float Value);
+	//--------------------------------------------------------------------------
+	// Copy/Move Semantics
+	//--------------------------------------------------------------------------
 
-    // Utility functions
-    FString ToString() const;
-    FMatrix2D Random(float Min, float Max) const;
+	FMatrix2D(const FMatrix2D& Other);
+	FMatrix2D& operator=(const FMatrix2D& Other);
+	FMatrix2D(FMatrix2D&& Other) noexcept;
+	FMatrix2D& operator=(FMatrix2D&& Other) noexcept;
 
-    // Get dimensions
-    int32 GetNumRows() const;
-    int32 GetNumColumns() const;
+	//--------------------------------------------------------------------------
+	// Element-wise Operators (Matrix-Matrix)
+	//--------------------------------------------------------------------------
 
-    // Additional operators for scalar operations
-    friend FMatrix2D operator+(float Scalar, const FMatrix2D& Matrix);
-    friend FMatrix2D operator-(float Scalar, const FMatrix2D& Matrix);
-    friend FMatrix2D operator*(float Scalar, const FMatrix2D& Matrix);
-    friend FMatrix2D operator/(float Scalar, const FMatrix2D& Matrix);
+	[[nodiscard]] FMatrix2D operator+(const FMatrix2D& Other) const;
+	FMatrix2D& operator+=(const FMatrix2D& Other);
+	[[nodiscard]] FMatrix2D operator-(const FMatrix2D& Other) const;
+	FMatrix2D& operator-=(const FMatrix2D& Other);
+	/** Element-wise multiplication (Hadamard product). */
+	[[nodiscard]] FMatrix2D operator*(const FMatrix2D& Other) const;
+	FMatrix2D& operator*=(const FMatrix2D& Other);
+	/** Element-wise division. Checks for division by zero. */
+	[[nodiscard]] FMatrix2D operator/(const FMatrix2D& Other) const;
+	FMatrix2D& operator/=(const FMatrix2D& Other);
 
-    // Min/Max
-    float Min() const;
-    float Max() const;
+	//--------------------------------------------------------------------------
+	// Scalar Operators
+	//--------------------------------------------------------------------------
 
-    // New Helper Methods
+	[[nodiscard]] FMatrix2D operator+(float Scalar) const;
+	FMatrix2D& operator+=(float Scalar);
+	[[nodiscard]] FMatrix2D operator-(float Scalar) const;
+	FMatrix2D& operator-=(float Scalar);
+	[[nodiscard]] FMatrix2D operator*(float Scalar) const;
+	FMatrix2D& operator*=(float Scalar);
+	/** Scalar division. Checks for division by zero. */
+	[[nodiscard]] FMatrix2D operator/(float Scalar) const;
+	FMatrix2D& operator/=(float Scalar);
 
-    /** Returns a FMatrix2D whose elements are the absolute values of this matrix. */
-    FMatrix2D Abs() const;
+	// Friend operators for scalar on the left
+	friend FMatrix2D operator+(float Scalar, const FMatrix2D& Matrix);
+	friend FMatrix2D operator-(float Scalar, const FMatrix2D& Matrix);
+	friend FMatrix2D operator*(float Scalar, const FMatrix2D& Matrix);
+	friend FMatrix2D operator/(float Scalar, const FMatrix2D& Matrix);
 
-    /** Returns the sum of all elements in this matrix. */
-    float Sum() const;
+	//--------------------------------------------------------------------------
+	// Accessors & Indexing
+	//--------------------------------------------------------------------------
 
-    /** Returns the arithmetic mean of all elements in this matrix. */
-    float Mean() const;
+	/** Non-const row indexing: returns a proxy object for M[row][col] access. */
+	FFMatrix2DRowProxy operator[](int32 RowIndex);
+	/** Const row indexing: returns a const proxy object for M[row][col] access. */
+	const FFMatrix2DConstRowProxy operator[](int32 RowIndex) const;
 
-    // Transpose the matrix
-    FMatrix2D T() const;
+	/** Get the number of rows. */
+	FORCEINLINE int32 GetNumRows() const { return Rows; }
+	/** Get the number of columns. */
+	FORCEINLINE int32 GetNumColumns() const { return Columns; }
+	/** Get the total number of elements (Rows * Columns). */
+	FORCEINLINE int32 Num() const { return Rows * Columns; }
 
-    // Standard matrix multiplication
-    FMatrix2D MatMul(const FMatrix2D& Other) const;
+	/** Get read-only access to the underlying flat data array. */
+	const TArray<float>& GetData() const { return Data; }
+	/** Get read/write access to the underlying flat data array. Use with extreme caution, as direct modification can break invariants. Prefer using matrix methods. */
+	TArray<float>& GetData_Unsafe() { return Data; }
 
-    // Single TArray of size (Rows * Columns) for data
-    UPROPERTY()
-    TArray<float> Data;
+	//--------------------------------------------------------------------------
+	// Matrix Operations & Manipulation
+	//--------------------------------------------------------------------------
+
+	/** Extracts a sub-matrix. Indices are inclusive. Negative indices count from the end. */
+	[[nodiscard]] FMatrix2D Sub(int32 RowStart, int32 RowEnd, int32 ColStart, int32 ColEnd) const;
+
+	/** Applies the exponential function element-wise. */
+	[[nodiscard]] FMatrix2D Exp() const;
+	/** Applies the cosine function element-wise. */
+	[[nodiscard]] FMatrix2D Cos() const;
+	/** Applies the sine function element-wise. */
+	[[nodiscard]] FMatrix2D Sin() const;
+	/** Applies the hyperbolic tangent function element-wise. */
+	[[nodiscard]] FMatrix2D Tanh() const;
+	/** Applies the absolute value function element-wise. */
+	[[nodiscard]] FMatrix2D Abs() const;
+
+	/** Calculates the element-wise dot product (sum of Hadamard product) with another matrix of the same dimensions. */
+	[[nodiscard]] float Dot(const FMatrix2D& Other) const;
+	/** Calculates the Frobenius norm (sqrt of sum of squares). */
+	[[nodiscard]] float Norm() const;
+	/** Calculates the sum of all elements. */
+	[[nodiscard]] float Sum() const;
+	/** Calculates the mean of all elements. Returns 0 for an empty matrix. */
+	[[nodiscard]] float Mean() const;
+	/** Finds the minimum element value. Asserts if the matrix is empty. */
+	[[nodiscard]] float Min() const;
+	/** Finds the maximum element value. Asserts if the matrix is empty. */
+	[[nodiscard]] float Max() const;
+
+	/** Clamps all elements within the specified range [MinValue, MaxValue]. */
+	void Clip(float MinValue, float MaxValue);
+	/** Initializes all elements to the specified value. */
+	void Init(float Value);
+
+	/** Returns a string representation of the matrix (potentially truncated for large matrices). */
+	[[nodiscard]] FString ToString() const;
+	/** Creates a new matrix with the same dimensions, filled with random numbers in the range [Min, Max]. */
+	[[nodiscard]] FMatrix2D Random(float Min, float Max) const;
+
+	/** Resizes the matrix to NewRows x NewCols. Data may be lost or uninitialized depending on InitMethod. */
+	void Resize(int32 NewRows, int32 NewCols, EInitialization InitMethod = EInitialization::None); // Enum declared above
+
+	/** Returns the transpose of the matrix. */
+	[[nodiscard]] FMatrix2D T() const;
+
+	/** Performs standard matrix multiplication (this * Other). Asserts if dimensions are incompatible. */
+	[[nodiscard]] FMatrix2D MatMul(const FMatrix2D& Other) const;
+
+public: // Keep Data public for UPROPERTY reflection, but discourage direct modification.
+	/**
+	 * Single TArray holding the matrix data in row-major order.
+	 * Size should always be Rows * Columns. Direct modification can break class invariants.
+	 * Prefer using matrix methods like Resize, Init, Clip, or operators.
+	 */
+	UPROPERTY()
+	TArray<float> Data;
+};
+
+
+//============================================================================
+// Proxy Struct Definitions (moved implementation outside FMatrix2D for clarity)
+//============================================================================
+
+/**
+ * A "row proxy" that allows user-friendly non-const [row][col] access while
+ * internally referencing a single TArray<float> storage.
+ */
+struct FFMatrix2DRowProxy
+{
+	friend struct FMatrix2D;
+	friend struct FFMatrix2DConstRowProxy;
 
 private:
-    /** Helper to get the index in the single array for (row,col). */
-    FORCEINLINE int32 LinearIndex(int32 RowIndex, int32 ColIndex) const
-    {
-        return (RowIndex * Columns) + ColIndex;
-    }
+	float* RowData; // Pointer to the start of the row in the parent matrix's Data array
+	int32 NumCols;  // Number of columns in the parent matrix
+
+	// Private constructor: Only FMatrix2D can create this proxy.
+	FFMatrix2DRowProxy(float* InRowData, int32 InNumCols)
+		: RowData(InRowData), NumCols(InNumCols) {}
+
+public:
+	// Column indexing operator: Returns a modifiable reference to the element.
+	float& operator[](int32 ColIndex)
+	{
+		checkf(ColIndex >= 0 && ColIndex < NumCols, TEXT("Column index %d out of bounds (0-%d)"), ColIndex, NumCols - 1);
+		checkf(RowData != nullptr, TEXT("RowData pointer is null in FFMatrix2DRowProxy"));
+		return RowData[ColIndex];
+	}
+
+	// Column indexing operator (const overload): Returns a const reference (allows reading from non-const proxy).
+	const float& operator[](int32 ColIndex) const
+	{
+		checkf(ColIndex >= 0 && ColIndex < NumCols, TEXT("Column index %d out of bounds (0-%d)"), ColIndex, NumCols - 1);
+		checkf(RowData != nullptr, TEXT("RowData pointer is null in FFMatrix2DRowProxy"));
+		return RowData[ColIndex];
+	}
+};
+
+/**
+ * A "const row proxy" that allows user-friendly const [row][col] access.
+ */
+struct FFMatrix2DConstRowProxy
+{
+	friend struct FMatrix2D;
+private:
+	const float* RowData; // Const pointer to the start of the row
+	int32 NumCols;       // Number of columns
+
+	// Private constructor: Only FMatrix2D can create this proxy.
+	FFMatrix2DConstRowProxy(const float* InRowData, int32 InNumCols)
+		: RowData(InRowData), NumCols(InNumCols) {}
+
+public:
+	// Column indexing operator: Returns a const reference to the element.
+	const float& operator[](int32 ColIndex) const
+	{
+		checkf(ColIndex >= 0 && ColIndex < NumCols, TEXT("Column index %d out of bounds (0-%d)"), ColIndex, NumCols - 1);
+		checkf(RowData != nullptr, TEXT("RowData pointer is null in FFMatrix2DConstRowProxy"));
+		return RowData[ColIndex];
+	}
 };
