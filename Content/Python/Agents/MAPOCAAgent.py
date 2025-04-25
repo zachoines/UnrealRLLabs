@@ -5,7 +5,6 @@ import torch.optim as optim
 import numpy as np
 from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import LinearLR
-# Ensure these imports are correct based on your project structure
 from Source.StateRecorder import StateRecorder
 from Source.Agent import Agent
 from Source.Utility import RunningMeanStdNormalizer, LinearValueScheduler
@@ -69,21 +68,12 @@ class MAPOCAAgent(Agent):
         pol_cfg = agent_cfg["networks"]["policy_network"]
         if self.action_space_type == "continuous":
             self.policy_net = TanhContinuousPolicyNetwork(
-                in_features=pol_cfg["in_features"],
-                out_features=self.action_dim,
-                hidden_size=pol_cfg["hidden_size"],
-                mean_scale=pol_cfg.get("mean_scale", 1.0),
-                log_std_min=pol_cfg.get("log_std_min", -20.0),
-                log_std_max=pol_cfg.get("log_std_max", 2.0),
-                entropy_method=pol_cfg.get("entropy_method", "analytic"),
-                n_entropy_samples=pol_cfg.get("n_entropy_samples", 5),
-                linear_init_scale=pol_cfg.get("linear_init_scale", 0.1)
+                **pol_cfg
             ).to(device)
         else: # Discrete
             self.policy_net = DiscretePolicyNetwork(
                 in_features=pol_cfg["in_features"],
                 out_features=self.action_dim,
-                hidden_size=pol_cfg["hidden_size"]
             ).to(device)
 
         # --- Optimizer & Schedulers ---

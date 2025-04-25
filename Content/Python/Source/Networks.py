@@ -378,28 +378,41 @@ class ResidualAttention(nn.Module):
 
 class TanhContinuousPolicyNetwork(nn.Module):
     """
-    A Tanh-squashed Normal distribution using PyTorch's TransformedDistribution.
+    Continuous policy network outputting a Tanh-squashed Normal distribution.
     """
-
     def __init__(
         self,
         in_features: int,
         out_features: int,
         hidden_size: int,
         mean_scale: float,
-        log_std_min: float,
-        log_std_max: float,
-        entropy_method: str = "analytic",
-        n_entropy_samples: int = 5,
+        std_init_bias: float = 0.0, # Configurable initial bias for the std dev head's final layer
+        min_std: float = 1e-4, # Minimum standard deviation to prevent collapse
+        entropy_method: str = "analytic", # "analytic" or "mc"
+        n_entropy_samples: int = 5, #  only for mc
         linear_init_scale: float = 1.0,
     ):
+        """
+        Args:
+            in_features: Dimension of the input embedding.
+            out_features: Dimension of the continuous action space.
+            hidden_size: Size of the hidden layers.
+            mean_scale: Scaling factor for the tanh activation on the mean.
+            std_init_bias: Initial bias value for the final layer of the std dev head.
+                           Controls the average initial standard deviation.
+            min_std: Minimum allowed standard deviation.
+            entropy_method: Method to compute entropy ('analytic' or 'mc').
+            n_entropy_samples: Number of samples for Monte Carlo entropy estimation.
+            linear_init_scale: Scaling factor for Kaiming initialization of linear layers.
+        """
         super().__init__()
         self.mean_scale = mean_scale
-        self.log_std_min = log_std_min
-        self.log_std_max = log_std_max
+        self.min_std = min_std
         self.entropy_method = entropy_method
         self.n_entropy_samples = n_entropy_samples
+        self.std_init_bias = std_init_bias
 
+        # Shared layers processing the input embedding
         self.shared = nn.Sequential(
             nn.Linear(in_features, hidden_size),
             nn.GELU(),
@@ -407,97 +420,153 @@ class TanhContinuousPolicyNetwork(nn.Module):
             nn.GELU(),
         )
 
+        # Head for predicting the mean of the Normal distribution
         self.mean_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.GELU(),
             nn.Linear(hidden_size, out_features),
         )
 
-        self.log_std_head = nn.Sequential(
+        # Head for predicting parameters used to compute standard deviation
+        self.std_param_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.GELU(),
-            nn.Linear(hidden_size, out_features),
+            nn.Linear(hidden_size, out_features)
         )
 
+        # Apply standard Kaiming initialization with GELU assumption
         self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale))
 
+        # Override the bias initialization for the final layer of std_param_head
+        if hasattr(self.std_param_head[-1], 'bias'):
+             nn.init.constant_(self.std_param_head[-1].bias, self.std_init_bias)
 
     def forward(self, x: torch.Tensor):
+        """
+        Computes the mean and log_std of the underlying Normal distribution
+        based on the input embedding.
+
+        Args:
+            x: Input embedding tensor (shape: ..., in_features).
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Mean and log_std tensors.
+        """
         feats = self.shared(x)
 
-        # Mean in [-mean_scale, +mean_scale]
+        # Calculate mean (squashed to [-mean_scale, mean_scale])
         raw_mean = self.mean_head(feats)
         mean = self.mean_scale * torch.tanh(raw_mean)
 
-        # log_std in [log_std_min, log_std_max]
-        raw_log_std = self.log_std_head(feats)
-        clamped_log_std = self.log_std_min + 0.5 * (self.log_std_max - self.log_std_min) * (
-            torch.tanh(raw_log_std) + 1.0
-        )
+        # Calculate standard deviation using softplus and add minimum floor
+        std_params = self.std_param_head(feats)
+        std = F.softplus(std_params) + self.min_std
+        # Calculate log_std needed for Normal distribution
+        log_std = torch.log(std)
 
-        return mean, clamped_log_std
+        return mean, log_std
 
     def get_actions(self, emb: torch.Tensor, eval: bool=False):
         """
-        Return final_action in [-1,1], plus log_probs & entropies
+        Samples an action from the Tanh-squashed distribution, or returns the mean
+        for evaluation. Also returns log probabilities and entropy.
+
+        Args:
+            emb: Input embedding tensor.
+            eval: If True, return the deterministic mean of the distribution.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                - actions: Sampled or mean action (in [-1, 1]).
+                - log_probs: Log probability of the action.
+                - entropies: Entropy of the distribution.
         """
         mean, log_std = self.forward(emb)
         std = torch.exp(log_std)
 
-        # Base Normal
+        # Define the base Normal distribution and the Tanh transformation
         base_dist = Normal(mean, std)
-        transform = TanhTransform(cache_size=1)
+        transform = TanhTransform(cache_size=1) # cache_size=1 for efficiency
         tanh_dist = TransformedDistribution(base_dist, transform)
 
+        # Sample or get mean based on eval flag
         if eval:
-            # deterministic => we can do transform(mean), or use tanh_dist.mean
-            actions = tanh_dist.mean  # shape => (B, out_features)
+            # Use the distribution's mean for deterministic evaluation
+            actions = tanh_dist.mean
         else:
-            # sample in [-1,1]
-            actions = tanh_dist.rsample()  # => (B, out_features)
+            # Sample from the distribution using reparameterization trick
+            actions = tanh_dist.rsample()
 
-        action_clamped = actions.clamp(-1+1e-6, 1-1e-6) # To avoid NAN's caused by tahn saturation
-        log_probs = tanh_dist.log_prob(action_clamped).sum(dim=-1)  # sum across action dims
+        # Clamp actions slightly away from -1 and 1 for numerical stability of log_prob
+        action_clamped = actions.clamp(-1+1e-6, 1-1e-6)
+
+        # Calculate log probability (summed across action dimensions)
+        log_probs = tanh_dist.log_prob(action_clamped).sum(dim=-1)
+
+        # Calculate entropy
         entropies = self._compute_entropy(tanh_dist)
 
         return action_clamped, log_probs, entropies
 
     def recompute_log_probs(self, emb: torch.Tensor, stored_actions: torch.Tensor):
         """
-        'stored_actions' are the final actions in [-1,1].
-        We invert them internally (via transform.inv) for stable log_prob calculation.
+        Recomputes log probabilities and entropy for previously sampled actions
+        given the current policy parameters and state embedding.
+
+        Args:
+            emb: Input embedding tensor.
+            stored_actions: Actions previously sampled (in [-1, 1]).
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Recomputed log_probs and entropies.
         """
         mean, log_std = self.forward(emb)
         std = torch.exp(log_std)
 
+        # Recreate the distribution with current parameters
         base_dist = Normal(mean, std)
         transform = TanhTransform(cache_size=1)
         tanh_dist = TransformedDistribution(base_dist, transform)
 
-        # We do *not* have raw actions. Instead, we have [-1,1] actions => invert via TanhTransform
-        log_probs = tanh_dist.log_prob(stored_actions).sum(dim=-1)
+        # Calculate log probability of the stored actions under the current distribution
+        # Clamping stored_actions might be necessary if they were very close to +/- 1
+        stored_actions_clamped = stored_actions.clamp(-1+1e-6, 1-1e-6)
+        log_probs = tanh_dist.log_prob(stored_actions_clamped).sum(dim=-1)
+
+        # Calculate entropy of the current distribution
         entropies = self._compute_entropy(tanh_dist)
+
         return log_probs, entropies
 
     def _compute_entropy(self, tanh_dist: TransformedDistribution) -> torch.Tensor:
-        """
-        We rely on .entropy() or do an MC fallback for TanhDist.
-        """
-        if self.entropy_method == "mc":
+        """Helper to compute entropy using the configured method."""
+        if self.entropy_method == "analytic":
+            try:
+                # Try analytic entropy calculation
+                ent = tanh_dist.entropy()
+                ent = ent.sum(dim=-1)
+                return ent
+            except NotImplementedError:
+                # Fallback to MC estimate if analytic is not implemented
+                # print("Warning: Analytic entropy failed, falling back to MC estimate.")
+                return self._mc_entropy(tanh_dist)
+        elif self.entropy_method == "mc":
             return self._mc_entropy(tanh_dist)
         else:
-            try:
-                ent = tanh_dist.entropy()  # shape => (B, out_features)
-                return ent.sum(dim=-1)
-            except NotImplementedError:
-                return self._mc_entropy(tanh_dist)
+            raise ValueError(f"Unknown entropy_method: {self.entropy_method}")
+
 
     def _mc_entropy(self, tanh_dist: TransformedDistribution) -> torch.Tensor:
-        n = self.n_entropy_samples
-        samps = tanh_dist.rsample([n])    # => (n, B, out_features)
-        lp = tanh_dist.log_prob(samps).sum(dim=-1)  # => (n,B)
-        return -lp.mean(dim=0)  # => (B,)
-
+        """Estimates entropy using Monte Carlo sampling."""
+        with torch.no_grad(): # No gradients needed for MC sampling
+            # Sample multiple actions from the distribution
+            action_samples = tanh_dist.rsample((self.n_entropy_samples,)) # Shape: (n_samples, ..., action_dim)
+        # Calculate log probs for the samples and average
+        log_probs = tanh_dist.log_prob(action_samples).sum(dim=-1) # Shape: (n_samples, ...)
+        # Average log probs across samples and negate for entropy estimate
+        entropy_estimate = -log_probs.mean(dim=0)
+        return entropy_estimate
+    
 
 class FeedForwardBlock(nn.Module):
     """
