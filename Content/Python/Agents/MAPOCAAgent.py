@@ -33,7 +33,7 @@ class MAPOCAAgent(Agent):
         action_cfg= shape_cfg["action"]
         rec_cfg = config.get("StateRecorder", None)
 
-        # --- Hyperparameters ---
+        # Hyperparameters, Training Params, Recording, Action Space determination
         self.gamma = agent_cfg.get("gamma", 0.99)
         self.lmbda = agent_cfg.get("lambda", 0.95) # GAE lambda
         self.lr = agent_cfg.get("learning_rate", 3e-4)
@@ -46,37 +46,41 @@ class MAPOCAAgent(Agent):
         self.clipped_value_loss = agent_cfg.get("clipped_value_loss", False)
         self.value_clip_range = agent_cfg.get("value_clip_range", 0.2)
 
-        # --- Training Params ---
+        # Training Params
         self.epochs = train_cfg.get("epochs", 4)
         self.mini_batch_size = train_cfg.get("mini_batch_size", 128)
 
-        # --- Recording ---
+        # Recording
         self.state_recorder = None
         if rec_cfg:
             self.state_recorder = StateRecorder(rec_cfg)
 
-        # --- Action Space ---
+        # Action Space
         self._determine_action_space(action_cfg)
 
-        # --- Build Networks ---
+
+        # Build Networks
         self.embedding_network = MultiAgentEmbeddingNetwork(
             agent_cfg["networks"]["MultiAgentEmbeddingNetwork"]
         ).to(device)
         self.shared_critic = SharedCritic(
             agent_cfg["networks"]["critic_network"]
         ).to(device)
+
         pol_cfg = agent_cfg["networks"]["policy_network"]
         if self.action_space_type == "continuous":
+            pol_cfg['out_features'] = self.action_dim
             self.policy_net = TanhContinuousPolicyNetwork(
                 **pol_cfg
             ).to(device)
         else: # Discrete
+            discrete_pol_cfg = pol_cfg.copy() # Avoid modifying original dict if needed elsewhere
+            discrete_pol_cfg['out_features'] = self.action_dim # Add the action dim determined earlier
             self.policy_net = DiscretePolicyNetwork(
-                in_features=pol_cfg["in_features"],
-                out_features=self.action_dim,
+                **discrete_pol_cfg
             ).to(device)
 
-        # --- Optimizer & Schedulers ---
+        # Optimizer & Schedulers
         self.optimizer = optim.AdamW(self.parameters(), lr=self.lr, eps=1e-7)
         lr_sched_cfg = agent_cfg["schedulers"].get("lr", None)
         self.lr_scheduler = None
@@ -103,7 +107,8 @@ class MAPOCAAgent(Agent):
              self.max_grad_norm_scheduler = LinearValueScheduler(**grad_norm_sched_cfg)
              self.max_grad_norm = self.max_grad_norm_scheduler.start_value
 
-        # --- Normalizers ---
+
+        # Normalizers
         rewards_normalization_cfg = agent_cfg.get('rewards_normalizer', None)
         self.rewards_normalizer = None
         if rewards_normalization_cfg:
