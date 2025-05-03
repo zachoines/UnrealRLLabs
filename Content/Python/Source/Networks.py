@@ -1,3 +1,5 @@
+# NOTICE: This file includes modifications generated with the assistance of generative AI.
+# Original code structure and logic by the project author.
 import math
 import torch
 import numpy as np
@@ -5,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
 from typing import Dict, Union, List, Any
-from torch.distributions import Normal, TransformedDistribution
+from torch.distributions import Beta, AffineTransform, Normal, TransformedDistribution
 from torch.distributions.transforms import TanhTransform
 from abc import ABC, abstractmethod
 
@@ -477,6 +479,241 @@ class TanhContinuousPolicyNetwork(nn.Module):
         entropy_estimate = -log_probs.mean(dim=0)
         return entropy_estimate
 
+
+class GaussianPolicyNetwork(BasePolicyNetwork):
+    """
+    Continuous policy network using an unbounded Normal (Gaussian) distribution.
+    Predicts state-dependent mean and standard deviation.
+    """
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int, # This is the action dimension
+        hidden_size: int,
+        std_init_bias: float = 0.0, # Controls initial standard deviation
+        min_std: float = 1e-4,      # Minimum standard deviation to prevent collapse
+        # Optional: Clipping log_std can help stabilize variance
+        log_std_min: float = -20.0, # Lower bound for log_std output
+        log_std_max: float = 2.0,   # Upper bound for log_std output
+        linear_init_scale: float = 1.0,
+        dropout_rate: float = 0.0
+    ):
+        super().__init__()
+        self.min_std = min_std
+        self.log_std_min = log_std_min
+        self.log_std_max = log_std_max
+        self.std_init_bias = std_init_bias
+
+        # Shared MLP backbone
+        self.shared = nn.Sequential(
+            nn.Linear(in_features, hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
+        )
+
+        # Head for predicting the mean of the Gaussian
+        self.mean_head = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, out_features), # Outputs action_dim means
+        )
+
+        # Head for predicting parameters used to compute standard deviation
+        self.std_param_head = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, out_features) # Outputs action_dim std parameters
+        )
+
+        # Initialize linear layers
+        self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
+
+        # Override the bias initialization for the final layer of std_param_head
+        if hasattr(self.std_param_head[-1], 'bias'):
+             nn.init.constant_(self.std_param_head[-1].bias, self.std_init_bias)
+
+    def forward(self, x: torch.Tensor):
+        """Computes mean and log_std for the Normal distribution."""
+        feats = self.shared(x)
+
+        # --- Mean Calculation ---
+        # Direct output, no tanh squash or scaling needed for unbounded Gaussian
+        mean = self.mean_head(feats)
+
+        # --- Standard Deviation Calculation ---
+        std_params = self.std_param_head(feats)
+
+        # Optional: Clip the raw log_std parameters before applying softplus
+        # This can prevent extreme variance values if the network outputs large numbers
+        std_params_clipped = torch.clamp(std_params, self.log_std_min, self.log_std_max)
+
+        # Use softplus to ensure positivity, add min_std floor
+        std = F.softplus(std_params_clipped) + self.min_std
+        log_std = torch.log(std) # Normal distribution uses log_std
+
+        return mean, log_std
+
+    def get_actions(self, emb: torch.Tensor, eval: bool = False):
+        """Samples actions or returns mean, computes log_probs and entropy."""
+        mean, log_std = self.forward(emb)
+        std = torch.exp(log_std)
+
+        # Define the base Normal distribution
+        dist = Normal(mean, std)
+
+        # Get action: mean for eval, sample for training
+        # Use rsample for differentiable sampling during training
+        actions = dist.mean if eval else dist.rsample()
+
+        # --- IMPORTANT: Do NOT clamp actions here for a pure Gaussian policy ---
+        # The environment (C++ code) will handle the clamping/bounding
+        # action_clamped = actions # No clamping
+
+        # Calculate log probability (sum across action dimensions)
+        log_probs = dist.log_prob(actions).sum(dim=-1)
+
+        # Calculate entropy (sum across action dimensions)
+        entropies = dist.entropy().sum(dim=-1)
+
+        return actions, log_probs, entropies # Return unclamped actions
+
+    def recompute_log_probs(self, emb: torch.Tensor, stored_actions: torch.Tensor):
+        """Recomputes log_probs and entropy for given actions and current policy."""
+        mean, log_std = self.forward(emb)
+        std = torch.exp(log_std)
+
+        # Recreate the distribution with current parameters
+        dist = Normal(mean, std)
+
+        # Calculate log_prob of the potentially unbounded actions that were stored
+        log_probs = dist.log_prob(stored_actions).sum(dim=-1)
+
+        # Calculate entropy of the current distribution
+        entropies = dist.entropy().sum(dim=-1)
+
+        return log_probs, entropies
+
+
+class BetaPolicyNetwork(BasePolicyNetwork):
+    """
+    Continuous policy network using a Beta distribution, scaled to [-1, 1].
+    Outputs alpha and beta parameters for the Beta distribution.
+    Handles entropy calculation for the transformed distribution manually.
+    """
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        hidden_size: int,
+        param_init_bias: float = 0.0,
+        min_concentration: float = 1.001,
+        linear_init_scale: float = 1.0,
+        dropout_rate: float = 0.0
+    ):
+        super().__init__()
+        self.action_dim = out_features
+        self.min_concentration = min_concentration
+
+        # Shared MLP backbone
+        self.shared = nn.Sequential(
+            nn.Linear(in_features, hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
+        )
+
+        # Head for predicting raw alpha parameters
+        self.alpha_head = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, out_features)
+        )
+
+        # Head for predicting raw beta parameters
+        self.beta_head = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, out_features)
+        )
+
+        # Initialize linear layers
+        self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
+
+        # Apply specific bias initialization to the output layers for alpha/beta params
+        if hasattr(self.alpha_head[-1], 'bias'):
+             nn.init.constant_(self.alpha_head[-1].bias, param_init_bias)
+        if hasattr(self.beta_head[-1], 'bias'):
+             nn.init.constant_(self.beta_head[-1].bias, param_init_bias)
+
+        # Precompute log(scale) for entropy calculation
+        self.log_scale = torch.log(torch.tensor(2.0)) # From AffineTransform(loc=-1, scale=2)
+
+    def _get_transformed_distribution(self, emb: torch.Tensor):
+        """ Helper to create the Beta distribution scaled to [-1, 1]. """
+        feats = self.shared(emb)
+        raw_alpha = self.alpha_head(feats)
+        raw_beta = self.beta_head(feats)
+
+        alpha = self.min_concentration + F.softplus(raw_alpha)
+        beta = self.min_concentration + F.softplus(raw_beta)
+
+        base_dist = Beta(alpha, beta)
+        # loc=-1, scale=2 maps (0,1) to (-1,1)
+        transform = AffineTransform(loc=-1.0, scale=2.0, cache_size=1)
+        scaled_beta_dist = TransformedDistribution(base_dist, transform)
+        return scaled_beta_dist
+
+    def forward(self, x: torch.Tensor):
+        """ Computes alpha and beta parameters. """
+        feats = self.shared(x)
+        raw_alpha = self.alpha_head(feats)
+        raw_beta = self.beta_head(feats)
+        alpha = self.min_concentration + F.softplus(raw_alpha)
+        beta = self.min_concentration + F.softplus(raw_beta)
+        return alpha, beta
+
+    def get_actions(self, emb: torch.Tensor, eval: bool = False):
+        """ Samples actions or returns mean, computes log_probs and entropy. """
+        dist = self._get_transformed_distribution(emb)
+        actions = dist.mean if eval else dist.rsample()
+
+        # --- Calculate Log Probability ---
+        # TransformedDistribution correctly handles the Jacobian for log_prob
+        log_probs = dist.log_prob(actions).sum(dim=-1)
+
+        # --- Calculate Entropy (Manual Workaround) ---
+        # H[Transformed] = H[Base] + log|scale|
+        base_entropy = dist.base_dist.entropy() # Entropy of Beta(alpha, beta)
+        # Ensure log_scale is on the same device as base_entropy
+        log_scale_term = self.log_scale.to(base_entropy.device)
+        # Add log|scale| for each action dimension
+        entropies = (base_entropy + log_scale_term).sum(dim=-1)
+
+        return actions, log_probs, entropies
+
+    def recompute_log_probs(self, emb: torch.Tensor, stored_actions: torch.Tensor):
+        """ Recomputes log_probs and entropy for given actions and current policy. """
+        dist = self._get_transformed_distribution(emb)
+
+        # Clamp stored actions slightly for log_prob stability as Beta is undefined at boundaries 0, 1
+        # (corresponding to -1, 1 in the transformed space)
+        stored_actions_clamped = stored_actions.clamp(-1.0 + 1e-6, 1.0 - 1e-6)
+
+        # --- Calculate Log Probability ---
+        log_probs = dist.log_prob(stored_actions_clamped).sum(dim=-1)
+
+        # --- Calculate Entropy (Manual Workaround) ---
+        # H[Transformed] = H[Base] + log|scale|
+        base_entropy = dist.base_dist.entropy()
+        log_scale_term = self.log_scale.to(base_entropy.device)
+        entropies = (base_entropy + log_scale_term).sum(dim=-1)
+
+        return log_probs, entropies
 
 class FeedForwardBlock(nn.Module):
     """Transformer FFN sublayer: LN -> Linear -> GELU -> Dropout -> Linear -> Dropout + Residual"""

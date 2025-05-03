@@ -1,4 +1,7 @@
-﻿#include "TerraShift/StateManager.h"
+﻿// NOTICE: This file includes modifications generated with the assistance of generative AI.
+// Original code structure and logic by the project author.
+
+#include "TerraShift/StateManager.h"
 #include "TerraShift/OccupancyGrid.h"
 #include "TerraShift/GridObject.h"
 #include "TerraShift/GridObjectManager.h"

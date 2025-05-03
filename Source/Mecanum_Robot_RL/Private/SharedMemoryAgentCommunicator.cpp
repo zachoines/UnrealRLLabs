@@ -1,3 +1,6 @@
+// NOTICE: This file includes modifications generated with the assistance of generative AI.
+// Original code structure and logic by the project author.
+
 #include "SharedMemoryAgentCommunicator.h"
 #include "Misc/FileHelper.h"
 #include "Serialization/JsonSerializer.h"

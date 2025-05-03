@@ -1,7 +1,7 @@
 {
   "environment": {
     "name": "TerraShift",
-    "id": "12_LR_Adjust",
+    "id": "16_Beta_Policy_Light",
     "params": {
       "PlatformSize": 1,
       "MaxColumnHeight": 4,
@@ -11,9 +11,9 @@
         0.1
       ],
       "ObjectMass": 0.1,
-      "GridSize": 50,
+      "GridSize": 100,
       "MaxSteps": 512,
-      "MaxAgents": 8,
+      "MaxAgents": 20,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
         "bUseXYDistanceImprovement": false,
@@ -29,18 +29,18 @@
         "ZAccel_Scale": 0.0,
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
-        "PotentialShaping_Gamma": 0.99,
-        "PotentialShaping_Scale": 0.5,
-        "REACH_GOAL_REWARD": 1.0,
-        "FALL_OFF_PENALTY": -1.0,
-        "STEP_PENALTY": -0.0001
+        "PotentialShaping_Gamma": 0.95,
+        "PotentialShaping_Scale": 10.0,
+        "REACH_GOAL_REWARD": 10.0,
+        "FALL_OFF_PENALTY": -10.0,
+        "STEP_PENALTY": 0.0
       },
       "GoalManager": {
         "DefaultRadius": 1.0
       },
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 8,
-        "GridSize": 50,
+        "NumAgents": 20,
+        "GridSize": 100,
         "MinHeight": -4.0,
         "MaxHeight": 4.0,
         "NumActions": 6,
@@ -48,12 +48,12 @@
         "bAccumulatedWave": false,
         "AccumulatedWaveFadeGamma": 0.95,
         "VelMinMax": [
-          -12.0,
-          12.0
+          -20.0,
+          20.0
         ],
         "AngVelRange": [
-          -2.4,
-          2.4
+          -6.28,
+          6.28
         ],
         "AmpMinMax": [
           -5.0,
@@ -61,12 +61,12 @@
         ],
         "SigMinMax": [
           1.0,
-          5.0
+          12.0
         ],
-        "DeltaVelScale": 2.0,
-        "DeltaAngVelScale": 2.0,
-        "DeltaAmpScale": 2.0,
-        "DeltaSigmaScale": 2.0
+        "DeltaVelScale": 4.0,
+        "DeltaAngVelScale": 1.57,
+        "DeltaAmpScale": 1.25,
+        "DeltaSigmaScale": 3.0
       },
       "StateManager": {
         "MaxGridObjects": 6,
@@ -79,8 +79,8 @@
         "BaseRespawnDelay": 0.0,
         "OverheadCameraDistance": 100.0,
         "OverheadCameraFOV": 60.0,
-        "OverheadCameraResX": 50,
-        "OverheadCameraResY": 50,
+        "OverheadCameraResX": 100,
+        "OverheadCameraResY": 100,
         "bUseRandomGoals": true,
         "bRemoveGridObjectOnGoalReached": true,
         "bRemoveGridObjectOnOOB": true,
@@ -88,79 +88,43 @@
         "GoalRadius": 8,
         "ObjectRadius": 6,
         "GoalColors": [
-          [
-            1.0,
-            0.0,
-            0.0
-          ],
-          [
-            0.0,
-            0.0,
-            1.0
-          ],
-          [
-            0.0,
-            1.0,
-            0.0
-          ]
+          [1.0, 0.0, 0.0],
+          [0.0, 0.0, 1.0],
+          [0.0, 1.0, 0.0],
+          [1.0, 0.0, 1.0],
+          [1.0, 1.0, 0.0],
+          [0.0, 1.0, 1.0]
         ],
         "GridObjectColors": [
-          [
-            1.0,
-            0.0,
-            1.0
-          ],
-          [
-            1.0,
-            1.0,
-            0.0
-          ],
-          [
-            0.0,
-            1.0,
-            1.0
-          ]
+          [1.0, 0.0, 0.0],
+          [0.0, 0.0, 1.0],
+          [0.0, 1.0, 0.0],
+          [1.0, 0.0, 1.0],
+          [1.0, 1.0, 0.0],
+          [0.0, 1.0, 1.0]
         ]
       }
     },
     "shape": {
       "state": {
         "central": {
-          "obs_size": 12500
+          "obs_size": 50000
         },
         "agent": {
           "obs_size": 9,
-          "min": 8,
-          "max": 8
+          "min": 20,
+          "max": 20
         }
       },
       "action": {
         "agent": {
           "continuous": [
-            {
-              "min": -1,
-              "max": 1
-            },
-            {
-              "min": -1,
-              "max": 1
-            },
-            {
-              "min": -1,
-              "max": 1
-            },
-            {
-              "min": -1,
-              "max": 1
-            },
-            {
-              "min": -1,
-              "max": 1
-            },
-            {
-              "min": -1,
-              "max": 1
-            }
+            {"min": -1, "max": 1},
+            {"min": -1, "max": 1},
+            {"min": -1, "max": 1},
+            {"min": -1, "max": 1},
+            {"min": -1, "max": 1},
+            {"min": -1, "max": 1}
           ]
         }
       }
@@ -168,30 +132,30 @@
   },
   "StateRecorder_disabled": {
     "height_map": {
-      "grid_h": 50,
-      "grid_w": 50,
+      "grid_h": 100,
+      "grid_w": 100,
       "num_channels": 5,
       "height_channel_index": 0,
       "clip_value": 1.0
     },
     "video": {
-      "fps": 16,
+      "fps": 18,
       "output_path": "height_auto.mp4"
     },
-    "auto_save_every": 128
+    "auto_save_every": 512
   },
   "agent": {
     "type": "MA_POCA",
     "params": {
       "learning_rate": 0.00001,
-      "gamma": 0.99,
+      "gamma": 0.95,
       "lambda": 0.95,
       "value_loss_coeff": 0.5,
-      "baseline_loss_coeff": 0.1,
+      "baseline_loss_coeff": 0.25,
       "normalize_advantages": false,
       "clipped_value_loss": true,
-      "max_grad_norm": 0.5,
-      "ppo_clip_range": 0.1,
+      "max_grad_norm": 100.0,
+      "ppo_clip_range": 0.2,
       "value_clip_range": 0.2,
       "entropy_coeff": 0.001,
       "rewards_normalizer_disabled": {
@@ -201,66 +165,51 @@
         "lr": {
           "start_factor": 1.0,
           "end_factor": 0.01,
-          "total_iters": 100000
+          "total_iters": 10000
         },
         "entropy_coeff": {
           "start_value": 0.001,
-          "end_value": 0.0001,
-          "total_iters": 100000
+          "end_value": 0.00001,
+          "total_iters": 10000
         }
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 8,
+            "num_agents": 20,
             "in_channels": 5,
-            "h": 50,
-            "w": 50,
-            "embed_dim": 128,
-            "num_heads": 8,
-            "cnn_channels": [
-              64,
-              96
-            ],
-            "cnn_kernel_sizes": [
-              5,
-              3
-            ],
-            "cnn_strides": [
-              2,
-              2
-            ],
-            "group_norms": [
-              16,
-              16
-            ],
-            "block_scales": [
-              16,
-              8
-            ],
-            "transformer_layers": 2,
+            "h": 100,
+            "w": 100,
+            "embed_dim": 64,
+            "num_heads": 4,
+            "cnn_channels": [64],
+            "cnn_kernel_sizes": [5],
+            "cnn_strides": [2],
+            "group_norms": [16],
+            "block_scales": [16],
+            "transformer_layers": 1,
             "dropout_rate": 0.1,
             "use_agent_id": true,
-            "ff_hidden_factor": 3,
+            "ff_hidden_factor": 2,
             "id_num_freqs": 16,
             "conv_init_scale": 0.5,
             "linear_init_scale": 1.0
           },
           "obs_encoder": {
-            "state_dim": 128,
-            "hidden_size": 128,
-            "output_size": 128,
+            "state_dim": 64,
+            "hidden_size": 64,
+            "output_size": 64,
             "dropout_rate": 0.0,
             "activation": true,
             "layer_norm": true,
             "linear_init_scale": 1.0
           },
           "obs_actions_encoder": {
-            "state_dim": 128,
+            "state_dim": 64,
             "action_dim": 6,
-            "hidden_size": 128,
-            "output_size": 128,
+            "hidden_size": 64,
+            "output_size": 64,
             "dropout_rate": 0.0,
             "activation": true,
             "layer_norm": true,
@@ -268,36 +217,33 @@
           }
         },
         "policy_network": {
-          "in_features": 128,
-          "hidden_size": 128,
-          "std_init_bias": 0.0,
-          "min_std": 0.0001,
-          "mean_scale": 1.0,
-          "entropy_method": "mc",
-          "n_entropy_samples": 10,
+          "in_features": 64,
+          "hidden_size": 64,
+          "param_init_bias": 0.0,
+          "min_concentration": 1.001,
           "linear_init_scale": 0.01,
           "dropout_rate": 0.1
         },
         "critic_network": {
           "value_head": {
-            "in_features": 128,
-            "hidden_size": 128,
+            "in_features": 64,
+            "hidden_size": 64,
             "dropout_rate": 0.1
           },
           "baseline_head": {
-            "in_features": 128,
-            "hidden_size": 128,
+            "in_features": 64,
+            "hidden_size": 64,
             "dropout_rate": 0.1
           },
           "baseline_attention": {
-            "embed_dim": 128,
-            "num_heads": 8,
+            "embed_dim": 64,
+            "num_heads": 4,
             "dropout": 0.1,
             "self_attention": true
           },
           "value_attention": {
-            "embed_dim": 128,
-            "num_heads": 8,
+            "embed_dim": 64,
+            "num_heads": 4,
             "dropout": 0.1,
             "self_attention": true
           },
@@ -310,11 +256,11 @@
     "states_normalizer_disabled": {
       "warmup_steps": 10000
     },
-    "num_environments": 4,
+    "num_environments": 1,
     "epochs": 4,
-    "mini_batch_size": 32,
-    "buffer_size": 256,
-    "batch_size": 256,
+    "mini_batch_size": 128,
+    "buffer_size": 1024,
+    "batch_size": 1024,
     "AgentsResetFrequency": 0,
     "ActionRepeat": 1,
     "saveFrequency": 100

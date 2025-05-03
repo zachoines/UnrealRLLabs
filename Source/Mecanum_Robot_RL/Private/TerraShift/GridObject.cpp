@@ -1,3 +1,6 @@
+// NOTICE: This file includes modifications generated with the assistance of generative AI.
+// Original code structure and logic by the project author.
+
 #include "TerraShift/GridObject.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "UObject/ConstructorHelpers.h"

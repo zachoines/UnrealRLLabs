@@ -1,3 +1,6 @@
+# NOTICE: This file includes modifications generated with the assistance of generative AI.
+# Original code structure and logic by the project author.
+import shutil
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -31,7 +34,10 @@ class StateRecorder:
         # (B) Video config
         vid_cfg = self.config.get("video", {})
         self.fps = vid_cfg.get("fps", 30)
-        self.output_path = vid_cfg.get("output_path", "output_heightmap.mp4")
+        self.output_path = os.path.join(
+            os.path.dirname(__file__),  # Root of the project
+            vid_cfg.get("output_path", "output_heightmap.mp4")
+        )
 
         # (C) Auto-save
         self.auto_save_every = self.config.get("auto_save_every", None)
@@ -106,8 +112,18 @@ class StateRecorder:
             print("[StateRecorder] No frames to save.")
             return
 
+        # Ensure FFmpeg is available
+        if shutil.which("ffmpeg") is None:
+            print("[StateRecorder] FFmpeg is not installed or not in PATH. Please install FFmpeg.")
+            return
+
+        # Ensure the output directory exists
+        output_dir = os.path.dirname(self.output_path)
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
         # We'll do a figure with 1 row, 3 columns
-        fig = plt.figure(figsize=(12, 5))
+        fig = plt.figure(figsize=(16, 9))  # Increase figure size for higher resolution
 
         # (1) 3D surface => height
         ax_surf = fig.add_subplot(1, 3, 1, projection='3d')
@@ -129,8 +145,19 @@ class StateRecorder:
         ax_img.set_xticks([])
         ax_img.set_yticks([])
 
-        writer = FFMpegWriter(fps=self.fps)
-        with writer.saving(fig, self.output_path, dpi=100):
+        # Configure FFMpegWriter with higher quality settings
+        writer = FFMpegWriter(
+            fps=self.fps,
+            metadata={"title": "State Recorder Video", "artist": "StateRecorder"},
+            extra_args=[
+                "-crf", "18",          # Set constant rate factor (lower is better quality)
+              
+                "-b:v", "5000k",       # Set video bitrate to 5000 kbps
+                "-pix_fmt", "yuv420p"  # Ensure compatibility with most players
+            ]
+        )
+
+        with writer.saving(fig, self.output_path, dpi=150):  # Reduce DPI if resolution is too high
             surf_plot = None
             delta_plot = None
             img_plot = None
