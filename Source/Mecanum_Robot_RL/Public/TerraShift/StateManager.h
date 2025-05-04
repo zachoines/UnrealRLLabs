@@ -266,6 +266,9 @@ private:
     float GoalRadius = 1.f;
 
     UPROPERTY()
+    float GoalCollectRadius = 6.f;
+
+    UPROPERTY()
     float ObjectRadius = 1.f;
 
     UPROPERTY()

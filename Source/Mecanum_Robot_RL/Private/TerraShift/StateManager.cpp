@@ -45,6 +45,7 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     bRespawnGridObjectOnGoalReached = Config->GetOrDefaultBool(TEXT("bRespawnGridObjectOnGoalReached"), false);
 
     GoalRadius = Config->GetOrDefaultNumber(TEXT("GoalRadius"), GoalRadius);
+    GoalCollectRadius = Config->GetOrDefaultNumber(TEXT("GoalCollectRadius"), GoalCollectRadius);
     ObjectRadius = Config->GetOrDefaultNumber(TEXT("ObjectRadius"), ObjectRadius);
 
     // Read GoalColors
@@ -303,7 +304,7 @@ void UStateManager::UpdateGridObjectFlags()
             if (gIdx >= 0)
             {
                 // Distance-based approach with GoalManager
-                bool bInRadius = GoalManager->IsInRadiusOf(gIdx, wPos, GoalRadius);
+                bool bInRadius = GoalManager->IsInRadiusOf(gIdx, wPos, GoalCollectRadius);
                 if (bInRadius)
                 {
                     bHasActive[i] = false;
