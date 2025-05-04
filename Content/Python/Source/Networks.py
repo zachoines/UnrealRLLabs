@@ -328,7 +328,7 @@ class ResidualAttention(nn.Module):
         return out, attn_weights
 
 
-class TanhContinuousPolicyNetwork(nn.Module):
+class TanhContinuousPolicyNetwork(BasePolicyNetwork):
     """
     Continuous policy network using a Tanh-squashed Normal distribution.
     Features state-dependent variance computed via softplus activation.
