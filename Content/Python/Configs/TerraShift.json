@@ -265,12 +265,12 @@
   },
   "train": {
     "sequence_length": 64,
-    "pad_trajectories": true, 
-    "batch_size": 256, 
-    "buffer_size": 256,
+    "pad_trajectories": true,
+    "batch_size": 512,
+    "buffer_size": 512,
     "num_environments": 4,
     "epochs": 6,
-    "mini_batch_size": 8, 
+    "mini_batch_size": 16,
     "ActionRepeat": 3,
     "saveFrequency": 100
   }
