@@ -624,7 +624,7 @@ TArray<float> UStateManager::GetCentralState()
     outArr.Append(CurrentHeight.Data);
 
     // (2) delta height
-    if (Step > 1 && dt > SMALL_NUMBER)
+    /*if (Step > 1 && dt > SMALL_NUMBER)
     {
         FMatrix2D diff = ((CurrentHeight - PreviousHeight) / dt);
         diff.Clip(-1, 1);
@@ -633,7 +633,7 @@ TArray<float> UStateManager::GetCentralState()
     else
     {
         outArr.Append(PreviousHeight.Data);
-    }
+    }*/
 
     // (3) overhead camera
     TArray<float> overhead = CaptureOverheadImage();
