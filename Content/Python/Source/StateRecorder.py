@@ -1,3 +1,4 @@
+# Source/StateRecorder.py
 # NOTICE: This file includes modifications generated with the assistance of generative AI.
 # Original code structure and logic by the project author.
 import shutil
@@ -9,169 +10,156 @@ from matplotlib.animation import FFMpegWriter
 class StateRecorder:
     """
     Records a multi-channel (num_channels x H x W) state each frame.
-    After removing the delta height map, we now expect:
+    Assuming 2 channels after modifications:
       - channel 0: height map in [-1..1]
-      - channels [1..3]: overhead RGB image in [0..1] (R, G, B respectively)
+      - channel 1: luminance (grayscale) of overhead view in [0..1]
 
-    Then saves an MP4 where each frame has two subplots:
-      (1) 3D surface of the height
-      (2) overhead RGB image
+    Saves an MP4 where each frame has two subplots:
+      (1) 3D surface of the height map
+      (2) 2D grayscale image of the luminance channel
     """
 
     def __init__(self, recorder_config: dict):
         self.config = recorder_config
 
-        # (A) Parse shape info from config
         map_cfg = self.config["height_map"]
         self.H = map_cfg.get("grid_h", 50)
         self.W = map_cfg.get("grid_w", 50)
-        # Expecting 4 channels now: Height + R + G + B
-        self.num_channels = map_cfg.get("num_channels", 4)
-        self.height_idx = map_cfg.get("height_channel_index", 0) # Should still be 0
-        self.clip_val = map_cfg.get("clip_value", None)
+        # Expecting 2 channels now: Height + Luminance
+        self.num_channels = map_cfg.get("num_channels", 2)
+        self.height_idx = map_cfg.get("height_channel_index", 0)
+        # Luminance will be the channel after height if height_idx is 0
+        self.luminance_idx = self.height_idx + 1
 
-        # (B) Video config
+        self.clip_val = map_cfg.get("clip_value", None) # For height map
+
         vid_cfg = self.config.get("video", {})
         self.fps = vid_cfg.get("fps", 30)
         self.output_path = os.path.join(
-            # Assuming Train.py is in Content/Python and StateRecorder is in Content/Python/Source
-            # To save in Content/Python/
-            os.path.dirname(os.path.dirname(__file__)), # Moves up one level from Source to Python
-            vid_cfg.get("output_path", "height_auto.mp4")
+            os.path.dirname(os.path.dirname(__file__)), # Assumes Train.py is in Content/Python
+            vid_cfg.get("output_path", "state_height_luminance.mp4")
         )
 
-
-        # (C) Auto-save
         self.auto_save_every = self.config.get("auto_save_every", None)
-        self.frames = [] # Will now store tuples of (height_map, overhead_rgb)
+        self.frames: list[tuple[np.ndarray, np.ndarray]] = []
 
-        # (D) We'll create coordinate grids for 3D surfaces
-        # shape => (H, W). So X => [0..W-1], Y => [0..H-1]
         self.Y, self.X = np.meshgrid(
             np.arange(self.H),
             np.arange(self.W),
             indexing='ij'
         )
-        # Now X, Y => shape (H, W).
+        print(f"[StateRecorder] Initialized for {self.num_channels} channels (H:{self.H}, W:{self.W}). Output: {self.output_path}")
+
 
     def record_frame(self, central_state_vec: np.ndarray):
         """
         central_state_vec => (num_channels * H * W).
-        We'll reshape => (num_channels, H, W).
+        Reshapes to (num_channels, H, W).
 
-        channel 0 => height
-        channels 1,2,3 => overhead R,G,B
+        channel 0 (self.height_idx)    => height
+        channel 1 (self.luminance_idx) => luminance of overhead
         """
         total_size = central_state_vec.size
-        # Update expected size for 4 channels
         expected_size = self.num_channels * self.H * self.W
         if total_size < expected_size:
-            print(f"[StateRecorder] Not enough data => have {total_size}, expected={expected_size} for {self.num_channels} channels.")
+            print(f"[StateRecorder] Record Frame: Not enough data. Have {total_size}, expected {expected_size} for {self.num_channels} channels.")
+            return
+        if self.num_channels < 2:
+            print(f"[StateRecorder] Record Frame: Not enough configured channels ({self.num_channels}) to extract height and luminance.")
             return
 
-        # Reshape based on the configured number of channels (should be 4)
-        data_3d = central_state_vec.reshape(self.num_channels, self.H, self.W)
+        try:
+            data_3d = central_state_vec.reshape(self.num_channels, self.H, self.W)
+        except ValueError as e:
+            print(f"[StateRecorder] Record Frame: Error reshaping central_state_vec (size {total_size}) to ({self.num_channels}, {self.H}, {self.W}). Error: {e}")
+            return
 
-        # 1) height map => channel 0
+        # 1) Height map
+        if self.height_idx >= data_3d.shape[0]:
+            print(f"[StateRecorder] Error: height_idx {self.height_idx} out of bounds for data_3d shape {data_3d.shape}.")
+            return
         height_map = data_3d[self.height_idx]
-
-        # 2) Delta-height map is removed.
-
-        # Optionally clip the height values
         if self.clip_val is not None:
             np.clip(height_map, -self.clip_val, self.clip_val, out=height_map)
 
-        # 3) overhead RGB => channels [1..3]
-        # Ensure we have enough channels for RGB (at least 1 for R, 2 for G, 3 for B, assuming height is 0)
-        if self.num_channels >= (self.height_idx + 4) or (self.height_idx == 0 and self.num_channels >=4) : # More robust check
-            r_channel_idx = self.height_idx + 1
-            g_channel_idx = self.height_idx + 2
-            b_channel_idx = self.height_idx + 3
-
-            r_channel = data_3d[r_channel_idx]
-            g_channel = data_3d[g_channel_idx]
-            b_channel = data_3d[b_channel_idx]
-            overhead_rgb = np.stack([r_channel, g_channel, b_channel], axis=-1)
+        # 2) Luminance map
+        if self.luminance_idx >= data_3d.shape[0]:
+            print(f"[StateRecorder] Warning: luminance_idx {self.luminance_idx} out of bounds for data_3d shape {data_3d.shape}. Using zeros for luminance.")
+            luminance_map = np.zeros((self.H, self.W), dtype=np.float32)
         else:
-            print(f"[StateRecorder] Warning: Not enough channels for RGB. Expected {self.height_idx + 3} channels, got {self.num_channels}.")
-            overhead_rgb = np.zeros((self.H, self.W, 3), dtype=np.float32)
+            luminance_map = data_3d[self.luminance_idx]
 
+        self.frames.append((height_map.copy(), luminance_map.copy()))
 
-        # 4) Save the frame data (height_map, overhead_rgb)
-        self.frames.append((height_map.copy(), overhead_rgb.copy()))
-
-        # 5) Possibly auto-save
         if (self.auto_save_every is not None) and (len(self.frames) >= self.auto_save_every):
             self.save_video()
             self.frames.clear()
 
     def save_video(self):
-        """
-        Creates an MP4 with two subplots:
-          - left => 3D surface of height
-          - right => overhead image
-        """
         if len(self.frames) == 0:
-            print("[StateRecorder] No frames to save.")
+            print("[StateRecorder] Save Video: No frames to save.")
             return
 
         if shutil.which("ffmpeg") is None:
-            print("[StateRecorder] FFmpeg is not installed or not in PATH. Please install FFmpeg.")
+            print("[StateRecorder] Save Video: FFmpeg is not installed or not in PATH. Please install FFmpeg.")
             return
 
         output_dir = os.path.dirname(self.output_path)
         if not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
 
-        # Figure with 1 row, 2 columns
-        fig = plt.figure(figsize=(12, 7)) # Adjusted for 2 plots
+        fig = plt.figure(figsize=(12, 5.5)) # Adjusted for 2 plots, slightly less height
 
-        # (1) 3D surface => height
         ax_surf = fig.add_subplot(1, 2, 1, projection='3d')
-        ax_surf.set_xlabel("X (columns)")
-        ax_surf.set_ylabel("Y (rows)")
+        ax_surf.set_xlabel("X")
+        ax_surf.set_ylabel("Y")
         ax_surf.set_zlabel("Height")
-        ax_surf.set_zlim(-1.5, 1.5) # Adjusted zlim slightly if needed, original was -1,1
+        ax_surf.set_zlim(-1.5, 1.5)
 
-        # (2) overhead image => 2D
         ax_img = fig.add_subplot(1, 2, 2)
-        ax_img.set_title("Overhead RGB")
         ax_img.set_xticks([])
         ax_img.set_yticks([])
 
         writer = FFMpegWriter(
             fps=self.fps,
-            metadata={"title": "TerraShift State Recorder", "artist": "StateRecorder"},
-            extra_args=["-crf", "18", "-b:v", "5000k", "-pix_fmt", "yuv420p"]
+            metadata={"title": "TerraShift State (Height + Luminance)", "artist": "StateRecorder"},
+            extra_args=["-crf", "20", "-b:v", "3000k", "-pix_fmt", "yuv420p"] # Adjusted bitrate
         )
+        
+        print(f"[StateRecorder] Attempting to save video to: {self.output_path} with {len(self.frames)} frames.")
 
-        with writer.saving(fig, self.output_path, dpi=150):
+        with writer.saving(fig, self.output_path, dpi=100): # Adjusted DPI
             surf_plot = None
             img_plot = None
 
-            for i, (height_map, overhead_rgb) in enumerate(self.frames): # Iterate over new frame tuple
-                # A) Clear old surface
+            for i, (height_map, luminance_map) in enumerate(self.frames):
                 if surf_plot is not None:
                     surf_plot.remove()
-
-                # B) 3D surface => height
                 surf_plot = ax_surf.plot_surface(
                     self.X, self.Y, height_map,
-                    cmap='viridis', edgecolor='none', vmin=-1.0, vmax=1.0 # Enforce consistent color mapping
+                    cmap='viridis', edgecolor='none', vmin=-1.0, vmax=1.0
                 )
-                ax_surf.set_title(f"Height Map (Frame {i+1})")
-                ax_surf.view_init(elev=40, azim=(45 + i * 0.3)) # Dynamic view
+                ax_surf.set_title(f"Height Map") # Removed frame number for cleaner look per frame
 
-                # C) Delta map subplot is removed.
+                if img_plot is None:
+                    img_plot = ax_img.imshow(luminance_map, cmap='gray', vmin=0.0, vmax=1.0)
+                else:
+                    img_plot.set_data(luminance_map)
+                ax_img.set_title(f"Overhead Luminance")
 
-                # D) overhead RGB => 2D
-                if img_plot is None: # Initialize imshow object
-                    img_plot = ax_img.imshow(overhead_rgb.clip(0,1), vmin=0.0, vmax=1.0) # Clip to ensure valid RGB
-                else: # Update data for existing imshow object
-                    img_plot.set_data(overhead_rgb.clip(0,1))
-                ax_img.set_title(f"Overhead RGB (Frame {i+1})")
-
-                writer.grab_frame()
-
+                fig.suptitle(f"Frame {i+1}/{len(self.frames)}", fontsize=12)
+                plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout for suptitle
+                
+                try:
+                    writer.grab_frame()
+                except Exception as e:
+                    print(f"[StateRecorder] Error grabbing frame {i+1}: {e}")
+                    # Decide if you want to break or continue
+                    break 
+            
         plt.close(fig)
-        print(f"[StateRecorder] Video saved => {self.output_path}")
+        # Check if the file was actually created and has size
+        if os.path.exists(self.output_path) and os.path.getsize(self.output_path) > 0:
+            print(f"[StateRecorder] Video successfully saved to: {self.output_path}")
+        else:
+            print(f"[StateRecorder] Error: Video file was not created or is empty at {self.output_path}. Check FFMpeg messages or permissions.")

@@ -109,7 +109,7 @@
     "shape": {
       "state": {
         "central": {
-          "obs_size": 2500
+          "obs_size": 1250
         },
         "agent": {
           "obs_size": 9,
@@ -135,7 +135,7 @@
     "height_map": {
       "grid_h": 25,
       "grid_w": 25,
-      "num_channels": 4,
+      "num_channels": 2,
       "height_channel_index": 0,
       "clip_value": 1.0
     },
@@ -158,7 +158,7 @@
         "dropout": 0.0
       },
       "no_grad_forward_batch_size": 64,
-      "learning_rate": 0.0001,
+      "learning_rate": 0.00001,
       "gamma": 0.90,
       "lambda": 0.95,
       "value_loss_coeff": 0.5,
@@ -189,7 +189,7 @@
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
             "num_agents": 16,
-            "in_channels": 4,
+            "in_channels": 2,
             "h": 25,
             "w": 25,
             "embed_dim": 128,

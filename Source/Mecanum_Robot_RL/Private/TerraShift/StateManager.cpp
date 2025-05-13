@@ -869,36 +869,51 @@ void UStateManager::SetupOverheadCamera()
     comp->bCaptureOnMovement = false;
 }
 
-// ------------------------------------------
-//   CaptureOverheadImage
-// ------------------------------------------
+// Inside UStateManager::CaptureOverheadImage() const
+
 TArray<float> UStateManager::CaptureOverheadImage() const
 {
     TArray<float> out;
     if (!OverheadCaptureActor || !OverheadRenderTarget)
-        return out;
+    {
+        UE_LOG(LogTemp, Warning, TEXT("StateManager::CaptureOverheadImage - OverheadCaptureActor or OverheadRenderTarget is null."));
+        return out; // Return empty if not setup
+    }
 
     UWorld* w = OverheadCaptureActor->GetWorld();
-    if (!w) return out;
+    if (!w)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("StateManager::CaptureOverheadImage - GetWorld() returned null."));
+        return out;
+    }
 
     TArray<FColor> pixels;
+    // Consider FReadSurfaceDataFlags for more control if needed, e.g. FReadSurfaceDataFlags(RCM_UNorm, CubeFace_MAX)
     bool bOk = UKismetRenderingLibrary::ReadRenderTarget(w, OverheadRenderTarget, pixels);
     if (!bOk || pixels.Num() == 0)
-        return out;
-
-    TArray<float> R; R.Reserve(pixels.Num());
-    TArray<float> G; G.Reserve(pixels.Num());
-    TArray<float> B; B.Reserve(pixels.Num());
-
-    for (FColor c : pixels)
     {
-        R.Add(c.R / 255.f);
-        G.Add(c.G / 255.f);
-        B.Add(c.B / 255.f);
+        UE_LOG(LogTemp, Warning, TEXT("StateManager::CaptureOverheadImage - ReadRenderTarget failed or returned no pixels."));
+        return out;
     }
-    out.Append(R);
-    out.Append(G);
-    out.Append(B);
+
+    TArray<float> LuminanceChannel;
+    LuminanceChannel.Reserve(pixels.Num());
+
+    for (const FColor& PixelColor : pixels) // Use const FColor&
+    {
+        // Standard Luminance calculation (NTSC/PAL Y = 0.299R + 0.587G + 0.114B)
+        // Ensure normalization to [0,1] before calculation if pixels are not already in that range.
+        // FColor components are 0-255.
+        float R_float = PixelColor.R / 255.0f;
+        float G_float = PixelColor.G / 255.0f;
+        float B_float = PixelColor.B / 255.0f;
+
+        float luminance = 0.299f * R_float + 0.587f * G_float + 0.114f * B_float;
+        LuminanceChannel.Add(luminance);
+    }
+
+    out.Append(LuminanceChannel);
+    // UE_LOG(LogTemp, Log, TEXT("CaptureOverheadImage: Outputting %d floats for 1 luminance channel (H: %d, W: %d). Expected: %d"), out.Num(), OverheadCamResY, OverheadCamResX, OverheadCamResX * OverheadCamResY);
     return out;
 }
 
