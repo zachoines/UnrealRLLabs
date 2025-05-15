@@ -425,6 +425,17 @@ bool ATerraShiftEnvironment::Done()
         UE_LOG(LogTemp, Verbose, TEXT("Episode Done: All objects handled at step %d."), CurrentStep);
         return true;
     }
+
+    //for (int32 ObjIndex = 0; ObjIndex < CurrentGridObjects; ++ObjIndex)
+    //{
+    //    // StateManager->GetHasFallenOff(ObjIndex) directly queries the bFallenOff flag for the object.
+    //    if (StateManager->GetHasFallenOff(ObjIndex))
+    //    {
+    //        UE_LOG(LogTemp, Verbose, TEXT("ATerraShiftEnvironment::Done() - Object with index %d has fallen off. Episode considered Done at step %d."), ObjIndex, CurrentStep);
+    //        return true;
+    //    }
+    //}
+
     return false;
 }
 

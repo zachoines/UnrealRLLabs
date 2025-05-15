@@ -660,7 +660,7 @@ void UStateManager::UpdateGridColumnsColors()
     // 1) Color by height
     float mn = Grid->GetMinHeight();
     float mx = Grid->GetMaxHeight();
-    for (int32 c = 0; c < Grid->GetTotalColumns(); c++)
+    /*for (int32 c = 0; c < Grid->GetTotalColumns(); c++)
     {
         float h = Grid->GetColumnHeight(c);
         float ratio = FMath::GetMappedRangeValueClamped(
@@ -674,7 +674,7 @@ void UStateManager::UpdateGridColumnsColors()
             ratio
         );
         Grid->SetColumnColor(c, baseCol);
-    }
+    }*/
 
     // 2) Overwrite columns if occupied by "GridObjects"
     //{

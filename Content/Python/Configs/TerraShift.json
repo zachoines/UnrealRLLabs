@@ -1,15 +1,11 @@
 {
   "environment": {
-    "name": "TerraShift",
-    "id": "21_MAPOCA_ModularMemory",
+    "name": "TerraShift_Lightweight_12GB_StableBatches",
+    "id": "Lightweight12GB_StableBatches_$(date +%Y%m%d_%H%M%S)",
     "params": {
       "PlatformSize": 1,
       "MaxColumnHeight": 4,
-      "ObjectSize": [
-        0.1,
-        0.1,
-        0.1
-      ],
+      "ObjectSize": [0.1, 0.1, 0.1],
       "ObjectMass": 0.1,
       "GridSize": 25,
       "MaxSteps": 512,
@@ -29,10 +25,10 @@
         "ZAccel_Scale": 0.0,
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
-        "PotentialShaping_Gamma": 0.90,
-        "PotentialShaping_Scale": 0.10,
-        "REACH_GOAL_REWARD": 0.10,
-        "FALL_OFF_PENALTY": -0.10,
+        "PotentialShaping_Gamma": 0.99,
+        "PotentialShaping_Scale": 1.0,
+        "REACH_GOAL_REWARD": 1.0,
+        "FALL_OFF_PENALTY": -1.0,
         "STEP_PENALTY": 0.0
       },
       "GoalManager": {
@@ -47,22 +43,10 @@
         "bUseActionDelta": true,
         "bAccumulatedWave": false,
         "AccumulatedWaveFadeGamma": 0.95,
-        "VelMinMax": [
-          -10.0,
-          10.0
-        ],
-        "AngVelRange": [
-          -3.14,
-          3.14
-        ],
-        "AmpMinMax": [
-          -2.5,
-          2.5
-        ],
-        "SigMinMax": [
-          1.0,
-          5.0
-        ],
+        "VelMinMax": [-10.0, 10.0],
+        "AngVelRange": [-3.14, 3.14],
+        "AmpMinMax": [-2.5, 2.5],
+        "SigMinMax": [1.0, 5.0],
         "DeltaVelScale": 2.0,
         "DeltaAngVelScale": 0.628,
         "DeltaAmpScale": 0.5,
@@ -89,20 +73,12 @@
         "ObjectRadius": 6,
         "GoalCollectRadius": 14,
         "GoalColors": [
-          [1.0, 0.0, 0.0],
-          [0.0, 0.0, 1.0],
-          [0.0, 1.0, 0.0],
-          [1.0, 0.0, 1.0],
-          [1.0, 1.0, 0.0],
-          [0.0, 1.0, 1.0]
+          [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0],
+          [1.0, 0.0, 1.0], [1.0, 1.0, 0.0], [0.0, 1.0, 1.0]
         ],
         "GridObjectColors": [
-          [1.0, 0.0, 0.0],
-          [0.0, 0.0, 1.0],
-          [0.0, 1.0, 0.0],
-          [1.0, 0.0, 1.0],
-          [1.0, 1.0, 0.0],
-          [0.0, 1.0, 1.0]
+          [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0],
+          [1.0, 0.0, 1.0], [1.0, 1.0, 0.0], [0.0, 1.0, 1.0]
         ]
       }
     },
@@ -120,12 +96,8 @@
       "action": {
         "agent": {
           "continuous": [
-            {"min": -1, "max": 1},
-            {"min": -1, "max": 1},
-            {"min": -1, "max": 1},
-            {"min": -1, "max": 1},
-            {"min": -1, "max": 1},
-            {"min": -1, "max": 1}
+            {"min": -1, "max": 1}, {"min": -1, "max": 1}, {"min": -1, "max": 1},
+            {"min": -1, "max": 1}, {"min": -1, "max": 1}, {"min": -1, "max": 1}
           ]
         }
       }
@@ -149,25 +121,25 @@
     "type": "MA_POCA",
     "params": {
       "enable_memory": true,
-      "memory_type": "gru", 
+      "memory_type": "gru",
       "gru": {
-        "input_size": 128, 
+        "input_size": 128,
         "hidden_size": 128,
         "num_layers": 1,
         "bias": true,
         "dropout": 0.0
       },
-      "no_grad_forward_batch_size": 64,
+      "no_grad_forward_batch_size": 16,
       "learning_rate": 0.00001,
-      "gamma": 0.90,
+      "gamma": 0.99,
       "lambda": 0.95,
       "value_loss_coeff": 0.5,
       "baseline_loss_coeff": 0.25,
-      "normalize_advantages": true,
+      "normalize_advantages": false,
       "clipped_value_loss": true,
-      "max_grad_norm": 10.0,
-      "ppo_clip_range": 0.2, 
-      "value_clip_range": 0.2, 
+      "max_grad_norm": 1.0,
+      "ppo_clip_range": 0.1,
+      "value_clip_range": 0.2,
       "entropy_coeff": 0.01,
       "rewards_normalizer_disabled": {
         "warmup_steps": 10000
@@ -175,7 +147,7 @@
       "schedulers": {
         "lr": {
           "start_factor": 1.0,
-          "end_factor": 0.001,
+          "end_factor": 0.01,
           "total_iters": 10000
         },
         "entropy_coeff": {
@@ -195,9 +167,9 @@
             "embed_dim": 128,
             "num_heads": 8,
             "cnn_channels": [64],
-            "cnn_kernel_sizes": [5],
+            "cnn_kernel_sizes": [3],
             "cnn_strides": [2],
-            "group_norms": [16],
+            "group_norms": [8],
             "block_scales": [8],
             "transformer_layers": 1,
             "dropout_rate": 0.1,
@@ -228,7 +200,7 @@
           }
         },
         "policy_network": {
-          "in_features": 128, 
+          "in_features": 128,
           "hidden_size": 128,
           "param_init_bias": 0.0,
           "min_concentration": 1.001,
@@ -268,10 +240,10 @@
     "pad_trajectories": true,
     "batch_size": 512,
     "buffer_size": 512,
-    "num_environments": 4,
+    "num_environments": 8,
     "epochs": 6,
     "mini_batch_size": 16,
-    "ActionRepeat": 3,
+    "ActionRepeat": 1,
     "saveFrequency": 100
   }
 }
