@@ -1,7 +1,7 @@
 {
   "environment": {
-    "name": "TerraShift_Lightweight_12GB_StableBatches",
-    "id": "Lightweight12GB_StableBatches_$(date +%Y%m%d_%H%M%S)",
+    "name": "TerraShift_Lightweight_StagnationFixAttempt",
+    "id": "Lightweight_FixAttempt_$(date +%Y%m%d_%H%M%S)",
     "params": {
       "PlatformSize": 1,
       "MaxColumnHeight": 4,
@@ -11,12 +11,12 @@
       "MaxSteps": 512,
       "MaxAgents": 16,
       "TerraShiftEnvironment": {
-        "bUseVelAlignment": false,
+        "bUseVelAlignment": true,
         "bUseXYDistanceImprovement": false,
         "bUseZAccelerationPenalty": false,
         "bUseAlignedDistanceShaping": false,
-        "bUsePotentialShaping": true,
-        "VelAlign_Scale": 0.1,
+        "bUsePotentialShaping": false,
+        "VelAlign_Scale": 0.01,
         "VelAlign_Min": -100.0,
         "VelAlign_Max": 100.0,
         "DistImprove_Scale": 1.0,
@@ -25,10 +25,10 @@
         "ZAccel_Scale": 0.0,
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
-        "PotentialShaping_Gamma": 0.99,
-        "PotentialShaping_Scale": 1.0,
-        "REACH_GOAL_REWARD": 1.0,
-        "FALL_OFF_PENALTY": -1.0,
+        "PotentialShaping_Gamma": 0.95,
+        "PotentialShaping_Scale": 0.10,
+        "REACH_GOAL_REWARD": 10.0,
+        "FALL_OFF_PENALTY": -10.0,
         "STEP_PENALTY": 0.0
       },
       "GoalManager": {
@@ -53,7 +53,7 @@
         "DeltaSigmaScale": 1.0
       },
       "StateManager": {
-        "MaxGridObjects": 6,
+        "MaxGridObjects": 1,
         "MarginXY": 1.5,
         "MinZ": -4.0,
         "MaxZ": 20.0,
@@ -73,12 +73,10 @@
         "ObjectRadius": 6,
         "GoalCollectRadius": 14,
         "GoalColors": [
-          [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0],
-          [1.0, 0.0, 1.0], [1.0, 1.0, 0.0], [0.0, 1.0, 1.0]
+          [1.0, 0.0, 0.0]
         ],
         "GridObjectColors": [
-          [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0],
-          [1.0, 0.0, 1.0], [1.0, 1.0, 0.0], [0.0, 1.0, 1.0]
+          [1.0, 0.0, 0.0]
         ]
       }
     },
@@ -130,17 +128,17 @@
         "dropout": 0.0
       },
       "no_grad_forward_batch_size": 16,
-      "learning_rate": 0.00001,
-      "gamma": 0.99,
+      "learning_rate": 0.00003,
+      "gamma": 0.95,
       "lambda": 0.95,
       "value_loss_coeff": 0.5,
       "baseline_loss_coeff": 0.25,
-      "normalize_advantages": false,
+      "normalize_advantages": true,
       "clipped_value_loss": true,
       "max_grad_norm": 1.0,
-      "ppo_clip_range": 0.1,
+      "ppo_clip_range": 0.2,
       "value_clip_range": 0.2,
-      "entropy_coeff": 0.01,
+      "entropy_coeff": 0.02,
       "rewards_normalizer_disabled": {
         "warmup_steps": 10000
       },
@@ -148,12 +146,12 @@
         "lr": {
           "start_factor": 1.0,
           "end_factor": 0.01,
-          "total_iters": 10000
+          "total_iters": 50000
         },
         "entropy_coeff": {
-          "start_value": 0.001,
-          "end_value": 0.0001,
-          "total_iters": 10000
+          "start_value": 0.02,
+          "end_value": 0.001,
+          "total_iters": 50000
         }
       },
       "networks": {
@@ -167,11 +165,11 @@
             "embed_dim": 128,
             "num_heads": 8,
             "cnn_channels": [64],
-            "cnn_kernel_sizes": [3],
+            "cnn_kernel_sizes": [5],
             "cnn_strides": [2],
             "group_norms": [8],
             "block_scales": [8],
-            "transformer_layers": 1,
+            "transformer_layers": 2,
             "dropout_rate": 0.1,
             "use_agent_id": true,
             "ff_hidden_factor": 2,
@@ -240,10 +238,10 @@
     "pad_trajectories": true,
     "batch_size": 512,
     "buffer_size": 512,
-    "num_environments": 8,
+    "num_environments": 16,
     "epochs": 6,
     "mini_batch_size": 16,
-    "ActionRepeat": 1,
+    "ActionRepeat": 3,
     "saveFrequency": 100
   }
 }
