@@ -511,16 +511,15 @@ class MAPOCAAgent(Agent):
                     valid_intrinsic_r_flat = all_intrinsic_rewards_seq[valid_intrinsic_mask] # Shape (M,)
 
                     if valid_intrinsic_r_flat.numel() > 0:
-                        valid_intrinsic_r = valid_intrinsic_r_flat.unsqueeze(-1) # YOUR FIX: Shape (M, 1)
+                        valid_intrinsic_r = valid_intrinsic_r_flat.unsqueeze(-1) # Shape (M, 1)
 
                         self.intrinsic_reward_normalizer.update(valid_intrinsic_r)
                         normalized_intrinsic_r_values = self.intrinsic_reward_normalizer.normalize(valid_intrinsic_r) # Shape (M,1)
-                        # Assign back to the original tensor using the mask
+                        
                         temp_norm_intrinsic_r = torch.zeros_like(all_intrinsic_rewards_seq) # Shape (B, MaxSeqLen, 1)
-                        # We need to assign a 1D tensor (M,) to masked locations of a 3D tensor.
-                        # So, normalized_intrinsic_r_values.squeeze(-1) gives (M,)
-                        temp_norm_intrinsic_r[valid_intrinsic_mask] = normalized_intrinsic_r_values.squeeze(-1) 
-                        all_intrinsic_rewards_seq = temp_norm_intrinsic_r # Now contains normalized intrinsic rewards
+                        # Ensure dtypes match for masked assignment
+                        temp_norm_intrinsic_r[valid_intrinsic_mask] = normalized_intrinsic_r_values.squeeze(-1).to(temp_norm_intrinsic_r.dtype) # <<< MODIFIED LINE
+                        all_intrinsic_rewards_seq = temp_norm_intrinsic_r 
 
             # Add normalized intrinsic reward to extrinsic rewards before GAE
             # Ensure detach() is used for intrinsic rewards if they are not meant to propagate gradients back to RND predictor during GAE calculation
@@ -825,8 +824,7 @@ class MAPOCAAgent(Agent):
 
         # Flatten actions to match flat_features: (B_or_MB * MaxSeqLen * NA, ActionDimPerAgent)
         # The 'actions' tensor from Runner is (B, MaxSeqLen, NA, ActionDimFlatForAgent)
-        flat_actions_target_shape = actions.shape[len(leading_dims)+1:] # Should be (ActionDimFlatForAgent,)
-        act_flat = actions.reshape(-1, *flat_actions_target_shape)
+        act_flat = actions.reshape(-1, actions.shape[-1]) # Assumes last dim is ActionDimFlatForAgent
         
         # Get log_probs and entropy from the policy network using the current parameters
         lp_flat, ent_flat = self.policy_net.recompute_log_probs(flat_features, act_flat)

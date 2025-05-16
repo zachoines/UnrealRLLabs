@@ -11,11 +11,11 @@
       "MaxSteps": 512,
       "MaxAgents": 16,
       "TerraShiftEnvironment": {
-        "bUseVelAlignment": true,
+        "bUseVelAlignment": false,
         "bUseXYDistanceImprovement": false,
         "bUseZAccelerationPenalty": false,
         "bUseAlignedDistanceShaping": false,
-        "bUsePotentialShaping": false,
+        "bUsePotentialShaping": true,
         "VelAlign_Scale": 0.001,
         "VelAlign_Min": -100.0,
         "VelAlign_Max": 100.0,
@@ -25,10 +25,10 @@
         "ZAccel_Scale": 0.0,
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
-        "PotentialShaping_Gamma": 0.95,
+        "PotentialShaping_Gamma": 0.99,
         "PotentialShaping_Scale": 0.10,
-        "REACH_GOAL_REWARD": 1.0,
-        "FALL_OFF_PENALTY": -1.0,
+        "REACH_GOAL_REWARD": 0.0,
+        "FALL_OFF_PENALTY": 0.0,
         "STEP_PENALTY": 0.0
       },
       "GoalManager": {
@@ -135,16 +135,16 @@
         "rnd_update_proportion": 0.25
       },
       "no_grad_forward_batch_size": 16,
-      "learning_rate": 0.00003,
+      "learning_rate": 0.00001,
       "gamma": 0.95,
       "lambda": 0.95,
-      "value_loss_coeff": 0.5,
-      "baseline_loss_coeff": 0.25,
+      "value_loss_coeff": 0.1,
+      "baseline_loss_coeff": 0.1,
       "normalize_advantages": true,
       "clipped_value_loss": true,
-      "max_grad_norm": 1.0,
-      "ppo_clip_range": 0.2,
-      "value_clip_range": 0.2,
+      "max_grad_norm": 0.5,
+      "ppo_clip_range": 0.1,
+      "value_clip_range": 0.01,
       "entropy_coeff": 0.02,
       "rewards_normalizer_disabled": {
         "warmup_steps": 10000
@@ -153,12 +153,27 @@
         "lr": {
           "start_factor": 1.0,
           "end_factor": 0.01,
-          "total_iters": 50000
+          "total_iters": 20000
         },
         "entropy_coeff": {
-          "start_value": 0.02,
+          "start_value": 0.01,
           "end_value": 0.001,
-          "total_iters": 50000
+          "total_iters": 20000
+        },
+        "value_clip": {
+          "start_value": 0.01,
+          "end_value": 0.001,
+          "total_iters": 20000
+        },
+        "policy_clip": {
+          "start_value": 0.1,
+          "end_value": 0.01,
+          "total_iters": 20000
+        },
+        "max_grad_norm": {
+          "start_value": 1.0,
+          "end_value": 0.01,
+          "total_iters": 20000
         }
       },
       "networks": {
@@ -245,7 +260,7 @@
     "pad_trajectories": true,
     "batch_size": 256,
     "buffer_size": 256,
-    "num_environments": 4,
+    "num_environments": 8,
     "epochs": 6,
     "mini_batch_size": 16,
     "ActionRepeat": 1,
