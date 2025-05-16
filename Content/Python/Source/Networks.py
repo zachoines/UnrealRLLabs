@@ -1184,3 +1184,36 @@ class CrossAttentionFeatureExtractor(nn.Module):
              attn_weights_final = attn_weights_final.view(attn_output_shape)
 
         return agent_embed, attn_weights_final
+    
+
+# In Networks.py
+
+class RNDTargetNetwork(nn.Module):
+    def __init__(self, input_size, output_size, hidden_size=256):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, output_size)
+        )
+        # Target network weights are fixed after random initialization
+        for param in self.parameters():
+            param.requires_grad = False
+        # Optional: Specific initialization if desired, but random is key
+        self.apply(lambda m: init_weights_leaky_relu(m) if isinstance(m, nn.Linear) else None)
+
+
+class RNDPredictorNetwork(nn.Module):
+    def __init__(self, input_size, output_size, hidden_size=256):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, output_size)
+        )
+        # Predictor network weights are learned
+        self.apply(lambda m: init_weights_leaky_relu(m) if isinstance(m, nn.Linear) else None)

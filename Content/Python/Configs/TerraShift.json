@@ -127,6 +127,13 @@
         "bias": true,
         "dropout": 0.0
       },
+      "enable_rnd": true,
+      "rnd_params": {
+        "output_size": 64,
+        "hidden_size": 128,
+        "intrinsic_reward_coeff": 0.01,
+        "rnd_update_proportion": 0.25
+      },
       "no_grad_forward_batch_size": 16,
       "learning_rate": 0.00003,
       "gamma": 0.95,
