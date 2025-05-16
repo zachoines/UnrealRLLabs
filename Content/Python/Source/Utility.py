@@ -276,34 +276,81 @@ class RunningMeanStdNormalizer:
         """
         Flatten all but last dimension => shape(N, features).
         Update running mean & var for this 'key'.
+        Made robust to batch_count <= 1 for variance calculation and
+        various input tensor dimensionalities.
         """
-        tensor = tensor.to(self.device)
+        tensor = tensor.to(self.device) # Ensure tensor is on the correct device
 
-        # create empty stats if not found
+        # Determine feature dimension and initialize stats if key not found
         if key not in self.stats:
-            fdim = tensor.shape[-1]
-            mean_ = torch.zeros(fdim, device=self.device)
-            var_  = torch.ones(fdim, device=self.device)
-            count_= self.epsilon
+            if tensor.ndim == 0: # Scalar input
+                fdim = 1
+            elif tensor.ndim == 1: # 1D input (e.g., M samples of a single feature if not unsqueezed yet)
+                # If it's meant to be M samples of 1 feature, fdim should be 1.
+                # The caller should ideally .unsqueeze(-1) it to (M,1) before passing.
+                # However, if it arrives as (M,), we'll assume it's M samples of 1 feature.
+                fdim = 1
+            else: # N-D input, last dimension is features
+                fdim = tensor.shape[-1]
+            
+            mean_ = torch.zeros(fdim, device=self.device, dtype=tensor.dtype)
+            var_  = torch.ones(fdim, device=self.device, dtype=tensor.dtype) # Initialize variance to 1
+            count_= torch.full((1,), self.epsilon, device=self.device, dtype=torch.float64) # Use float64 for count
             self.stats[key] = (mean_, var_, count_)
 
         mean, var, cnt = self.stats[key]
 
-        # Flatten => shape(N, features)
-        flat = tensor.view(-1, tensor.shape[-1])
-        batch_mean = flat.mean(dim=0)
-        batch_var  = flat.var(dim=0, unbiased=True)
-        batch_count= flat.size(0)
+        # Prepare 'flat' tensor with shape (batch_count_val, features)
+        if tensor.ndim == 0: # Scalar input
+            flat = tensor.view(1, 1) # Treat as 1 sample, 1 feature
+        elif tensor.ndim == 1: # 1D input (M,), e.g. from boolean indexing
+            # This case is hit if the calling code (e.g. MAPOCAAgent) passes a 1D tensor.
+            # Your fix .unsqueeze(-1) in MAPOCAAgent makes the input 2D (M,1), so this branch might be less common now for that specific call.
+            flat = tensor.unsqueeze(-1) # Treat as M samples, 1 feature. Shape: (M, 1)
+        else: # 2D or higher-D input, e.g. (M, 1) after your unsqueeze, or (N, F)
+            # Ensures last dimension is features, all others are flattened into samples.
+            flat = tensor.view(-1, tensor.shape[-1]) 
+        
+        batch_count_val = flat.size(0)
+        if batch_count_val == 0:
+            return # No new data to update with
+
+        batch_mean = flat.mean(dim=0) # Shape: (features,)
+        
+        # Calculate batch variance robustly
+        if batch_count_val > 1:
+            batch_var  = flat.var(dim=0, unbiased=True) # unbiased=True is fine for N > 1
+        else: # batch_count_val == 1
+            # Variance of a single data point is 0.
+            # Using unbiased=False would also give 0. torch.var(unbiased=True) gives NaN for N=1.
+            batch_var = torch.zeros_like(batch_mean) # Shape: (features,)
+
+        # Ensure no NaNs from mean/var calculation if flat had NaNs initially (though should be checked before)
+        if torch.isnan(batch_mean).any() or torch.isnan(batch_var).any():
+            print(f"Warning: NaN detected in batch_mean or batch_var for key '{key}'. Skipping update for this batch.")
+            # This can happen if 'flat' itself contained NaNs.
+            return
+
+        # Update running statistics using Welford's algorithm or similar stable method
+        batch_count_tensor = torch.full_like(cnt, float(batch_count_val)) # Match dtype of cnt (float64)
 
         delta = batch_mean - mean
-        new_count = cnt + batch_count
+        new_count = cnt + batch_count_tensor
 
-        # standard formula
-        new_mean = mean + delta * (batch_count / new_count)
+        # Update mean
+        new_mean = mean + delta * (batch_count_tensor / new_count.clamp(min=1e-6)) # Clamp new_count to avoid div by zero if it became 0
+        
+        # Update variance: Var_new = (count_old * Var_old + count_batch * Var_batch) / count_new + count_old * count_batch * (Mean_old - Mean_batch)^2 / (count_new^2)
+        # This is a more stable way to combine variances:
+        # new_var = (cnt * var + batch_count_tensor * batch_var) / new_count + \
+        #           (cnt * batch_count_tensor * torch.square(delta)) / (new_count * new_count.clamp(min=1e-6))
+        # Simpler variant (Welford's M2 update style, adapted):
         m_a = var * cnt
-        m_b = batch_var * batch_count
-        M2  = m_a + m_b + delta**2 * cnt * batch_count / new_count
-        new_var = M2 / new_count
+        m_b = batch_var * batch_count_tensor
+        new_var = (m_a + m_b + torch.square(delta) * (cnt * batch_count_tensor) / new_count.clamp(min=1e-6)) / new_count.clamp(min=1e-6)
+        
+        # Ensure variance is not negative due to floating point issues
+        new_var = torch.clamp(new_var, min=0.0)
 
         self.stats[key] = (new_mean, new_var, new_count)
 

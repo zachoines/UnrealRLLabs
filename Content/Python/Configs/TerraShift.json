@@ -16,7 +16,7 @@
         "bUseZAccelerationPenalty": false,
         "bUseAlignedDistanceShaping": false,
         "bUsePotentialShaping": false,
-        "VelAlign_Scale": 0.01,
+        "VelAlign_Scale": 0.001,
         "VelAlign_Min": -100.0,
         "VelAlign_Max": 100.0,
         "DistImprove_Scale": 1.0,
@@ -27,8 +27,8 @@
         "ZAccel_Max": 2000.0,
         "PotentialShaping_Gamma": 0.95,
         "PotentialShaping_Scale": 0.10,
-        "REACH_GOAL_REWARD": 10.0,
-        "FALL_OFF_PENALTY": -10.0,
+        "REACH_GOAL_REWARD": 1.0,
+        "FALL_OFF_PENALTY": -1.0,
         "STEP_PENALTY": 0.0
       },
       "GoalManager": {
@@ -243,12 +243,12 @@
   "train": {
     "sequence_length": 64,
     "pad_trajectories": true,
-    "batch_size": 512,
-    "buffer_size": 512,
-    "num_environments": 16,
+    "batch_size": 256,
+    "buffer_size": 256,
+    "num_environments": 4,
     "epochs": 6,
     "mini_batch_size": 16,
-    "ActionRepeat": 3,
+    "ActionRepeat": 1,
     "saveFrequency": 100
   }
 }

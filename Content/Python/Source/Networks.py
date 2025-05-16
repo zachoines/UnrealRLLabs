@@ -1186,10 +1186,12 @@ class CrossAttentionFeatureExtractor(nn.Module):
         return agent_embed, attn_weights_final
     
 
-# In Networks.py
-
 class RNDTargetNetwork(nn.Module):
-    def __init__(self, input_size, output_size, hidden_size=256):
+    """
+    Random Network Distillation (RND) Target Network.
+    Its weights are fixed after random initialization.
+    """
+    def __init__(self, input_size: int, output_size: int, hidden_size: int = 256):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_size, hidden_size),
@@ -1198,15 +1200,30 @@ class RNDTargetNetwork(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_size, output_size)
         )
+        # Initialize weights (e.g., LeakyReLU-appropriate Kaiming normal)
+        # The specific initialization can be tuned.
+        self.apply(lambda m: init_weights_leaky_relu(m, negative_slope=0.01) if isinstance(m, nn.Linear) else None)
+
         # Target network weights are fixed after random initialization
         for param in self.parameters():
             param.requires_grad = False
-        # Optional: Specific initialization if desired, but random is key
-        self.apply(lambda m: init_weights_leaky_relu(m) if isinstance(m, nn.Linear) else None)
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass for the RND target network.
+        Args:
+            x (torch.Tensor): Input tensor (e.g., state/feature embeddings).
+        Returns:
+            torch.Tensor: Output random features.
+        """
+        return self.net(x)
 
 class RNDPredictorNetwork(nn.Module):
-    def __init__(self, input_size, output_size, hidden_size=256):
+    """
+    Random Network Distillation (RND) Predictor Network.
+    This network is trained to predict the output of the RNDTargetNetwork.
+    """
+    def __init__(self, input_size: int, output_size: int, hidden_size: int = 256):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_size, hidden_size),
@@ -1215,5 +1232,16 @@ class RNDPredictorNetwork(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_size, output_size)
         )
-        # Predictor network weights are learned
-        self.apply(lambda m: init_weights_leaky_relu(m) if isinstance(m, nn.Linear) else None)
+        # Initialize weights (e.g., LeakyReLU-appropriate Kaiming normal)
+        # The specific initialization can be tuned.
+        self.apply(lambda m: init_weights_leaky_relu(m, negative_slope=0.01) if isinstance(m, nn.Linear) else None)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass for the RND predictor network.
+        Args:
+            x (torch.Tensor): Input tensor (e.g., state/feature embeddings).
+        Returns:
+            torch.Tensor: Predicted random features.
+        """
+        return self.net(x)

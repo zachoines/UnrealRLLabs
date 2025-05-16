@@ -503,22 +503,26 @@ class MAPOCAAgent(Agent):
             old_baselines_seq = torch.cat(all_old_baselines_seq_parts, dim=0)  # (B, MaxSeqLen, NA, 1)
             next_values_seq = torch.cat(all_next_values_seq_parts, dim=0)      # (B, MaxSeqLen, 1)
             
-            # NEW RND: Concatenate all intrinsic rewards and normalize them
+            # Concatenate all intrinsic rewards and normalize them
             all_intrinsic_rewards_seq = torch.cat(all_intrinsic_rewards_sub_batch_parts, dim=0) # (B, MaxSeqLen, 1)
             if self.enable_rnd and self.intrinsic_reward_normalizer:
-                # Normalize using only valid (non-padded) steps
                 valid_intrinsic_mask = attention_mask_batch.unsqueeze(-1).expand_as(all_intrinsic_rewards_seq).bool()
                 if valid_intrinsic_mask.sum() > 0:
-                    valid_intrinsic_r = all_intrinsic_rewards_seq[valid_intrinsic_mask]
-                    self.intrinsic_reward_normalizer.update(valid_intrinsic_r) # Update normalizer stats
-                    normalized_intrinsic_r = self.intrinsic_reward_normalizer.normalize(valid_intrinsic_r)
-                    
-                    # Assign normalized values back to the tensor using the mask
-                    temp_norm_intrinsic_r = torch.zeros_like(all_intrinsic_rewards_seq)
-                    temp_norm_intrinsic_r[valid_intrinsic_mask] = normalized_intrinsic_r
-                    all_intrinsic_rewards_seq = temp_norm_intrinsic_r # Now contains normalized intrinsic rewards
+                    valid_intrinsic_r_flat = all_intrinsic_rewards_seq[valid_intrinsic_mask] # Shape (M,)
 
-            # NEW RND: Add normalized intrinsic reward to extrinsic rewards before GAE
+                    if valid_intrinsic_r_flat.numel() > 0:
+                        valid_intrinsic_r = valid_intrinsic_r_flat.unsqueeze(-1) # YOUR FIX: Shape (M, 1)
+
+                        self.intrinsic_reward_normalizer.update(valid_intrinsic_r)
+                        normalized_intrinsic_r_values = self.intrinsic_reward_normalizer.normalize(valid_intrinsic_r) # Shape (M,1)
+                        # Assign back to the original tensor using the mask
+                        temp_norm_intrinsic_r = torch.zeros_like(all_intrinsic_rewards_seq) # Shape (B, MaxSeqLen, 1)
+                        # We need to assign a 1D tensor (M,) to masked locations of a 3D tensor.
+                        # So, normalized_intrinsic_r_values.squeeze(-1) gives (M,)
+                        temp_norm_intrinsic_r[valid_intrinsic_mask] = normalized_intrinsic_r_values.squeeze(-1) 
+                        all_intrinsic_rewards_seq = temp_norm_intrinsic_r # Now contains normalized intrinsic rewards
+
+            # Add normalized intrinsic reward to extrinsic rewards before GAE
             # Ensure detach() is used for intrinsic rewards if they are not meant to propagate gradients back to RND predictor during GAE calculation
             combined_rewards_seq = padded_rewards_seq + self.intrinsic_reward_coeff * all_intrinsic_rewards_seq.detach()
 
