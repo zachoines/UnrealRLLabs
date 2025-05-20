@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.init as init
 import torch.nn.functional as F
 import numpy as np
-from typing import Union, Dict
+from typing import Union, Dict, Tuple
 
 def create_2d_sin_cos_pos_emb(h: int, w: int, embed_dim: int, device: torch.device):
     """
@@ -208,166 +208,148 @@ class RunningMeanStdNormalizer:
     - If you pass a dictionary of Tensors => each value shape (..., features),
       it tracks each dictionary key separately.
 
-    Each update() call does a standard running mean/variance calculation on the *flattened*
-    data except for the last dimension. So for shape (B,T,..., features), we gather
-    B*T*... samples across each feature dimension.
+    Each update() call does a standard running mean/variance calculation.
+    It expects inputs to have features as the last dimension, e.g. (N, num_features).
+    For scalar values like rewards, input should be (N, 1).
+
+    Warmup behavior:
+    - During 'warmup_steps', 'update()' will accumulate statistics.
+    - During 'warmup_steps', 'normalize()' will return the original, unnormalized data.
+    - After 'warmup_steps', 'normalize()' will return normalized data.
     """
 
     def __init__(self, warmup_steps: int = 0, epsilon: float = 1e-4, device: torch.device = torch.device("cpu")):
-        """
-        :param epsilon: initial count to avoid divide-by-zero
-        :param device: store mean/var on this device
-        """
         self.device = device
-        self.epsilon = epsilon
+        self.epsilon = epsilon # Used for initial count to prevent division by zero
         self.warmup_steps = warmup_steps
-        self.current_step = 0
-
-        # stats[key] = (mean: Tensor, var: Tensor, count: float)
-        # single Tensors store under key="__single__"
-        self.stats = {}
+        self.current_warmup_step_count = 0 # Tracks number of update calls during warmup phase
+        self.stats: Dict[str, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {} # mean, var, count
 
     def update(self, x: Union[torch.Tensor, Dict[str, torch.Tensor]]):
         """
         Incorporate new data into the running mean+var.
-        Usually, you'd pass single states from get_states() (which might be shape (1,NumEnv,features) or so).
-        
-        If 'x' is a dict => we handle each key's last dimension separately.
-        If 'x' is a single Tensor => store in self.stats["__single__"].
+        Input tensors are expected to have features as the last dimension, e.g. (N, num_features).
+        For scalar values (like rewards), input should be (N, 1).
+        This method ALWAYS updates the statistics.
+        It also increments current_warmup_step_count if still in warmup phase.
         """
-        # Stop calling update if warmup steps have been exceeded
-        if self.warmup_steps > 0:
-            self.current_step += 1
-            skip_update = self.warmup_steps < self.current_step
-            if skip_update:
-                return
-
         if isinstance(x, torch.Tensor):
-            self._update_single(x, key="__single__")
+            if x.numel() > 0:
+                self._update_single(x, key="__single__")
         elif isinstance(x, dict):
             for k, v in x.items():
-                self._update_single(v, key=k)
+                if v is not None and v.numel() > 0:
+                    self._update_single(v, key=k)
         else:
             raise ValueError("Unsupported type for update: must be Tensor or dict of Tensors.")
+
+        # Increment warmup step counter if we are in the warmup phase
+        if self.warmup_steps > 0 and self.current_warmup_step_count < self.warmup_steps:
+            self.current_warmup_step_count += 1
 
     def normalize(self, x: Union[torch.Tensor, Dict[str, torch.Tensor]]
                  ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
         """
-        Returns a normalized version of 'x' using the stored stats for each key.
-        - If 'x' is single => use stats["__single__"] if it exists.
-        - If 'x' is dict => for each k => stats[k].
-        We flatten all but last dim, subtract mean, divide sqrt(var+1e-8).
+        Returns a normalized version of 'x' using the stored stats for each key,
+        OR the original 'x' if still in the warmup phase.
         """
+        # If still in warmup phase, return original data
+        if self.warmup_steps > 0 and self.current_warmup_step_count < self.warmup_steps:
+            return x
+
+        # Otherwise, proceed with normalization
         if isinstance(x, torch.Tensor):
+            if x.numel() == 0: return x
             return self._normalize_single(x, key="__single__")
         elif isinstance(x, dict):
             out = {}
             for k,v in x.items():
-                out[k] = self._normalize_single(v, key=k)
+                if v is not None:
+                    if v.numel() == 0: out[k] = v
+                    else: out[k] = self._normalize_single(v, key=k)
+                else:
+                    out[k] = None
             return out
         else:
             raise ValueError("Unsupported type for normalize: must be Tensor or dict of Tensors.")
 
-    # ---------------------------------------------------------------------
-    #                          Internal Methods
-    # ---------------------------------------------------------------------
-
     def _update_single(self, tensor: torch.Tensor, key: str):
-        """
-        Flatten all but last dimension => shape(N, features).
-        Update running mean & var for this 'key'.
-        Made robust to batch_count <= 1 for variance calculation and
-        various input tensor dimensionalities.
-        """
-        tensor = tensor.to(self.device) # Ensure tensor is on the correct device
+        tensor = tensor.to(self.device)
 
-        # Determine feature dimension and initialize stats if key not found
+        # Ensure tensor is at least 2D (num_samples, num_features)
+        if tensor.ndim == 0: 
+            tensor = tensor.view(1, 1)
+        elif tensor.ndim == 1: 
+            tensor = tensor.unsqueeze(-1)
+        
+        num_features = tensor.shape[-1]
+
         if key not in self.stats:
-            if tensor.ndim == 0: # Scalar input
-                fdim = 1
-            elif tensor.ndim == 1: # 1D input (e.g., M samples of a single feature if not unsqueezed yet)
-                # If it's meant to be M samples of 1 feature, fdim should be 1.
-                # The caller should ideally .unsqueeze(-1) it to (M,1) before passing.
-                # However, if it arrives as (M,), we'll assume it's M samples of 1 feature.
-                fdim = 1
-            else: # N-D input, last dimension is features
-                fdim = tensor.shape[-1]
-            
-            mean_ = torch.zeros(fdim, device=self.device, dtype=tensor.dtype)
-            var_  = torch.ones(fdim, device=self.device, dtype=tensor.dtype) # Initialize variance to 1
-            count_= torch.full((1,), self.epsilon, device=self.device, dtype=torch.float64) # Use float64 for count
+            mean_ = torch.zeros(num_features, device=self.device, dtype=tensor.dtype)
+            var_  = torch.ones(num_features, device=self.device, dtype=tensor.dtype)
+            count_= torch.full((1,), self.epsilon, device=self.device, dtype=torch.float64) # Use float for count
             self.stats[key] = (mean_, var_, count_)
 
-        mean, var, cnt = self.stats[key]
-
-        # Prepare 'flat' tensor with shape (batch_count_val, features)
-        if tensor.ndim == 0: # Scalar input
-            flat = tensor.view(1, 1) # Treat as 1 sample, 1 feature
-        elif tensor.ndim == 1: # 1D input (M,), e.g. from boolean indexing
-            # This case is hit if the calling code (e.g. MAPOCAAgent) passes a 1D tensor.
-            # Your fix .unsqueeze(-1) in MAPOCAAgent makes the input 2D (M,1), so this branch might be less common now for that specific call.
-            flat = tensor.unsqueeze(-1) # Treat as M samples, 1 feature. Shape: (M, 1)
-        else: # 2D or higher-D input, e.g. (M, 1) after your unsqueeze, or (N, F)
-            # Ensures last dimension is features, all others are flattened into samples.
-            flat = tensor.view(-1, tensor.shape[-1]) 
+        mean, var, count = self.stats[key]
         
-        batch_count_val = flat.size(0)
-        if batch_count_val == 0:
-            return # No new data to update with
+        if mean.shape[-1] != num_features:
+            raise RuntimeError(f"Feature dimension mismatch for key '{key}' during update. "
+                               f"Stored normalizer fdim: {mean.shape[-1]}, input tensor fdim: {num_features}")
 
-        batch_mean = flat.mean(dim=0) # Shape: (features,)
-        
-        # Calculate batch variance robustly
-        if batch_count_val > 1:
-            batch_var  = flat.var(dim=0, unbiased=True) # unbiased=True is fine for N > 1
-        else: # batch_count_val == 1
-            # Variance of a single data point is 0.
-            # Using unbiased=False would also give 0. torch.var(unbiased=True) gives NaN for N=1.
-            batch_var = torch.zeros_like(batch_mean) # Shape: (features,)
+        flat_tensor = tensor.reshape(-1, num_features)
+        batch_n = flat_tensor.shape[0]
+        if batch_n == 0: return
 
-        # Ensure no NaNs from mean/var calculation if flat had NaNs initially (though should be checked before)
+        batch_mean = flat_tensor.mean(dim=0)
+        batch_var = flat_tensor.var(dim=0, unbiased=True) if batch_n > 1 else torch.zeros_like(batch_mean)
+
         if torch.isnan(batch_mean).any() or torch.isnan(batch_var).any():
-            print(f"Warning: NaN detected in batch_mean or batch_var for key '{key}'. Skipping update for this batch.")
-            # This can happen if 'flat' itself contained NaNs.
+            print(f"RunningMeanStdNormalizer Warning: NaN in batch stats for key '{key}'. Skipping update.")
             return
 
-        # Update running statistics using Welford's algorithm or similar stable method
-        batch_count_tensor = torch.full_like(cnt, float(batch_count_val)) # Match dtype of cnt (float64)
-
+        total_count_prev = count
+        total_count_new = total_count_prev + batch_n # batch_n is an int, count is tensor
+        
         delta = batch_mean - mean
-        new_count = cnt + batch_count_tensor
-
-        # Update mean
-        new_mean = mean + delta * (batch_count_tensor / new_count.clamp(min=1e-6)) # Clamp new_count to avoid div by zero if it became 0
+        # Ensure batch_n is float for division if total_count_new is float
+        new_mean = mean + delta * (float(batch_n) / total_count_new.clamp(min=1e-6))
         
-        # Update variance: Var_new = (count_old * Var_old + count_batch * Var_batch) / count_new + count_old * count_batch * (Mean_old - Mean_batch)^2 / (count_new^2)
-        # This is a more stable way to combine variances:
-        # new_var = (cnt * var + batch_count_tensor * batch_var) / new_count + \
-        #           (cnt * batch_count_tensor * torch.square(delta)) / (new_count * new_count.clamp(min=1e-6))
-        # Simpler variant (Welford's M2 update style, adapted):
-        m_a = var * cnt
-        m_b = batch_var * batch_count_tensor
-        new_var = (m_a + m_b + torch.square(delta) * (cnt * batch_count_tensor) / new_count.clamp(min=1e-6)) / new_count.clamp(min=1e-6)
+        delta2 = batch_mean - new_mean 
         
-        # Ensure variance is not negative due to floating point issues
+        # Welford's M2 update: M2_new = M2_old + delta * delta_prime * batch_n
+        # M2 = var * (count - 1) for unbiased, or var * count for biased.
+        # Let's use the direct update for combined variance:
+        # var_new = (count_old * var_old + count_batch * var_batch + delta^2 * count_old * count_batch / count_new) / count_new
+        m_a = var * total_count_prev # Using total_count_prev (which is a tensor)
+        m_b = batch_var * float(batch_n)
+        
+        new_var = (m_a + m_b + torch.square(delta) * (total_count_prev * float(batch_n)) / total_count_new.clamp(min=1e-6)) / total_count_new.clamp(min=1e-6)
         new_var = torch.clamp(new_var, min=0.0)
 
-        self.stats[key] = (new_mean, new_var, new_count)
+        self.stats[key] = (new_mean, new_var, total_count_new)
+
 
     def _normalize_single(self, tensor: torch.Tensor, key: str) -> torch.Tensor:
-        """
-        Normalizes 'tensor' (shape => (..., features)) using self.stats[key].
-        If stats not exist for 'key', returns tensor as is.
-        """
-        if key not in self.stats:
-            # no stats => return unmodified
-            return tensor
+        if key not in self.stats: # Should not happen if normalize is called after warmup
+            print(f"RunningMeanStdNormalizer Warning: normalize called for key '{key}' but no stats found. Returning original tensor.")
+            return tensor 
 
-        mean, var, cnt = self.stats[key]
-        # shape => (features,). broadcast to tensor's last dimension
-        bshape = [1]*(tensor.dim()-1) + [tensor.shape[-1]]
-        mean_ = mean.view(*bshape)
-        var_  = var.view(*bshape)
+        mean, var, count = self.stats[key]
+        tensor_on_device = tensor.to(self.device)
 
-        # (x - mean)/ sqrt(var + 1e-8)
-        return (tensor.to(self.device) - mean_) / torch.sqrt(var_ + 1e-8)
+        if tensor_on_device.ndim == 0:
+            tensor_on_device = tensor_on_device.view(1, 1)
+        elif tensor_on_device.ndim == 1:
+            tensor_on_device = tensor_on_device.unsqueeze(-1)
+        
+        if tensor_on_device.shape[-1] != mean.shape[-1]:
+            raise RuntimeError(
+                f"Feature dimension mismatch in _normalize_single for key '{key}'. "
+                f"Input tensor features: {tensor_on_device.shape[-1]}, "
+                f"Normalizer features: {mean.shape[-1]}. Input shape: {tensor.shape}"
+            )
+        
+        mean_reshaped = mean.unsqueeze(0) 
+        var_reshaped  = var.unsqueeze(0)
+
+        return (tensor_on_device - mean_reshaped) / torch.sqrt(var_reshaped + 1e-8)

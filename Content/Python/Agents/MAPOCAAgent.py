@@ -397,19 +397,53 @@ class MAPOCAAgent(Agent):
         
         # EmbDim: Output dimension of the embedding network (input to memory module or heads)
         EmbDim = self.embedding_network.base_encoder.embed_dim 
-
+       
         # --- Reward Normalization (Optional) ---
         # Normalize rewards using only valid steps indicated by attention_mask_batch
         valid_rewards_mask = attention_mask_batch.unsqueeze(-1).expand_as(padded_rewards_seq).bool()
-        rewards_raw_mean = padded_rewards_seq[valid_rewards_mask].mean().item() if valid_rewards_mask.sum() > 0 else 0.0
+
+        rewards_raw_mean = 0.0 # Initialize to a default
+        if valid_rewards_mask.sum() > 0: # Ensure there are valid rewards before calculating mean
+            rewards_raw_mean = padded_rewards_seq[valid_rewards_mask].mean().item()
+
         if self.rewards_normalizer:
-            valid_rewards = padded_rewards_seq[valid_rewards_mask]
-            if valid_rewards.numel() > 0: 
-                 self.rewards_normalizer.update(valid_rewards) 
-                 norm_rewards_seq = torch.zeros_like(padded_rewards_seq)
-                 norm_rewards_seq[valid_rewards_mask] = self.rewards_normalizer.normalize(valid_rewards)
-                 padded_rewards_seq = norm_rewards_seq # Update with normalized rewards
-        rewards_norm_mean = padded_rewards_seq[valid_rewards_mask].mean().item() if valid_rewards_mask.sum() > 0 else 0.0
+            # Extract valid rewards; this creates a 1D tensor of shape (M,)
+            # where M is the number of True elements in valid_rewards_mask.
+            valid_rewards_flat = padded_rewards_seq[valid_rewards_mask]
+
+            if valid_rewards_flat.numel() > 0: 
+                # Reshape valid_rewards_flat to (M, 1) to treat rewards as a single feature
+                # before passing to the normalizer.
+                valid_rewards_for_norm_update = valid_rewards_flat.unsqueeze(-1)
+                
+                # Update the normalizer's statistics with the (M, 1) shaped tensor
+                self.rewards_normalizer.update(valid_rewards_for_norm_update)
+                
+                # Normalize these valid rewards. Input is (M, 1), output will also be (M, 1).
+                normalized_valid_rewards = self.rewards_normalizer.normalize(valid_rewards_for_norm_update)
+
+                # Create a temporary tensor to place normalized rewards back into the original sequence structure.
+                norm_rewards_seq = torch.zeros_like(padded_rewards_seq)
+                
+                # Assign the normalized rewards back.
+                # normalized_valid_rewards is (M, 1), squeeze it to (M,) for assignment
+                # to the locations indicated by valid_rewards_mask (which effectively flattens those locations).
+                norm_rewards_seq[valid_rewards_mask] = normalized_valid_rewards.squeeze(-1).to(norm_rewards_seq.dtype)
+                
+                # Update padded_rewards_seq to use the normalized rewards for GAE calculation
+                padded_rewards_seq = norm_rewards_seq 
+
+        # Calculate the mean of normalized rewards for logging
+        rewards_norm_mean = 0.0 # Initialize to a default
+        if valid_rewards_mask.sum() > 0: # Ensure there are valid rewards
+            rewards_norm_mean = padded_rewards_seq[valid_rewards_mask].mean().item()
+
+        # --- Intrinsic Rewards (RND) Section (if enabled) ---
+        all_intrinsic_rewards_seq = torch.zeros_like(padded_rewards_seq) # Initialize intrinsic rewards
+
+        # ... (rest of the 'with torch.no_grad():' block for gathering old values, including RND calculation) ...
+        # The combined_rewards_seq will use the potentially normalized padded_rewards_seq
+
 
         # --- NEW RND: Prepare placeholder for intrinsic rewards ---
         # This tensor will be populated during the no_grad forward pass if RND is enabled.
