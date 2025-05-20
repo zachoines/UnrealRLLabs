@@ -728,56 +728,77 @@ class MAPOCAAgent(Agent):
     def _compute_gae_with_padding(self, rewards_seq, values_seq, next_values_seq,
                                   dones_seq, truncs_seq, attention_mask):
         # Computes Generalized Advantage Estimation (GAE) respecting padded sequences.
-        # rewards_seq, values_seq, next_values_seq, dones_seq, truncs_seq: (B, MaxSeqLen, 1)
-        # attention_mask: (B, MaxSeqLen)
+        # All input sequences (rewards, values, next_values, dones, truncs) are expected
+        # to have shape (B, MaxSeqLen, 1), where B is the number of sequences (segments)
+        # in the batch, and MaxSeqLen is the padded sequence length.
+        # attention_mask has shape (B, MaxSeqLen), with 1.0 for valid steps and 0.0 for padded steps.
+
         B, MaxSeqLen, _ = rewards_seq.shape
-        returns_seq = torch.zeros_like(rewards_seq) # Will store GAE + V(s_t)
-        gae = torch.zeros(B, 1, device=rewards_seq.device) # GAE accumulator per sequence in batch
+        returns_seq = torch.zeros_like(rewards_seq)  # Will store target returns (GAE + V(s_t))
+        gae = torch.zeros(B, 1, device=rewards_seq.device)  # GAE accumulator, reset for each sequence in batch implicitly by loop start
 
-        dones_float_seq = dones_seq.float()   # Convert booleans/ints to float for masking
-        truncs_float_seq = truncs_seq.float()
+        # Convert done flags to float for masking operations.
+        # The 'dones_seq' indicates true terminal states from the environment.
+        dones_float_seq = dones_seq.float()
+        # 'truncs_seq' indicates episode termination due to timeout/MaxSteps.
+        # It's not directly used in the modified bootstrap logic here but is an input.
+        # Its primary role is handled by the attention_mask and by the runner in resetting envs.
 
-        # Iterate backwards through the sequence steps
+        # Iterate backwards through the sequence timesteps
         for t in reversed(range(MaxSeqLen)):
-            # current_step_is_valid_mask_t: (B, 1), 1.0 if current step t is not padded, 0.0 otherwise
-            current_step_is_valid_mask_t = attention_mask[:, t:t+1] # Slice to keep 2D: (B, 1)
-            
-            # Mask for whether the *next* step (t+1) is a valid, non-padded part of the sequence
-            next_step_is_valid_in_sequence_mask_t_plus_1 = attention_mask[:, t+1:t+2] if t < MaxSeqLen - 1 else torch.zeros_like(current_step_is_valid_mask_t)
-            
-            # A step is a "true done" if it's a 'done' (game over) and NOT a 'truncation' (timeout).
-            is_true_done_at_t = dones_float_seq[:, t] * (1.0 - truncs_float_seq[:, t]) # Shape: (B, 1)
-            
-            # We can bootstrap from V(s_{t+1}) if:
-            # 1. The current step s_t was NOT a true 'done' state (i.e., episode didn't end here permanently).
-            # 2. The next step s_{t+1} is a valid (non-padded) step in the sequence.
-            can_bootstrap_from_next_value = (1.0 - is_true_done_at_t) * next_step_is_valid_in_sequence_mask_t_plus_1 # Shape: (B, 1)
-            
-            # Get V(s_{t+1}) but only if we can bootstrap from it, otherwise it's 0.
-            v_next_bootstrapped = next_values_seq[:, t] * can_bootstrap_from_next_value # Shape: (B, 1)
-            
-            # TD error: delta_t = r_t + gamma * V(s_{t+1})_bootstrapped - V(s_t)
-            # This calculation is only meaningful for valid steps. Invalid (padded) steps will have delta = 0.
-            delta = (rewards_seq[:, t] + self.gamma * v_next_bootstrapped - values_seq[:, t]) * current_step_is_valid_mask_t # Shape: (B, 1)
-            
-            # GAE: A_t = delta_t + gamma * lambda * A_{t+1} * (mask for GAE propagation)
-            # GAE propagates if the current step s_t was not a true 'done' and s_{t+1} is valid.
-            gae_prop_mask = can_bootstrap_from_next_value # Same condition as bootstrapping, Shape: (B, 1)
-            gae = delta + self.gamma * self.lmbda * gae_prop_mask * gae # Shape: (B, 1)
-            
-            # Returns R_t = A_t + V(s_t)
-            current_returns_t = gae + values_seq[:, t] # Shape: (B, 1)
-            
-            # Store returns only for valid steps. Padded steps will have returns_seq[:, t] = 0.
-            returns_seq[:, t] = torch.where(current_step_is_valid_mask_t.bool(), 
-                                           current_returns_t, 
-                                           torch.zeros_like(current_returns_t)
-                                          )
-            
-            # If current step itself is padded, zero out GAE so it doesn't affect prior valid steps in the next loop iteration.
-            gae = gae * current_step_is_valid_mask_t 
-        return returns_seq
+            # Mask for the current timestep t: 1.0 if valid, 0.0 if padded.
+            # Sliced as [:, t:t+1] to keep the dimension for broadcasting: (B, 1)
+            current_step_is_valid_mask_t = attention_mask[:, t:t+1]
 
+            # Mask for the next timestep t+1: 1.0 if valid, 0.0 if padded or beyond MaxSeqLen.
+            # If t is the last step (MaxSeqLen - 1), there's no valid next step in the sequence.
+            if t < MaxSeqLen - 1:
+                next_step_is_valid_in_sequence_mask_t_plus_1 = attention_mask[:, t+1:t+2]
+            else:
+                next_step_is_valid_in_sequence_mask_t_plus_1 = torch.zeros_like(current_step_is_valid_mask_t)
+
+            # Determine if we should bootstrap the value of the next state V(s_{t+1}).
+            # We bootstrap if:
+            #   1. The current state s_t is NOT a true terminal state (dones_float_seq[:, t] is 0).
+            #   2. The next state s_{t+1} is a valid (non-padded) step within the current sequence.
+            # This correctly handles pure truncations (dones=0, truncs=1) by allowing bootstrapping.
+            # It also correctly handles true terminal states (dones=1) by not bootstrapping.
+            can_bootstrap_from_next_value = (1.0 - dones_float_seq[:, t]) * next_step_is_valid_in_sequence_mask_t_plus_1
+
+            # Get V(s_{t+1}), scaled by can_bootstrap_from_next_value.
+            # If cannot bootstrap (e.g., s_t is terminal or s_{t+1} is padded), v_next_bootstrapped becomes 0.
+            # values_seq[:, t] is V(s_t) and next_values_seq[:, t] is V(s_{t+1}) for the current step t.
+            v_next_bootstrapped = next_values_seq[:, t] * can_bootstrap_from_next_value
+
+            # Calculate TD error (delta_t) for the current step t.
+            # delta_t = r_t + gamma * V(s_{t+1})_bootstrapped - V(s_t)
+            # Multiply by current_step_is_valid_mask_t so delta is 0 for padded steps.
+            delta = (rewards_seq[:, t] + self.gamma * v_next_bootstrapped - values_seq[:, t]) * current_step_is_valid_mask_t
+
+            # Calculate GAE (A_t).
+            # A_t = delta_t + gamma * lambda * A_{t+1} * (mask_for_gae_propagation)
+            # GAE should propagate from A_{t+1} if s_t was not a terminal state and s_{t+1} was valid.
+            # This uses the same condition as can_bootstrap_from_next_value.
+            gae_prop_mask = (1.0 - dones_float_seq[:, t]) * next_step_is_valid_in_sequence_mask_t_plus_1
+            gae = delta + self.gamma * self.lmbda * gae_prop_mask * gae
+
+            # Calculate the target return R_t = A_t + V(s_t) for the value function.
+            current_returns_t = gae + values_seq[:, t]
+
+            # Store the calculated return for the current step t.
+            # If current_step_is_valid_mask_t is 0 (padded step), store 0.
+            returns_seq[:, t] = torch.where(current_step_is_valid_mask_t.bool(),
+                                            current_returns_t,
+                                            torch.zeros_like(current_returns_t))
+
+            # If the current step itself was padded, reset gae to 0.
+            # This prevents gae from a padded step (which would be 0 due to delta being 0)
+            # from being incorrectly used by a previous valid step in the next iteration of the loop.
+            # (Essentially, gae should be 0 if it's calculated based on a padded 'current_step_is_valid_mask_t').
+            gae = gae * current_step_is_valid_mask_t
+
+        return returns_seq
+    
     def _ppo_clip_loss(self, new_lp, old_lp, advantages, clip_range, reduction='mean'):
         # new_lp, old_lp, advantages: (MiniBatchNumSeq, MaxSeqLen, NumAgents)
         log_ratio = new_lp - old_lp

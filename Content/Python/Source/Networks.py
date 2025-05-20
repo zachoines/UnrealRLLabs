@@ -6,7 +6,7 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
-from typing import Dict, Union, List, Any
+from typing import Dict, Union, List, Any, Optional
 from torch.distributions import Beta, AffineTransform, Normal, TransformedDistribution
 from torch.distributions.transforms import TanhTransform
 from abc import ABC, abstractmethod
@@ -236,22 +236,47 @@ class StatesActionsEncoder(nn.Module):
 
 class ValueNetwork(nn.Module):
     """MLP predicting a scalar value from input features, with optional dropout."""
-    def __init__(self, in_features: int, hidden_size: int, dropout_rate: float = 0.0, linear_init_scale: float = 1.0):
+    def __init__(self, in_features: int, hidden_size: int, dropout_rate: float = 0.0,
+                 linear_init_scale: float = 1.0, # General scale for hidden layers
+                 output_layer_init_gain: Optional[float] = None): # Specific gain for the output layer
         super().__init__()
-        self.value_net = nn.Sequential(
-            nn.Linear(in_features, hidden_size),
-            nn.GELU(),
-            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.GELU(),
-            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
-            nn.Linear(hidden_size, 1) # Output a single scalar value
-        )
-        # Apply initialization to all linear layers
-        self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
+        
+        # Define layers individually for more control over initialization
+        self.fc1 = nn.Linear(in_features, hidden_size)
+        self.act1 = nn.GELU()
+        self.dropout1 = nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity()
+        
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.act2 = nn.GELU()
+        self.dropout2 = nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity()
+        
+        self.output_layer = nn.Linear(hidden_size, 1) # Outputs a single scalar value
+
+        # Initialize hidden layers using the general linear_init_scale
+        # Assuming init_weights_gelu_linear is available in the scope
+        init_weights_gelu_linear(self.fc1, scale=linear_init_scale)
+        init_weights_gelu_linear(self.fc2, scale=linear_init_scale)
+
+        # Specific initialization for the output layer
+        if output_layer_init_gain is not None:
+            init.orthogonal_(self.output_layer.weight, gain=output_layer_init_gain)
+            if self.output_layer.bias is not None:
+                init.zeros_(self.output_layer.bias)
+        else:
+            # Fallback to the general init scale if specific gain is not provided for the output layer
+            init_weights_gelu_linear(self.output_layer, scale=linear_init_scale)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.value_net(x)
+        x = self.fc1(x)
+        x = self.act1(x)
+        x = self.dropout1(x)
+        
+        x = self.fc2(x)
+        x = self.act2(x)
+        x = self.dropout2(x)
+        
+        x = self.output_layer(x)
+        return x
 
 
 class ResidualAttention(nn.Module):
