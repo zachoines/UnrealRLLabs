@@ -1,7 +1,7 @@
 {
   "environment": {
-    "name": "TerraShift_TestC_NetworkSizeReduced_SeparateLRs",
-    "id": "TestC_NetworkSizeReduced_SeparateLRs_$(date +%Y%m%d_%H%M%S)",
+    "name": "TerraShift_TestD_IncreasedCapacity",
+    "id": "TestD_IncreasedCapacity_$(date +%Y%m%d_%H%M%S)",
     "params": {
       "PlatformSize": 1,
       "MaxColumnHeight": 4,
@@ -33,7 +33,7 @@
         "PotentialShaping_Scale": 0.0,
         "REACH_GOAL_REWARD": 1.0,
         "FALL_OFF_PENALTY": -1.0,
-        "STEP_PENALTY": 0.0
+        "STEP_PENALTY": -0.0001
       },
       "GoalManager": {
         "DefaultRadius": 1.0
@@ -167,19 +167,22 @@
       "enable_memory": true,
       "memory_type": "gru",
       "gru": {
-        "input_size": 64,
-        "hidden_size": 64,
-        "num_layers": 1,
+        "input_size": 128,
+        "hidden_size": 128,
+        "num_layers": 2,
         "bias": true,
         "dropout": 0.0
       },
       "enable_rnd": false,
       "rnd_params": {
-        "output_size": 64,
+        "output_size": 128,
         "hidden_size": 128,
         "intrinsic_reward_coeff": 0.0,
         "rnd_update_proportion": 0.0
       },
+      "enable_popart": true,
+      "popart_beta": 0.999,
+      "popart_epsilon": 1e-5,
       "no_grad_forward_batch_size": 16,
       "learning_rate": 0.00002,
       "lr_policy": 0.00002,
@@ -187,16 +190,16 @@
       "lr_baseline": 0.00001,
       "lr_rnd_predictor": 0.00002,
       "gamma": 0.99,
-      "lambda": 0.92,
-      "value_loss_coeff": 1.0,
-      "baseline_loss_coeff": 1.0,
+      "lambda": 0.95,
+      "value_loss_coeff": 0.5,
+      "baseline_loss_coeff": 0.5,
       "normalize_advantages": true,
       "clipped_value_loss": true,
       "max_grad_norm": 0.5,
       "ppo_clip_range": 0.2,
       "value_clip_range": 0.1,
       "entropy_coeff": 0.01,
-      "rewards_normalizer": {
+      "rewards_normalizer_disabled_due_to_popart": { 
         "warmup_steps": 2000,
         "epsilon": 1e-8
       },
@@ -207,8 +210,8 @@
           "total_iters": 20000
         },
         "entropy_coeff": {
-          "start_value": 0.001,
-          "end_value": 0.0001,
+          "start_value": 0.01,
+          "end_value": 0.001,
           "total_iters": 20000
         },
         "value_clip": {
@@ -235,10 +238,10 @@
             "in_channels": 2,
             "h": 25,
             "w": 25,
-            "embed_dim": 64,
-            "num_heads": 4,
+            "embed_dim": 128,
+            "num_heads": 8,
             "cnn_channels": [
-              32
+              64
             ],
             "cnn_kernel_sizes": [
               5
@@ -247,33 +250,33 @@
               2
             ],
             "group_norms": [
-              4
+              8 
             ],
             "block_scales": [
               8
             ],
-            "transformer_layers": 1,
+            "transformer_layers": 2,
             "dropout_rate": 0.1,
             "use_agent_id": true,
             "ff_hidden_factor": 2,
-            "id_num_freqs": 8,
+            "id_num_freqs": 16,
             "conv_init_scale": 0.1,
             "linear_init_scale": 0.1
           },
           "obs_encoder": {
-            "state_dim": 64,
-            "hidden_size": 64,
-            "output_size": 64,
+            "state_dim": 128,
+            "hidden_size": 128,
+            "output_size": 128,
             "dropout_rate": 0.1,
             "activation": true,
             "layer_norm": true,
             "linear_init_scale": 0.01
           },
           "obs_actions_encoder": {
-            "state_dim": 64,
+            "state_dim": 128,
             "action_dim": 6,
-            "hidden_size": 64,
-            "output_size": 64,
+            "hidden_size": 128,
+            "output_size": 128,
             "dropout_rate": 0.1,
             "activation": true,
             "layer_norm": true,
@@ -281,8 +284,8 @@
           }
         },
         "policy_network": {
-          "in_features": 64,
-          "hidden_size": 64,
+          "in_features": 128,
+          "hidden_size": 128,
           "param_init_bias": 0.0,
           "min_concentration": 1.001,
           "linear_init_scale": 0.01,
@@ -290,28 +293,28 @@
         },
         "critic_network": {
           "value_head": {
-            "in_features": 64,
-            "hidden_size": 64,
+            "in_features": 128,
+            "hidden_size": 128,
             "dropout_rate": 0.1,
             "linear_init_scale": 0.1,
             "output_layer_init_gain": 0.1
           },
           "baseline_head": {
-            "in_features": 64,
-            "hidden_size": 64,
+            "in_features": 128,
+            "hidden_size": 128,
             "dropout_rate": 0.1,
-            "linear_init_scale": 0.1,
+            "linear_init_scale": 0.1, 
             "output_layer_init_gain": 0.1
           },
           "baseline_attention": {
-            "embed_dim": 64,
-            "num_heads": 4,
+            "embed_dim": 128,
+            "num_heads": 8,
             "dropout": 0.1,
             "self_attention": true
           },
           "value_attention": {
-            "embed_dim": 64,
-            "num_heads": 4,
+            "embed_dim": 128,
+            "num_heads": 8,
             "dropout": 0.1,
             "self_attention": true
           }
@@ -324,8 +327,8 @@
     "pad_trajectories": true,
     "batch_size": 512,
     "buffer_size": 512,
-    "num_environments": 16,
-    "epochs": 3,
+    "num_environments": 16, 
+    "epochs": 4,
     "mini_batch_size": 16,
     "ActionRepeat": 3,
     "saveFrequency": 100

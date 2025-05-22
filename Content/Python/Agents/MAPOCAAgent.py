@@ -11,7 +11,7 @@ from torch.optim.lr_scheduler import LinearLR
 
 from Source.StateRecorder import StateRecorder
 from Source.Agent import Agent
-from Source.Utility import RunningMeanStdNormalizer, LinearValueScheduler
+from Source.Utility import RunningMeanStdNormalizer, LinearValueScheduler, PopArtNormalizer # POPART: Import PopArtNormalizer
 from Source.Networks import (
     MultiAgentEmbeddingNetwork,
     SharedCritic,
@@ -25,25 +25,14 @@ from Source.Memory import RecurrentMemoryNetwork, GRUSequenceMemory
 class MAPOCAAgent(Agent):
     """
     Multi-agent PPO (MAPOCA) agent using an Attention-based SharedCritic.
-    Key features:
-    - Modular recurrent memory (e.g., GRU, LSTM) for temporal processing.
-    - Support for Beta (continuous) or Discrete policy networks.
-    - PPO algorithm with clipped surrogate objective.
-    - Optional clipped value and baseline loss functions.
-    - Generalized Advantage Estimation (GAE) for advantage calculation.
-    - Multi-epoch mini-batch updates over sequences of experiences.
-    - Counterfactual baseline for multi-agent credit assignment.
-    - Schedulers for learning rate, entropy, and clipping parameters.
-    - Optional state and reward normalization.
-    - Optional Random Network Distillation (RND) for exploration.
     MODIFIED: Now uses separate base embedding and memory networks for policy, value, and baseline.
     MODIFIED: Now uses separate optimizers for policy, value, baseline, and RND predictor.
+    MODIFIED: Integrated PopArt for value and baseline function normalization.
     """
 
     def __init__(self, config: Dict, device: torch.device):
         super().__init__(config, device)
 
-        # Parse configuration dictionaries
         agent_cfg = config["agent"]["params"]
         train_cfg = config["train"]
         shape_cfg = config["environment"]["shape"]
@@ -51,10 +40,8 @@ class MAPOCAAgent(Agent):
         rec_cfg = config.get("StateRecorder", None) 
         env_params_cfg = config["environment"]["params"]
 
-        # --- Core PPO & GAE Hyperparameters ---
         self.gamma = agent_cfg.get("gamma", 0.99)
         self.lmbda = agent_cfg.get("lambda", 0.95)
-        # General learning rate, used as fallback if specific LRs are not provided
         self.lr = agent_cfg.get("learning_rate", 3e-4) 
         self.value_loss_coeff = agent_cfg.get("value_loss_coeff", 0.5)
         self.baseline_loss_coeff = agent_cfg.get("baseline_loss_coeff", 0.5)
@@ -120,7 +107,7 @@ class MAPOCAAgent(Agent):
         else:
             raise ValueError(f"MAPOCAAgent Error: Unsupported action_space_type: {self.action_space_type}")
 
-        self.lr_scheduler_cfg = agent_cfg.get("schedulers", {}).get("lr", None) # Main LR scheduler config
+        self.lr_scheduler_cfg = agent_cfg.get("schedulers", {}).get("lr", None)
         ent_sched_cfg = agent_cfg.get("schedulers", {}).get("entropy_coeff", None)
         self.entropy_scheduler = LinearValueScheduler(**ent_sched_cfg) if ent_sched_cfg else None
         if self.entropy_scheduler: self.entropy_coeff = self.entropy_scheduler.start_value
@@ -137,8 +124,28 @@ class MAPOCAAgent(Agent):
         self.max_grad_norm_scheduler = LinearValueScheduler(**grad_norm_sched_cfg) if grad_norm_sched_cfg else None
         if self.max_grad_norm_scheduler: self.max_grad_norm = self.max_grad_norm_scheduler.start_value
 
-        rewards_normalization_cfg = agent_cfg.get('rewards_normalizer', None)
-        self.rewards_normalizer = RunningMeanStdNormalizer(**rewards_normalization_cfg, device=self.device) if rewards_normalization_cfg else None
+        # POPART: Initialize PopArt normalizers if enabled
+        self.enable_popart = agent_cfg.get("enable_popart", False)
+        self.value_popart: Optional[PopArtNormalizer] = None
+        self.baseline_popart: Optional[PopArtNormalizer] = None
+        if self.enable_popart:
+            popart_beta = agent_cfg.get("popart_beta", 0.999)
+            popart_epsilon = agent_cfg.get("popart_epsilon", 1e-5)
+            self.value_popart = PopArtNormalizer(
+                self.shared_critic.value_head.output_layer, # Pass the final linear layer of the value head
+                beta=popart_beta, epsilon=popart_epsilon, device=self.device
+            ).to(self.device)
+            self.baseline_popart = PopArtNormalizer(
+                self.shared_critic.baseline_head.output_layer, # Pass the final linear layer of the baseline head
+                beta=popart_beta, epsilon=popart_epsilon, device=self.device
+            ).to(self.device)
+            print("MAPOCAAgent: PopArt Normalization ENABLED for value and baseline heads.")
+            self.rewards_normalizer = None # Disable standard reward normalizer if PopArt is active for value targets
+        else:
+            # Standard reward normalizer (if PopArt is disabled)
+            rewards_normalization_cfg = agent_cfg.get('rewards_normalizer', None)
+            self.rewards_normalizer = RunningMeanStdNormalizer(**rewards_normalization_cfg, device=self.device) if rewards_normalization_cfg else None
+
 
         self.enable_rnd = agent_cfg.get("enable_rnd", False)
         self.rnd_target_network: Optional[RNDTargetNetwork] = None
@@ -159,21 +166,17 @@ class MAPOCAAgent(Agent):
             self.intrinsic_reward_normalizer = RunningMeanStdNormalizer(epsilon=1e-8, device=self.device) 
             print(f"MAPOCAAgent: RND Module Initialized. Input Dim: {rnd_input_dim}, Output Dim: {rnd_output_dim}")
 
-        # --- Initialize Separate Optimizers ---
-        # Learning rates for each component (can be specified in config, otherwise defaults to self.lr)
         lr_policy = agent_cfg.get("lr_policy", self.lr)
         lr_value = agent_cfg.get("lr_value", self.lr)
         lr_baseline = agent_cfg.get("lr_baseline", self.lr)
-        lr_rnd_predictor = agent_cfg.get("lr_rnd_predictor", self.lr) # For RND predictor
+        lr_rnd_predictor = agent_cfg.get("lr_rnd_predictor", self.lr)
 
-        # Policy pathway parameters
         policy_params = list(self.policy_embedding_network.parameters()) + \
                         list(self.policy_net.parameters())
         if self.enable_memory and self.policy_memory_module:
             policy_params += list(self.policy_memory_module.parameters())
         self.policy_optimizer = optim.Adam(policy_params, lr=lr_policy, eps=1e-7)
 
-        # Value pathway parameters (Value Embedding, Value Memory, Critic's Value Head & Attention)
         value_params = list(self.value_embedding_network.parameters()) + \
                        list(self.shared_critic.value_head.parameters()) + \
                        list(self.shared_critic.value_attention.parameters())
@@ -181,7 +184,6 @@ class MAPOCAAgent(Agent):
             value_params += list(self.value_memory_module.parameters())
         self.value_optimizer = optim.Adam(value_params, lr=lr_value, eps=1e-7)
 
-        # Baseline pathway parameters (Baseline Embedding, Baseline Memory, Critic's Baseline Head & Attention)
         baseline_params = list(self.baseline_embedding_network.parameters()) + \
                           list(self.shared_critic.baseline_head.parameters()) + \
                           list(self.shared_critic.baseline_attention.parameters())
@@ -189,22 +191,19 @@ class MAPOCAAgent(Agent):
             baseline_params += list(self.baseline_memory_module.parameters())
         self.baseline_optimizer = optim.Adam(baseline_params, lr=lr_baseline, eps=1e-7)
         
-        # RND Predictor Optimizer (if RND is enabled)
         self.rnd_predictor_optimizer: Optional[optim.Adam] = None
         if self.enable_rnd and self.rnd_predictor_network:
             self.rnd_predictor_optimizer = optim.Adam(self.rnd_predictor_network.parameters(), lr=lr_rnd_predictor, eps=1e-7)
 
-        # Main LR scheduler is now applied to the policy_optimizer
         self.policy_lr_scheduler: Optional[LinearLR] = None
         if self.lr_scheduler_cfg: 
             self.policy_lr_scheduler = LinearLR(self.policy_optimizer, **self.lr_scheduler_cfg)
         
         self.current_policy_memory_hidden_states: Optional[torch.Tensor] = None
 
-
+    # ... (parameters, _determine_action_space, _get_batch_shape_info, get_actions methods remain largely the same as in mapoca_agent_separate_bases_v1) ...
+    # Minor adjustment in get_actions if self.rewards_normalizer is None due to PopArt
     def parameters(self):
-        # Collects ALL trainable parameters from all networks.
-        # This is used for global gradient clipping if applied to all params at once.
         params_list = list(self.policy_embedding_network.parameters()) + \
                       list(self.value_embedding_network.parameters()) + \
                       list(self.baseline_embedding_network.parameters()) + \
@@ -330,7 +329,7 @@ class MAPOCAAgent(Agent):
                padded_states_dict_seq: Dict[str, torch.Tensor],
                padded_next_states_dict_seq: Dict[str, torch.Tensor],
                padded_actions_seq: torch.Tensor,
-               padded_rewards_seq: torch.Tensor,
+               padded_rewards_seq: torch.Tensor, # These are raw extrinsic rewards
                padded_dones_seq: torch.Tensor,
                padded_truncs_seq: torch.Tensor,
                initial_hidden_states_batch: Optional[torch.Tensor], 
@@ -343,28 +342,34 @@ class MAPOCAAgent(Agent):
         EmbDimValue = self.value_embedding_network.base_encoder.embed_dim
         EmbDimBaseline = self.baseline_embedding_network.base_encoder.embed_dim
 
-        valid_rewards_mask = attention_mask_batch.unsqueeze(-1).expand_as(padded_rewards_seq).bool()
+        # --- Reward Normalization (Optional, if PopArt is not enabled or for other purposes) ---
+        current_rewards_seq = padded_rewards_seq.clone() # Work with a copy
         rewards_raw_mean = 0.0
+        valid_rewards_mask = attention_mask_batch.unsqueeze(-1).expand_as(current_rewards_seq).bool()
         if valid_rewards_mask.sum() > 0: 
-            rewards_raw_mean = padded_rewards_seq[valid_rewards_mask].mean().item()
-        if self.rewards_normalizer:
-            valid_rewards_flat = padded_rewards_seq[valid_rewards_mask]
+            rewards_raw_mean = current_rewards_seq[valid_rewards_mask].mean().item()
+
+        if self.rewards_normalizer: # This is None if PopArt is enabled
+            valid_rewards_flat = current_rewards_seq[valid_rewards_mask]
             if valid_rewards_flat.numel() > 0: 
                 valid_rewards_for_norm_update = valid_rewards_flat.unsqueeze(-1)
                 self.rewards_normalizer.update(valid_rewards_for_norm_update)
                 normalized_valid_rewards = self.rewards_normalizer.normalize(valid_rewards_for_norm_update)
-                norm_rewards_seq = torch.zeros_like(padded_rewards_seq)
+                norm_rewards_seq = torch.zeros_like(current_rewards_seq)
                 norm_rewards_seq[valid_rewards_mask] = normalized_valid_rewards.squeeze(-1).to(norm_rewards_seq.dtype)
-                padded_rewards_seq = norm_rewards_seq 
-        rewards_norm_mean = 0.0
+                current_rewards_seq = norm_rewards_seq # Use normalized rewards for GAE if self.rewards_normalizer is active
+        
+        rewards_norm_mean = 0.0 # This will be raw mean if rewards_normalizer is None
         if valid_rewards_mask.sum() > 0:
-            rewards_norm_mean = padded_rewards_seq[valid_rewards_mask].mean().item()
+            rewards_norm_mean = current_rewards_seq[valid_rewards_mask].mean().item()
 
-        all_intrinsic_rewards_seq = torch.zeros_like(padded_rewards_seq)
 
+        all_intrinsic_rewards_seq = torch.zeros_like(current_rewards_seq) # Based on current_rewards_seq shape
+
+        # --- Data Gathering (old policy/values) with torch.no_grad() ---
         with torch.no_grad():
-            all_old_log_probs_seq_parts, all_old_values_seq_parts = [], []
-            all_old_baselines_seq_parts, all_next_values_seq_parts = [], []
+            all_old_log_probs_seq_parts, all_old_values_seq_norm_parts = [], [] # Store normalized values
+            all_old_baselines_seq_norm_parts, all_next_values_seq_norm_parts = [], [] # Store normalized baselines and next_values
             all_intrinsic_rewards_sub_batch_parts = [] 
             num_sequences_total = B 
 
@@ -377,6 +382,7 @@ class MAPOCAAgent(Agent):
                 sub_batch_next_states_dict_seq = {k: v[start_idx:end_idx] for k, v in padded_next_states_dict_seq.items() if v is not None}
                 sub_batch_actions_seq = padded_actions_seq[start_idx:end_idx]
                 
+                # POLICY pathway features (for old_log_probs)
                 sub_base_emb_policy, _ = self.policy_embedding_network.get_base_embedding(sub_batch_states_dict_seq)
                 sub_processed_feat_policy = sub_base_emb_policy
                 if self.enable_memory and self.policy_memory_module:
@@ -388,6 +394,7 @@ class MAPOCAAgent(Agent):
                     proc_feat_flat_policy, _ = self.policy_memory_module.forward_sequence(mem_in_policy, init_h_policy)
                     sub_processed_feat_policy = proc_feat_flat_policy.reshape(current_sub_batch_size, MaxSeqLen, NA_config, self.memory_hidden_size)
 
+                # VALUE pathway features (for old_values_norm, next_values_norm, RND)
                 sub_base_emb_value, _ = self.value_embedding_network.get_base_embedding(sub_batch_states_dict_seq)
                 sub_next_base_emb_value, _ = self.value_embedding_network.get_base_embedding(sub_batch_next_states_dict_seq)
                 sub_processed_feat_value = sub_base_emb_value
@@ -400,6 +407,7 @@ class MAPOCAAgent(Agent):
                     proc_feat_flat_next_value, _ = self.value_memory_module.forward_sequence(mem_in_next_value, None)
                     sub_next_processed_feat_value = proc_feat_flat_next_value.reshape(current_sub_batch_size, MaxSeqLen, NA_config, self.memory_hidden_size)
 
+                # BASELINE pathway features (for old_baselines_norm)
                 sub_base_emb_baseline, _ = self.baseline_embedding_network.get_base_embedding(sub_batch_states_dict_seq)
                 sub_processed_feat_baseline = sub_base_emb_baseline
                 if self.enable_memory and self.baseline_memory_module:
@@ -407,6 +415,7 @@ class MAPOCAAgent(Agent):
                     proc_feat_flat_baseline, _ = self.baseline_memory_module.forward_sequence(mem_in_baseline, None)
                     sub_processed_feat_baseline = proc_feat_flat_baseline.reshape(current_sub_batch_size, MaxSeqLen, NA_config, self.memory_hidden_size)
 
+                # RND intrinsic reward (uses VALUE pathway features)
                 if self.enable_rnd and self.rnd_target_network and self.rnd_predictor_network:
                     flat_features_for_rnd = sub_processed_feat_value.reshape(-1, self.feature_dim_for_heads)
                     target_rnd_feats = self.rnd_target_network(flat_features_for_rnd)
@@ -417,21 +426,24 @@ class MAPOCAAgent(Agent):
                 else:
                     all_intrinsic_rewards_sub_batch_parts.append(torch.zeros(current_sub_batch_size, MaxSeqLen, 1, device=self.device))
 
+                # Get old log_probs (from policy pathway)
                 sub_old_log_probs_seq, _ = self._recompute_log_probs_from_features(sub_processed_feat_policy, sub_batch_actions_seq)
-                sub_old_values_seq = self.shared_critic.values(sub_processed_feat_value)
+                
+                # Get NORMALIZED old values and baselines (direct output from critic heads)
+                sub_old_values_seq_norm = self.shared_critic.values(sub_processed_feat_value)
                 sub_baseline_input_seq = self.baseline_embedding_network.get_baseline_embeddings(sub_processed_feat_baseline, sub_batch_actions_seq)
-                sub_old_baselines_seq = self.shared_critic.baselines(sub_baseline_input_seq)
-                sub_next_values_seq = self.shared_critic.values(sub_next_processed_feat_value)
+                sub_old_baselines_seq_norm = self.shared_critic.baselines(sub_baseline_input_seq)
+                sub_next_values_seq_norm = self.shared_critic.values(sub_next_processed_feat_value)
 
                 all_old_log_probs_seq_parts.append(sub_old_log_probs_seq)
-                all_old_values_seq_parts.append(sub_old_values_seq)
-                all_old_baselines_seq_parts.append(sub_old_baselines_seq)
-                all_next_values_seq_parts.append(sub_next_values_seq)
+                all_old_values_seq_norm_parts.append(sub_old_values_seq_norm) # Storing normalized
+                all_old_baselines_seq_norm_parts.append(sub_old_baselines_seq_norm) # Storing normalized
+                all_next_values_seq_norm_parts.append(sub_next_values_seq_norm) # Storing normalized
             
             old_log_probs_seq = torch.cat(all_old_log_probs_seq_parts, dim=0)
-            old_values_seq = torch.cat(all_old_values_seq_parts, dim=0)
-            old_baselines_seq = torch.cat(all_old_baselines_seq_parts, dim=0)
-            next_values_seq = torch.cat(all_next_values_seq_parts, dim=0)
+            old_values_seq_norm = torch.cat(all_old_values_seq_norm_parts, dim=0)       # Normalized
+            old_baselines_seq_norm = torch.cat(all_old_baselines_seq_norm_parts, dim=0)  # Normalized
+            next_values_seq_norm = torch.cat(all_next_values_seq_norm_parts, dim=0)      # Normalized
             
             all_intrinsic_rewards_seq = torch.cat(all_intrinsic_rewards_sub_batch_parts, dim=0)
             if self.enable_rnd and self.intrinsic_reward_normalizer:
@@ -446,13 +458,46 @@ class MAPOCAAgent(Agent):
                         temp_norm_intrinsic_r[valid_intrinsic_mask] = normalized_intrinsic_r_values.squeeze(-1).to(temp_norm_intrinsic_r.dtype)
                         all_intrinsic_rewards_seq = temp_norm_intrinsic_r 
 
-            combined_rewards_seq = padded_rewards_seq + self.intrinsic_reward_coeff * all_intrinsic_rewards_seq.detach()
-            returns_seq = self._compute_gae_with_padding(combined_rewards_seq, old_values_seq, next_values_seq, padded_dones_seq, padded_truncs_seq, attention_mask_batch)
+            # Rewards for GAE: extrinsic (potentially step-normalized) + intrinsic (normalized)
+            rewards_for_gae = current_rewards_seq + self.intrinsic_reward_coeff * all_intrinsic_rewards_seq.detach()
 
+            # POPART: Denormalize old_values_norm and next_values_norm for GAE calculation
+            # These use PopArt stats from *before* the current update cycle's PopArt stat update
+            old_values_seq_denorm = old_values_seq_norm # Default if PopArt disabled
+            next_values_seq_denorm = next_values_seq_norm # Default if PopArt disabled
+            if self.enable_popart and self.value_popart:
+                old_values_seq_denorm = self.value_popart.denormalize_outputs(old_values_seq_norm)
+                next_values_seq_denorm = self.value_popart.denormalize_outputs(next_values_seq_norm)
+            
+            # GAE computation uses DENORMALIZED values and raw/combined rewards
+            # returns_seq_raw will be in RAW scale
+            returns_seq_raw = self._compute_gae_with_padding(
+                rewards_for_gae, # These are raw extrinsic + normalized intrinsic * coeff
+                old_values_seq_denorm, 
+                next_values_seq_denorm, 
+                padded_dones_seq, padded_truncs_seq, attention_mask_batch
+            )
+
+            # POPART: Update PopArt Statistics using the RAW GAE returns
+            if self.enable_popart:
+                if self.value_popart:
+                    valid_returns_mask_value = attention_mask_batch.unsqueeze(-1).expand_as(returns_seq_raw).bool()
+                    if valid_returns_mask_value.sum() > 0:
+                        self.value_popart.update_stats(returns_seq_raw[valid_returns_mask_value].detach()) # Detach targets for stat update
+                
+                if self.baseline_popart:
+                    # Baseline target is also the raw GAE return
+                    returns_for_baseline_raw = returns_seq_raw.unsqueeze(2).expand(-1, -1, NA_config, -1) # (B, MaxSeqLen, NA_config, 1)
+                    valid_returns_mask_baseline = attention_mask_batch.unsqueeze(-1).unsqueeze(-1).expand_as(returns_for_baseline_raw).bool()
+                    if valid_returns_mask_baseline.sum() > 0:
+                        self.baseline_popart.update_stats(returns_for_baseline_raw[valid_returns_mask_baseline].detach()) # Detach targets
+
+        # --- PPO Update Loop (Mini-batches of sequences) ---
         num_sequences_in_batch = B 
         idxes = np.arange(num_sequences_in_batch)
-        log_keys = ["Policy Loss", "Value Loss", "Baseline Loss", "Entropy", "Grad Norm", "Advantage Raw Mean", "Advantage Raw Std", "Advantage Final Mean", "Returns Mean", "Logprob Mean", "Logprob Min", "Logprob Max"]
+        log_keys = ["Policy Loss", "Value Loss", "Baseline Loss", "Entropy", "Grad Norm", "Advantage Raw Mean", "Advantage Raw Std", "Advantage Final Mean", "Returns Mean (Raw)", "Logprob Mean", "Logprob Min", "Logprob Max"]
         if self.enable_rnd: log_keys.extend(["RND Predictor Loss", "Intrinsic Reward Mean (Normalized)"])
+        if self.enable_popart: log_keys.extend(["PopArt Value Mu", "PopArt Value Sigma", "PopArt Baseline Mu", "PopArt Baseline Sigma"])
         batch_logs = {k: [] for k in log_keys}
 
         for epoch in range(self.epochs):
@@ -467,10 +512,12 @@ class MAPOCAAgent(Agent):
                 act_mb_seq = padded_actions_seq[mb_indices].contiguous()
                 mask_mb = attention_mask_batch[mb_indices].contiguous()
                 
+                # Sliced OLD values (these are NORMALIZED if PopArt was on during data gathering)
                 olp_mb_seq = old_log_probs_seq[mb_indices].contiguous()
-                oval_mb_seq = old_values_seq[mb_indices].contiguous()
-                obase_mb_seq = old_baselines_seq[mb_indices].contiguous()
-                ret_mb_seq = returns_seq[mb_indices].contiguous()
+                oval_mb_seq_norm = old_values_seq_norm[mb_indices].contiguous() 
+                obase_mb_seq_norm = old_baselines_seq_norm[mb_indices].contiguous()
+                # Sliced RAW GAE returns
+                ret_mb_seq_raw = returns_seq_raw[mb_indices].contiguous()
                 
                 init_h_mb_policy = initial_hidden_states_batch[mb_indices].contiguous() if self.enable_memory and initial_hidden_states_batch is not None else None
                 base_emb_mb_seq_policy, _ = self.policy_embedding_network.get_base_embedding(st_mb_seq_dict)
@@ -488,7 +535,8 @@ class MAPOCAAgent(Agent):
                     mem_in_value = base_emb_mb_seq_value.reshape(MB_NUM_SEQ*NA_config, MaxSeqLen, EmbDimValue)
                     proc_feat_flat_value, _ = self.value_memory_module.forward_sequence(mem_in_value, None) 
                     processed_features_mb_seq_value = proc_feat_flat_value.reshape(MB_NUM_SEQ, MaxSeqLen, NA_config, self.memory_hidden_size)
-                new_vals_mb_seq = self.shared_critic.values(processed_features_mb_seq_value)
+                # NEW predictions are NORMALIZED if PopArt is on (due to adapted output layer)
+                new_vals_mb_seq_norm = self.shared_critic.values(processed_features_mb_seq_value)
 
                 base_emb_mb_seq_baseline, _ = self.baseline_embedding_network.get_base_embedding(st_mb_seq_dict)
                 processed_features_mb_seq_baseline = base_emb_mb_seq_baseline
@@ -497,7 +545,8 @@ class MAPOCAAgent(Agent):
                     proc_feat_flat_baseline, _ = self.baseline_memory_module.forward_sequence(mem_in_baseline, None)
                     processed_features_mb_seq_baseline = proc_feat_flat_baseline.reshape(MB_NUM_SEQ, MaxSeqLen, NA_config, self.memory_hidden_size)
                 baseline_input_mb_seq_for_loss = self.baseline_embedding_network.get_baseline_embeddings(processed_features_mb_seq_baseline, act_mb_seq)
-                new_base_mb_seq = self.shared_critic.baselines(baseline_input_mb_seq_for_loss)
+                # NEW predictions are NORMALIZED if PopArt is on
+                new_base_mb_seq_norm = self.shared_critic.baselines(baseline_input_mb_seq_for_loss)
                 
                 lp_detached = new_lp_mb_seq.detach()
                 valid_lp_mask = mask_mb.unsqueeze(-1).expand_as(lp_detached).bool()
@@ -506,60 +555,77 @@ class MAPOCAAgent(Agent):
                     batch_logs["Logprob Min"].append(lp_detached[valid_lp_mask].min().item())
                     batch_logs["Logprob Max"].append(lp_detached[valid_lp_mask].max().item())
 
-                adv_mb_seq = ret_mb_seq.unsqueeze(2).expand_as(new_base_mb_seq) - new_base_mb_seq 
-                adv_mb_squeezed_seq = adv_mb_seq.squeeze(-1)
-                valid_adv_mask = mask_mb.unsqueeze(-1).expand_as(adv_mb_squeezed_seq).bool()
+                # Advantage Calculation: Uses RAW returns and DENORMALIZED baselines
+                new_base_mb_seq_denorm = new_base_mb_seq_norm # Default if PopArt disabled
+                if self.enable_popart and self.baseline_popart:
+                    new_base_mb_seq_denorm = self.baseline_popart.denormalize_outputs(new_base_mb_seq_norm)
+
+                adv_mb_seq_raw = ret_mb_seq_raw.unsqueeze(2).expand_as(new_base_mb_seq_denorm) - new_base_mb_seq_denorm 
+                adv_mb_squeezed_seq_raw = adv_mb_seq_raw.squeeze(-1)
+                
+                detached_adv_for_policy = adv_mb_squeezed_seq_raw.detach() # Start with raw advantages
+                valid_adv_mask = mask_mb.unsqueeze(-1).expand_as(adv_mb_squeezed_seq_raw).bool()
                 if valid_adv_mask.sum() > 0:
-                    valid_adv_elements = adv_mb_squeezed_seq[valid_adv_mask]
-                    batch_logs["Advantage Raw Mean"].append(valid_adv_elements.mean().item())
-                    batch_logs["Advantage Raw Std"].append(valid_adv_elements.std().item())
+                    valid_adv_elements_raw = adv_mb_squeezed_seq_raw[valid_adv_mask]
+                    batch_logs["Advantage Raw Mean"].append(valid_adv_elements_raw.mean().item())
+                    batch_logs["Advantage Raw Std"].append(valid_adv_elements_raw.std().item())
                     if self.normalize_adv:
-                        normalized_valid_adv = (valid_adv_elements - valid_adv_elements.mean()) / (valid_adv_elements.std() + 1e-8)
-                        temp_adv_norm = torch.zeros_like(adv_mb_squeezed_seq)
+                        normalized_valid_adv = (valid_adv_elements_raw - valid_adv_elements_raw.mean()) / (valid_adv_elements_raw.std() + 1e-8)
+                        temp_adv_norm = torch.zeros_like(adv_mb_squeezed_seq_raw)
                         temp_adv_norm[valid_adv_mask] = normalized_valid_adv
-                        adv_mb_squeezed_seq = temp_adv_norm
-                    batch_logs["Advantage Final Mean"].append(adv_mb_squeezed_seq[valid_adv_mask].mean().item())
+                        detached_adv_for_policy = temp_adv_norm # Use normalized advantages for policy loss
+                    batch_logs["Advantage Final Mean"].append(detached_adv_for_policy[valid_adv_mask].mean().item())
                 else: 
                     batch_logs["Advantage Raw Mean"].append(0.0); batch_logs["Advantage Raw Std"].append(0.0); batch_logs["Advantage Final Mean"].append(0.0)
-                detached_adv_seq = adv_mb_squeezed_seq.detach()
-
+                
                 mask_mb_policy_entropy = mask_mb.unsqueeze(-1).expand_as(new_lp_mb_seq)
-                mask_mb_value = mask_mb.unsqueeze(-1).expand_as(new_vals_mb_seq)
-                mask_mb_baseline = mask_mb.unsqueeze(-1).unsqueeze(-1).expand_as(new_base_mb_seq)
                 num_valid_policy_entropy = mask_mb_policy_entropy.sum().clamp(min=1)
-                num_valid_value = mask_mb_value.sum().clamp(min=1)
-                num_valid_baseline = mask_mb_baseline.sum().clamp(min=1)
-
-                pol_loss_terms = self._ppo_clip_loss(new_lp_mb_seq, olp_mb_seq, detached_adv_seq, self.ppo_clip_range, reduction='none')
+                pol_loss_terms = self._ppo_clip_loss(new_lp_mb_seq, olp_mb_seq, detached_adv_for_policy, self.ppo_clip_range, reduction='none')
                 pol_loss = (pol_loss_terms * mask_mb_policy_entropy).sum() / num_valid_policy_entropy
                 
-                ret_mb_for_value = ret_mb_seq
+                # Value Loss: Uses NORMALIZED targets and NORMALIZED predictions if PopArt enabled
+                targets_for_value_loss = ret_mb_seq_raw # Default to raw returns if PopArt disabled
+                old_values_for_loss = oval_mb_seq_norm # Use normalized old values if PopArt
+                new_values_for_loss = new_vals_mb_seq_norm # Use normalized new values if PopArt
+                if self.enable_popart and self.value_popart:
+                    targets_for_value_loss = self.value_popart.normalize_targets(ret_mb_seq_raw)
+                
+                mask_mb_value = mask_mb.unsqueeze(-1).expand_as(new_values_for_loss).bool() # Mask for value loss
+                num_valid_value = mask_mb_value.sum().clamp(min=1)
                 if self.clipped_value_loss:
-                    value_loss_terms = self._clipped_value_loss(oval_mb_seq, new_vals_mb_seq, ret_mb_for_value, self.value_clip_range, reduction='none')
+                    value_loss_terms = self._clipped_value_loss(old_values_for_loss, new_values_for_loss, targets_for_value_loss, self.value_clip_range, reduction='none')
                 else:
-                    value_loss_terms = F.mse_loss(new_vals_mb_seq, ret_mb_for_value, reduction='none')
+                    value_loss_terms = F.mse_loss(new_values_for_loss, targets_for_value_loss, reduction='none')
                 val_loss = (value_loss_terms * mask_mb_value).sum() / num_valid_value
 
-                ret_mb_exp_baseline = ret_mb_seq.unsqueeze(2).expand_as(new_base_mb_seq)
-                if self.clipped_value_loss:
-                    baseline_loss_terms = self._clipped_value_loss(obase_mb_seq, new_base_mb_seq, ret_mb_exp_baseline, self.value_clip_range, reduction='none')
+                # Baseline Loss: Uses NORMALIZED targets and NORMALIZED predictions if PopArt enabled
+                targets_for_baseline_loss_raw = ret_mb_seq_raw.unsqueeze(2).expand_as(obase_mb_seq_norm) # Raw targets
+                targets_for_baseline_loss = targets_for_baseline_loss_raw
+                old_baselines_for_loss = obase_mb_seq_norm # Use normalized old baselines if PopArt
+                new_baselines_for_loss = new_base_mb_seq_norm # Use normalized new baselines if PopArt
+                if self.enable_popart and self.baseline_popart:
+                    targets_for_baseline_loss = self.baseline_popart.normalize_targets(targets_for_baseline_loss_raw)
+
+                mask_mb_baseline = mask_mb.unsqueeze(-1).unsqueeze(-1).expand_as(new_baselines_for_loss).bool() # Mask for baseline loss
+                num_valid_baseline = mask_mb_baseline.sum().clamp(min=1)
+                if self.clipped_value_loss: # Assuming same clipping logic for baseline
+                    baseline_loss_terms = self._clipped_value_loss(old_baselines_for_loss, new_baselines_for_loss, targets_for_baseline_loss, self.value_clip_range, reduction='none')
                 else:
-                    baseline_loss_terms = F.mse_loss(new_base_mb_seq, ret_mb_exp_baseline, reduction='none')
+                    baseline_loss_terms = F.mse_loss(new_baselines_for_loss, targets_for_baseline_loss, reduction='none')
                 base_loss = (baseline_loss_terms * mask_mb_baseline).sum() / num_valid_baseline
                 
                 entropy_terms = -ent_mb_seq
                 ent_loss = (entropy_terms * mask_mb_policy_entropy).sum() / num_valid_policy_entropy
                 
                 total_loss_rl = (pol_loss + self.value_loss_coeff * val_loss + self.baseline_loss_coeff * base_loss + self.entropy_coeff * ent_loss)
-                total_loss = total_loss_rl # Initialize total loss with RL components
+                total_loss = total_loss_rl
 
                 rnd_predictor_loss = torch.tensor(0.0, device=self.device)
                 if self.enable_rnd and self.rnd_target_network and self.rnd_predictor_network:
-                    flat_features_for_rnd_update_mb = processed_features_mb_seq_value.reshape(-1, self.feature_dim_for_heads)
+                    flat_features_for_rnd_update_mb = processed_features_mb_seq_value.reshape(-1, self.feature_dim_for_heads) # Use value pathway features
                     expanded_mask_for_na = mask_mb.unsqueeze(-1).expand(-1, -1, NA_config)
                     flat_mask_mb_rnd = expanded_mask_for_na.reshape(-1)
                     valid_indices_rnd = flat_mask_mb_rnd.nonzero(as_tuple=False).squeeze(-1)
-                    
                     if valid_indices_rnd.numel() > 0:
                         num_rnd_update_samples = int(valid_indices_rnd.numel() * self.rnd_update_proportion)
                         if num_rnd_update_samples > 0:
@@ -571,36 +637,20 @@ class MAPOCAAgent(Agent):
                                     target_rnd_feats_update = self.rnd_target_network(features_for_rnd_predictor_update)
                                 predicted_rnd_feats_update = self.rnd_predictor_network(features_for_rnd_predictor_update)
                                 rnd_predictor_loss = F.mse_loss(predicted_rnd_feats_update, target_rnd_feats_update)
-                                # Add RND predictor loss to the total loss that will be backpropagated
-                                # This means RND predictor loss will affect the value pathway's embedding and memory if they exist
                                 total_loss = total_loss + rnd_predictor_loss 
                 
-                # Zero gradients for all optimizers before backward pass
                 self.policy_optimizer.zero_grad()
                 self.value_optimizer.zero_grad()
                 self.baseline_optimizer.zero_grad()
-                if self.rnd_predictor_optimizer:
-                    self.rnd_predictor_optimizer.zero_grad()
-
-                total_loss.backward() # Compute gradients for all parts contributing to total_loss
-                
-                # Clip gradients globally across all parameters managed by the agent
-                # This is a common approach even with separate optimizers if a single clipping threshold is desired.
-                # Alternatively, one could clip per parameter group before each optimizer step.
-                all_trainable_params = self.parameters() # Gets all parameters from all optimizers' groups
+                if self.rnd_predictor_optimizer: self.rnd_predictor_optimizer.zero_grad()
+                total_loss.backward()
+                all_trainable_params = self.parameters()
                 gn = clip_grad_norm_(all_trainable_params, self.max_grad_norm)
                 
-                # Step each optimizer
                 self.policy_optimizer.step()
                 self.value_optimizer.step()
                 self.baseline_optimizer.step()
-                if self.enable_rnd and self.rnd_predictor_optimizer:
-                    # If RND predictor loss was part of total_loss, its gradients are already computed.
-                    # If RND predictor had a separate loss.backward(), it would be stepped here.
-                    # Since rnd_predictor_loss is added to total_loss, its gradients are included.
-                    # The RND predictor optimizer will only update rnd_predictor_network.parameters().
-                    self.rnd_predictor_optimizer.step()
-
+                if self.enable_rnd and self.rnd_predictor_optimizer: self.rnd_predictor_optimizer.step()
 
                 batch_logs["Policy Loss"].append(pol_loss.item())
                 batch_logs["Value Loss"].append(val_loss.item())
@@ -609,9 +659,9 @@ class MAPOCAAgent(Agent):
                 else: batch_logs["Entropy"].append(0.0)
                 batch_logs["Grad Norm"].append(gn.item() if torch.is_tensor(gn) else gn)
                 
-                valid_returns_mask_mb = mask_mb.unsqueeze(-1).expand_as(ret_mb_seq).bool()
-                if valid_returns_mask_mb.sum() > 0 : batch_logs["Returns Mean"].append(ret_mb_seq[valid_returns_mask_mb].mean().item())
-                else: batch_logs["Returns Mean"].append(0.0)
+                valid_returns_mask_mb = mask_mb.unsqueeze(-1).expand_as(ret_mb_seq_raw).bool() # Use raw returns for logging
+                if valid_returns_mask_mb.sum() > 0 : batch_logs["Returns Mean (Raw)"].append(ret_mb_seq_raw[valid_returns_mask_mb].mean().item())
+                else: batch_logs["Returns Mean (Raw)"].append(0.0)
                 
                 if self.enable_rnd:
                     batch_logs["RND Predictor Loss"].append(rnd_predictor_loss.item())
@@ -621,9 +671,18 @@ class MAPOCAAgent(Agent):
                          batch_logs["Intrinsic Reward Mean (Normalized)"].append(intrinsic_rewards_for_mb_log[valid_intrinsic_mb_mask].mean().item())
                     else:
                          batch_logs["Intrinsic Reward Mean (Normalized)"].append(0.0)
+                
+                if self.enable_popart:
+                    if self.value_popart:
+                        batch_logs["PopArt Value Mu"].append(self.value_popart.mu.item())
+                        batch_logs["PopArt Value Sigma"].append(self.value_popart.sigma.item())
+                    if self.baseline_popart:
+                        batch_logs["PopArt Baseline Mu"].append(self.baseline_popart.mu.item())
+                        batch_logs["PopArt Baseline Sigma"].append(self.baseline_popart.sigma.item())
 
-            current_lr = self._get_policy_lr() # Get policy LR for logging
-            if self.policy_lr_scheduler: self.policy_lr_scheduler.step() # Step only policy LR scheduler
+
+            current_lr = self._get_policy_lr()
+            if self.policy_lr_scheduler: self.policy_lr_scheduler.step()
             if self.entropy_scheduler: self.entropy_coeff = self.entropy_scheduler.step()
             if self.policy_clip_scheduler: self.ppo_clip_range = self.policy_clip_scheduler.step()
             if self.value_clip_scheduler: self.value_clip_range = self.value_clip_scheduler.step()
@@ -631,35 +690,49 @@ class MAPOCAAgent(Agent):
 
         final_logs = {k: np.mean(v) if v else 0.0 for k, v in batch_logs.items()}
         final_logs["Entropy coeff"] = self.entropy_coeff
-        final_logs["Learning Rate (Policy)"] = current_lr # Log policy LR
+        final_logs["Learning Rate (Policy)"] = current_lr
         final_logs["PPO Clip Range"] = self.ppo_clip_range
         final_logs["Max Grad Norm"] = self.max_grad_norm
-        final_logs["Raw Reward Mean"] = rewards_raw_mean
-        final_logs["Norm Reward Mean"] = rewards_norm_mean
+        final_logs["Raw Reward Mean (Extrinsic)"] = rewards_raw_mean # Log raw extrinsic before any norm/combo
+        final_logs["Processed Reward Mean (for GAE)"] = rewards_norm_mean # Log rewards used for GAE (after step norm, before intrinsic)
         if self.enable_rnd and "Intrinsic Reward Mean (Normalized)" not in final_logs:
              final_logs["Intrinsic Reward Mean (Normalized)"] = 0.0
+        if self.enable_popart:
+            if "PopArt Value Mu" not in final_logs: final_logs["PopArt Value Mu"] = 0.0
+            if "PopArt Value Sigma" not in final_logs: final_logs["PopArt Value Sigma"] = 1.0
+            if "PopArt Baseline Mu" not in final_logs: final_logs["PopArt Baseline Mu"] = 0.0
+            if "PopArt Baseline Sigma" not in final_logs: final_logs["PopArt Baseline Sigma"] = 1.0
+
 
         return final_logs
 
-    def _compute_gae_with_padding(self, rewards_seq, values_seq, next_values_seq,
+    def _compute_gae_with_padding(self, rewards_seq, values_seq_denorm, next_values_seq_denorm,
                                   dones_seq, truncs_seq, attention_mask):
+        # rewards_seq: (B, MaxSeqLen, 1) - these are combined (extrinsic + intrinsic_coeff * intrinsic_norm)
+        # values_seq_denorm, next_values_seq_denorm: (B, MaxSeqLen, 1) - DENORMALIZED values
+        # attention_mask: (B, MaxSeqLen)
         B, MaxSeqLen, _ = rewards_seq.shape
-        returns_seq = torch.zeros_like(rewards_seq)
-        gae = torch.zeros(B, 1, device=rewards_seq.device)
+        returns_seq_raw = torch.zeros_like(rewards_seq) # Will store raw-scale GAE targets
+        gae_raw = torch.zeros(B, 1, device=rewards_seq.device) 
         dones_float_seq = dones_seq.float()
 
         for t in reversed(range(MaxSeqLen)):
             current_step_is_valid_mask_t = attention_mask[:, t:t+1] 
             next_step_is_valid_in_sequence_mask_t_plus_1 = attention_mask[:, t+1:t+2] if t < MaxSeqLen - 1 else torch.zeros_like(current_step_is_valid_mask_t)
+            
             can_bootstrap_from_next_value = (1.0 - dones_float_seq[:, t]) * next_step_is_valid_in_sequence_mask_t_plus_1
-            v_next_bootstrapped = next_values_seq[:, t] * can_bootstrap_from_next_value
-            delta = (rewards_seq[:, t] + self.gamma * v_next_bootstrapped - values_seq[:, t]) * current_step_is_valid_mask_t
-            gae_prop_mask = can_bootstrap_from_next_value
-            gae = delta + self.gamma * self.lmbda * gae_prop_mask * gae
-            current_returns_t = gae + values_seq[:, t]
-            returns_seq[:, t] = torch.where(current_step_is_valid_mask_t.bool(), current_returns_t, torch.zeros_like(current_returns_t))
-            gae = gae * current_step_is_valid_mask_t
-        return returns_seq
+            v_next_bootstrapped_denorm = next_values_seq_denorm[:, t] * can_bootstrap_from_next_value
+
+            delta_raw = (rewards_seq[:, t] + self.gamma * v_next_bootstrapped_denorm - values_seq_denorm[:, t]) * current_step_is_valid_mask_t
+            
+            gae_prop_mask = can_bootstrap_from_next_value # Same mask for GAE propagation
+            gae_raw = delta_raw + self.gamma * self.lmbda * gae_prop_mask * gae_raw
+            
+            current_returns_t_raw = gae_raw + values_seq_denorm[:, t] # Raw-scale returns
+
+            returns_seq_raw[:, t] = torch.where(current_step_is_valid_mask_t.bool(), current_returns_t_raw, torch.zeros_like(current_returns_t_raw))
+            gae_raw = gae_raw * current_step_is_valid_mask_t
+        return returns_seq_raw # These are the raw-scale GAE targets
     
     def _ppo_clip_loss(self, new_lp, old_lp, advantages, clip_range, reduction='mean'):
         log_ratio = new_lp - old_lp
@@ -671,10 +744,11 @@ class MAPOCAAgent(Agent):
         elif reduction == 'none': return loss_terms
         else: raise ValueError(f"MAPOCAAgent Error: Unsupported reduction type in _ppo_clip_loss: {reduction}")
 
-    def _clipped_value_loss(self, old_values, new_values, targets, clip_range, reduction='mean'):
-        values_clipped = old_values + torch.clamp(new_values - old_values, -clip_range, clip_range)
-        mse_unclipped = F.mse_loss(new_values, targets, reduction='none')
-        mse_clipped = F.mse_loss(values_clipped, targets, reduction='none')
+    def _clipped_value_loss(self, old_values_norm, new_values_norm, targets_norm, clip_range, reduction='mean'):
+        # Operates on NORMALIZED values and targets if PopArt is enabled
+        values_clipped_norm = old_values_norm + torch.clamp(new_values_norm - old_values_norm, -clip_range, clip_range)
+        mse_unclipped = F.mse_loss(new_values_norm, targets_norm, reduction='none')
+        mse_clipped = F.mse_loss(values_clipped_norm, targets_norm, reduction='none')
         loss_terms = torch.max(mse_unclipped, mse_clipped)
         if reduction == 'mean': return loss_terms.mean()
         elif reduction == 'none': return loss_terms
@@ -699,10 +773,9 @@ class MAPOCAAgent(Agent):
             else: new_dict[k] = None
         return new_dict
 
-    def _get_policy_lr(self) -> float: # Renamed from _get_avg_lr
-        # Utility to get current learning rate from the policy optimizer.
+    def _get_policy_lr(self) -> float:
         lr_sum, count = 0.0, 0
-        for pg in self.policy_optimizer.param_groups: # Use policy_optimizer
+        for pg in self.policy_optimizer.param_groups:
             lr_sum += pg.get('lr', 0.0) 
             count += 1
         return lr_sum / max(count, 1)
