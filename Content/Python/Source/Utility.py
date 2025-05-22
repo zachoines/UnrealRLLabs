@@ -363,3 +363,59 @@ class RunningMeanStdNormalizer:
 
         # Use the stored variance, which should be clamped >= 1e-8 from _update_single
         return (tensor_on_device - mean_reshaped) / torch.sqrt(var_reshaped + 1e-8)
+    
+
+class PopArtNormalizer(nn.Module):
+    def __init__(self, output_layer: nn.Linear, beta: float = 0.999, epsilon: float = 1e-5, device: torch.device = torch.device("cpu")):
+        super().__init__()
+        self.output_layer = output_layer # The final linear layer of the value head
+        self.beta = beta         # For EMA of mean and second moment
+        self.epsilon = epsilon   # For numerical stability
+        self.device = device
+
+        # Running statistics for the raw returns (targets)
+        self.register_buffer('mu', torch.zeros(1, device=self.device))
+        self.register_buffer('nu', torch.ones(1, device=self.device)) # Second moment E[X^2]
+        self.register_buffer('sigma', torch.ones(1, device=self.device))
+        self.register_buffer('count', torch.tensor(0.0, device=self.device)) # Using float for potentially large counts with EMA
+
+    @torch.no_grad()
+    def update_stats(self, raw_targets_batch: torch.Tensor):
+        # raw_targets_batch should be a flat tensor of raw (unnormalized) returns
+        if raw_targets_batch.numel() == 0:
+            return
+
+        batch_mu = raw_targets_batch.mean()
+        batch_nu = (raw_targets_batch ** 2).mean()
+
+        # Exponential Moving Average (EMA) update for stability
+        # If count is small, weigh new batch more heavily
+        # For very first batch, directly set stats, or use a scheme to rapidly adapt.
+        if self.count < 10: # Initialize with first few batches directly or with high weight
+             current_beta = 0.1 # Or some other aggressive initial beta
+        else:
+             current_beta = self.beta
+
+        new_mu = current_beta * self.mu + (1 - current_beta) * batch_mu
+        new_nu = current_beta * self.nu + (1 - current_beta) * batch_nu
+        
+        self.count += raw_targets_batch.numel() # Can track total elements seen
+
+        old_mu = self.mu.clone()
+        old_sigma = self.sigma.clone()
+
+        self.mu.copy_(new_mu)
+        self.nu.copy_(new_nu)
+        self.sigma.copy_(torch.sqrt(self.nu - self.mu**2).clamp(min=self.epsilon))
+
+        # Adapt the output layer of the associated value network
+        if torch.is_tensor(self.output_layer.weight) and torch.is_tensor(self.output_layer.bias): # Check if parameters exist
+            self.output_layer.weight.data.mul_(old_sigma / self.sigma)
+            self.output_layer.bias.data.mul_(old_sigma / self.sigma)
+            self.output_layer.bias.data.add_((old_mu - self.mu) / self.sigma)
+
+    def normalize_targets(self, raw_targets: torch.Tensor) -> torch.Tensor:
+        return (raw_targets - self.mu) / self.sigma
+
+    def denormalize_outputs(self, normalized_outputs: torch.Tensor) -> torch.Tensor:
+        return normalized_outputs * self.sigma + self.mu

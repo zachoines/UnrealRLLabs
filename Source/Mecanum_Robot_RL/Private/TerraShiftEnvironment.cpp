@@ -535,7 +535,7 @@ float ATerraShiftEnvironment::Reward()
             if (previousDistance > 0.f && currentDistance > 0.f)
             {
                 float deltaDistance = (previousDistance - currentDistance) / PlatformWorldSize.X;
-                float clampedDelta = ThresholdAndClamp(deltaDistance, KINDA_SMALL_NUMBER, DistImprove_Min, DistImprove_Max);
+                float clampedDelta = FMath::Clamp(deltaDistance, DistImprove_Min, DistImprove_Max);
                 ShapingSubReward += DistImprove_Scale * clampedDelta;
             }
         }
@@ -549,7 +549,7 @@ float ATerraShiftEnvironment::Reward()
                 FVector currentVelocity = StateManager->GetCurrentVelocity(ObjIndex);
                 FVector acceleration = (currentVelocity - previousVelocity) / DeltaTime;
                 float upwardZAcceleration = (acceleration.Z > 0.f) ? acceleration.Z : 0.f;
-                float clampedZAccel = ThresholdAndClamp(upwardZAcceleration, SMALL_NUMBER, ZAccel_Min, ZAccel_Max);
+                float clampedZAccel = ThresholdAndClamp(upwardZAcceleration, ZAccel_Min, ZAccel_Max);
                 ShapingSubReward -= (ZAccel_Scale * clampedZAccel);
             }
         }
@@ -629,10 +629,10 @@ float ATerraShiftEnvironment::Reward()
 /**
  * Helper function to clamp a value if its absolute value exceeds a minimum threshold.
  */
-float ATerraShiftEnvironment::ThresholdAndClamp(float value, float minThreshold, float minClamp, float maxClamp)
+float ATerraShiftEnvironment::ThresholdAndClamp(float value, float minThreshold, float maxClamp)
 {
     if (FMath::Abs(value) < minThreshold) return 0.f;
-    return FMath::Clamp(value, minClamp, maxClamp); // Clamp both positive and negative
+    return FMath::Clamp(value, -maxClamp, maxClamp); // Clamp both positive and negative
 }
 
 /**
