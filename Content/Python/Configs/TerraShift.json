@@ -15,25 +15,24 @@
       "MaxSteps": 1024,
       "MaxAgents": 12,
       "TerraShiftEnvironment": {
-        "bUseVelAlignment": false,
+        "bUseVelAlignment": true,
         "bUseXYDistanceImprovement": true,
         "bUseZAccelerationPenalty": false,
-        "bUseAlignedDistanceShaping": false,
         "bUsePotentialShaping": false,
-        "VelAlign_Scale": 0.0,
-        "VelAlign_Min": -100.0,
-        "VelAlign_Max": 100.0,
-        "DistImprove_Scale": 1.0,
-        "DistImprove_Min": -1.0,
+        "VelAlign_Scale": 0.10,
+        "VelAlign_Min": 0.001,
+        "VelAlign_Max": 10.0,
+        "DistImprove_Scale": 10.0,
+        "DistImprove_Min": 0.0001,
         "DistImprove_Max": 1.0,
-        "ZAccel_Scale": 0.0,
-        "ZAccel_Min": 0.1,
-        "ZAccel_Max": 2000.0,
+        "ZAccel_Scale": 0.10,
+        "ZAccel_Min": 0.01,
+        "ZAccel_Max": 100.0,
         "PotentialShaping_Gamma": 0.99,
         "PotentialShaping_Scale": 0.0,
-        "REACH_GOAL_REWARD": 1.0,
-        "FALL_OFF_PENALTY": -1.0,
-        "STEP_PENALTY": -0.0001
+        "REACH_GOAL_REWARD": 0.0,
+        "FALL_OFF_PENALTY": 0.0,
+        "STEP_PENALTY": 0.0
       },
       "GoalManager": {
         "DefaultRadius": 1.0
@@ -69,7 +68,7 @@
         "DeltaSigmaScale": 1.0
       },
       "StateManager": {
-        "MaxGridObjects": 1,
+        "MaxGridObjects": 3,
         "MarginXY": 1.5,
         "MinZ": -4.0,
         "MaxZ": 20.0,
@@ -93,6 +92,16 @@
             1.0,
             0.0,
             0.0
+          ],
+          [
+            0.0,
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
           ]
         ],
         "GridObjectColors": [
@@ -100,6 +109,16 @@
             1.0,
             0.0,
             0.0
+          ],
+          [
+            0.0,
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
           ]
         ]
       }
@@ -193,13 +212,13 @@
       "lambda": 0.95,
       "value_loss_coeff": 0.5,
       "baseline_loss_coeff": 0.5,
-      "normalize_advantages": true,
+      "normalize_advantages": false,
       "clipped_value_loss": true,
       "max_grad_norm": 0.5,
       "ppo_clip_range": 0.2,
       "value_clip_range": 0.1,
       "entropy_coeff": 0.01,
-      "rewards_normalizer_disabled_due_to_popart": { 
+      "rewards_normalizer_disabled": { 
         "warmup_steps": 2000,
         "epsilon": 1e-8
       },
@@ -215,8 +234,8 @@
           "total_iters": 20000
         },
         "value_clip": {
-          "start_value": 0.01,
-          "end_value": 0.001,
+          "start_value": 0.2,
+          "end_value": 0.1,
           "total_iters": 20000
         },
         "policy_clip": {
@@ -255,7 +274,7 @@
             "block_scales": [
               8
             ],
-            "transformer_layers": 2,
+            "transformer_layers": 1,
             "dropout_rate": 0.1,
             "use_agent_id": true,
             "ff_hidden_factor": 2,
@@ -270,7 +289,7 @@
             "dropout_rate": 0.1,
             "activation": true,
             "layer_norm": true,
-            "linear_init_scale": 0.01
+            "linear_init_scale": 0.1
           },
           "obs_actions_encoder": {
             "state_dim": 128,
@@ -280,7 +299,7 @@
             "dropout_rate": 0.1,
             "activation": true,
             "layer_norm": true,
-            "linear_init_scale": 0.01
+            "linear_init_scale": 0.1
           }
         },
         "policy_network": {
@@ -288,7 +307,7 @@
           "hidden_size": 128,
           "param_init_bias": 0.0,
           "min_concentration": 1.001,
-          "linear_init_scale": 0.01,
+          "linear_init_scale": 0.1,
           "dropout_rate": 0.1
         },
         "critic_network": {
@@ -330,7 +349,7 @@
     "num_environments": 16, 
     "epochs": 4,
     "mini_batch_size": 16,
-    "ActionRepeat": 3,
+    "ActionRepeat": 1,
     "saveFrequency": 100
   }
 }

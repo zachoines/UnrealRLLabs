@@ -48,7 +48,6 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
     // Assuming user updated C++ to use PotentialShaping_Gamma from env config
     PotentialShaping_Gamma = 0.99f; // Default gamma for potential shaping
 
-    bUseAlignedDistanceShaping = false;
     bUseVelAlignment = false;
     bUseXYDistanceImprovement = false; // Changed default to false based on original code
     bUseZAccelerationPenalty = false;
@@ -137,15 +136,12 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
         // Potential Shaping Params (NEW)
         bUsePotentialShaping = envSpecificCfg->GetOrDefaultBool(TEXT("bUsePotentialShaping"), false);
         PotentialShaping_Scale = envSpecificCfg->GetOrDefaultNumber(TEXT("PotentialShaping_Scale"), 1.0f);
-        // Read the gamma specific to potential shaping if defined, else use default
         PotentialShaping_Gamma = envSpecificCfg->GetOrDefaultNumber(TEXT("PotentialShaping_Gamma"), 0.99f);
 
-        // Original Reward Toggles & Scales (Logic matches original, reads from config)
+        // Reward Toggles & Scales
         bUseVelAlignment = envSpecificCfg->GetOrDefaultBool(TEXT("bUseVelAlignment"), false);
-        // Note: Original code had default true here, but config loading overrides it.
         bUseXYDistanceImprovement = envSpecificCfg->GetOrDefaultBool(TEXT("bUseXYDistanceImprovement"), false);
         bUseZAccelerationPenalty = envSpecificCfg->GetOrDefaultBool(TEXT("bUseZAccelerationPenalty"), false);
-        bUseAlignedDistanceShaping = envSpecificCfg->GetOrDefaultBool(TEXT("bUseAlignedDistanceShaping"), false);
 
         VelAlign_Scale = envSpecificCfg->GetOrDefaultNumber(TEXT("VelAlign_Scale"), 0.1f);
         VelAlign_Min = envSpecificCfg->GetOrDefaultNumber(TEXT("VelAlign_Min"), -100.f);
@@ -535,7 +531,7 @@ float ATerraShiftEnvironment::Reward()
             if (previousDistance > 0.f && currentDistance > 0.f)
             {
                 float deltaDistance = (previousDistance - currentDistance) / PlatformWorldSize.X;
-                float clampedDelta = FMath::Clamp(deltaDistance, DistImprove_Min, DistImprove_Max);
+                float clampedDelta = ThresholdAndClamp(deltaDistance, DistImprove_Min, DistImprove_Max);
                 ShapingSubReward += DistImprove_Scale * clampedDelta;
             }
         }
@@ -574,49 +570,13 @@ float ATerraShiftEnvironment::Reward()
                         dirToObjectToGoal.Normalize();
                         velLocal.Normalize();
                         float dotProduct = FVector::DotProduct(velLocal, dirToObjectToGoal);
-                        float alignReward = VelAlign_Scale * dotProduct * velLocal.Size();
-                        ShapingSubReward += alignReward;
+                        float alignReward = dotProduct * velLocal.Size();
+                        ShapingSubReward += VelAlign_Scale * ThresholdAndClamp(alignReward, VelAlign_Min, VelAlign_Max);
                     }
                 }
             }
         }
 
-        // 4D) Aligned Distance Shaping Reward
-        if (bUseAlignedDistanceShaping) // Removed redundant bActive check
-        {
-            int32 goalIndex = StateManager->GetGoalIndex(ObjIndex);
-            if (goalIndex >= 0)
-            {
-                FVector goalPosLocal = Platform->GetActorTransform().InverseTransformPosition(GoalManager->GetGoalLocation(goalIndex));
-                FVector objPosLocal = StateManager->GetCurrentPosition(ObjIndex);
-                FVector velLocal = StateManager->GetCurrentVelocity(ObjIndex);
-
-                float previousDistance = StateManager->GetPreviousDistance(ObjIndex);
-                float currentDistance = StateManager->GetCurrentDistance(ObjIndex);
-                float deltaDistance = 0.0f;
-                if (previousDistance > 0.f && currentDistance > 0.f)
-                {
-                    deltaDistance = (previousDistance - currentDistance) / PlatformWorldSize.X; // Normalized delta
-                }
-
-                if (!velLocal.IsNearlyZero() && deltaDistance > 0.f)
-                {
-                    FVector dirToObjectToGoal = goalPosLocal - objPosLocal;
-                    float distanceToGoal = dirToObjectToGoal.Size();
-
-                    if (distanceToGoal > KINDA_SMALL_NUMBER)
-                    {
-                        dirToObjectToGoal.Normalize();
-                        velLocal.Normalize();
-                        float dotProduct = FVector::DotProduct(velLocal, dirToObjectToGoal);
-                        float positiveAlignment = FMath::Max(dotProduct, 0.f);
-
-                        float alignedReward = positiveAlignment * deltaDistance * DistImprove_Scale;
-                        ShapingSubReward += alignedReward;
-                    }
-                }
-            }
-        }
 
         AccumulatedReward += ShapingSubReward; // Add all shaping sub-rewards for this object
 

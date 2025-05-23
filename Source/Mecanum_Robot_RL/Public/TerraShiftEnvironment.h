@@ -141,8 +141,6 @@ private:
     bool bUseXYDistanceImprovement;
     UPROPERTY()
     bool bUseZAccelerationPenalty;
-    UPROPERTY()
-    bool bUseAlignedDistanceShaping;
 
     // Scales and Limits for Shaping Rewards
     UPROPERTY()
