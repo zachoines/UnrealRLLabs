@@ -30,6 +30,6 @@ class AgentEnvFactory:
         runner = RLRunner(
             agent=agent, 
             agentComm=agentComm, 
-            config=self.config
+            cfg=self.config
         )
         return runner

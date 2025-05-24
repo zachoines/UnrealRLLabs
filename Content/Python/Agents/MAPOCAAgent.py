@@ -1,789 +1,566 @@
-# NOTICE: This file includes modifications generated with the assistance of generative AI.
-# Original code structure and logic by the project author.
-from typing import Dict, Tuple, Optional
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
+from __future__ import annotations
+from typing import Dict, Tuple, Optional, List, Any, Union
 import numpy as np
+import torch
+import torch.nn.functional as F
+from torch import nn, optim
 from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import LinearLR
 
-from Source.StateRecorder import StateRecorder
 from Source.Agent import Agent
-from Source.Utility import RunningMeanStdNormalizer, LinearValueScheduler, PopArtNormalizer # POPART: Import PopArtNormalizer
+from Source.StateRecorder import StateRecorder
+from Source.Utility import RunningMeanStdNormalizer, LinearValueScheduler, PopArtNormalizer
 from Source.Networks import (
     MultiAgentEmbeddingNetwork,
     SharedCritic,
-    DiscretePolicyNetwork,
     BetaPolicyNetwork,
-    RNDTargetNetwork, 
-    RNDPredictorNetwork
+    DiscretePolicyNetwork,
+    RNDTargetNetwork,
+    RNDPredictorNetwork,
 )
-from Source.Memory import RecurrentMemoryNetwork, GRUSequenceMemory
+from Source.Memory import GRUSequenceMemory
 
+# -----------------------------------------------------------------------------
+# helpers
+# -----------------------------------------------------------------------------
+def _bool_or(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Element-wise OR that works on float or bool tensors."""
+    return (a > 0.5) | (b > 0.5)
+
+# -----------------------------------------------------------------------------
 class MAPOCAAgent(Agent):
-    """
-    Multi-agent PPO (MAPOCA) agent using an Attention-based SharedCritic.
-    MODIFIED: Now uses separate base embedding and memory networks for policy, value, and baseline.
-    MODIFIED: Now uses separate optimizers for policy, value, baseline, and RND predictor.
-    MODIFIED: Integrated PopArt for value and baseline function normalization.
-    """
+    """Multi-Agent PPO / MA-POCA agent with shared embedding + GRU trunk."""
 
-    def __init__(self, config: Dict, device: torch.device):
-        super().__init__(config, device)
+    def __init__(self, cfg: Dict, device: torch.device):
+        super().__init__(cfg, device)
+        self.device = device
+        a_cfg      = cfg["agent"]["params"]
+        t_cfg      = cfg["train"]
+        env_shape  = cfg["environment"]["shape"]
+        env_params = cfg["environment"]["params"]
 
-        agent_cfg = config["agent"]["params"]
-        train_cfg = config["train"]
-        shape_cfg = config["environment"]["shape"]
-        action_cfg = shape_cfg["action"]
-        rec_cfg = config.get("StateRecorder", None) 
-        env_params_cfg = config["environment"]["params"]
+        # ---------- hyper-parameters ----------
+        self.gamma               = a_cfg.get("gamma", 0.99)
+        self.lmbda               = a_cfg.get("lambda", 0.95)
+        self.entropy_coeff       = a_cfg.get("entropy_coeff", 0.01)
+        self.value_loss_coeff    = a_cfg.get("value_loss_coeff", 0.5)
+        self.baseline_loss_coeff = a_cfg.get("baseline_loss_coeff", 0.5)
+        self.max_grad_norm       = a_cfg.get("max_grad_norm", 0.5)
+        self.normalize_adv       = a_cfg.get("normalize_advantages", True)
+        self.ppo_clip_range      = a_cfg.get("ppo_clip_range", 0.2)
+        self.value_clip_range    = a_cfg.get("value_clip_range", 0.2)
+        self.lr_base             = a_cfg.get("learning_rate", 3e-4)
+        self.epochs              = t_cfg.get("epochs", 4)
+        self.mini_batch_size     = t_cfg.get("mini_batch_size", 64)
+        self.no_grad_bs          = a_cfg.get("no_grad_forward_batch_size", self.mini_batch_size)
 
-        self.gamma = agent_cfg.get("gamma", 0.99)
-        self.lmbda = agent_cfg.get("lambda", 0.95)
-        self.lr = agent_cfg.get("learning_rate", 3e-4) 
-        self.value_loss_coeff = agent_cfg.get("value_loss_coeff", 0.5)
-        self.baseline_loss_coeff = agent_cfg.get("baseline_loss_coeff", 0.5)
-        self.entropy_coeff = agent_cfg.get("entropy_coeff", 0.01)
-        self.max_grad_norm = agent_cfg.get("max_grad_norm", 0.5)
-        self.normalize_adv = agent_cfg.get("normalize_advantages", True)
-        self.ppo_clip_range = agent_cfg.get("ppo_clip_range", 0.2)
-        self.clipped_value_loss = agent_cfg.get("clipped_value_loss", True)
-        self.value_clip_range = agent_cfg.get("value_clip_range", 0.2)
-        self.no_grad_forward_batch_size = agent_cfg.get("no_grad_forward_batch_size", train_cfg.get("mini_batch_size", 64))
+        # ---------- environment counts --------
+        self.num_agents = env_params.get("MaxAgents", 1)
+        if "agent" in env_shape["state"]:
+            self.num_agents = env_shape["state"]["agent"].get("max", self.num_agents)
 
-        self.epochs = train_cfg.get("epochs", 4)
-        self.mini_batch_size = train_cfg.get("mini_batch_size", 64)
-        self.state_recorder = StateRecorder(rec_cfg) if rec_cfg else None
-        self._determine_action_space(action_cfg)
-        
-        self.num_agents = env_params_cfg.get('MaxAgents', 1)
-        if "agent" in shape_cfg["state"]:
-            self.num_agents = shape_cfg["state"]["agent"].get("max", self.num_agents)
+        # ---------- recorder ----------
+        self.state_recorder = StateRecorder(cfg.get("StateRecorder")) if cfg.get("StateRecorder") else None
 
-        self.enable_memory = agent_cfg.get('enable_memory', False)
-        embedding_output_dim = agent_cfg["networks"]["MultiAgentEmbeddingNetwork"]["cross_attention_feature_extractor"]["embed_dim"]
-        
-        embedding_network_config = agent_cfg["networks"]["MultiAgentEmbeddingNetwork"]
-        self.policy_embedding_network = MultiAgentEmbeddingNetwork(embedding_network_config).to(device)
-        self.value_embedding_network = MultiAgentEmbeddingNetwork(embedding_network_config).to(device)
-        self.baseline_embedding_network = MultiAgentEmbeddingNetwork(embedding_network_config).to(device)
+        # ---------- action space ----------
+        self._determine_action_space(env_shape["action"])
 
-        self.policy_memory_module: Optional[RecurrentMemoryNetwork] = None
-        self.value_memory_module: Optional[RecurrentMemoryNetwork] = None
-        self.baseline_memory_module: Optional[RecurrentMemoryNetwork] = None
-        self.memory_hidden_size = 0
-        self.memory_num_layers = 0
+        # ---------- networks ----------
+        emb_cfg         = a_cfg["networks"]["MultiAgentEmbeddingNetwork"]
+        self.embedding_net = MultiAgentEmbeddingNetwork(emb_cfg).to(device)
+        emb_out         = emb_cfg["cross_attention_feature_extractor"]["embed_dim"]
 
+        self.enable_memory = a_cfg.get("enable_memory", False)
         if self.enable_memory:
-            self.memory_type = agent_cfg.get('memory_type', 'gru')
-            memory_module_config = agent_cfg.get(self.memory_type, {})
-            if 'input_size' not in memory_module_config:
-                memory_module_config['input_size'] = embedding_output_dim
-            if memory_module_config['input_size'] != embedding_output_dim:
-                 print(f"MAPOCAAgent Warning: Memory module input_size ({memory_module_config['input_size']}) "
-                       f"differs from embedding_network's output_dim ({embedding_output_dim}).")
-            self.memory_hidden_size = memory_module_config.get('hidden_size', 128)
-            self.memory_num_layers = memory_module_config.get('num_layers', 1)
-            if self.memory_type == 'gru':
-                self.policy_memory_module = GRUSequenceMemory(**memory_module_config).to(device)
-                self.value_memory_module = GRUSequenceMemory(**memory_module_config).to(device)
-                self.baseline_memory_module = GRUSequenceMemory(**memory_module_config).to(device)
-            else:
-                raise ValueError(f"MAPOCAAgent Error: Unsupported memory_type '{self.memory_type}' specified in config.")
-        
-        self.feature_dim_for_heads = self.memory_hidden_size if self.enable_memory else embedding_output_dim
-        self.shared_critic = SharedCritic(agent_cfg["networks"]["critic_network"]).to(device)
-        
-        policy_network_config = agent_cfg["networks"]["policy_network"].copy()
-        policy_network_config["in_features"] = self.feature_dim_for_heads
-        if self.action_space_type == "continuous":
-            policy_network_config['out_features'] = self.action_dim
-            self.policy_net = BetaPolicyNetwork(**policy_network_config).to(device)
-        elif self.action_space_type == "discrete":
-            policy_network_config['out_features'] = self.action_dim 
-            self.policy_net = DiscretePolicyNetwork(**policy_network_config).to(device)
+            mem_cfg = a_cfg.get(a_cfg.get("memory_type", "gru"), {})
+            mem_cfg.setdefault("input_size", emb_out)
+            self.memory_hidden = mem_cfg.get("hidden_size", 128)
+            self.memory_layers = mem_cfg.get("num_layers", 1)
+            self.memory_module = GRUSequenceMemory(**mem_cfg).to(device)
+            trunk_dim = self.memory_hidden
         else:
-            raise ValueError(f"MAPOCAAgent Error: Unsupported action_space_type: {self.action_space_type}")
+            self.memory_module = None
+            self.memory_hidden = self.memory_layers = 0
+            trunk_dim = emb_out
 
-        self.lr_scheduler_cfg = agent_cfg.get("schedulers", {}).get("lr", None)
-        ent_sched_cfg = agent_cfg.get("schedulers", {}).get("entropy_coeff", None)
-        self.entropy_scheduler = LinearValueScheduler(**ent_sched_cfg) if ent_sched_cfg else None
-        if self.entropy_scheduler: self.entropy_coeff = self.entropy_scheduler.start_value
-        
-        policy_clip_sched_cfg = agent_cfg.get("schedulers", {}).get("policy_clip", None)
-        self.policy_clip_scheduler = LinearValueScheduler(**policy_clip_sched_cfg) if policy_clip_sched_cfg else None
-        if self.policy_clip_scheduler: self.ppo_clip_range = self.policy_clip_scheduler.start_value
-        
-        value_clip_sched_cfg = agent_cfg.get("schedulers", {}).get("value_clip", None)
-        self.value_clip_scheduler = LinearValueScheduler(**value_clip_sched_cfg) if value_clip_sched_cfg else None
-        if self.value_clip_scheduler: self.value_clip_range = self.value_clip_scheduler.start_value
-        
-        grad_norm_sched_cfg = agent_cfg.get("schedulers", {}).get("max_grad_norm", None)
-        self.max_grad_norm_scheduler = LinearValueScheduler(**grad_norm_sched_cfg) if grad_norm_sched_cfg else None
-        if self.max_grad_norm_scheduler: self.max_grad_norm = self.max_grad_norm_scheduler.start_value
+        pol_cfg = a_cfg["networks"]["policy_network"].copy()
+        pol_cfg.update({"in_features": trunk_dim, "out_features": self.action_dim})
+        if self.action_space_type == "continuous":
+            self.policy_net = BetaPolicyNetwork(**pol_cfg).to(device)
+        else:
+            self.policy_net = DiscretePolicyNetwork(**pol_cfg).to(device)
 
-        # POPART: Initialize PopArt normalizers if enabled
-        self.enable_popart = agent_cfg.get("enable_popart", False)
-        self.value_popart: Optional[PopArtNormalizer] = None
-        self.baseline_popart: Optional[PopArtNormalizer] = None
+        self.shared_critic = SharedCritic(a_cfg["networks"]["critic_network"]).to(device)
+
+        # ---------- PopArt / reward norm ----------
+        self.enable_popart = a_cfg.get("enable_popart", False)
         if self.enable_popart:
-            popart_beta = agent_cfg.get("popart_beta", 0.999)
-            popart_epsilon = agent_cfg.get("popart_epsilon", 1e-5)
-            self.value_popart = PopArtNormalizer(
-                self.shared_critic.value_head.output_layer, # Pass the final linear layer of the value head
-                beta=popart_beta, epsilon=popart_epsilon, device=self.device
-            ).to(self.device)
-            self.baseline_popart = PopArtNormalizer(
-                self.shared_critic.baseline_head.output_layer, # Pass the final linear layer of the baseline head
-                beta=popart_beta, epsilon=popart_epsilon, device=self.device
-            ).to(self.device)
-            print("MAPOCAAgent: PopArt Normalization ENABLED for value and baseline heads.")
-            self.rewards_normalizer = None # Disable standard reward normalizer if PopArt is active for value targets
+            beta, eps = a_cfg.get("popart_beta", 0.999), a_cfg.get("popart_epsilon", 1e-5)
+            self.value_popart    = PopArtNormalizer(self.shared_critic.value_head.output_layer,    beta, eps, device).to(device)
+            self.baseline_popart = PopArtNormalizer(self.shared_critic.baseline_head.output_layer, beta, eps, device).to(device)
+            self.rewards_normalizer = None
         else:
-            # Standard reward normalizer (if PopArt is disabled)
-            rewards_normalization_cfg = agent_cfg.get('rewards_normalizer', None)
-            self.rewards_normalizer = RunningMeanStdNormalizer(**rewards_normalization_cfg, device=self.device) if rewards_normalization_cfg else None
+            self.value_popart = self.baseline_popart = None
+            rnorm_cfg = a_cfg.get("rewards_normalizer")
+            self.rewards_normalizer = RunningMeanStdNormalizer(**rnorm_cfg, device=device) if rnorm_cfg else None
 
-
-        self.enable_rnd = agent_cfg.get("enable_rnd", False)
-        self.rnd_target_network: Optional[RNDTargetNetwork] = None
-        self.rnd_predictor_network: Optional[RNDPredictorNetwork] = None
-        self.intrinsic_reward_normalizer: Optional[RunningMeanStdNormalizer] = None
-        self.intrinsic_reward_coeff = 0.0
-        self.rnd_update_proportion = 0.25
-
+        # ---------- RND ----------
+        self.enable_rnd = a_cfg.get("enable_rnd", False)
         if self.enable_rnd:
-            rnd_cfg = agent_cfg.get("rnd_params", {})
-            rnd_input_dim = self.feature_dim_for_heads 
-            rnd_output_dim = rnd_cfg.get("output_size", 128)
-            rnd_hidden_size = rnd_cfg.get("hidden_size", 256)
-            self.rnd_target_network = RNDTargetNetwork(rnd_input_dim, rnd_output_dim, rnd_hidden_size).to(self.device)
-            self.rnd_predictor_network = RNDPredictorNetwork(rnd_input_dim, rnd_output_dim, rnd_hidden_size).to(self.device)
+            rnd_cfg = a_cfg.get("rnd_params", {})
+            rnd_in, rnd_out = trunk_dim, rnd_cfg.get("output_size", 128)
+            rnd_hid = rnd_cfg.get("hidden_size", 256)
+            self.rnd_target_network = RNDTargetNetwork(rnd_in, rnd_out, rnd_hid).to(device)
+            self.rnd_target_network.eval()
+            for p in self.rnd_target_network.parameters(): p.requires_grad_(False)
+            self.rnd_predictor_network = RNDPredictorNetwork(rnd_in, rnd_out, rnd_hid).to(device)
+            self.intrinsic_reward_normalizer = RunningMeanStdNormalizer(epsilon=1e-8, device=device)
             self.intrinsic_reward_coeff = rnd_cfg.get("intrinsic_reward_coeff", 0.01)
-            self.rnd_update_proportion = rnd_cfg.get("rnd_update_proportion", 0.25)
-            self.intrinsic_reward_normalizer = RunningMeanStdNormalizer(epsilon=1e-8, device=self.device) 
-            print(f"MAPOCAAgent: RND Module Initialized. Input Dim: {rnd_input_dim}, Output Dim: {rnd_output_dim}")
-
-        lr_policy = agent_cfg.get("lr_policy", self.lr)
-        lr_value = agent_cfg.get("lr_value", self.lr)
-        lr_baseline = agent_cfg.get("lr_baseline", self.lr)
-        lr_rnd_predictor = agent_cfg.get("lr_rnd_predictor", self.lr)
-
-        policy_params = list(self.policy_embedding_network.parameters()) + \
-                        list(self.policy_net.parameters())
-        if self.enable_memory and self.policy_memory_module:
-            policy_params += list(self.policy_memory_module.parameters())
-        self.policy_optimizer = optim.Adam(policy_params, lr=lr_policy, eps=1e-7)
-
-        value_params = list(self.value_embedding_network.parameters()) + \
-                       list(self.shared_critic.value_head.parameters()) + \
-                       list(self.shared_critic.value_attention.parameters())
-        if self.enable_memory and self.value_memory_module:
-            value_params += list(self.value_memory_module.parameters())
-        self.value_optimizer = optim.Adam(value_params, lr=lr_value, eps=1e-7)
-
-        baseline_params = list(self.baseline_embedding_network.parameters()) + \
-                          list(self.shared_critic.baseline_head.parameters()) + \
-                          list(self.shared_critic.baseline_attention.parameters())
-        if self.enable_memory and self.baseline_memory_module:
-            baseline_params += list(self.baseline_memory_module.parameters())
-        self.baseline_optimizer = optim.Adam(baseline_params, lr=lr_baseline, eps=1e-7)
-        
-        self.rnd_predictor_optimizer: Optional[optim.Adam] = None
-        if self.enable_rnd and self.rnd_predictor_network:
-            self.rnd_predictor_optimizer = optim.Adam(self.rnd_predictor_network.parameters(), lr=lr_rnd_predictor, eps=1e-7)
-
-        self.policy_lr_scheduler: Optional[LinearLR] = None
-        if self.lr_scheduler_cfg: 
-            self.policy_lr_scheduler = LinearLR(self.policy_optimizer, **self.lr_scheduler_cfg)
-        
-        self.current_policy_memory_hidden_states: Optional[torch.Tensor] = None
-
-    # ... (parameters, _determine_action_space, _get_batch_shape_info, get_actions methods remain largely the same as in mapoca_agent_separate_bases_v1) ...
-    # Minor adjustment in get_actions if self.rewards_normalizer is None due to PopArt
-    def parameters(self):
-        params_list = list(self.policy_embedding_network.parameters()) + \
-                      list(self.value_embedding_network.parameters()) + \
-                      list(self.baseline_embedding_network.parameters()) + \
-                      list(self.shared_critic.parameters()) + \
-                      list(self.policy_net.parameters())
-        if self.enable_memory:
-            if self.policy_memory_module: params_list += list(self.policy_memory_module.parameters())
-            if self.value_memory_module: params_list += list(self.value_memory_module.parameters())
-            if self.baseline_memory_module: params_list += list(self.baseline_memory_module.parameters())
-        if self.enable_rnd and self.rnd_predictor_network is not None:
-            params_list += list(self.rnd_predictor_network.parameters())
-        return params_list
-
-    def _determine_action_space(self, action_cfg: Dict):
-        if "agent" in action_cfg:
-            agent_action_cfg = action_cfg["agent"]
-            if "discrete" in agent_action_cfg:
-                self.action_space_type = "discrete"
-                d_list = agent_action_cfg["discrete"]
-                self.action_dim = [d["num_choices"] for d in d_list]
-                self.total_action_dim_per_agent = len(self.action_dim)
-            elif "continuous" in agent_action_cfg:
-                self.action_space_type = "continuous"
-                self.action_dim = len(agent_action_cfg["continuous"]) 
-                self.total_action_dim_per_agent = self.action_dim
-            else:
-                raise ValueError("MAPOCAAgent Error: Missing 'discrete' or 'continuous' under 'action.agent' in config.")
+            self.rnd_update_prop        = rnd_cfg.get("rnd_update_proportion", 0.25)
         else:
-            raise ValueError("MAPOCAAgent Error: No 'agent' block found in 'action' config.")
+            self.rnd_target_network    = self.rnd_predictor_network = None
+            self.intrinsic_reward_normalizer = None
+            self.intrinsic_reward_coeff      = 0.0
+            self.rnd_update_prop             = 0.0
 
-    def _get_batch_shape_info(self, states_input: Dict[str, torch.Tensor], context: str = "get_actions") -> Tuple[int, int, int, int]:
-        dim0, dim1, num_actual_agents_in_tensor, obs_d = -1, -1, -1, -1
-        primary_key = 'agent' if 'agent' in states_input and states_input['agent'] is not None else 'central'
-        if primary_key not in states_input or states_input[primary_key] is None:
-            raise ValueError(f"MAPOCAAgent Error: Cannot determine batch dimensions: '{primary_key}' key missing or None in states_input for {context}.")
-        tensor_shape = states_input[primary_key].shape
-        if primary_key == 'agent':
-            if len(tensor_shape) < 3: 
-                raise ValueError(f"MAPOCAAgent Error: Agent state tensor in {context} has {len(tensor_shape)} dims, expected at least 3. Shape: {tensor_shape}")
-            if len(tensor_shape) == 3 and context == "get_actions": 
-                dim0 = 1; dim1 = tensor_shape[0]; num_actual_agents_in_tensor = tensor_shape[1]
-            elif len(tensor_shape) == 4 : 
-                dim0 = tensor_shape[0]; dim1 = tensor_shape[1]; num_actual_agents_in_tensor = tensor_shape[2]
-            else: raise ValueError(f"MAPOCAAgent Error: Unexpected agent state tensor shape in {context}: {tensor_shape}")
-            obs_d = tensor_shape[-1]
-        elif primary_key == 'central':
-            if len(tensor_shape) < 2: raise ValueError(f"MAPOCAAgent Error: Central state tensor in {context} has {len(tensor_shape)} dims, expected at least 2. Shape: {tensor_shape}")
-            if len(tensor_shape) == 2 and context == "get_actions": dim0 = 1; dim1 = tensor_shape[0]
-            elif len(tensor_shape) == 3: dim0 = tensor_shape[0]; dim1 = tensor_shape[1]
-            else: raise ValueError(f"MAPOCAAgent Error: Unexpected central state tensor shape in {context}: {tensor_shape}")
-            num_actual_agents_in_tensor = 1; obs_d = tensor_shape[-1]
-        return dim0, dim1, num_actual_agents_in_tensor, obs_d
+        # ---------- optimisers ----------
+        lr_pol = a_cfg.get("lr_policy",    self.lr_base)
+        lr_val = a_cfg.get("lr_value",     self.lr_base)
+        lr_bas = a_cfg.get("lr_baseline",  self.lr_base)
+        lr_rnd = a_cfg.get("lr_rnd_predictor", self.lr_base)
 
+        # read optimizer betas and weight decay from config
+        opt_betas = a_cfg.get("optimizer_betas", {})
+        wd_cfg    = a_cfg.get("weight_decay", {})
+        trunk_betas  = tuple(opt_betas.get("trunk",    (0.9, 0.98)))
+        policy_betas = tuple(opt_betas.get("policy",   (0.9, 0.98)))
+        value_betas  = tuple(opt_betas.get("value",    (0.9, 0.95)))
+        base_betas   = tuple(opt_betas.get("baseline", (0.9, 0.95)))
+        rnd_betas    = tuple(opt_betas.get("rnd",      (0.9, 0.98)))
+        trunk_wd     = wd_cfg.get("trunk",    1e-5)
+        policy_wd    = wd_cfg.get("policy",   1e-5)
+        value_wd     = wd_cfg.get("value",    1e-4)
+        base_wd      = wd_cfg.get("baseline", 1e-4)
+        rnd_wd       = wd_cfg.get("rnd",      0.0)
 
+        trunk_params = list(self.embedding_net.parameters())
+        if self.memory_module:
+            trunk_params += list(self.memory_module.parameters())
+
+        # 1) trunk optimizer
+        self.trunk_opt  = optim.Adam(trunk_params, lr=lr_pol, betas=trunk_betas, eps=1e-7, weight_decay=trunk_wd)
+        # 2) policy optimizer
+        self.policy_opt = optim.Adam(self.policy_net.parameters(), lr=lr_pol, betas=policy_betas, eps=1e-7, weight_decay=policy_wd)
+        # 3) value head optimizer
+        self.value_opt  = optim.Adam(
+            list(self.shared_critic.value_head.parameters()) + list(self.shared_critic.value_attention.parameters()),
+            lr=lr_val * 0.5, betas=value_betas, eps=1e-6, weight_decay=value_wd
+        )
+        # 4) baseline head optimizer
+        self.base_opt   = optim.Adam(
+            list(self.shared_critic.baseline_head.parameters()) + list(self.shared_critic.baseline_attention.parameters()),
+            lr=lr_bas, betas=base_betas, eps=1e-6, weight_decay=base_wd
+        )
+        # 5) rnd predictor optimizer
+        self.rnd_opt    = optim.Adam(
+            self.rnd_predictor_network.parameters(),
+            lr=lr_rnd * 2.0, betas=rnd_betas, eps=1e-7, weight_decay=rnd_wd
+        ) if self.enable_rnd else None
+
+        # ---------- schedulers ----------
+        sched_cfg = a_cfg.get("schedulers", {})
+        self.policy_lr_sched = LinearLR(self.policy_opt, **sched_cfg.get("lr", {})) if "lr" in sched_cfg else None
+        self.entropy_sched   = LinearValueScheduler(**sched_cfg.get("entropy_coeff", {})) if "entropy_coeff" in sched_cfg else None
+        if self.entropy_sched:
+            self.entropy_coeff = self.entropy_sched.start_value
+        self.clip_sched      = LinearValueScheduler(**sched_cfg.get("policy_clip", {})) if "policy_clip" in sched_cfg else None
+        self.val_clip_sched  = LinearValueScheduler(**sched_cfg.get("value_clip", {})) if "value_clip" in sched_cfg else None
+        self.grad_sched      = LinearValueScheduler(**sched_cfg.get("max_grad_norm", {})) if "max_grad_norm" in sched_cfg else None
+
+    # ------------------------------------------------------------------
+    # action-space helper
+    # ------------------------------------------------------------------
+    def _determine_action_space(self, cfg: Dict[str, Any]):
+        if "agent" not in cfg:
+            raise ValueError("Missing 'action.agent' block")
+        a_cfg = cfg["agent"]
+        if "continuous" in a_cfg:
+            self.action_space_type = "continuous"
+            self.action_dim        = len(a_cfg["continuous"])
+            self.total_action_dim_per_agent = self.action_dim
+        elif "discrete" in a_cfg:
+            self.action_space_type = "discrete"
+            self.action_dim = [d["num_choices"] for d in a_cfg["discrete"]]
+            self.total_action_dim_per_agent = len(self.action_dim)
+        else:
+            raise ValueError("Specify discrete or continuous")
+
+    # ------------------------------------------------------------------
+    # memory utilities
+    # ------------------------------------------------------------------
+    def _apply_memory_seq(
+        self,
+        seq_feats: torch.Tensor,
+        init_h: Optional[torch.Tensor],
+        return_hidden: bool = False
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        if not self.memory_module:
+            if return_hidden:
+                return seq_feats, None
+            return seq_feats
+
+        B, T, NA, F = seq_feats.shape
+        flat = seq_feats.reshape(B * NA, T, F)
+
+        if init_h is None:
+            init_h = torch.zeros(B, NA, self.memory_layers, self.memory_hidden, device=self.device)
+        # reshape to (layers, batch, hidden)
+        h0   = init_h.reshape(B * NA, self.memory_layers, self.memory_hidden).permute(1, 0, 2).contiguous()
+        flat_out, h_n = self.memory_module.forward_sequence(flat, h0)
+        out = flat_out.reshape(B, T, NA, self.memory_hidden)
+
+        if return_hidden:
+            # reshape h_n back to (B, NA, layers, hidden)
+            h_n = h_n.permute(1, 0, 2).reshape(B, NA, self.memory_layers, self.memory_hidden)
+            return out, h_n
+        return out
+
+    # ------------------------------------------------------------------
+    # ACTION SELECTION
+    # ------------------------------------------------------------------
     @torch.no_grad()
-    def get_actions(self, states: dict, dones: torch.Tensor, truncs: torch.Tensor,
-                    h_prev_batch: Optional[torch.Tensor] = None, eval: bool=False, record: bool=True) \
-                    -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], Optional[torch.Tensor]]:
-        s_dim, num_envs_from_state, _, _ = self._get_batch_shape_info(states, context="get_actions")
-        
-        base_embeddings, _ = self.policy_embedding_network.get_base_embedding(states)
-        
-        if base_embeddings.shape[0] == 1 and s_dim == 1:
-            features_for_memory_input = base_embeddings.squeeze(0) 
-        else: 
-            features_for_memory_input = base_embeddings.reshape(-1, self.num_agents, base_embeddings.shape[-1])
-            num_envs_from_state = features_for_memory_input.shape[0]
+    def get_actions(
+        self,
+        states: Dict[str, torch.Tensor],
+        dones: torch.Tensor,
+        truncs: torch.Tensor,
+        h_prev_batch: Optional[torch.Tensor] = None,
+        eval: bool = False,
+        record: bool = True,
+    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], Optional[torch.Tensor]]:
+        B_env = states["agent"].shape[1] if "agent" in states else 1
+        emb, _ = self.embedding_net.get_base_embedding(states)
+        emb = emb.squeeze(0)
 
-        embedding_dim = features_for_memory_input.shape[-1]
-        features_for_policy_head = features_for_memory_input
-        next_policy_hidden_state_to_return = h_prev_batch
+        if self.memory_module:
+            if h_prev_batch is None:
+                h_prev_batch = torch.zeros(
+                    B_env, self.num_agents, self.memory_layers, self.memory_hidden, device=self.device
+                )
+            flat         = emb.reshape(B_env * self.num_agents, -1)
+            h_prev_flat  = h_prev_batch.reshape(B_env * self.num_agents, self.memory_layers, self.memory_hidden)\
+                                     .permute(1, 0, 2).contiguous()
+            flat_out, h_next_flat = self.memory_module.forward_step(flat, h_prev_flat)
+            feats        = flat_out.reshape(B_env, self.num_agents, -1)
+            h_next       = h_next_flat.permute(1, 0, 2).reshape(
+                B_env, self.num_agents, self.memory_layers, self.memory_hidden
+            )
+            reset = _bool_or(dones, truncs).view(B_env, 1, 1, 1).float()
+            h_next = h_next * (1.0 - reset)
+        else:
+            feats  = emb
+            h_next = None
 
-        if self.enable_memory and self.policy_memory_module is not None:
-            if h_prev_batch is None: 
-                h_prev_batch = torch.zeros(num_envs_from_state, self.num_agents, self.memory_num_layers, self.memory_hidden_size, device=self.device)
-            
-            if h_prev_batch.shape[0] != num_envs_from_state or h_prev_batch.shape[1] != self.num_agents:
-                 print(f"MAPOCAAgent Warning in get_actions: Policy h_prev_batch shape {h_prev_batch.shape} mismatch. Expected num_envs={num_envs_from_state}, num_agents={self.num_agents}. Adapting.")
-                 h_prev_batch_adapted = torch.zeros(num_envs_from_state, self.num_agents, self.memory_num_layers, self.memory_hidden_size, device=self.device)
-                 min_envs = min(h_prev_batch.shape[0], num_envs_from_state)
-                 min_agents_dim = min(h_prev_batch.shape[1], self.num_agents)
-                 h_prev_batch_adapted[:min_envs, :min_agents_dim, :, :] = h_prev_batch[:min_envs, :min_agents_dim, :, :]
-                 h_prev_batch = h_prev_batch_adapted
+        pol_in = feats.reshape(B_env * self.num_agents, -1)
+        act_flat, lp_flat, ent_flat = self.policy_net.get_actions(pol_in, eval)
+        actions = act_flat.reshape(B_env, self.num_agents * self.total_action_dim_per_agent)
+        logp    = lp_flat.reshape(B_env, self.num_agents)
+        ent     = ent_flat.reshape(B_env, self.num_agents)
 
-            memory_input_features_flat = features_for_memory_input.reshape(num_envs_from_state * self.num_agents, embedding_dim)
-            h_prev_for_policy_memory = h_prev_batch.reshape(num_envs_from_state * self.num_agents, self.memory_num_layers, self.memory_hidden_size).permute(1, 0, 2).contiguous()
-            features_for_policy_head_flat, h_next_policy_flat = self.policy_memory_module.forward_step(memory_input_features_flat, h_prev_for_policy_memory)
-            features_for_policy_head = features_for_policy_head_flat.reshape(num_envs_from_state, self.num_agents, self.memory_hidden_size)
-            next_hidden_intermediate_policy = h_next_policy_flat.permute(1, 0, 2).reshape(num_envs_from_state, self.num_agents, self.memory_num_layers, self.memory_hidden_size)
-            
-            if dones.ndim == 1: dones = dones.unsqueeze(1).expand(-1, self.num_agents)
-            if truncs.ndim == 1: truncs = truncs.unsqueeze(1).expand(-1, self.num_agents)
-            if dones.shape[0] != num_envs_from_state: dones = dones[:num_envs_from_state, :] 
-            if truncs.shape[0] != num_envs_from_state: truncs = truncs[:num_envs_from_state, :]
-            reset_mask_bool = dones.bool() | truncs.bool()
-            reset_mask = reset_mask_bool.unsqueeze(-1).unsqueeze(-1).expand_as(next_hidden_intermediate_policy).float()
-            next_policy_hidden_state_to_return = next_hidden_intermediate_policy * (1.0 - reset_mask)
-        
-        flat_features_for_policy_head = features_for_policy_head.reshape(num_envs_from_state * self.num_agents, features_for_policy_head.shape[-1])
-        actions_flat, lp_flat, ent_flat = self.policy_net.get_actions(flat_features_for_policy_head, eval=eval)
+        if record and self.state_recorder and "central" in states and states["central"].ndim >= 2:
+            self.state_recorder.record_frame(states["central"][0, 0].cpu().numpy().flatten())
 
-        log_probs = lp_flat.reshape(num_envs_from_state, self.num_agents)
-        entropies = ent_flat.reshape(num_envs_from_state, self.num_agents)
+        return actions, (logp, ent), h_next
 
-        if self.action_space_type == "continuous":
-            actions_per_agent_reshaped = actions_flat.reshape(num_envs_from_state, self.num_agents, self.total_action_dim_per_agent)
-        else: 
-            if actions_flat.dim() == 1 and self.total_action_dim_per_agent == 1: 
-                actions_per_agent_reshaped = actions_flat.reshape(num_envs_from_state, self.num_agents, 1)
-            else: 
-                actions_per_agent_reshaped = actions_flat.reshape(num_envs_from_state, self.num_agents, self.total_action_dim_per_agent)
-        
-        actions_out_final_shape = actions_per_agent_reshaped.reshape(num_envs_from_state, -1)
+    # ------------------------------------------------------------------
+    # PPO UPDATE
+    # ------------------------------------------------------------------
+    def update(
+        self,
+        padded_states_dict_seq: Dict[str, torch.Tensor],
+        padded_actions_seq: torch.Tensor,
+        padded_rewards_seq: torch.Tensor,
+        padded_next_states_dict_seq: Dict[str, torch.Tensor],
+        padded_dones_seq: torch.Tensor,
+        padded_truncs_seq: torch.Tensor,
+        initial_hidden_states_batch: Optional[torch.Tensor],
+        attention_mask_batch: torch.Tensor,
+    ) -> Dict[str, float]:
+        B, T = attention_mask_batch.shape
+        NA    = self.num_agents
+        mask_bt    = attention_mask_batch
+        mask_bt1   = mask_bt.unsqueeze(-1)
+        mask_btna1 = mask_bt.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, NA, 1)
 
-        if record and self.state_recorder is not None and 'central' in states:
-            if states['central'].ndim >= 2 and states['central'].shape[0] == 1 and states['central'].shape[1] > 0 : 
-                c_state_to_record = states["central"][0,0].cpu().numpy()
-                self.state_recorder.record_frame(c_state_to_record.flatten())
-        
-        return actions_out_final_shape, (log_probs, entropies), next_policy_hidden_state_to_return
+        # ----- reward normalization -----
+        rewards_seq = padded_rewards_seq.clone()
+        if self.rewards_normalizer is not None:
+            valid_r = rewards_seq[mask_bt1.bool()]
+            if valid_r.numel():
+                self.rewards_normalizer.update(valid_r.unsqueeze(-1))
+                rewards_seq[mask_bt1.bool()] = self.rewards_normalizer.normalize(valid_r.unsqueeze(-1)).squeeze(-1)
 
-    def update(self,
-               padded_states_dict_seq: Dict[str, torch.Tensor],
-               padded_next_states_dict_seq: Dict[str, torch.Tensor],
-               padded_actions_seq: torch.Tensor,
-               padded_rewards_seq: torch.Tensor, # These are raw extrinsic rewards
-               padded_dones_seq: torch.Tensor,
-               padded_truncs_seq: torch.Tensor,
-               initial_hidden_states_batch: Optional[torch.Tensor], 
-               attention_mask_batch: Optional[torch.Tensor]):
-        
-        B, MaxSeqLen, _, _ = self._get_batch_shape_info(padded_states_dict_seq, context="update")
-        NA_config = self.num_agents 
-        
-        EmbDimPolicy = self.policy_embedding_network.base_encoder.embed_dim
-        EmbDimValue = self.value_embedding_network.base_encoder.embed_dim
-        EmbDimBaseline = self.baseline_embedding_network.base_encoder.embed_dim
-
-        # --- Reward Normalization (Optional, if PopArt is not enabled or for other purposes) ---
-        current_rewards_seq = padded_rewards_seq.clone() # Work with a copy
-        rewards_raw_mean = 0.0
-        valid_rewards_mask = attention_mask_batch.unsqueeze(-1).expand_as(current_rewards_seq).bool()
-        if valid_rewards_mask.sum() > 0: 
-            rewards_raw_mean = current_rewards_seq[valid_rewards_mask].mean().item()
-
-        if self.rewards_normalizer: # This is None if PopArt is enabled
-            valid_rewards_flat = current_rewards_seq[valid_rewards_mask]
-            if valid_rewards_flat.numel() > 0: 
-                valid_rewards_for_norm_update = valid_rewards_flat.unsqueeze(-1)
-                self.rewards_normalizer.update(valid_rewards_for_norm_update)
-                normalized_valid_rewards = self.rewards_normalizer.normalize(valid_rewards_for_norm_update)
-                norm_rewards_seq = torch.zeros_like(current_rewards_seq)
-                norm_rewards_seq[valid_rewards_mask] = normalized_valid_rewards.squeeze(-1).to(norm_rewards_seq.dtype)
-                current_rewards_seq = norm_rewards_seq # Use normalized rewards for GAE if self.rewards_normalizer is active
-        
-        rewards_norm_mean = 0.0 # This will be raw mean if rewards_normalizer is None
-        if valid_rewards_mask.sum() > 0:
-            rewards_norm_mean = current_rewards_seq[valid_rewards_mask].mean().item()
-
-
-        all_intrinsic_rewards_seq = torch.zeros_like(current_rewards_seq) # Based on current_rewards_seq shape
-
-        # --- Data Gathering (old policy/values) with torch.no_grad() ---
+        # =============================================================
+        # NO-GRAD PASS: compute old logprobs, values, intrinsic rewards, returns & update PopArt
+        # =============================================================
         with torch.no_grad():
-            all_old_log_probs_seq_parts, all_old_values_seq_norm_parts = [], [] # Store normalized values
-            all_old_baselines_seq_norm_parts, all_next_values_seq_norm_parts = [], [] # Store normalized baselines and next_values
-            all_intrinsic_rewards_sub_batch_parts = [] 
-            num_sequences_total = B 
+            emb_seq, _      = self.embedding_net.get_base_embedding(padded_states_dict_seq)
+            emb_next_seq, _ = self.embedding_net.get_base_embedding(padded_next_states_dict_seq)
 
-            for i in range(0, num_sequences_total, self.no_grad_forward_batch_size):
-                start_idx, end_idx = i, min(i + self.no_grad_forward_batch_size, num_sequences_total)
-                current_sub_batch_size = end_idx - start_idx
-                if current_sub_batch_size == 0: continue
+            if self.memory_module:
+                feats_seq, h_n = self._apply_memory_seq(
+                    emb_seq, initial_hidden_states_batch, return_hidden=True
+                )
+                feats_next_seq = self._apply_memory_seq(emb_next_seq, h_n)
+            else:
+                feats_seq      = self._apply_memory_seq(emb_seq, None)
+                feats_next_seq = self._apply_memory_seq(emb_next_seq, None)
 
-                sub_batch_states_dict_seq = {k: v[start_idx:end_idx] for k, v in padded_states_dict_seq.items() if v is not None}
-                sub_batch_next_states_dict_seq = {k: v[start_idx:end_idx] for k, v in padded_next_states_dict_seq.items() if v is not None}
-                sub_batch_actions_seq = padded_actions_seq[start_idx:end_idx]
-                
-                # POLICY pathway features (for old_log_probs)
-                sub_base_emb_policy, _ = self.policy_embedding_network.get_base_embedding(sub_batch_states_dict_seq)
-                sub_processed_feat_policy = sub_base_emb_policy
-                if self.enable_memory and self.policy_memory_module:
-                    sub_batch_initial_hidden_policy = initial_hidden_states_batch[start_idx:end_idx] if initial_hidden_states_batch is not None else None
-                    if sub_batch_initial_hidden_policy is None:
-                        sub_batch_initial_hidden_policy = torch.zeros(current_sub_batch_size, NA_config, self.memory_num_layers, self.memory_hidden_size, device=self.device)
-                    mem_in_policy = sub_base_emb_policy.reshape(current_sub_batch_size * NA_config, MaxSeqLen, EmbDimPolicy)
-                    init_h_policy = sub_batch_initial_hidden_policy.reshape(current_sub_batch_size * NA_config, self.memory_num_layers, self.memory_hidden_size).permute(1,0,2).contiguous()
-                    proc_feat_flat_policy, _ = self.policy_memory_module.forward_sequence(mem_in_policy, init_h_policy)
-                    sub_processed_feat_policy = proc_feat_flat_policy.reshape(current_sub_batch_size, MaxSeqLen, NA_config, self.memory_hidden_size)
+            old_logp_seq, _ = self._recompute_log_probs_from_features(feats_seq, padded_actions_seq)
+            old_val_norm    = self.shared_critic.values(feats_seq)
+            next_val_norm   = self.shared_critic.values(feats_next_seq)
+            base_in_seq     = self.embedding_net.get_baseline_embeddings(feats_seq, padded_actions_seq)
+            old_base_norm   = self.shared_critic.baselines(base_in_seq)
 
-                # VALUE pathway features (for old_values_norm, next_values_norm, RND)
-                sub_base_emb_value, _ = self.value_embedding_network.get_base_embedding(sub_batch_states_dict_seq)
-                sub_next_base_emb_value, _ = self.value_embedding_network.get_base_embedding(sub_batch_next_states_dict_seq)
-                sub_processed_feat_value = sub_base_emb_value
-                sub_next_processed_feat_value = sub_next_base_emb_value
-                if self.enable_memory and self.value_memory_module:
-                    mem_in_value = sub_base_emb_value.reshape(current_sub_batch_size * NA_config, MaxSeqLen, EmbDimValue)
-                    proc_feat_flat_value, _ = self.value_memory_module.forward_sequence(mem_in_value, None) 
-                    sub_processed_feat_value = proc_feat_flat_value.reshape(current_sub_batch_size, MaxSeqLen, NA_config, self.memory_hidden_size)
-                    mem_in_next_value = sub_next_base_emb_value.reshape(current_sub_batch_size*NA_config, MaxSeqLen, EmbDimValue)
-                    proc_feat_flat_next_value, _ = self.value_memory_module.forward_sequence(mem_in_next_value, None)
-                    sub_next_processed_feat_value = proc_feat_flat_next_value.reshape(current_sub_batch_size, MaxSeqLen, NA_config, self.memory_hidden_size)
+            # intrinsic reward
+            intrinsic_na = torch.zeros(B, T, NA, device=self.device)
+            if self.enable_rnd:
+                flat_feats = feats_seq.reshape(B * T * NA, -1)
+                tgt        = self.rnd_target_network(flat_feats)
+                pred       = self.rnd_predictor_network(flat_feats)
+                mse        = F.mse_loss(pred, tgt, reduction="none").mean(-1)
+                intrinsic_na = mse.reshape(B, T, NA)
+                valid_intr = intrinsic_na[mask_bt.unsqueeze(-1).expand_as(intrinsic_na).bool()]
+                if valid_intr.numel():
+                    self.intrinsic_reward_normalizer.update(valid_intr.unsqueeze(-1))
+                    intrinsic_na[mask_bt.unsqueeze(-1).expand_as(intrinsic_na).bool()] = \
+                        self.intrinsic_reward_normalizer.normalize(valid_intr.unsqueeze(-1)).squeeze(-1).to(intrinsic_na.dtype)
+            intrinsic_seq = intrinsic_na.mean(-1, keepdim=True)
 
-                # BASELINE pathway features (for old_baselines_norm)
-                sub_base_emb_baseline, _ = self.baseline_embedding_network.get_base_embedding(sub_batch_states_dict_seq)
-                sub_processed_feat_baseline = sub_base_emb_baseline
-                if self.enable_memory and self.baseline_memory_module:
-                    mem_in_baseline = sub_base_emb_baseline.reshape(current_sub_batch_size*NA_config, MaxSeqLen, EmbDimBaseline)
-                    proc_feat_flat_baseline, _ = self.baseline_memory_module.forward_sequence(mem_in_baseline, None)
-                    sub_processed_feat_baseline = proc_feat_flat_baseline.reshape(current_sub_batch_size, MaxSeqLen, NA_config, self.memory_hidden_size)
-
-                # RND intrinsic reward (uses VALUE pathway features)
-                if self.enable_rnd and self.rnd_target_network and self.rnd_predictor_network:
-                    flat_features_for_rnd = sub_processed_feat_value.reshape(-1, self.feature_dim_for_heads)
-                    target_rnd_feats = self.rnd_target_network(flat_features_for_rnd)
-                    predicted_rnd_feats_for_reward = self.rnd_predictor_network(flat_features_for_rnd) 
-                    intrinsic_r_terms = F.mse_loss(predicted_rnd_feats_for_reward, target_rnd_feats, reduction='none').mean(dim=-1)
-                    intrinsic_r_sub_batch_per_agent = intrinsic_r_terms.reshape(current_sub_batch_size, MaxSeqLen, NA_config)
-                    all_intrinsic_rewards_sub_batch_parts.append(intrinsic_r_sub_batch_per_agent.mean(dim=-1, keepdim=True))
-                else:
-                    all_intrinsic_rewards_sub_batch_parts.append(torch.zeros(current_sub_batch_size, MaxSeqLen, 1, device=self.device))
-
-                # Get old log_probs (from policy pathway)
-                sub_old_log_probs_seq, _ = self._recompute_log_probs_from_features(sub_processed_feat_policy, sub_batch_actions_seq)
-                
-                # Get NORMALIZED old values and baselines (direct output from critic heads)
-                sub_old_values_seq_norm = self.shared_critic.values(sub_processed_feat_value)
-                sub_baseline_input_seq = self.baseline_embedding_network.get_baseline_embeddings(sub_processed_feat_baseline, sub_batch_actions_seq)
-                sub_old_baselines_seq_norm = self.shared_critic.baselines(sub_baseline_input_seq)
-                sub_next_values_seq_norm = self.shared_critic.values(sub_next_processed_feat_value)
-
-                all_old_log_probs_seq_parts.append(sub_old_log_probs_seq)
-                all_old_values_seq_norm_parts.append(sub_old_values_seq_norm) # Storing normalized
-                all_old_baselines_seq_norm_parts.append(sub_old_baselines_seq_norm) # Storing normalized
-                all_next_values_seq_norm_parts.append(sub_next_values_seq_norm) # Storing normalized
-            
-            old_log_probs_seq = torch.cat(all_old_log_probs_seq_parts, dim=0)
-            old_values_seq_norm = torch.cat(all_old_values_seq_norm_parts, dim=0)       # Normalized
-            old_baselines_seq_norm = torch.cat(all_old_baselines_seq_norm_parts, dim=0)  # Normalized
-            next_values_seq_norm = torch.cat(all_next_values_seq_norm_parts, dim=0)      # Normalized
-            
-            all_intrinsic_rewards_seq = torch.cat(all_intrinsic_rewards_sub_batch_parts, dim=0)
-            if self.enable_rnd and self.intrinsic_reward_normalizer:
-                valid_intrinsic_mask = attention_mask_batch.unsqueeze(-1).expand_as(all_intrinsic_rewards_seq).bool()
-                if valid_intrinsic_mask.sum() > 0:
-                    valid_intrinsic_r_flat = all_intrinsic_rewards_seq[valid_intrinsic_mask]
-                    if valid_intrinsic_r_flat.numel() > 0:
-                        valid_intrinsic_r = valid_intrinsic_r_flat.unsqueeze(-1)
-                        self.intrinsic_reward_normalizer.update(valid_intrinsic_r)
-                        normalized_intrinsic_r_values = self.intrinsic_reward_normalizer.normalize(valid_intrinsic_r)
-                        temp_norm_intrinsic_r = torch.zeros_like(all_intrinsic_rewards_seq)
-                        temp_norm_intrinsic_r[valid_intrinsic_mask] = normalized_intrinsic_r_values.squeeze(-1).to(temp_norm_intrinsic_r.dtype)
-                        all_intrinsic_rewards_seq = temp_norm_intrinsic_r 
-
-            # Rewards for GAE: extrinsic (potentially step-normalized) + intrinsic (normalized)
-            rewards_for_gae = current_rewards_seq + self.intrinsic_reward_coeff * all_intrinsic_rewards_seq.detach()
-
-            # POPART: Denormalize old_values_norm and next_values_norm for GAE calculation
-            # These use PopArt stats from *before* the current update cycle's PopArt stat update
-            old_values_seq_denorm = old_values_seq_norm # Default if PopArt disabled
-            next_values_seq_denorm = next_values_seq_norm # Default if PopArt disabled
-            if self.enable_popart and self.value_popart:
-                old_values_seq_denorm = self.value_popart.denormalize_outputs(old_values_seq_norm)
-                next_values_seq_denorm = self.value_popart.denormalize_outputs(next_values_seq_norm)
-            
-            # GAE computation uses DENORMALIZED values and raw/combined rewards
-            # returns_seq_raw will be in RAW scale
-            returns_seq_raw = self._compute_gae_with_padding(
-                rewards_for_gae, # These are raw extrinsic + normalized intrinsic * coeff
-                old_values_seq_denorm, 
-                next_values_seq_denorm, 
-                padded_dones_seq, padded_truncs_seq, attention_mask_batch
+            # returns & GAE
+            rew_gae     = rewards_seq + self.intrinsic_reward_coeff * intrinsic_seq
+            old_val     = self.value_popart.denormalize_outputs(old_val_norm)  if self.enable_popart else old_val_norm
+            nxt_val     = self.value_popart.denormalize_outputs(next_val_norm) if self.enable_popart else next_val_norm
+            returns_seq = self._compute_gae_with_padding(
+                rew_gae, old_val, nxt_val, padded_dones_seq, padded_truncs_seq, mask_bt
             )
 
-            # POPART: Update PopArt Statistics using the RAW GAE returns
+            # stats for logging
+            raw_ext_mean  = float(padded_rewards_seq[mask_bt1.bool()].mean()) if mask_bt1.any() else 0.0
+            proc_rew_mean = float(rewards_seq[mask_bt1.bool()].mean())     if mask_bt1.any() else 0.0
+            ret_vals      = returns_seq[mask_bt1.bool()]
+            ret_mean      = float(ret_vals.mean()) if ret_vals.numel() else 0.0
+            ret_std       = float(ret_vals.std())  if ret_vals.numel() else 0.0
+
+            # PopArt stats update (once)
             if self.enable_popart:
-                if self.value_popart:
-                    valid_returns_mask_value = attention_mask_batch.unsqueeze(-1).expand_as(returns_seq_raw).bool()
-                    if valid_returns_mask_value.sum() > 0:
-                        self.value_popart.update_stats(returns_seq_raw[valid_returns_mask_value].detach()) # Detach targets for stat update
-                
-                if self.baseline_popart:
-                    # Baseline target is also the raw GAE return
-                    returns_for_baseline_raw = returns_seq_raw.unsqueeze(2).expand(-1, -1, NA_config, -1) # (B, MaxSeqLen, NA_config, 1)
-                    valid_returns_mask_baseline = attention_mask_batch.unsqueeze(-1).unsqueeze(-1).expand_as(returns_for_baseline_raw).bool()
-                    if valid_returns_mask_baseline.sum() > 0:
-                        self.baseline_popart.update_stats(returns_for_baseline_raw[valid_returns_mask_baseline].detach()) # Detach targets
+                self.value_popart.update_stats(returns_seq[mask_bt1.bool()])
+                self.baseline_popart.update_stats(
+                    returns_seq.unsqueeze(2).expand(-1, -1, NA, -1)[mask_btna1.bool()]
+                )
+        # =============================================================
 
-        # --- PPO Update Loop (Mini-batches of sequences) ---
-        num_sequences_in_batch = B 
-        idxes = np.arange(num_sequences_in_batch)
-        log_keys = ["Policy Loss", "Value Loss", "Baseline Loss", "Entropy", "Grad Norm", "Advantage Raw Mean", "Advantage Raw Std", "Advantage Final Mean", "Returns Mean (Raw)", "Logprob Mean", "Logprob Min", "Logprob Max"]
-        if self.enable_rnd: log_keys.extend(["RND Predictor Loss", "Intrinsic Reward Mean (Normalized)"])
-        if self.enable_popart: log_keys.extend(["PopArt Value Mu", "PopArt Value Sigma", "PopArt Baseline Mu", "PopArt Baseline Sigma"])
-        batch_logs = {k: [] for k in log_keys}
+        # TRAINING LOOP
+        logs_acc: Dict[str, List[float]] = {k: [] for k in [
+            "policy", "value", "baseline", "entropy", "grad", "adv_mean", "adv_std"
+        ]}
+        if self.enable_rnd:
+            logs_acc["rnd"] = []
 
-        for epoch in range(self.epochs):
-            np.random.shuffle(idxes)
-            for mb_start_idx in range(0, num_sequences_in_batch, self.mini_batch_size):
-                mb_end_idx = min(mb_start_idx + self.mini_batch_size, num_sequences_in_batch)
-                mb_indices = idxes[mb_start_idx:mb_end_idx] 
-                MB_NUM_SEQ = len(mb_indices)
-                if MB_NUM_SEQ == 0: continue 
+        idx = np.arange(B)
+        for _ in range(self.epochs):
+            np.random.shuffle(idx)
+            for mb_start in range(0, B, self.mini_batch_size):
+                mb_idx = idx[mb_start: mb_start + self.mini_batch_size]
+                if mb_idx.size == 0:
+                    continue
+                mask_mb = mask_bt[mb_idx]  # (M,T)
 
-                st_mb_seq_dict = self._slice_state_dict_batch(padded_states_dict_seq, mb_indices)
-                act_mb_seq = padded_actions_seq[mb_indices].contiguous()
-                mask_mb = attention_mask_batch[mb_indices].contiguous()
-                
-                # Sliced OLD values (these are NORMALIZED if PopArt was on during data gathering)
-                olp_mb_seq = old_log_probs_seq[mb_indices].contiguous()
-                oval_mb_seq_norm = old_values_seq_norm[mb_indices].contiguous() 
-                obase_mb_seq_norm = old_baselines_seq_norm[mb_indices].contiguous()
-                # Sliced RAW GAE returns
-                ret_mb_seq_raw = returns_seq_raw[mb_indices].contiguous()
-                
-                init_h_mb_policy = initial_hidden_states_batch[mb_indices].contiguous() if self.enable_memory and initial_hidden_states_batch is not None else None
-                base_emb_mb_seq_policy, _ = self.policy_embedding_network.get_base_embedding(st_mb_seq_dict)
-                processed_features_mb_seq_policy = base_emb_mb_seq_policy
-                if self.enable_memory and self.policy_memory_module and init_h_mb_policy is not None:
-                    mem_in_policy = base_emb_mb_seq_policy.reshape(MB_NUM_SEQ * NA_config, MaxSeqLen, EmbDimPolicy)
-                    init_h_policy = init_h_mb_policy.reshape(MB_NUM_SEQ * NA_config, self.memory_num_layers, self.memory_hidden_size).permute(1,0,2).contiguous()
-                    proc_feat_flat_policy, _ = self.policy_memory_module.forward_sequence(mem_in_policy, init_h_policy)
-                    processed_features_mb_seq_policy = proc_feat_flat_policy.reshape(MB_NUM_SEQ, MaxSeqLen, NA_config, self.memory_hidden_size)
-                new_lp_mb_seq, ent_mb_seq = self._recompute_log_probs_from_features(processed_features_mb_seq_policy, act_mb_seq)
-                
-                base_emb_mb_seq_value, _ = self.value_embedding_network.get_base_embedding(st_mb_seq_dict)
-                processed_features_mb_seq_value = base_emb_mb_seq_value
-                if self.enable_memory and self.value_memory_module:
-                    mem_in_value = base_emb_mb_seq_value.reshape(MB_NUM_SEQ*NA_config, MaxSeqLen, EmbDimValue)
-                    proc_feat_flat_value, _ = self.value_memory_module.forward_sequence(mem_in_value, None) 
-                    processed_features_mb_seq_value = proc_feat_flat_value.reshape(MB_NUM_SEQ, MaxSeqLen, NA_config, self.memory_hidden_size)
-                # NEW predictions are NORMALIZED if PopArt is on (due to adapted output layer)
-                new_vals_mb_seq_norm = self.shared_critic.values(processed_features_mb_seq_value)
+                # fresh forward for grads
+                emb_mb, _        = self.embedding_net.get_base_embedding({
+                    k: v[mb_idx] for k, v in padded_states_dict_seq.items()
+                })
+                feats_mb         = self._apply_memory_seq(
+                    emb_mb,
+                    initial_hidden_states_batch[mb_idx] if initial_hidden_states_batch is not None else None
+                )
+                new_lp_mb, ent_mb = self._recompute_log_probs_from_features(feats_mb, padded_actions_seq[mb_idx])
+                new_val_norm_mb   = self.shared_critic.values(feats_mb)
+                base_in_mb        = self.embedding_net.get_baseline_embeddings(feats_mb, padded_actions_seq[mb_idx])
+                new_base_norm_mb  = self.shared_critic.baselines(base_in_mb)
 
-                base_emb_mb_seq_baseline, _ = self.baseline_embedding_network.get_base_embedding(st_mb_seq_dict)
-                processed_features_mb_seq_baseline = base_emb_mb_seq_baseline
-                if self.enable_memory and self.baseline_memory_module:
-                    mem_in_baseline = base_emb_mb_seq_baseline.reshape(MB_NUM_SEQ*NA_config, MaxSeqLen, EmbDimBaseline)
-                    proc_feat_flat_baseline, _ = self.baseline_memory_module.forward_sequence(mem_in_baseline, None)
-                    processed_features_mb_seq_baseline = proc_feat_flat_baseline.reshape(MB_NUM_SEQ, MaxSeqLen, NA_config, self.memory_hidden_size)
-                baseline_input_mb_seq_for_loss = self.baseline_embedding_network.get_baseline_embeddings(processed_features_mb_seq_baseline, act_mb_seq)
-                # NEW predictions are NORMALIZED if PopArt is on
-                new_base_mb_seq_norm = self.shared_critic.baselines(baseline_input_mb_seq_for_loss)
-                
-                lp_detached = new_lp_mb_seq.detach()
-                valid_lp_mask = mask_mb.unsqueeze(-1).expand_as(lp_detached).bool()
-                if valid_lp_mask.sum() > 0: 
-                    batch_logs["Logprob Mean"].append(lp_detached[valid_lp_mask].mean().item())
-                    batch_logs["Logprob Min"].append(lp_detached[valid_lp_mask].min().item())
-                    batch_logs["Logprob Max"].append(lp_detached[valid_lp_mask].max().item())
+                old_lp_mb        = old_logp_seq[mb_idx]
+                old_val_mb_norm  = old_val_norm[mb_idx]
+                old_base_mb_norm = old_base_norm[mb_idx]
+                returns_mb       = returns_seq[mb_idx]
 
-                # Advantage Calculation: Uses RAW returns and DENORMALIZED baselines
-                new_base_mb_seq_denorm = new_base_mb_seq_norm # Default if PopArt disabled
-                if self.enable_popart and self.baseline_popart:
-                    new_base_mb_seq_denorm = self.baseline_popart.denormalize_outputs(new_base_mb_seq_norm)
-
-                adv_mb_seq_raw = ret_mb_seq_raw.unsqueeze(2).expand_as(new_base_mb_seq_denorm) - new_base_mb_seq_denorm 
-                adv_mb_squeezed_seq_raw = adv_mb_seq_raw.squeeze(-1)
-                
-                detached_adv_for_policy = adv_mb_squeezed_seq_raw.detach() # Start with raw advantages
-                valid_adv_mask = mask_mb.unsqueeze(-1).expand_as(adv_mb_squeezed_seq_raw).bool()
-                if valid_adv_mask.sum() > 0:
-                    valid_adv_elements_raw = adv_mb_squeezed_seq_raw[valid_adv_mask]
-                    batch_logs["Advantage Raw Mean"].append(valid_adv_elements_raw.mean().item())
-                    batch_logs["Advantage Raw Std"].append(valid_adv_elements_raw.std().item())
-                    if self.normalize_adv:
-                        normalized_valid_adv = (valid_adv_elements_raw - valid_adv_elements_raw.mean()) / (valid_adv_elements_raw.std() + 1e-8)
-                        temp_adv_norm = torch.zeros_like(adv_mb_squeezed_seq_raw)
-                        temp_adv_norm[valid_adv_mask] = normalized_valid_adv
-                        detached_adv_for_policy = temp_adv_norm # Use normalized advantages for policy loss
-                    batch_logs["Advantage Final Mean"].append(detached_adv_for_policy[valid_adv_mask].mean().item())
-                else: 
-                    batch_logs["Advantage Raw Mean"].append(0.0); batch_logs["Advantage Raw Std"].append(0.0); batch_logs["Advantage Final Mean"].append(0.0)
-                
-                mask_mb_policy_entropy = mask_mb.unsqueeze(-1).expand_as(new_lp_mb_seq)
-                num_valid_policy_entropy = mask_mb_policy_entropy.sum().clamp(min=1)
-                pol_loss_terms = self._ppo_clip_loss(new_lp_mb_seq, olp_mb_seq, detached_adv_for_policy, self.ppo_clip_range, reduction='none')
-                pol_loss = (pol_loss_terms * mask_mb_policy_entropy).sum() / num_valid_policy_entropy
-                
-                # Value Loss: Uses NORMALIZED targets and NORMALIZED predictions if PopArt enabled
-                targets_for_value_loss = ret_mb_seq_raw # Default to raw returns if PopArt disabled
-                old_values_for_loss = oval_mb_seq_norm # Use normalized old values if PopArt
-                new_values_for_loss = new_vals_mb_seq_norm # Use normalized new values if PopArt
-                if self.enable_popart and self.value_popart:
-                    targets_for_value_loss = self.value_popart.normalize_targets(ret_mb_seq_raw)
-                
-                mask_mb_value = mask_mb.unsqueeze(-1).expand_as(new_values_for_loss).bool() # Mask for value loss
-                num_valid_value = mask_mb_value.sum().clamp(min=1)
-                if self.clipped_value_loss:
-                    value_loss_terms = self._clipped_value_loss(old_values_for_loss, new_values_for_loss, targets_for_value_loss, self.value_clip_range, reduction='none')
+                # advantages
+                new_base_denorm = (
+                    self.baseline_popart.denormalize_outputs(new_base_norm_mb)
+                    if self.enable_popart else new_base_norm_mb
+                )
+                adv = (returns_mb.unsqueeze(2) - new_base_denorm).squeeze(-1)
+                valid_adv_mask = mask_mb.unsqueeze(-1).expand_as(adv).bool()
+                if self.normalize_adv:
+                    valid_adv = adv[valid_adv_mask]
+                    if valid_adv.numel():
+                        m, s = valid_adv.mean(), valid_adv.std() + 1e-8
+                        adv_norm = (valid_adv - m) / s
+                        tmp = torch.zeros_like(adv)
+                        tmp[valid_adv_mask] = adv_norm
+                        adv = tmp
+                        logs_acc["adv_mean"].append(m.item())
+                        logs_acc["adv_std"].append((s - 1e-8).item())
                 else:
-                    value_loss_terms = F.mse_loss(new_values_for_loss, targets_for_value_loss, reduction='none')
-                val_loss = (value_loss_terms * mask_mb_value).sum() / num_valid_value
+                    if valid_adv_mask.any():
+                        logs_acc["adv_mean"].append(float(adv[valid_adv_mask].mean()))
+                        logs_acc["adv_std"].append(float(adv[valid_adv_mask].std()))
 
-                # Baseline Loss: Uses NORMALIZED targets and NORMALIZED predictions if PopArt enabled
-                targets_for_baseline_loss_raw = ret_mb_seq_raw.unsqueeze(2).expand_as(obase_mb_seq_norm) # Raw targets
-                targets_for_baseline_loss = targets_for_baseline_loss_raw
-                old_baselines_for_loss = obase_mb_seq_norm # Use normalized old baselines if PopArt
-                new_baselines_for_loss = new_base_mb_seq_norm # Use normalized new baselines if PopArt
-                if self.enable_popart and self.baseline_popart:
-                    targets_for_baseline_loss = self.baseline_popart.normalize_targets(targets_for_baseline_loss_raw)
+                # policy loss
+                pol_loss = self._ppo_clip_loss(new_lp_mb, old_lp_mb, adv, self.ppo_clip_range)
 
-                mask_mb_baseline = mask_mb.unsqueeze(-1).unsqueeze(-1).expand_as(new_baselines_for_loss).bool() # Mask for baseline loss
-                num_valid_baseline = mask_mb_baseline.sum().clamp(min=1)
-                if self.clipped_value_loss: # Assuming same clipping logic for baseline
-                    baseline_loss_terms = self._clipped_value_loss(old_baselines_for_loss, new_baselines_for_loss, targets_for_baseline_loss, self.value_clip_range, reduction='none')
-                else:
-                    baseline_loss_terms = F.mse_loss(new_baselines_for_loss, targets_for_baseline_loss, reduction='none')
-                base_loss = (baseline_loss_terms * mask_mb_baseline).sum() / num_valid_baseline
-                
-                entropy_terms = -ent_mb_seq
-                ent_loss = (entropy_terms * mask_mb_policy_entropy).sum() / num_valid_policy_entropy
-                
-                total_loss_rl = (pol_loss + self.value_loss_coeff * val_loss + self.baseline_loss_coeff * base_loss + self.entropy_coeff * ent_loss)
-                total_loss = total_loss_rl
+                # value loss
+                tgt_val   = returns_mb if not self.enable_popart else self.value_popart.normalize_targets(returns_mb)
+                val_terms = self._clipped_value_loss(
+                    old_val_mb_norm, new_val_norm_mb, tgt_val, self.value_clip_range, reduction="none"
+                )
+                mask_val  = mask_mb.unsqueeze(-1)
+                val_loss  = (val_terms * mask_val).sum() / mask_val.sum().clamp(min=1)
 
-                rnd_predictor_loss = torch.tensor(0.0, device=self.device)
-                if self.enable_rnd and self.rnd_target_network and self.rnd_predictor_network:
-                    flat_features_for_rnd_update_mb = processed_features_mb_seq_value.reshape(-1, self.feature_dim_for_heads) # Use value pathway features
-                    expanded_mask_for_na = mask_mb.unsqueeze(-1).expand(-1, -1, NA_config)
-                    flat_mask_mb_rnd = expanded_mask_for_na.reshape(-1)
-                    valid_indices_rnd = flat_mask_mb_rnd.nonzero(as_tuple=False).squeeze(-1)
-                    if valid_indices_rnd.numel() > 0:
-                        num_rnd_update_samples = int(valid_indices_rnd.numel() * self.rnd_update_proportion)
-                        if num_rnd_update_samples > 0:
-                            perm_rnd = torch.randperm(valid_indices_rnd.numel(), device=self.device)[:num_rnd_update_samples]
-                            rnd_mb_update_indices = valid_indices_rnd[perm_rnd]
-                            features_for_rnd_predictor_update = flat_features_for_rnd_update_mb[rnd_mb_update_indices]
-                            if features_for_rnd_predictor_update.numel() > 0:
-                                with torch.no_grad():
-                                    target_rnd_feats_update = self.rnd_target_network(features_for_rnd_predictor_update)
-                                predicted_rnd_feats_update = self.rnd_predictor_network(features_for_rnd_predictor_update)
-                                rnd_predictor_loss = F.mse_loss(predicted_rnd_feats_update, target_rnd_feats_update)
-                                total_loss = total_loss + rnd_predictor_loss 
-                
-                self.policy_optimizer.zero_grad()
-                self.value_optimizer.zero_grad()
-                self.baseline_optimizer.zero_grad()
-                if self.rnd_predictor_optimizer: self.rnd_predictor_optimizer.zero_grad()
-                total_loss.backward()
-                all_trainable_params = self.parameters()
-                gn = clip_grad_norm_(all_trainable_params, self.max_grad_norm)
-                
-                self.policy_optimizer.step()
-                self.value_optimizer.step()
-                self.baseline_optimizer.step()
-                if self.enable_rnd and self.rnd_predictor_optimizer: self.rnd_predictor_optimizer.step()
-
-                batch_logs["Policy Loss"].append(pol_loss.item())
-                batch_logs["Value Loss"].append(val_loss.item())
-                batch_logs["Baseline Loss"].append(base_loss.item())
-                if valid_lp_mask.sum() > 0: batch_logs["Entropy"].append(ent_mb_seq[valid_lp_mask].mean().item())
-                else: batch_logs["Entropy"].append(0.0)
-                batch_logs["Grad Norm"].append(gn.item() if torch.is_tensor(gn) else gn)
-                
-                valid_returns_mask_mb = mask_mb.unsqueeze(-1).expand_as(ret_mb_seq_raw).bool() # Use raw returns for logging
-                if valid_returns_mask_mb.sum() > 0 : batch_logs["Returns Mean (Raw)"].append(ret_mb_seq_raw[valid_returns_mask_mb].mean().item())
-                else: batch_logs["Returns Mean (Raw)"].append(0.0)
-                
-                if self.enable_rnd:
-                    batch_logs["RND Predictor Loss"].append(rnd_predictor_loss.item())
-                    intrinsic_rewards_for_mb_log = all_intrinsic_rewards_seq[mb_indices]
-                    valid_intrinsic_mb_mask = mask_mb.unsqueeze(-1).expand_as(intrinsic_rewards_for_mb_log).bool()
-                    if valid_intrinsic_mb_mask.sum() > 0:
-                         batch_logs["Intrinsic Reward Mean (Normalized)"].append(intrinsic_rewards_for_mb_log[valid_intrinsic_mb_mask].mean().item())
-                    else:
-                         batch_logs["Intrinsic Reward Mean (Normalized)"].append(0.0)
-                
+                # baseline loss
+                tgt_base   = returns_mb.unsqueeze(2).expand_as(new_base_norm_mb)
                 if self.enable_popart:
-                    if self.value_popart:
-                        batch_logs["PopArt Value Mu"].append(self.value_popart.mu.item())
-                        batch_logs["PopArt Value Sigma"].append(self.value_popart.sigma.item())
-                    if self.baseline_popart:
-                        batch_logs["PopArt Baseline Mu"].append(self.baseline_popart.mu.item())
-                        batch_logs["PopArt Baseline Sigma"].append(self.baseline_popart.sigma.item())
+                    tgt_base = self.baseline_popart.normalize_targets(tgt_base)
+                base_terms = self._clipped_value_loss(
+                    old_base_mb_norm, new_base_norm_mb, tgt_base, self.value_clip_range, reduction="none"
+                )
+                mask_base = mask_mb.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, NA, 1)
+                base_loss  = (base_terms * mask_base).sum() / mask_base.sum().clamp(min=1)
 
+                # entropy loss
+                mask_ent = mask_mb.unsqueeze(-1)
+                ent_loss = (-ent_mb * mask_ent).sum() / mask_ent.sum().clamp(min=1)
 
-            current_lr = self._get_policy_lr()
-            if self.policy_lr_scheduler: self.policy_lr_scheduler.step()
-            if self.entropy_scheduler: self.entropy_coeff = self.entropy_scheduler.step()
-            if self.policy_clip_scheduler: self.ppo_clip_range = self.policy_clip_scheduler.step()
-            if self.value_clip_scheduler: self.value_clip_range = self.value_clip_scheduler.step()
-            if self.max_grad_norm_scheduler: self.max_grad_norm = self.max_grad_norm_scheduler.step()
+                # total loss
+                loss = (
+                    pol_loss
+                    + self.value_loss_coeff * val_loss
+                    + self.baseline_loss_coeff * base_loss
+                    + self.entropy_coeff * ent_loss
+                )
 
-        final_logs = {k: np.mean(v) if v else 0.0 for k, v in batch_logs.items()}
-        final_logs["Entropy coeff"] = self.entropy_coeff
-        final_logs["Learning Rate (Policy)"] = current_lr
-        final_logs["PPO Clip Range"] = self.ppo_clip_range
-        final_logs["Max Grad Norm"] = self.max_grad_norm
-        final_logs["Raw Reward Mean (Extrinsic)"] = rewards_raw_mean # Log raw extrinsic before any norm/combo
-        final_logs["Processed Reward Mean (for GAE)"] = rewards_norm_mean # Log rewards used for GAE (after step norm, before intrinsic)
-        if self.enable_rnd and "Intrinsic Reward Mean (Normalized)" not in final_logs:
-             final_logs["Intrinsic Reward Mean (Normalized)"] = 0.0
-        if self.enable_popart:
-            if "PopArt Value Mu" not in final_logs: final_logs["PopArt Value Mu"] = 0.0
-            if "PopArt Value Sigma" not in final_logs: final_logs["PopArt Value Sigma"] = 1.0
-            if "PopArt Baseline Mu" not in final_logs: final_logs["PopArt Baseline Mu"] = 0.0
-            if "PopArt Baseline Sigma" not in final_logs: final_logs["PopArt Baseline Sigma"] = 1.0
+                # RND update on subsample
+                rnd_loss = torch.tensor(0.0, device=self.device)
+                if self.enable_rnd and self.rnd_update_prop > 0.0:
+                    flat_f = feats_mb.reshape(-1, feats_mb.shape[-1])
+                    n      = flat_f.shape[0]
+                    k      = int(n * self.rnd_update_prop)
+                    if k > 0:
+                        sel     = torch.randperm(n, device=self.device)[:k]
+                        pred_rnd= self.rnd_predictor_network(flat_f[sel])
+                        with torch.no_grad():
+                            tgt_rnd = self.rnd_target_network(flat_f[sel])
+                        rnd_loss = F.mse_loss(pred_rnd, tgt_rnd)
+                        loss    += rnd_loss
 
+                # backward and optimization
+                for opt in (self.trunk_opt, self.policy_opt, self.value_opt, self.base_opt, self.rnd_opt):
+                    if opt: opt.zero_grad()
+                loss.backward()
+                gn = clip_grad_norm_(self.parameters(), self.max_grad_norm)
+                for opt in (self.trunk_opt, self.policy_opt, self.value_opt, self.base_opt, self.rnd_opt):
+                    if opt: opt.step()
 
-        return final_logs
+                # logs
+                logs_acc["policy"].append(pol_loss.item())
+                logs_acc["value"].append(val_loss.item())
+                logs_acc["baseline"].append(base_loss.item())
+                logs_acc["entropy"].append(ent_mb.mean().item())
+                logs_acc["grad"].append(gn.item() if torch.is_tensor(gn) else gn)
+                if self.enable_rnd:
+                    logs_acc["rnd"].append(rnd_loss.item())
 
-    def _compute_gae_with_padding(self, rewards_seq, values_seq_denorm, next_values_seq_denorm,
-                                  dones_seq, truncs_seq, attention_mask):
-        # rewards_seq: (B, MaxSeqLen, 1) - these are combined (extrinsic + intrinsic_coeff * intrinsic_norm)
-        # values_seq_denorm, next_values_seq_denorm: (B, MaxSeqLen, 1) - DENORMALIZED values
-        # attention_mask: (B, MaxSeqLen)
-        B, MaxSeqLen, _ = rewards_seq.shape
-        returns_seq_raw = torch.zeros_like(rewards_seq) # Will store raw-scale GAE targets
-        gae_raw = torch.zeros(B, 1, device=rewards_seq.device) 
-        dones_float_seq = dones_seq.float()
+            # schedulers
+            if self.policy_lr_sched: self.policy_lr_sched.step()
+            if self.entropy_sched:   self.entropy_coeff    = self.entropy_sched.step()
+            if self.clip_sched:      self.ppo_clip_range   = self.clip_sched.step()
+            if self.val_clip_sched:  self.value_clip_range = self.val_clip_sched.step()
+            if self.grad_sched:      self.max_grad_norm    = self.grad_sched.step()
 
-        for t in reversed(range(MaxSeqLen)):
-            current_step_is_valid_mask_t = attention_mask[:, t:t+1] 
-            next_step_is_valid_in_sequence_mask_t_plus_1 = attention_mask[:, t+1:t+2] if t < MaxSeqLen - 1 else torch.zeros_like(current_step_is_valid_mask_t)
-            
-            can_bootstrap_from_next_value = (1.0 - dones_float_seq[:, t]) * next_step_is_valid_in_sequence_mask_t_plus_1
-            v_next_bootstrapped_denorm = next_values_seq_denorm[:, t] * can_bootstrap_from_next_value
+        # aggregate logs
+        logs = {k: (np.mean(v) if v else 0.0) for k, v in logs_acc.items()}
+        logs.update({
+            "raw_reward_mean":       raw_ext_mean,
+            "processed_reward_mean": proc_rew_mean,
+            "return_mean":           ret_mean,
+            "return_std":            ret_std,
+            "entropy_coeff":         self.entropy_coeff,
+            "ppo_clip":              self.ppo_clip_range,
+            "lr_policy":             self._get_policy_lr(),
+        })
+        return logs
 
-            delta_raw = (rewards_seq[:, t] + self.gamma * v_next_bootstrapped_denorm - values_seq_denorm[:, t]) * current_step_is_valid_mask_t
-            
-            gae_prop_mask = can_bootstrap_from_next_value # Same mask for GAE propagation
-            gae_raw = delta_raw + self.gamma * self.lmbda * gae_prop_mask * gae_raw
-            
-            current_returns_t_raw = gae_raw + values_seq_denorm[:, t] # Raw-scale returns
+    # ------------------------------------------------------------------
+    # GAE with padding
+    # ------------------------------------------------------------------
+    def _compute_gae_with_padding(self, r, v, v_next, d, tr, mask_bt):
+        B, T, _ = r.shape
+        out = torch.zeros_like(r)
+        gae = torch.zeros(B, 1, device=self.device)
+        term = (d + tr).clamp(max=1.0)
+        for t in reversed(range(T)):
+            valid     = mask_bt[:, t:t+1]
+            nxt_valid = mask_bt[:, t+1:t+2] if t < T-1 else torch.zeros_like(valid)
+            non_term  = (1.0 - term[:, t]) * nxt_valid
+            delta     = r[:, t] + self.gamma * v_next[:, t] * non_term - v[:, t]
+            gae       = delta + self.gamma * self.lmbda * non_term * gae
+            out[:, t] = gae + v[:, t]
+            gae       = gae * valid
+        return out
 
-            returns_seq_raw[:, t] = torch.where(current_step_is_valid_mask_t.bool(), current_returns_t_raw, torch.zeros_like(current_returns_t_raw))
-            gae_raw = gae_raw * current_step_is_valid_mask_t
-        return returns_seq_raw # These are the raw-scale GAE targets
-    
-    def _ppo_clip_loss(self, new_lp, old_lp, advantages, clip_range, reduction='mean'):
-        log_ratio = new_lp - old_lp
-        ratio = torch.exp(log_ratio.clamp(-10,10))
-        surr1 = ratio * advantages
-        surr2 = torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range) * advantages
-        loss_terms = -torch.min(surr1, surr2)
-        if reduction == 'mean': return loss_terms.mean()
-        elif reduction == 'none': return loss_terms
-        else: raise ValueError(f"MAPOCAAgent Error: Unsupported reduction type in _ppo_clip_loss: {reduction}")
+    # ------------------------------------------------------------------
+    # PPO clipping helpers
+    # ------------------------------------------------------------------
+    def _ppo_clip_loss(self, new_lp, old_lp, adv, clip_range):
+        ratio = torch.exp((new_lp - old_lp).clamp(-10, 10))
+        s1    = ratio * adv
+        s2    = torch.clamp(ratio, 1 - clip_range, 1 + clip_range) * adv
+        return -torch.min(s1, s2).mean()
 
-    def _clipped_value_loss(self, old_values_norm, new_values_norm, targets_norm, clip_range, reduction='mean'):
-        # Operates on NORMALIZED values and targets if PopArt is enabled
-        values_clipped_norm = old_values_norm + torch.clamp(new_values_norm - old_values_norm, -clip_range, clip_range)
-        mse_unclipped = F.mse_loss(new_values_norm, targets_norm, reduction='none')
-        mse_clipped = F.mse_loss(values_clipped_norm, targets_norm, reduction='none')
-        loss_terms = torch.max(mse_unclipped, mse_clipped)
-        if reduction == 'mean': return loss_terms.mean()
-        elif reduction == 'none': return loss_terms
-        else: raise ValueError(f"MAPOCAAgent Error: Unsupported reduction type in _clipped_value_loss: {reduction}")
+    def _clipped_value_loss(self, old, new, target, clip_range, reduction="mean"):
+        clipped = old + (new - old).clamp(-clip_range, clip_range)
+        loss    = torch.max((new - target).pow(2), (clipped - target).pow(2))
+        if reduction == "none":
+            return loss
+        return loss.mean()
 
-    def _recompute_log_probs_from_features(self, processed_features: torch.Tensor, actions: torch.Tensor):
-        input_shape = processed_features.shape
-        FeatureDim = input_shape[-1]
-        NA = input_shape[-2]
-        leading_dims = input_shape[:-2]
-        flat_features = processed_features.reshape(-1, FeatureDim)
-        act_flat = actions.reshape(-1, actions.shape[-1]) 
-        lp_flat, ent_flat = self.policy_net.recompute_log_probs(flat_features, act_flat)
-        log_probs = lp_flat.reshape(*leading_dims, NA)
-        entropies = ent_flat.reshape(*leading_dims, NA)
-        return log_probs, entropies
+    # ------------------------------------------------------------------
+    # recompute log-probs
+    # ------------------------------------------------------------------
+    def _recompute_log_probs_from_features(self, feats, actions):
+        flat_f = feats.reshape(-1, feats.shape[-1])
+        flat_a = actions.reshape(-1, actions.shape[-1])
+        lp, ent = self.policy_net.recompute_log_probs(flat_f, flat_a)
+        leading = feats.shape[:-1]
+        return lp.reshape(*leading), ent.reshape(*leading)
 
-    def _slice_state_dict_batch(self, states_dict_seq: dict, mb_indices: np.ndarray):
-        new_dict = {}
-        for k, v_seq in states_dict_seq.items():
-            if v_seq is not None: new_dict[k] = v_seq[mb_indices].contiguous()
-            else: new_dict[k] = None
-        return new_dict
+    # ------------------------------------------------------------------
+    # gather parameters for grad clipping
+    # ------------------------------------------------------------------
+    def parameters(self):
+        params = (
+            list(self.embedding_net.parameters())
+            + list(self.policy_net.parameters())
+            + list(self.shared_critic.parameters())
+        )
+        if self.memory_module:
+            params += list(self.memory_module.parameters())
+        if self.enable_rnd:
+            params += list(self.rnd_predictor_network.parameters())
+        return params
 
-    def _get_policy_lr(self) -> float:
-        lr_sum, count = 0.0, 0
-        for pg in self.policy_optimizer.param_groups:
-            lr_sum += pg.get('lr', 0.0) 
-            count += 1
-        return lr_sum / max(count, 1)
-
-    def _accumulate_per_layer_grad_norms(self, grad_norms_sum_per_layer: dict):
-        if not hasattr(self, '_param_names_with_grads'):
-            self._param_names_with_grads = {name for name, param in self.named_parameters() if param.requires_grad}
-        for name, param in self.named_parameters():
-            if name in self._param_names_with_grads and param.grad is not None:
-                grad_norm = param.grad.data.norm(2).item()
-                grad_norms_sum_per_layer[name] = grad_norms_sum_per_layer.get(name, 0.0) + grad_norm
+    # ------------------------------------------------------------------
+    # current policy learning rate
+    # ------------------------------------------------------------------
+    def _get_policy_lr(self):
+        return float(np.mean([pg["lr"] for pg in self.policy_opt.param_groups]))

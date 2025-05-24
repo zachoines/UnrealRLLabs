@@ -13,15 +13,15 @@
       "ObjectMass": 0.1,
       "GridSize": 25,
       "MaxSteps": 1024,
-      "MaxAgents": 12,
+      "MaxAgents": 24,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": true,
-        "bUseXYDistanceImprovement": true,
+        "bUseXYDistanceImprovement": false,
         "bUseZAccelerationPenalty": false,
         "bUsePotentialShaping": false,
-        "VelAlign_Scale": 0.10,
+        "VelAlign_Scale": 1.0,
         "VelAlign_Min": 0.001,
-        "VelAlign_Max": 10.0,
+        "VelAlign_Max": 1.0,
         "DistImprove_Scale": 10.0,
         "DistImprove_Min": 0.0001,
         "DistImprove_Max": 1.0,
@@ -30,15 +30,15 @@
         "ZAccel_Max": 100.0,
         "PotentialShaping_Gamma": 0.99,
         "PotentialShaping_Scale": 0.0,
-        "REACH_GOAL_REWARD": 0.0,
-        "FALL_OFF_PENALTY": 0.0,
+        "REACH_GOAL_REWARD": 1.0,
+        "FALL_OFF_PENALTY": -1.0,
         "STEP_PENALTY": 0.0
       },
       "GoalManager": {
         "DefaultRadius": 1.0
       },
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 12,
+        "NumAgents": 24,
         "GridSize": 25,
         "MinHeight": -4.0,
         "MaxHeight": 4.0,
@@ -68,7 +68,7 @@
         "DeltaSigmaScale": 1.0
       },
       "StateManager": {
-        "MaxGridObjects": 3,
+        "MaxGridObjects": 1,
         "MarginXY": 1.5,
         "MinZ": -4.0,
         "MaxZ": 20.0,
@@ -92,16 +92,6 @@
             1.0,
             0.0,
             0.0
-          ],
-          [
-            0.0,
-            1.0,
-            0.0
-          ],
-          [
-            0.0,
-            0.0,
-            1.0
           ]
         ],
         "GridObjectColors": [
@@ -109,16 +99,6 @@
             1.0,
             0.0,
             0.0
-          ],
-          [
-            0.0,
-            1.0,
-            0.0
-          ],
-          [
-            0.0,
-            0.0,
-            1.0
           ]
         ]
       }
@@ -130,8 +110,8 @@
         },
         "agent": {
           "obs_size": 9,
-          "min": 12,
-          "max": 12
+          "min": 24,
+          "max": 24
         }
       },
       "action": {
@@ -196,23 +176,37 @@
       "rnd_params": {
         "output_size": 128,
         "hidden_size": 128,
-        "intrinsic_reward_coeff": 0.0,
-        "rnd_update_proportion": 0.0
+        "intrinsic_reward_coeff": 0.001,
+        "rnd_update_proportion": 0.25
       },
       "enable_popart": true,
       "popart_beta": 0.999,
       "popart_epsilon": 1e-5,
       "no_grad_forward_batch_size": 16,
-      "learning_rate": 0.00002,
-      "lr_policy": 0.00002,
-      "lr_value": 0.00001,
-      "lr_baseline": 0.00001,
+      "learning_rate": 0.0001,
+      "lr_policy":     0.0002,
+      "lr_value":      0.00005,
+      "lr_baseline":   0.00001,
       "lr_rnd_predictor": 0.00002,
+      "optimizer_betas": {
+        "trunk":    [0.9, 0.98],
+        "policy":   [0.9, 0.98],
+        "value":    [0.9, 0.95],
+        "baseline": [0.9, 0.95],
+        "rnd":      [0.9, 0.98]
+      },
+      "weight_decay": {
+        "trunk":    1e-5,
+        "policy":   1e-5,
+        "value":    1e-4,
+        "baseline": 1e-4,
+        "rnd":      0.0
+      },
       "gamma": 0.99,
       "lambda": 0.95,
       "value_loss_coeff": 0.5,
       "baseline_loss_coeff": 0.5,
-      "normalize_advantages": false,
+      "normalize_advantages": true,
       "clipped_value_loss": true,
       "max_grad_norm": 0.5,
       "ppo_clip_range": 0.2,
@@ -225,21 +219,21 @@
       "schedulers": {
         "lr": {
           "start_factor": 1.0,
-          "end_factor": 0.01,
+          "end_factor": 0.001,
           "total_iters": 20000
         },
         "entropy_coeff": {
-          "start_value": 0.01,
-          "end_value": 0.001,
+          "start_value": 0.001,
+          "end_value": 0.00001,
           "total_iters": 20000
         },
         "value_clip": {
-          "start_value": 0.2,
-          "end_value": 0.1,
+          "start_value": 0.1,
+          "end_value": 0.01,
           "total_iters": 20000
         },
         "policy_clip": {
-          "start_value": 0.2,
+          "start_value": 0.3,
           "end_value": 0.1,
           "total_iters": 20000
         },
@@ -253,7 +247,7 @@
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 12,
+            "num_agents": 24,
             "in_channels": 2,
             "h": 25,
             "w": 25,
@@ -274,8 +268,8 @@
             "block_scales": [
               8
             ],
-            "transformer_layers": 1,
-            "dropout_rate": 0.1,
+            "transformer_layers": 2,
+            "dropout_rate": 0.0,
             "use_agent_id": true,
             "ff_hidden_factor": 2,
             "id_num_freqs": 16,
@@ -286,9 +280,9 @@
             "state_dim": 128,
             "hidden_size": 128,
             "output_size": 128,
-            "dropout_rate": 0.1,
+            "dropout_rate": 0.0,
             "activation": true,
-            "layer_norm": true,
+            "layer_norm": false,
             "linear_init_scale": 0.1
           },
           "obs_actions_encoder": {
@@ -296,9 +290,9 @@
             "action_dim": 6,
             "hidden_size": 128,
             "output_size": 128,
-            "dropout_rate": 0.1,
+            "dropout_rate": 0.0,
             "activation": true,
-            "layer_norm": true,
+            "layer_norm": false,
             "linear_init_scale": 0.1
           }
         },
@@ -308,33 +302,33 @@
           "param_init_bias": 0.0,
           "min_concentration": 1.001,
           "linear_init_scale": 0.1,
-          "dropout_rate": 0.1
+          "dropout_rate": 0.0
         },
         "critic_network": {
           "value_head": {
             "in_features": 128,
             "hidden_size": 128,
-            "dropout_rate": 0.1,
+            "dropout_rate": 0.0,
             "linear_init_scale": 0.1,
             "output_layer_init_gain": 0.1
           },
           "baseline_head": {
             "in_features": 128,
             "hidden_size": 128,
-            "dropout_rate": 0.1,
+            "dropout_rate": 0.0,
             "linear_init_scale": 0.1, 
             "output_layer_init_gain": 0.1
           },
           "baseline_attention": {
             "embed_dim": 128,
             "num_heads": 8,
-            "dropout": 0.1,
+            "dropout": 0.0,
             "self_attention": true
           },
           "value_attention": {
             "embed_dim": 128,
             "num_heads": 8,
-            "dropout": 0.1,
+            "dropout": 0.0,
             "self_attention": true
           }
         }
@@ -344,10 +338,10 @@
   "train": {
     "sequence_length": 32,
     "pad_trajectories": true,
-    "batch_size": 512,
-    "buffer_size": 512,
-    "num_environments": 16, 
-    "epochs": 4,
+    "batch_size": 256,
+    "buffer_size": 256,
+    "num_environments": 4, 
+    "epochs": 3,
     "mini_batch_size": 16,
     "ActionRepeat": 1,
     "saveFrequency": 100
