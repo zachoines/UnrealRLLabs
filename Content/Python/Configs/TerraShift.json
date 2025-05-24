@@ -13,7 +13,7 @@
       "ObjectMass": 0.1,
       "GridSize": 25,
       "MaxSteps": 1024,
-      "MaxAgents": 24,
+      "MaxAgents": 12,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": true,
         "bUseXYDistanceImprovement": false,
@@ -38,7 +38,7 @@
         "DefaultRadius": 1.0
       },
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 24,
+        "NumAgents": 12,
         "GridSize": 25,
         "MinHeight": -4.0,
         "MaxHeight": 4.0,
@@ -110,8 +110,8 @@
         },
         "agent": {
           "obs_size": 9,
-          "min": 24,
-          "max": 24
+          "min": 12,
+          "max": 12
         }
       },
       "action": {
@@ -202,8 +202,8 @@
         "baseline": 1e-4,
         "rnd":      0.0
       },
-      "gamma": 0.99,
-      "lambda": 0.95,
+      "gamma": 0.95,
+      "lambda": 0.9,
       "value_loss_coeff": 0.5,
       "baseline_loss_coeff": 0.5,
       "normalize_advantages": true,
@@ -233,7 +233,7 @@
           "total_iters": 20000
         },
         "policy_clip": {
-          "start_value": 0.3,
+          "start_value": 0.2,
           "end_value": 0.1,
           "total_iters": 20000
         },
@@ -247,7 +247,7 @@
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 24,
+            "num_agents": 12,
             "in_channels": 2,
             "h": 25,
             "w": 25,
@@ -340,7 +340,7 @@
     "pad_trajectories": true,
     "batch_size": 256,
     "buffer_size": 256,
-    "num_environments": 4, 
+    "num_environments": 8, 
     "epochs": 3,
     "mini_batch_size": 16,
     "ActionRepeat": 1,

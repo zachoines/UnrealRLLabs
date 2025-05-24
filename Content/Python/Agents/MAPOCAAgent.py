@@ -498,6 +498,16 @@ class MAPOCAAgent(Agent):
             "ppo_clip":              self.ppo_clip_range,
             "lr_policy":             self._get_policy_lr(),
         })
+        # --- Add PopArt running stats ---
+        if self.enable_popart:
+            logs.update({
+                # value head running moments
+                "popart_value_mu": float(self.value_popart.mu),
+                "popart_value_sigma": float(self.value_popart.sigma),
+                # baseline head running moments
+                "popart_baseline_mu": float(self.baseline_popart.mu),
+                "popart_baseline_sigma": float(self.baseline_popart.sigma),
+            })
         return logs
 
     # ------------------------------------------------------------------
