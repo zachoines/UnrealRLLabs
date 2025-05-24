@@ -167,15 +167,36 @@ class MAPOCAAgent(Agent):
             lr=lr_rnd * 2.0, betas=rnd_betas, eps=1e-7, weight_decay=rnd_wd
         ) if self.enable_rnd else None
 
-        # ---------- schedulers ----------
+                # ---------- schedulers ----------
         sched_cfg = a_cfg.get("schedulers", {})
-        self.policy_lr_sched = LinearLR(self.policy_opt, **sched_cfg.get("lr", {})) if "lr" in sched_cfg else None
-        self.entropy_sched   = LinearValueScheduler(**sched_cfg.get("entropy_coeff", {})) if "entropy_coeff" in sched_cfg else None
+
+        # trunk LR schedule
+        self.trunk_lr_sched  = LinearLR(self.trunk_opt,  **sched_cfg.get("lr_trunk",   {})) \
+                                  if "lr_trunk"   in sched_cfg else None
+        # policy LR schedule (was 'lr')
+        self.policy_lr_sched = LinearLR(self.policy_opt, **sched_cfg.get("lr",         {})) \
+                                  if "lr"          in sched_cfg else None
+        # value-head LR schedule
+        self.value_lr_sched  = LinearLR(self.value_opt,  **sched_cfg.get("lr_value",   {})) \
+                                  if "lr_value"    in sched_cfg else None
+        # baseline-head LR schedule
+        self.base_lr_sched   = LinearLR(self.base_opt,   **sched_cfg.get("lr_baseline",{})) \
+                                  if "lr_baseline" in sched_cfg else None
+        # RND-predictor LR schedule
+        self.rnd_lr_sched    = LinearLR(self.rnd_opt,    **sched_cfg.get("lr_rnd_predictor",{})) \
+                                  if (self.enable_rnd and "lr_rnd_predictor" in sched_cfg) else None
+
+        # entropy, clipping and grad-norm schedules (unchanged)
+        self.entropy_sched   = LinearValueScheduler(**sched_cfg.get("entropy_coeff", {})) \
+                                  if "entropy_coeff" in sched_cfg else None
         if self.entropy_sched:
             self.entropy_coeff = self.entropy_sched.start_value
-        self.clip_sched      = LinearValueScheduler(**sched_cfg.get("policy_clip", {})) if "policy_clip" in sched_cfg else None
-        self.val_clip_sched  = LinearValueScheduler(**sched_cfg.get("value_clip", {})) if "value_clip" in sched_cfg else None
-        self.grad_sched      = LinearValueScheduler(**sched_cfg.get("max_grad_norm", {})) if "max_grad_norm" in sched_cfg else None
+        self.clip_sched      = LinearValueScheduler(**sched_cfg.get("policy_clip", {})) \
+                                  if "policy_clip" in sched_cfg else None
+        self.val_clip_sched  = LinearValueScheduler(**sched_cfg.get("value_clip",  {})) \
+                                  if "value_clip"  in sched_cfg else None
+        self.grad_sched      = LinearValueScheduler(**sched_cfg.get("max_grad_norm",{})) \
+                                  if "max_grad_norm"in sched_cfg else None
 
     # ------------------------------------------------------------------
     # action-space helper
@@ -479,25 +500,40 @@ class MAPOCAAgent(Agent):
                 logs_acc["grad"].append(gn.item() if torch.is_tensor(gn) else gn)
                 if self.enable_rnd:
                     logs_acc["rnd"].append(rnd_loss.item())
+                
+            # step each LR scheduler once per epoch
+            if self.trunk_lr_sched:    self.trunk_lr_sched.step()
+            if self.policy_lr_sched:   self.policy_lr_sched.step()
+            if self.value_lr_sched:    self.value_lr_sched.step()
+            if self.base_lr_sched:     self.base_lr_sched.step()
+            if self.rnd_lr_sched:      self.rnd_lr_sched.step()
 
-            # schedulers
-            if self.policy_lr_sched: self.policy_lr_sched.step()
-            if self.entropy_sched:   self.entropy_coeff    = self.entropy_sched.step()
-            if self.clip_sched:      self.ppo_clip_range   = self.clip_sched.step()
-            if self.val_clip_sched:  self.value_clip_range = self.val_clip_sched.step()
-            if self.grad_sched:      self.max_grad_norm    = self.grad_sched.step()
+            # step the other schedules you already had
+            if self.entropy_sched:     self.entropy_coeff    = self.entropy_sched.step()
+            if self.clip_sched:        self.ppo_clip_range   = self.clip_sched.step()
+            if self.val_clip_sched:    self.value_clip_range = self.val_clip_sched.step()
+            if self.grad_sched:        self.max_grad_norm    = self.grad_sched.step()
 
+
+            
         # aggregate logs
         logs = {k: (np.mean(v) if v else 0.0) for k, v in logs_acc.items()}
         logs.update({
-            "raw_reward_mean":       raw_ext_mean,
-            "processed_reward_mean": proc_rew_mean,
-            "return_mean":           ret_mean,
-            "return_std":            ret_std,
-            "entropy_coeff":         self.entropy_coeff,
-            "ppo_clip":              self.ppo_clip_range,
-            "lr_policy":             self._get_policy_lr(),
+            "raw_reward_mean":        raw_ext_mean,
+            "processed_reward_mean":  proc_rew_mean,
+            "return_mean":            ret_mean,
+            "return_std":             ret_std,
+            "entropy_coeff":          self.entropy_coeff,
+            "ppo_clip":               self.ppo_clip_range,
+            "value_clip":             self.value_clip_range,
+            "max_grad_norm":          self.max_grad_norm,
+            "lr_policy":    self.policy_lr_sched.get_last_lr()[0] if self.policy_lr_sched else self._get_policy_lr(),
+            "lr_trunk":     self.trunk_lr_sched.get_last_lr()[0]  if self.trunk_lr_sched  else self.trunk_opt.param_groups[0]["lr"],
+            "lr_value":     self.value_lr_sched.get_last_lr()[0]  if self.value_lr_sched  else self.value_opt.param_groups[0]["lr"],
+            "lr_baseline":  self.base_lr_sched.get_last_lr()[0]   if self.base_lr_sched   else self.base_opt.param_groups[0]["lr"],
+            "lr_rnd":       self.rnd_lr_sched.get_last_lr()[0]    if (self.enable_rnd and self.rnd_lr_sched) else (self.rnd_opt.param_groups[0]["lr"] if self.enable_rnd else 0.0),
         })
+        
         # --- Add PopArt running stats ---
         if self.enable_popart:
             logs.update({
