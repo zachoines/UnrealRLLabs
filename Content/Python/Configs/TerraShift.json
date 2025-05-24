@@ -77,24 +77,18 @@
     },
     "shape": {
       "state": {
-        "central": {
-          "obs_size": 1250
-        },
-        "agent": {
-          "obs_size": 9,
-          "min": 12,
-          "max": 12
-        }
+        "central": { "obs_size": 1250 },
+        "agent": { "obs_size": 9, "min": 12, "max": 12 }
       },
       "action": {
         "agent": {
           "continuous": [
-            {"min": -1, "max": 1},
-            {"min": -1, "max": 1},
-            {"min": -1, "max": 1},
-            {"min": -1, "max": 1},
-            {"min": -1, "max": 1},
-            {"min": -1, "max": 1}
+            { "min": -1, "max": 1 },
+            { "min": -1, "max": 1 },
+            { "min": -1, "max": 1 },
+            { "min": -1, "max": 1 },
+            { "min": -1, "max": 1 },
+            { "min": -1, "max": 1 }
           ]
         }
       }
@@ -108,10 +102,7 @@
       "height_channel_index": 0,
       "clip_value": 1.0
     },
-    "video": {
-      "fps": 18,
-      "output_path": "height_auto.mp4"
-    },
+    "video": { "fps": 18, "output_path": "height_auto.mp4" },
     "auto_save_every": 128
   },
   "agent": {
@@ -127,7 +118,7 @@
         "dropout": 0.0
       },
       "enable_rnd": false,
-      "rnd_params": {
+      "rnd_params_disabled": {
         "output_size": 128,
         "hidden_size": 128,
         "intrinsic_reward_coeff": 0.001,
@@ -143,18 +134,18 @@
       "lr_baseline": 0.00001,
       "lr_rnd_predictor": 0.00002,
       "optimizer_betas": {
-        "trunk": [0.9, 0.98],
-        "policy": [0.9, 0.98],
-        "value": [0.9, 0.95],
+        "trunk":    [0.9, 0.98],
+        "policy":   [0.9, 0.98],
+        "value":    [0.9, 0.95],
         "baseline": [0.9, 0.95],
-        "rnd": [0.9, 0.98]
+        "rnd":      [0.9, 0.98]
       },
       "weight_decay": {
-        "trunk": 1e-5,
-        "policy": 1e-5,
-        "value": 1e-4,
+        "trunk":    1e-5,
+        "policy":   1e-5,
+        "value":    1e-4,
         "baseline": 1e-4,
-        "rnd": 0.0
+        "rnd":      0.0
       },
       "gamma": 0.95,
       "lambda": 0.9,
@@ -173,48 +164,48 @@
       "schedulers": {
         "lr_trunk": {
           "start_factor": 1.0,
-          "end_factor": 0.001,
-          "total_iters": 20000
+          "end_factor":   0.001,
+          "total_iters":  20000
         },
         "lr": {
           "start_factor": 1.0,
-          "end_factor": 0.001,
-          "total_iters": 20000
+          "end_factor":   0.001,
+          "total_iters":  20000
         },
         "lr_value": {
           "start_factor": 1.0,
-          "end_factor": 0.1,
-          "total_iters": 20000
+          "end_factor":   0.1,
+          "total_iters":  20000
         },
         "lr_baseline": {
           "start_factor": 1.0,
-          "end_factor": 0.1,
-          "total_iters": 20000
+          "end_factor":   0.1,
+          "total_iters":  20000
         },
         "lr_rnd_predictor": {
           "start_factor": 1.0,
-          "end_factor": 0.01,
-          "total_iters": 20000
+          "end_factor":   0.01,
+          "total_iters":  20000
         },
         "entropy_coeff": {
           "start_value": 0.001,
-          "end_value": 0.0001,
-          "total_iters": 20000
+          "end_value":   0.0001,
+          "total_iters":  20000
         },
         "policy_clip": {
           "start_value": 0.2,
-          "end_value": 0.1,
-          "total_iters": 20000
+          "end_value":   0.1,
+          "total_iters":  20000
         },
         "value_clip": {
           "start_value": 0.1,
-          "end_value": 0.01,
-          "total_iters": 20000
+          "end_value":   0.01,
+          "total_iters":  20000
         },
         "max_grad_norm": {
           "start_value": 10.0,
-          "end_value": 0.5,
-          "total_iters": 20000
+          "end_value":   0.5,
+          "total_iters":  20000
         }
       },
       "networks": {
@@ -275,25 +266,26 @@
             "dropout_rate": 0.0,
             "linear_init_scale": 0.1,
             "output_layer_init_gain": 0.1
-        },
-        "baseline_head": {
+          },
+          "baseline_head": {
             "in_features": 128,
             "hidden_size": 128,
             "dropout_rate": 0.0,
             "linear_init_scale": 0.1,
             "output_layer_init_gain": 0.1
-        },
-        "baseline_attention": {
+          },
+          "baseline_attention": {
             "embed_dim": 128,
             "num_heads": 8,
             "dropout": 0.0,
             "self_attention": true
-        },
-        "value_attention": {
+          },
+          "value_attention": {
             "embed_dim": 128,
             "num_heads": 8,
             "dropout": 0.0,
             "self_attention": true
+          }
         }
       }
     }
