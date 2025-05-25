@@ -1085,8 +1085,8 @@ class CrossAttentionFeatureExtractor(nn.Module):
 
         # A) Agent MLP Encoder: Encodes individual agent observations
         self.agent_encoder = nn.Sequential(
-            nn.Linear(agent_obs_size, embed_dim), nn.GELU(),
-            nn.Linear(embed_dim, embed_dim), nn.GELU()
+            nn.Linear(agent_obs_size, embed_dim), nn.LayerNorm(embed_dim), nn.GELU(),
+            nn.Linear(embed_dim, embed_dim), nn.LayerNorm(embed_dim), nn.GELU()
         )
 
         # B) Optional Agent ID Embedding: Adds unique ID info if enabled
@@ -1142,11 +1142,10 @@ class CrossAttentionFeatureExtractor(nn.Module):
             self.agent_self_ffn.append(FeedForwardBlock(embed_dim, hidden_dim=ff_hidden_dim, dropout=dropout_rate))
 
         # G) Final Layers: Apply LayerNorm and an MLP after the transformer stack
-        self.final_agent_ln = nn.LayerNorm(embed_dim)
         self.post_cross_mlp = nn.Sequential(
-            nn.LayerNorm(embed_dim), # Extra LN before final MLP
+            nn.LayerNorm(embed_dim),
             nn.Linear(embed_dim, embed_dim), nn.GELU(),
-            nn.Linear(embed_dim, embed_dim) # Final projection
+            nn.Linear(embed_dim, embed_dim)
         )
 
         # H) Initialization: Apply specific initializations to CNN and Linear layers
@@ -1249,10 +1248,9 @@ class CrossAttentionFeatureExtractor(nn.Module):
             agent_embed = self.agent_self_ffn[layer_idx](agent_embed)
 
         # --- 7. Final Processing ---
-        agent_embed = self.final_agent_ln(agent_embed) # Final LayerNorm
-        residual = agent_embed
-        agent_embed = self.post_cross_mlp(agent_embed) # Final MLP
-        agent_embed = agent_embed + residual # Final residual connection
+        residual = agent_embed # If you want a residual around the post_cross_mlp
+        agent_embed = self.post_cross_mlp(agent_embed)
+        agent_embed = agent_embed + residual
 
         # --- Reshape Output ---
         # Reshape agent embeddings back to original leading dimensions
@@ -1275,9 +1273,9 @@ class RNDTargetNetwork(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_size, hidden_size),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(hidden_size, output_size)
         )
         # Initialize weights (e.g., LeakyReLU-appropriate Kaiming normal)
@@ -1298,6 +1296,7 @@ class RNDTargetNetwork(nn.Module):
         """
         return self.net(x)
 
+
 class RNDPredictorNetwork(nn.Module):
     """
     Random Network Distillation (RND) Predictor Network.
@@ -1307,9 +1306,9 @@ class RNDPredictorNetwork(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_size, hidden_size),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(hidden_size, output_size)
         )
         # Initialize weights (e.g., LeakyReLU-appropriate Kaiming normal)
@@ -1358,7 +1357,7 @@ class ImplicitQuantileNetwork(nn.Module):
         # MLP to process the merged state and quantile embeddings
         self.merge_mlp = nn.Sequential(
             nn.Linear(self.feature_dim, self.hidden_size),
-            nn.ReLU(), # Or GELU, consistent with your other networks
+            nn.GELU(), # Or GELU, consistent with your other networks
             nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity()
         )
 
@@ -1399,7 +1398,7 @@ class ImplicitQuantileNetwork(nn.Module):
         cosine_features = torch.cos(taus_unsqueezed * self.i_pi_values.view(1, -1).to(taus_unsqueezed.device))
         
         # Project cosine features to feature_dim
-        quantile_embeddings = F.relu(self.cosine_embedding_layer(cosine_features)) # (..., feature_dim)
+        quantile_embeddings = F.gelu(self.cosine_embedding_layer(cosine_features)) # (..., feature_dim)
         return quantile_embeddings
 
     def forward(self, state_features: torch.Tensor, taus: torch.Tensor) -> torch.Tensor:
@@ -1484,10 +1483,10 @@ class DistillationNetwork(nn.Module):
 
         self.mlp = nn.Sequential(
             nn.Linear(self.input_dim_to_mlp, self.hidden_size),
-            nn.ReLU(), # Or GELU
+            nn.GELU(), # Or GELU
             nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
             nn.Linear(self.hidden_size, self.hidden_size),
-            nn.ReLU(), # Or GELU
+            nn.GELU(), # Or GELU
             nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
             nn.Linear(self.hidden_size, 1) # Outputs a single distilled scalar value
         )

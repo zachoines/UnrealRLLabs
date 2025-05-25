@@ -13,7 +13,7 @@
       "ObjectMass": 0.1,
       "GridSize": 25,
       "MaxSteps": 1024,
-      "MaxAgents": 12,
+      "MaxAgents": 8,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
         "bUseXYDistanceImprovement": false,
@@ -30,15 +30,15 @@
         "ZAccel_Max": 100.0,
         "PotentialShaping_Gamma": 0.95,
         "PotentialShaping_Scale": 10.0,
-        "REACH_GOAL_REWARD": 1.0,
-        "FALL_OFF_PENALTY": -1.0,
+        "REACH_GOAL_REWARD": 10.0,
+        "FALL_OFF_PENALTY": -10.0,
         "STEP_PENALTY": 0.0
       },
       "GoalManager": {
         "DefaultRadius": 1.0
       },
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 12,
+        "NumAgents": 8,
         "GridSize": 25,
         "MinHeight": -4.0,
         "MaxHeight": 4.0,
@@ -68,7 +68,7 @@
         "DeltaSigmaScale": 1.0
       },
       "StateManager": {
-        "MaxGridObjects": 1,
+        "MaxGridObjects": 3,
         "MarginXY": 1.5,
         "MinZ": -4.0,
         "MaxZ": 20.0,
@@ -92,6 +92,16 @@
             1.0,
             0.0,
             0.0
+          ],
+          [
+            0.0,
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
           ]
         ],
         "GridObjectColors": [
@@ -99,6 +109,16 @@
             1.0,
             0.0,
             0.0
+          ],
+          [
+            0.0,
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            1.0
           ]
         ]
       }
@@ -110,8 +130,8 @@
         },
         "agent": {
           "obs_size": 9,
-          "min": 12,
-          "max": 12
+          "min": 8,
+          "max": 8
         }
       },
       "action": {
@@ -238,7 +258,7 @@
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 12,
+            "num_agents": 8,
             "in_channels": 2,
             "h": 25,
             "w": 25,
@@ -335,8 +355,8 @@
   "train": {
     "sequence_length": 64,
     "pad_trajectories": true,
-    "batch_size": 512,
-    "buffer_size": 512,
+    "batch_size": 256,
+    "buffer_size": 256,
     "num_environments": 8,
     "epochs": 4,
     "mini_batch_size": 16,
