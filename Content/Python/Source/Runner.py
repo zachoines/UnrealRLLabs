@@ -1,7 +1,7 @@
-# NOTICE: Re‑written 2025‑05‑23 to align with shared‑memory MAPOCAAgent refactor.
-# Fixed: float‑tensor logical ops now use >0.5 comparisons (bitwise_or on float removed).
-# Key fixes remain: segment flushing, action padding, hidden‑state resets, comments.
-
+# NOTICE: This file includes modifications generated with the assistance of generative AI (VSCode Copilot Assistant).
+# Original code structure and logic by the project author.
+# The modifications are intended to enhance the functionality and performance of the code.
+# The author has reviewed all changes for correctness.
 from typing import Dict, List, Tuple, Any, Optional
 import numpy as np
 import torch

@@ -4,7 +4,6 @@ from Source.Environment import SharedMemoryInterface
 from Source.Runner import RLRunner
 from Source.Agent import Agent
 from Agents.MAPOCAAgent import MAPOCAAgent
-# New import:
 from Agents.RandomAgent import RandomAgent
 
 class AgentEnvFactory:
