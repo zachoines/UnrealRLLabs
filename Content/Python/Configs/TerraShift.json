@@ -338,7 +338,7 @@
     "pad_trajectories": true,
     "batch_size": 256,
     "buffer_size": 256,
-    "num_environments": 8,
+    "num_environments": 4,
     "epochs": 3,
     "mini_batch_size": 32,
     "ActionRepeat": 3,

@@ -841,33 +841,95 @@ void UStateManager::SetupOverheadCamera()
     checkf(Platform, TEXT("SetupOverheadCamera => missing platform."));
     UWorld* w = Platform->GetWorld();
     if (!w) return;
-    if (OverheadCaptureActor) return;
+    if (OverheadCaptureActor) return; // Already setup
 
     FVector spawnLoc = PlatformCenter + FVector(0, 0, OverheadCamDistance);
-    FRotator spawnRot = FRotator(-90.f, 0.f, 0.f);
+    FRotator spawnRot = FRotator(-90.f, 0.f, 0.f); // Looking straight down
 
     FActorSpawnParameters sp;
-    sp.Owner = Platform;
+    sp.Owner = Platform; // Set owner to the platform
     OverheadCaptureActor = w->SpawnActor<ASceneCapture2D>(spawnLoc, spawnRot, sp);
+
     if (!OverheadCaptureActor)
     {
-        UE_LOG(LogTemp, Error, TEXT("Failed to spawn overhead camera actor."));
+        UE_LOG(LogTemp, Error, TEXT("UStateManager::SetupOverheadCamera - Failed to spawn overhead camera actor."));
         return;
     }
 
-    OverheadRenderTarget = NewObject<UTextureRenderTarget2D>();
-    OverheadRenderTarget->RenderTargetFormat = RTF_RGBA8;
+    // Configure the Render Target
+    OverheadRenderTarget = NewObject<UTextureRenderTarget2D>(this, TEXT("OverheadCameraRenderTarget")); // Added 'this' for proper UObject ownership
+    OverheadRenderTarget->RenderTargetFormat = RTF_RGBA8; // Using RGBA8 for BaseColor is fine, could use RTF_R8 for true greyscale if processed later
     OverheadRenderTarget->InitAutoFormat(OverheadCamResX, OverheadCamResY);
+    OverheadRenderTarget->UpdateResourceImmediate(true); // Ensure it's ready
 
+    // Configure the Scene Capture Component
     USceneCaptureComponent2D* comp = OverheadCaptureActor->GetCaptureComponent2D();
-    comp->ProjectionType = ECameraProjectionMode::Perspective;
+    if (!comp)
+    {
+        UE_LOG(LogTemp, Error, TEXT("UStateManager::SetupOverheadCamera - OverheadCaptureActor is missing USceneCaptureComponent2D."));
+        OverheadCaptureActor->Destroy(); // Clean up spawned actor
+        OverheadCaptureActor = nullptr;
+        return;
+    }
+
+    comp->ProjectionType = ECameraProjectionMode::Perspective; // Or ECameraProjectionMode::Orthographic if preferred
     comp->FOVAngle = OverheadCamFOV;
     comp->TextureTarget = OverheadRenderTarget;
-    comp->CaptureSource = ESceneCaptureSource::SCS_BaseColor;
-    comp->MaxViewDistanceOverride = OverheadCamDistance * 1.1f;
+    comp->CaptureSource = ESceneCaptureSource::SCS_BaseColor; // Capturing unlit base color
+
+    // Performance: Limit MaxViewDistance if appropriate, ensures far-off objects aren't considered
+    comp->MaxViewDistanceOverride = OverheadCamDistance * 1.1f; // Slightly more than camera distance to ensure platform is captured
+
+    // Explicitly set bCaptureEveryFrame and bCaptureOnMovement to false as we trigger manually
     comp->bCaptureEveryFrame = false;
     comp->bCaptureOnMovement = false;
+
+    // Performance: Adjust ShowFlags to disable unnecessary rendering features
+    // This is crucial for making the capture lightweight.
+    FEngineShowFlags& ShowFlags = comp->ShowFlags;
+    ShowFlags.SetAtmosphere(false);
+    ShowFlags.SetBSP(false); // If you don't use BSP geometry visible to this camera
+    ShowFlags.SetDecals(false);
+    ShowFlags.SetFog(false);
+    ShowFlags.SetVolumetricFog(false);
+    ShowFlags.SetSkeletalMeshes(true); // Keep true if GridObjects or other relevant actors are skeletal
+    // If GridObjects are static meshes, you might disable this if no other skeletal meshes are needed
+    ShowFlags.SetStaticMeshes(true);  // Keep true for Columns, Platform, GridObjects (if static)
+    ShowFlags.SetTranslucency(false); // If translucent materials aren't needed in the capture
+
+    // For SCS_BaseColor, lighting and post-processing are generally not applied,
+    // but explicitly disabling them can prevent any overhead.
+    ShowFlags.SetLighting(false);
+    ShowFlags.SetPostProcessing(false);
+    ShowFlags.SetDynamicShadows(false);
+    ShowFlags.SetAmbientOcclusion(false);
+    ShowFlags.SetGlobalIllumination(false);
+    ShowFlags.SetReflectionEnvironment(false);
+    ShowFlags.SetScreenSpaceReflections(false);
+    ShowFlags.SetDistanceFieldAO(false);
+
+    ShowFlags.SetAntiAliasing(false); // AA might not be needed for a small observation texture
+    ShowFlags.SetBloom(false);
+    ShowFlags.SetLensFlares(false);
+    ShowFlags.SetMotionBlur(false); // Motion blur is irrelevant for a still capture
+    ShowFlags.SetDepthOfField(false);
+    ShowFlags.SetEyeAdaptation(false); // Not relevant for non-HDR captures
+
+    // Potentially keep if your base colors rely on it, but for SCS_BaseColor usually not.
+    ShowFlags.SetMaterials(true);
+    ShowFlags.SetInstancedStaticMeshes(true); // If using ISM for columns or other elements
+    ShowFlags.SetInstancedGrass(false);
+    ShowFlags.SetInstancedFoliage(false);
+    ShowFlags.SetPaper2DSprites(false);
+    ShowFlags.SetParticles(false); // If no relevant particles in the overhead view
+    ShowFlags.SetTextRender(false);
+    ShowFlags.SetLandscape(false); // If no landscape visible
+
+    // Ensure the component is active so it can capture when CaptureScene() is called
+    comp->SetActive(true);
+    OverheadCaptureActor->SetActorEnableCollision(false); // Camera actor itself doesn't need collision
 }
+
 
 // Inside UStateManager::CaptureOverheadImage() const
 
