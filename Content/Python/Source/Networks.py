@@ -1091,8 +1091,8 @@ class CrossAttentionFeatureExtractor(nn.Module):
 
         # B) Optional Agent ID Embedding: Adds unique ID info if enabled
         if use_agent_id:
-            self.agent_id_embedding = nn.Embedding(num_agents, embed_dim)
-            nn.init.normal_(self.agent_id_embedding.weight, mean=0.0, std=0.01) # Small random init
+            # self.agent_id_embedding = nn.Embedding(num_agents, embed_dim)
+            # nn.init.normal_(self.agent_id_embedding.weight, mean=0.0, std=0.01) # Small random init
             self.agent_id_pos_enc = AgentIDPosEnc(num_freqs=id_num_freqs, id_embed_dim=embed_dim)
             self.agent_id_sum_ln = nn.LayerNorm(embed_dim) # Normalize after adding ID embeddings
         else:
@@ -1194,7 +1194,8 @@ class CrossAttentionFeatureExtractor(nn.Module):
         if self.use_agent_id:
             # Create agent IDs [0, 1, ..., A-1] for each batch element
             agent_ids = torch.arange(A, device=device).view(1, A).expand(B, A)
-            agent_embed = agent_embed + self.agent_id_embedding(agent_ids) + self.agent_id_pos_enc(agent_ids)
+            # agent_embed = agent_embed + self.agent_id_embedding(agent_ids) + self.agent_id_pos_enc(agent_ids)
+            agent_embed = agent_embed + self.agent_id_pos_enc(agent_ids)
             agent_embed = self.agent_id_sum_ln(agent_embed) # Normalize sum
 
         # --- 3. Central State Preparation ---

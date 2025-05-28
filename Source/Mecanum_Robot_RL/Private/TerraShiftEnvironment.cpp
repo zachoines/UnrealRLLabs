@@ -530,7 +530,7 @@ float ATerraShiftEnvironment::Reward()
             float currentDistance = StateManager->GetCurrentDistance(ObjIndex);
             if (previousDistance > 0.f && currentDistance > 0.f)
             {
-                float deltaDistance = (previousDistance - currentDistance) / PlatformWorldSize.X;
+                float deltaDistance = (previousDistance - currentDistance); // PlatformWorldSize.X;
                 float clampedDelta = ThresholdAndClamp(deltaDistance, DistImprove_Min, DistImprove_Max);
                 ShapingSubReward += DistImprove_Scale * clampedDelta;
             }
@@ -576,7 +576,6 @@ float ATerraShiftEnvironment::Reward()
                 }
             }
         }
-
 
         AccumulatedReward += ShapingSubReward; // Add all shaping sub-rewards for this object
 
