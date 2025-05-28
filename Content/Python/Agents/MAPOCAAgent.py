@@ -21,9 +21,10 @@ from Source.Networks import (
     SharedCritic,
     BetaPolicyNetwork,
     DiscretePolicyNetwork,
+    TanhContinuousPolicyNetwork, # Assuming this might be used, added for completeness
+    GaussianPolicyNetwork, # Assuming this might be used
     RNDTargetNetwork,
     RNDPredictorNetwork,
-    # ImplicitQuantileNetwork and DistillationNetwork are used by SharedCritic
 )
 from Source.Memory import GRUSequenceMemory
 
@@ -116,7 +117,19 @@ def _bool_or(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Element-wise OR that works on float or bool tensors."""
     return (a > 0.5) | (b > 0.5)
 
-# -----------------------------------------------------------------------------
+def _get_avg_grad_mag(params_list: List[torch.nn.Parameter]) -> float:
+    """Computes the average magnitude of gradients for a list of parameters."""
+    total_abs_grad = 0.0
+    num_params_with_grad = 0
+    if not params_list: # Handle empty list
+        return 0.0
+        
+    for p in params_list:
+        if p.grad is not None:
+            total_abs_grad += p.grad.abs().mean().item()
+            num_params_with_grad += 1
+    return total_abs_grad / num_params_with_grad if num_params_with_grad > 0 else 0.0
+
 class MAPOCAAgent(Agent):
     def __init__(self, cfg: Dict, device: torch.device):
         super().__init__(cfg, device)
@@ -185,8 +198,24 @@ class MAPOCAAgent(Agent):
             self.memory_module = None; self.memory_hidden = self.memory_layers = 0; trunk_dim = emb_out
 
         pol_cfg = a_cfg["networks"]["policy_network"].copy(); pol_cfg.update({"in_features": trunk_dim, "out_features": self.action_dim})
-        self.policy_net = BetaPolicyNetwork(**pol_cfg).to(device) if self.action_space_type == "continuous" else DiscretePolicyNetwork(**pol_cfg).to(device)
         
+        # Determine policy network type based on config or action_space_type
+        policy_type_str = pol_cfg.get("type", self.action_space_type) # Allow overriding in config
+        if policy_type_str == "continuous" or policy_type_str == "beta": # Assuming "continuous" implies Beta for now
+            self.policy_net = BetaPolicyNetwork(**pol_cfg).to(device)
+            self.action_space_type = "beta" # Standardize
+        elif policy_type_str == "tanh_continuous":
+            self.policy_net = TanhContinuousPolicyNetwork(**pol_cfg).to(device)
+            self.action_space_type = "tanh_continuous"
+        elif policy_type_str == "gaussian":
+            self.policy_net = GaussianPolicyNetwork(**pol_cfg).to(device)
+            self.action_space_type = "gaussian"
+        elif policy_type_str == "discrete":
+            self.policy_net = DiscretePolicyNetwork(**pol_cfg).to(device)
+            self.action_space_type = "discrete"
+        else:
+            raise ValueError(f"Unsupported policy_network type: {policy_type_str}")
+
         self.shared_critic = SharedCritic(net_cfg=critic_full_config).to(device)
 
         if self.enable_iqn_distillation:
@@ -208,7 +237,7 @@ class MAPOCAAgent(Agent):
             self.rewards_normalizer = None
         else:
             self.value_popart = self.baseline_popart = None
-            rnorm_cfg = a_cfg.get("rewards_normalizer_disabled", None); 
+            rnorm_cfg = a_cfg.get("rewards_normalizer", None);  # Changed from _disabled
             self.rewards_normalizer = RunningMeanStdNormalizer(**rnorm_cfg, device=device) if rnorm_cfg else None
         
         # --- RND Initialization ---
@@ -280,13 +309,28 @@ class MAPOCAAgent(Agent):
     def _determine_action_space(self, cfg: Dict[str, Any]): # Unchanged
         if "agent" not in cfg: raise ValueError("Missing 'action.agent' block")
         a_cfg = cfg["agent"]
-        if "continuous" in a_cfg:
-            self.action_space_type = "continuous"; self.action_dim = len(a_cfg["continuous"])
-            self.total_action_dim_per_agent = self.action_dim
+        # Check for policy type override in config first
+        policy_type_override = self.config["agent"]["params"]["networks"]["policy_network"].get("type", None)
+
+        if policy_type_override:
+            self.action_space_type = policy_type_override
+            if policy_type_override == "beta" or policy_type_override == "tanh_continuous" or policy_type_override == "gaussian":
+                self.action_dim = len(a_cfg["continuous"]) if "continuous" in a_cfg else 0
+            elif policy_type_override == "discrete":
+                 self.action_dim = [d["num_choices"] for d in a_cfg["discrete"]] if "discrete" in a_cfg else []
+            else:
+                raise ValueError(f"Unsupported policy_network type in config: {policy_type_override}")
+        elif "continuous" in a_cfg: # Default to beta if continuous and no override
+            self.action_space_type = "beta" 
+            self.action_dim = len(a_cfg["continuous"])
         elif "discrete" in a_cfg:
-            self.action_space_type = "discrete"; self.action_dim = [d["num_choices"] for d in a_cfg["discrete"]]
-            self.total_action_dim_per_agent = len(self.action_dim)
-        else: raise ValueError("Specify discrete or continuous for action space")
+            self.action_space_type = "discrete"
+            self.action_dim = [d["num_choices"] for d in a_cfg["discrete"]]
+        else: 
+            raise ValueError("Specify discrete or continuous for action space, or a policy type in config.")
+        
+        self.total_action_dim_per_agent = self.action_dim if isinstance(self.action_dim, int) else len(self.action_dim)
+
 
     def _apply_memory_seq(self, seq_feats: torch.Tensor, init_h: Optional[torch.Tensor], return_hidden: bool = False) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]: # Unchanged
         if not self.memory_module: return (seq_feats, None) if return_hidden else seq_feats
@@ -326,6 +370,8 @@ class MAPOCAAgent(Agent):
              actions_shaped = act_flat.reshape(B_env, NA_runtime, len(self.action_dim))
         else:
              actions_shaped = act_flat.reshape(B_env, NA_runtime, self.action_dim if isinstance(self.action_dim, int) else self.action_dim[0])
+        
+        # Ensure actions_ue has the correct total action dimension per agent
         actions_ue = actions_shaped.reshape(B_env, NA_runtime * self.total_action_dim_per_agent)
         
         logp = lp_flat.reshape(B_env, NA_runtime); ent = ent_flat.reshape(B_env, NA_runtime)
@@ -365,12 +411,44 @@ class MAPOCAAgent(Agent):
 
     def update(self, padded_states_dict_seq: Dict[str, torch.Tensor], padded_actions_seq: torch.Tensor, padded_rewards_seq: torch.Tensor, padded_next_states_dict_seq: Dict[str, torch.Tensor], padded_dones_seq: torch.Tensor, padded_truncs_seq: torch.Tensor, initial_hidden_states_batch: Optional[torch.Tensor], attention_mask_batch: torch.Tensor) -> Dict[str, float]:
         B, T = attention_mask_batch.shape; NA = self.num_agents
-        mask_bt = attention_mask_batch; mask_bt1 = mask_bt.unsqueeze(-1); mask_btna1 = mask_bt.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, NA, 1)
+        mask_bt = attention_mask_batch # (B, T)
+        mask_bt1 = mask_bt.unsqueeze(-1) # (B, T, 1) for rewards, values
+        mask_btna = mask_bt.unsqueeze(-1).expand(-1, -1, NA) # (B,T,NA) for per-agent logp, ent
+        mask_btna1 = mask_bt.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, NA, 1) # (B,T,NA,1) for per-agent baselines
+
+        # --- Initialize logs accumulator for this update cycle ---
+        logs_acc: Dict[str, List[float]] = {
+            "policy_loss": [], "value_distill_loss": [], "baseline_distill_loss": [], 
+            "entropy_mean": [], "grad_norm_ppo": [], "adv_mean": [], "adv_std": [],
+            "logp_old_mean": [], "logp_old_min": [], "logp_old_max": [],
+            "logp_new_mean": [], "logp_new_min": [], "logp_new_max": [],
+            "grad_norm_trunk": [], "grad_norm_policy": [], 
+            "grad_norm_value_distill": [], "grad_norm_baseline_distill": []
+        }
+        if self.enable_rnd:
+            logs_acc.update({"rnd_loss": [], "rnd_reward_raw_mean": [], "rnd_reward_raw_std": [],
+                             "rnd_reward_norm_mean": [], "rnd_reward_norm_std": []})
+        if self.enable_iqn_distillation:
+            logs_acc.update({"value_iqn_loss": [], "baseline_iqn_loss": [], "grad_norm_iqn": [],
+                             "distill_val_v_ppo_mean": [], "distill_val_v_ppo_std": [],
+                             "distill_val_quantiles_mean": [], "distill_val_quantiles_std": [],
+                             "distill_val_output_norm_mean": [], "distill_val_output_norm_std": [],
+                             "distill_base_b_ppo_mean": [], "distill_base_b_ppo_std": [],
+                             "distill_base_quantiles_mean": [], "distill_base_quantiles_std": [],
+                             "distill_base_output_norm_mean": [], "distill_base_output_norm_std": []
+                             })
+        if self.action_space_type == "beta": # Or check isinstance(self.policy_net, BetaPolicyNetwork)
+            logs_acc.update({"policy_alpha_mean": [], "policy_alpha_std": [], 
+                             "policy_beta_mean": [], "policy_beta_std": []})
+
 
         rewards_seq = padded_rewards_seq.clone()
         if self.rewards_normalizer:
-            valid_r = rewards_seq[mask_bt1.bool()]; 
-            if valid_r.numel(): self.rewards_normalizer.update(valid_r.unsqueeze(-1)); rewards_seq[mask_bt1.bool()] = self.rewards_normalizer.normalize(valid_r.unsqueeze(-1)).squeeze(-1).to(rewards_seq.dtype)
+            valid_r_mask = mask_bt1.bool()
+            if valid_r_mask.any():
+                valid_r = rewards_seq[valid_r_mask]
+                self.rewards_normalizer.update(valid_r.unsqueeze(-1))
+                rewards_seq[valid_r_mask] = self.rewards_normalizer.normalize(valid_r.unsqueeze(-1)).squeeze(-1).to(rewards_seq.dtype)
         
         # --- NO-GRAD PASS for PPO GAE and IQN Replay Buffer Storage ---
         with torch.no_grad():
@@ -384,7 +462,6 @@ class MAPOCAAgent(Agent):
             else:
                 feats_seq = self._apply_memory_seq(emb_seq, None); feats_next_seq = self._apply_memory_seq(emb_next_seq, None)
             
-            # Push to IQN replay buffer before any reshaping for critic calls
             if self.enable_iqn_distillation and hasattr(self, 'iqn_replay_buffer') and self.iqn_replay_buffer.capacity > 0:
                  self.iqn_replay_buffer.push_batch(
                      feats_seq, feats_next_seq, rewards_seq, padded_dones_seq, 
@@ -395,64 +472,136 @@ class MAPOCAAgent(Agent):
             taus_no_grad_val = self._sample_taus(B_T_flat_dim, self.num_quantiles) if self.enable_iqn_distillation else None
             taus_no_grad_base = self._sample_taus(B_T_NA_flat_dim, self.num_quantiles) if self.enable_iqn_distillation else None
 
-            old_logp_seq, _ = self._recompute_log_probs_from_features(feats_seq, padded_actions_seq)
+            old_logp_seq, _ = self._recompute_log_probs_from_features(feats_seq, padded_actions_seq) # (B,T,NA)
             
-            critic_args_val_no_grad = (feats_seq.view(B_T_flat_dim, NA, -1), taus_no_grad_val) if self.enable_iqn_distillation else (feats_seq.view(B_T_flat_dim, NA, -1),)
-            old_val_output_no_grad = self.shared_critic.values(*critic_args_val_no_grad)
+            # Get PPO-style value and baseline predictions (potentially from distillation if IQN is on)
+            # These are PopArt-normalized if PopArt is enabled.
+            # For value (centralized critic)
+            val_input_flat = feats_seq.reshape(B_T_flat_dim, NA, -1)
+            val_critic_args_no_grad = (val_input_flat, taus_no_grad_val) if self.enable_iqn_distillation else (val_input_flat,)
+            old_val_output_no_grad = self.shared_critic.values(*val_critic_args_no_grad) # Returns (distilled_norm, quantiles_norm) or just distilled_norm
             old_val_distilled_norm = old_val_output_no_grad[0] if self.enable_iqn_distillation else old_val_output_no_grad
-            old_val_distilled_norm = old_val_distilled_norm.view(B,T,1)
+            old_val_distilled_norm = old_val_distilled_norm.reshape(B,T,1)
 
-            critic_args_next_val_no_grad = (feats_next_seq.view(B_T_flat_dim, NA, -1), taus_no_grad_val) if self.enable_iqn_distillation else (feats_next_seq.view(B_T_flat_dim, NA, -1),)
-            next_val_output_no_grad = self.shared_critic.values(*critic_args_next_val_no_grad)
+            # For next_value (centralized critic)
+            next_val_input_flat = feats_next_seq.reshape(B_T_flat_dim, NA, -1)
+            next_val_critic_args_no_grad = (next_val_input_flat, taus_no_grad_val) if self.enable_iqn_distillation else (next_val_input_flat,)
+            next_val_output_no_grad = self.shared_critic.values(*next_val_critic_args_no_grad)
             next_val_distilled_norm = next_val_output_no_grad[0] if self.enable_iqn_distillation else next_val_output_no_grad
-            next_val_distilled_norm = next_val_distilled_norm.view(B,T,1)
-
-            base_in_seq = self.embedding_net.get_baseline_embeddings(feats_seq, padded_actions_seq)
-            base_in_seq_flat = base_in_seq.view(B_T_NA_flat_dim, base_in_seq.shape[-2], base_in_seq.shape[-1])
-            critic_args_base_no_grad = (base_in_seq_flat, taus_no_grad_base) if self.enable_iqn_distillation else (base_in_seq_flat,)
-            old_base_output_no_grad = self.shared_critic.baselines(*critic_args_base_no_grad)
-            old_base_distilled_norm = old_base_output_no_grad[0] if self.enable_iqn_distillation else old_base_output_no_grad
-            old_base_distilled_norm = old_base_distilled_norm.view(B,T,NA,1)
+            next_val_distilled_norm = next_val_distilled_norm.reshape(B,T,1)
             
-            intrinsic_na = torch.zeros(B,T,NA, device=self.device) 
-            if self.enable_rnd: # RND Logic
-                flat_feats_for_rnd = feats_seq.reshape(B*T*NA, -1)
-                with torch.no_grad(): tgt_rnd = self.rnd_target_network(flat_feats_for_rnd)
-                pred_rnd_no_grad = self.rnd_predictor_network(flat_feats_for_rnd).detach()
-                mse_rnd = F.mse_loss(pred_rnd_no_grad, tgt_rnd, reduction="none").mean(-1)
-                intrinsic_na = mse_rnd.reshape(B,T,NA)
-                valid_intr_mask = mask_bt.unsqueeze(-1).expand_as(intrinsic_na).bool()
-                valid_intr = intrinsic_na[valid_intr_mask]
-                if valid_intr.numel() > 0:
-                    self.intrinsic_reward_normalizer.update(valid_intr.unsqueeze(-1))
-                    intrinsic_na[valid_intr_mask] = self.intrinsic_reward_normalizer.normalize(valid_intr.unsqueeze(-1)).squeeze(-1).to(intrinsic_na.dtype)
-            intrinsic_seq = intrinsic_na.mean(-1, keepdim=True)
+            # For baseline (per-agent critic)
+            base_in_seq = self.embedding_net.get_baseline_embeddings(feats_seq, padded_actions_seq) # (B,T,NA,SeqLen_A,Feat)
+            base_in_seq_flat = base_in_seq.reshape(B_T_NA_flat_dim, base_in_seq.shape[-2], base_in_seq.shape[-1])
+            base_critic_args_no_grad = (base_in_seq_flat, taus_no_grad_base) if self.enable_iqn_distillation else (base_in_seq_flat,)
+            old_base_output_no_grad = self.shared_critic.baselines(*base_critic_args_no_grad)
+            old_base_distilled_norm = old_base_output_no_grad[0] if self.enable_iqn_distillation else old_base_output_no_grad
+            old_base_distilled_norm = old_base_distilled_norm.reshape(B,T,NA,1)
+            
+            intrinsic_rewards_per_agent_seq = torch.zeros(B,T,NA, device=self.device) # (B,T,NA) for RND rewards
+            if self.enable_rnd:
+                flat_feats_for_rnd = feats_seq.reshape(B_T_NA_flat_dim, -1) # (B*T*NA, FeatDim)
+                with torch.no_grad(): target_rnd_embeddings = self.rnd_target_network(flat_feats_for_rnd)
+                # Predictor network's output (no_grad needed here if only calculating intrinsic reward for GAE)
+                predictor_rnd_embeddings_no_grad = self.rnd_predictor_network(flat_feats_for_rnd).detach()
+                # MSE loss per feature, then mean over features
+                rnd_mse_errors = F.mse_loss(predictor_rnd_embeddings_no_grad, target_rnd_embeddings, reduction="none").mean(dim=-1) # (B*T*NA)
+                intrinsic_rewards_per_agent_seq = rnd_mse_errors.reshape(B,T,NA)
+                
+                # Normalize these raw intrinsic rewards
+                valid_intrinsic_mask_btna = mask_btna.bool()
+                if valid_intrinsic_mask_btna.any():
+                    valid_intrinsic_rewards = intrinsic_rewards_per_agent_seq[valid_intrinsic_mask_btna]
+                    # Log raw RND reward stats
+                    logs_acc["rnd_reward_raw_mean"].append(valid_intrinsic_rewards.mean().item())
+                    logs_acc["rnd_reward_raw_std"].append(valid_intrinsic_rewards.std().item())
+                    
+                    self.intrinsic_reward_normalizer.update(valid_intrinsic_rewards.unsqueeze(-1))
+                    normalized_intrinsic_rewards = self.intrinsic_reward_normalizer.normalize(valid_intrinsic_rewards.unsqueeze(-1)).squeeze(-1)
+                    intrinsic_rewards_per_agent_seq[valid_intrinsic_mask_btna] = normalized_intrinsic_rewards.to(intrinsic_rewards_per_agent_seq.dtype)
+                    
+                    # Log normalized RND reward stats
+                    logs_acc["rnd_reward_norm_mean"].append(normalized_intrinsic_rewards.mean().item())
+                    logs_acc["rnd_reward_norm_std"].append(normalized_intrinsic_rewards.std().item())
+                else: # Add placeholders if no valid intrinsic rewards
+                    logs_acc["rnd_reward_raw_mean"].append(0.0); logs_acc["rnd_reward_raw_std"].append(0.0)
+                    logs_acc["rnd_reward_norm_mean"].append(0.0); logs_acc["rnd_reward_norm_std"].append(0.0)
 
-            rew_gae = rewards_seq + self.intrinsic_reward_coeff * intrinsic_seq
-            old_val_distilled = self.value_popart.denormalize_outputs(old_val_distilled_norm) if self.enable_popart else old_val_distilled_norm
-            next_val_distilled = self.value_popart.denormalize_outputs(next_val_distilled_norm) if self.enable_popart else next_val_distilled_norm
-            returns_seq = self._compute_gae_with_padding(rew_gae, old_val_distilled, next_val_distilled, padded_dones_seq, padded_truncs_seq, mask_bt)
+            # Average RND rewards across agents for GAE calculation
+            intrinsic_rewards_global_seq = intrinsic_rewards_per_agent_seq.mean(dim=-1, keepdim=True) # (B,T,1)
+
+            # Combine rewards for GAE
+            rewards_for_gae = rewards_seq + self.intrinsic_reward_coeff * intrinsic_rewards_global_seq
+            
+            # Denormalize PopArt values for GAE calculation
+            old_val_distilled_denorm = self.value_popart.denormalize_outputs(old_val_distilled_norm) if self.enable_popart else old_val_distilled_norm
+            next_val_distilled_denorm = self.value_popart.denormalize_outputs(next_val_distilled_norm) if self.enable_popart else next_val_distilled_norm
+            
+            returns_seq = self._compute_gae_with_padding(rewards_for_gae, old_val_distilled_denorm, next_val_distilled_denorm, padded_dones_seq, padded_truncs_seq, mask_bt)
+
+            # Log PopArt stats (once per update, not per minibatch)
+            if self.enable_popart:
+                valid_returns_mask = mask_bt1.bool()
+                if valid_returns_mask.any():
+                    # Update PopArt stats using the GAE returns computed with denormalized values
+                    self.value_popart.update_stats(returns_seq[valid_returns_mask])
+                    # For baseline, expand returns to per-agent for PopArt update
+                    baseline_popart_targets = returns_seq.unsqueeze(2).expand(-1,-1,NA,-1)[mask_btna1.bool()]
+                    if baseline_popart_targets.numel() > 0:
+                         self.baseline_popart.update_stats(baseline_popart_targets)
+                    
+                    # Log PopArt mu and sigma
+                    logs_acc.setdefault("popart_val_mu", []).append(self.value_popart.mu.item())
+                    logs_acc.setdefault("popart_val_sigma", []).append(self.value_popart.sigma.item())
+                    logs_acc.setdefault("popart_base_mu", []).append(self.baseline_popart.mu.item())
+                    logs_acc.setdefault("popart_base_sigma", []).append(self.baseline_popart.sigma.item())
+
+                    # Log sample raw returns vs normalized targets
+                    sample_raw_ret = returns_seq[valid_returns_mask][:5].cpu().numpy()
+                    sample_norm_targ_val = self.value_popart.normalize_targets(returns_seq[valid_returns_mask][:5]).cpu().numpy()
+                    logs_acc.setdefault("popart_sample_raw_returns", []).append(sample_raw_ret.tolist()) # Convert to list for JSON
+                    logs_acc.setdefault("popart_sample_norm_val_targets", []).append(sample_norm_targ_val.tolist())
+
+                    # Log sample normalized vs denormalized values used in GAE
+                    sample_old_val_norm = old_val_distilled_norm[valid_returns_mask][:5].cpu().numpy()
+                    sample_old_val_denorm = old_val_distilled_denorm[valid_returns_mask][:5].cpu().numpy()
+                    logs_acc.setdefault("popart_sample_old_val_norm", []).append(sample_old_val_norm.tolist())
+                    logs_acc.setdefault("popart_sample_old_val_denorm_for_gae", []).append(sample_old_val_denorm.tolist())
+                else: # Add placeholders if no valid returns
+                    for k_pa in ["popart_val_mu", "popart_val_sigma", "popart_base_mu", "popart_base_sigma", 
+                                 "popart_sample_raw_returns", "popart_sample_norm_val_targets",
+                                 "popart_sample_old_val_norm", "popart_sample_old_val_denorm_for_gae"]:
+                        logs_acc.setdefault(k_pa, []).append(0.0 if "mu" in k_pa or "sigma" in k_pa else [])
+
+
+            # Log old log_probs stats (once per update)
+            valid_old_lp_mask = mask_btna.bool()
+            if valid_old_lp_mask.any():
+                valid_old_lp = old_logp_seq[valid_old_lp_mask]
+                logs_acc["logp_old_mean"].append(valid_old_lp.mean().item())
+                logs_acc["logp_old_min"].append(valid_old_lp.min().item())
+                logs_acc["logp_old_max"].append(valid_old_lp.max().item())
+            else: # Add placeholders
+                logs_acc["logp_old_mean"].append(0.0); logs_acc["logp_old_min"].append(0.0); logs_acc["logp_old_max"].append(0.0)
+
 
             raw_ext_mean = float(padded_rewards_seq[mask_bt1.bool()].mean()) if mask_bt1.any() else 0.0
             proc_rew_mean = float(rewards_seq[mask_bt1.bool()].mean()) if mask_bt1.any() else 0.0
             ret_vals = returns_seq[mask_bt1.bool()]; ret_mean = float(ret_vals.mean()) if ret_vals.numel() else 0.0; ret_std = float(ret_vals.std()) if ret_vals.numel() else 0.0
-            
-            if self.enable_popart:
-                self.value_popart.update_stats(returns_seq[mask_bt1.bool()])
-                self.baseline_popart.update_stats(returns_seq.unsqueeze(2).expand(-1,-1,NA,-1)[mask_btna1.bool()])
         
         # --- PPO Training Loop ---
-        logs_acc: Dict[str, List[float]] = {k: [] for k in ["policy", "value_distill", "baseline_distill", "entropy", "grad_ppo", "adv_mean", "adv_std", "value_iqn", "baseline_iqn", "grad_iqn"]}
-        if self.enable_rnd: logs_acc["rnd"] = []
-        
         idx = np.arange(B)
         for _epoch_ppo in range(self.epochs):
             np.random.shuffle(idx)
             for mb_start in range(0, B, self.mini_batch_size):
                 mb_idx = idx[mb_start : mb_start + self.mini_batch_size]; M = mb_idx.shape[0]
                 if M == 0: continue
-                mask_mb = mask_bt[mb_idx] # (M, T)
                 
+                mask_mb = mask_bt[mb_idx] # (M, T)
+                mask_mb1 = mask_mb.unsqueeze(-1) # (M,T,1)
+                mask_mbna = mask_mb.unsqueeze(-1).expand(-1,-1,NA) # (M,T,NA)
+                mask_mbna1 = mask_mb.unsqueeze(-1).unsqueeze(-1).expand(-1,-1,NA,1) # (M,T,NA,1)
+
                 M_T_flat_dim = M*T; M_T_NA_flat_dim = M*T*NA
                 taus_for_ppo_mb_val = self._sample_taus(M_T_flat_dim, self.num_quantiles) if self.enable_iqn_distillation else None
                 taus_for_ppo_mb_base = self._sample_taus(M_T_NA_flat_dim, self.num_quantiles) if self.enable_iqn_distillation else None
@@ -465,98 +614,185 @@ class MAPOCAAgent(Agent):
                 
                 new_lp_mb, ent_mb = self._recompute_log_probs_from_features(feats_mb, padded_actions_seq[mb_idx]) # (M,T,NA)
                 
-                critic_args_val_mb = (feats_mb.view(M_T_flat_dim, NA, -1), taus_for_ppo_mb_val) if self.enable_iqn_distillation else (feats_mb.view(M_T_flat_dim, NA, -1),)
-                new_val_output_mb = self.shared_critic.values(*critic_args_val_mb)
+                # --- Value Path ---
+                val_input_mb_flat = feats_mb.reshape(M_T_flat_dim, NA, -1)
+                # Get PPO-style head output and IQN quantiles for logging distillation inputs
+                v_ppo_mb_norm = self.shared_critic.value_head_ppo(val_input_mb_flat.mean(dim=1)) # (M*T, 1)
+                value_quantiles_mb_norm = self.shared_critic.value_iqn_net(val_input_mb_flat.mean(dim=1), taus_for_ppo_mb_val) if self.enable_iqn_distillation else None # (M*T, N_q)
+                
+                # Get the final distilled value (or PPO value if IQN is off)
+                critic_args_val_mb = (val_input_mb_flat, taus_for_ppo_mb_val) if self.enable_iqn_distillation else (val_input_mb_flat,)
+                new_val_output_mb = self.shared_critic.values(*critic_args_val_mb) # Tuple if IQN, else tensor
                 new_val_distilled_norm_mb = new_val_output_mb[0] if self.enable_iqn_distillation else new_val_output_mb
-                new_val_distilled_norm_mb = new_val_distilled_norm_mb.view(M,T,1)
+                new_val_distilled_norm_mb = new_val_distilled_norm_mb.reshape(M,T,1)
 
-                base_in_mb = self.embedding_net.get_baseline_embeddings(feats_mb, padded_actions_seq[mb_idx]) # (M,T,NA,SeqLen,H)
-                base_in_mb_flat = base_in_mb.view(M_T_NA_flat_dim, base_in_mb.shape[-2], base_in_mb.shape[-1])
+                # --- Baseline Path ---
+                base_in_mb = self.embedding_net.get_baseline_embeddings(feats_mb, padded_actions_seq[mb_idx]) 
+                base_in_mb_flat = base_in_mb.reshape(M_T_NA_flat_dim, base_in_mb.shape[-2], base_in_mb.shape[-1])
+                # Get PPO-style head output and IQN quantiles for logging distillation inputs
+                b_ppo_mb_norm = self.shared_critic.baseline_head_ppo(base_in_mb_flat.mean(dim=1)) # (M*T*NA, 1)
+                baseline_quantiles_mb_norm = self.shared_critic.baseline_iqn_net(base_in_mb_flat.mean(dim=1), taus_for_ppo_mb_base) if self.enable_iqn_distillation else None # (M*T*NA, N_q)
+
+                # Get final distilled baseline
                 critic_args_base_mb = (base_in_mb_flat, taus_for_ppo_mb_base) if self.enable_iqn_distillation else (base_in_mb_flat,)
                 new_base_output_mb = self.shared_critic.baselines(*critic_args_base_mb)
                 new_base_distilled_norm_mb = new_base_output_mb[0] if self.enable_iqn_distillation else new_base_output_mb
-                new_base_distilled_norm_mb = new_base_distilled_norm_mb.view(M,T,NA,1)
+                new_base_distilled_norm_mb = new_base_distilled_norm_mb.reshape(M,T,NA,1)
 
-                old_lp_mb = old_logp_seq[mb_idx]
-                old_val_distilled_mb_norm = old_val_distilled_norm[mb_idx]
-                old_base_distilled_mb_norm = old_base_distilled_norm[mb_idx]
-                returns_mb = returns_seq[mb_idx]
+                # --- Log Distillation Inputs/Outputs (for the first minibatch of first epoch) ---
+                if self.enable_iqn_distillation and _epoch_ppo == 0 and mb_start == 0:
+                    # Value Distillation Logs
+                    valid_v_ppo_mask_mb = mask_mb.reshape(-1).bool() # M*T
+                    if valid_v_ppo_mask_mb.any():
+                        logs_acc["distill_val_v_ppo_mean"].append(v_ppo_mb_norm[valid_v_ppo_mask_mb].mean().item())
+                        logs_acc["distill_val_v_ppo_std"].append(v_ppo_mb_norm[valid_v_ppo_mask_mb].std().item())
+                        if value_quantiles_mb_norm is not None:
+                            logs_acc["distill_val_quantiles_mean"].append(value_quantiles_mb_norm[valid_v_ppo_mask_mb].mean().item())
+                            logs_acc["distill_val_quantiles_std"].append(value_quantiles_mb_norm[valid_v_ppo_mask_mb].std().item())
+                        logs_acc["distill_val_output_norm_mean"].append(new_val_distilled_norm_mb[mask_mb1.bool()].mean().item())
+                        logs_acc["distill_val_output_norm_std"].append(new_val_distilled_norm_mb[mask_mb1.bool()].std().item())
+                    else: # Add placeholders
+                        for k_dist_val in ["distill_val_v_ppo_mean", "distill_val_v_ppo_std", "distill_val_quantiles_mean", "distill_val_quantiles_std", "distill_val_output_norm_mean", "distill_val_output_norm_std"]: logs_acc[k_dist_val].append(0.0)
+                    
+                    # Baseline Distillation Logs
+                    valid_b_ppo_mask_mb = mask_mbna.reshape(-1).bool() # M*T*NA
+                    if valid_b_ppo_mask_mb.any():
+                        logs_acc["distill_base_b_ppo_mean"].append(b_ppo_mb_norm[valid_b_ppo_mask_mb].mean().item())
+                        logs_acc["distill_base_b_ppo_std"].append(b_ppo_mb_norm[valid_b_ppo_mask_mb].std().item())
+                        if baseline_quantiles_mb_norm is not None:
+                            logs_acc["distill_base_quantiles_mean"].append(baseline_quantiles_mb_norm[valid_b_ppo_mask_mb].mean().item())
+                            logs_acc["distill_base_quantiles_std"].append(baseline_quantiles_mb_norm[valid_b_ppo_mask_mb].std().item())
+                        logs_acc["distill_base_output_norm_mean"].append(new_base_distilled_norm_mb[mask_mbna1.bool()].mean().item())
+                        logs_acc["distill_base_output_norm_std"].append(new_base_distilled_norm_mb[mask_mbna1.bool()].std().item())
+                    else: # Add placeholders
+                         for k_dist_base in ["distill_base_b_ppo_mean", "distill_base_b_ppo_std", "distill_base_quantiles_mean", "distill_base_quantiles_std", "distill_base_output_norm_mean", "distill_base_output_norm_std"]: logs_acc[k_dist_base].append(0.0)
 
-                new_base_denorm_distilled = self.baseline_popart.denormalize_outputs(new_base_distilled_norm_mb) if self.enable_popart else new_base_distilled_norm_mb
-                adv = (returns_mb.unsqueeze(2).expand_as(new_base_distilled_norm_mb) - new_base_denorm_distilled).squeeze(-1)
+
+                # --- Log Policy Alpha/Beta (for first minibatch of first epoch) ---
+                if self.action_space_type == "beta" and _epoch_ppo == 0 and mb_start == 0:
+                    policy_input_flat_mb = feats_mb.reshape(M*T*NA, -1)
+                    valid_policy_mask_flat_mb = mask_mbna.reshape(-1).bool()
+                    if valid_policy_mask_flat_mb.any():
+                        alpha_p, beta_p = self.policy_net.forward(policy_input_flat_mb[valid_policy_mask_flat_mb])
+                        logs_acc["policy_alpha_mean"].append(alpha_p.mean().item())
+                        logs_acc["policy_alpha_std"].append(alpha_p.std().item())
+                        logs_acc["policy_beta_mean"].append(beta_p.mean().item())
+                        logs_acc["policy_beta_std"].append(beta_p.std().item())
+                    else: # Add placeholders
+                        for k_beta in ["policy_alpha_mean", "policy_alpha_std", "policy_beta_mean", "policy_beta_std"]: logs_acc[k_beta].append(0.0)
+
+
+                old_lp_mb = old_logp_seq[mb_idx] # (M,T,NA)
+                old_val_distilled_mb_norm = old_val_distilled_norm[mb_idx] # (M,T,1)
+                old_base_distilled_mb_norm = old_base_distilled_norm[mb_idx] # (M,T,NA,1)
+                returns_mb = returns_seq[mb_idx] # (M,T,1)
+
+                # Denormalize baseline for advantage calculation
+                new_base_denorm_distilled_mb = self.baseline_popart.denormalize_outputs(new_base_distilled_norm_mb) if self.enable_popart else new_base_distilled_norm_mb
+                adv = (returns_mb.unsqueeze(2).expand_as(new_base_distilled_norm_mb) - new_base_denorm_distilled_mb).squeeze(-1) # (M,T,NA)
                 
-                adv_mask_mb = mask_mb.unsqueeze(-1).expand_as(adv) 
+                adv_mask_mbna = mask_mbna.bool() 
                 if self.normalize_adv:
-                    valid_adv_data = adv[adv_mask_mb.bool()]
+                    valid_adv_data = adv[adv_mask_mbna]
                     if valid_adv_data.numel() > 0:
                         m,s = valid_adv_data.mean(), valid_adv_data.std()+1e-8; adv_norm_data = (valid_adv_data-m)/s
-                        tmp_adv = torch.zeros_like(adv); tmp_adv[adv_mask_mb.bool()] = adv_norm_data; adv = tmp_adv
+                        tmp_adv = torch.zeros_like(adv); tmp_adv[adv_mask_mbna] = adv_norm_data; adv = tmp_adv
                         if _epoch_ppo == 0 and mb_start == 0: logs_acc["adv_mean"].append(m.item()); logs_acc["adv_std"].append((s-1e-8).item())
-                elif adv_mask_mb.any() and _epoch_ppo == 0 and mb_start == 0:
-                    logs_acc["adv_mean"].append(float(adv[adv_mask_mb.bool()].mean())); logs_acc["adv_std"].append(float(adv[adv_mask_mb.bool()].std()))
+                elif adv_mask_mbna.any() and _epoch_ppo == 0 and mb_start == 0: # Log unnormalized stats if not normalizing
+                    logs_acc["adv_mean"].append(float(adv[adv_mask_mbna].mean())); logs_acc["adv_std"].append(float(adv[adv_mask_mbna].std()))
                 
-                pol_loss = self._ppo_clip_loss(new_lp_mb, old_lp_mb, adv.detach(), self.ppo_clip_range, mask_mb.unsqueeze(-1).expand_as(new_lp_mb))
+                pol_loss = self._ppo_clip_loss(new_lp_mb, old_lp_mb.detach(), adv.detach(), self.ppo_clip_range, mask_mbna)
                 
-                tgt_val_distilled = returns_mb if not self.enable_popart else self.value_popart.normalize_targets(returns_mb)
-                val_loss = self._clipped_value_loss(old_val_distilled_mb_norm.detach(), new_val_distilled_norm_mb, tgt_val_distilled, self.value_clip_range, mask=mask_mb.unsqueeze(-1))
+                # Target for value is GAE returns (potentially PopArt normalized)
+                tgt_val_distilled_mb = returns_mb if not self.enable_popart else self.value_popart.normalize_targets(returns_mb)
+                val_loss = self._clipped_value_loss(old_val_distilled_mb_norm.detach(), new_val_distilled_norm_mb, tgt_val_distilled_mb, self.value_clip_range, mask=mask_mb1)
                 
-                tgt_base_distilled = returns_mb.unsqueeze(2).expand_as(new_base_distilled_norm_mb)
-                if self.enable_popart: tgt_base_distilled = self.baseline_popart.normalize_targets(tgt_base_distilled)
-                base_loss = self._clipped_value_loss(old_base_distilled_mb_norm.detach(), new_base_distilled_norm_mb, tgt_base_distilled, self.value_clip_range, mask=mask_mb.unsqueeze(-1).unsqueeze(-1).expand_as(new_base_distilled_norm_mb))
+                # Target for baseline is also GAE returns (expanded and potentially PopArt normalized)
+                tgt_base_distilled_mb = returns_mb.unsqueeze(2).expand_as(new_base_distilled_norm_mb)
+                if self.enable_popart: tgt_base_distilled_mb = self.baseline_popart.normalize_targets(tgt_base_distilled_mb)
+                base_loss = self._clipped_value_loss(old_base_distilled_mb_norm.detach(), new_base_distilled_norm_mb, tgt_base_distilled_mb, self.value_clip_range, mask=mask_mbna1)
                 
-                ent_mask_mb_expanded = mask_mb.unsqueeze(-1).expand_as(ent_mb)
-                ent_terms_masked = -ent_mb * ent_mask_mb_expanded 
-                ent_loss = ent_terms_masked.sum() / ent_mask_mb_expanded.sum().clamp(min=1e-8)
-
+                ent_terms_masked = -ent_mb * mask_mbna 
+                ent_loss = ent_terms_masked.sum() / mask_mbna.sum().clamp(min=1e-8)
 
                 ppo_total_loss = pol_loss + self.value_loss_coeff * val_loss + self.baseline_loss_coeff * base_loss + self.entropy_coeff * ent_loss
 
-                rnd_loss = torch.tensor(0.0, device=self.device) 
+                rnd_loss_mb = torch.tensor(0.0, device=self.device) 
                 if self.enable_rnd and self.rnd_update_prop > 0.0:
-                    # RND features mask: (M, T, NA)
-                    valid_rnd_feats_mask_mb_bool = mask_mb.unsqueeze(-1).expand_as(feats_mb[...,0]).bool() 
-                    # Flatten feats_mb to (M*T*NA, FeatDim) then apply mask
+                    valid_rnd_feats_mask_mbna_bool = mask_mbna.bool() 
                     flat_feats_mb_for_rnd = feats_mb.reshape(M*T*NA, -1)
-                    valid_feats_mb_for_rnd = flat_feats_mb_for_rnd[valid_rnd_feats_mask_mb_bool.reshape(-1)]
+                    valid_feats_mb_for_rnd = flat_feats_mb_for_rnd[valid_rnd_feats_mask_mbna_bool.reshape(-1)]
 
                     if valid_feats_mb_for_rnd.numel() > 0:
                         num_rnd_samples = valid_feats_mb_for_rnd.shape[0]
                         k_rnd = int(num_rnd_samples * self.rnd_update_prop)
                         if k_rnd > 0:
-                            sel_rnd = torch.randperm(num_rnd_samples, device=self.device)[:k_rnd]
-                            pred_rnd_val = self.rnd_predictor_network(valid_feats_mb_for_rnd[sel_rnd])
-                            with torch.no_grad(): tgt_rnd_val = self.rnd_target_network(valid_feats_mb_for_rnd[sel_rnd])
-                            rnd_loss = F.mse_loss(pred_rnd_val, tgt_rnd_val); ppo_total_loss += rnd_loss
+                            sel_rnd_idx = torch.randperm(num_rnd_samples, device=self.device)[:k_rnd]
+                            selected_feats_for_rnd = valid_feats_mb_for_rnd[sel_rnd_idx]
+                            
+                            pred_rnd_val = self.rnd_predictor_network(selected_feats_for_rnd)
+                            with torch.no_grad(): tgt_rnd_val = self.rnd_target_network(selected_feats_for_rnd)
+                            rnd_loss_mb = F.mse_loss(pred_rnd_val, tgt_rnd_val); ppo_total_loss += rnd_loss_mb
                 
                 self.trunk_opt.zero_grad(); self.policy_opt.zero_grad()
                 self.value_distill_opt.zero_grad(); self.baseline_distill_opt.zero_grad()
                 if self.rnd_opt: self.rnd_opt.zero_grad()
+                
                 ppo_total_loss.backward()
                 
-                ppo_path_params = list(self.embedding_net.parameters()) + list(self.policy_net.parameters()) + \
+                # Log average gradient magnitudes for components
+                if _epoch_ppo == 0 and mb_start == 0: # Log only for the first minibatch of the first epoch
+                    logs_acc["grad_norm_trunk"].append(_get_avg_grad_mag(list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])))
+                    logs_acc["grad_norm_policy"].append(_get_avg_grad_mag(list(self.policy_net.parameters())))
+                    
+                    val_dist_params_list = list(self.shared_critic.value_head_ppo.parameters()) + list(self.shared_critic.value_attention.parameters())
+                    if self.enable_iqn_distillation: val_dist_params_list += list(self.shared_critic.value_distill_net.parameters())
+                    logs_acc["grad_norm_value_distill"].append(_get_avg_grad_mag(val_dist_params_list))
+
+                    base_dist_params_list = list(self.shared_critic.baseline_head_ppo.parameters()) + list(self.shared_critic.baseline_attention.parameters())
+                    if self.enable_iqn_distillation: base_dist_params_list += list(self.shared_critic.baseline_distill_net.parameters())
+                    logs_acc["grad_norm_baseline_distill"].append(_get_avg_grad_mag(base_dist_params_list))
+
+
+                # Clip gradients for the entire PPO path
+                ppo_path_params_list = list(self.embedding_net.parameters()) + list(self.policy_net.parameters()) + \
                                   list(self.shared_critic.value_head_ppo.parameters()) + list(self.shared_critic.value_attention.parameters()) + \
                                   list(self.shared_critic.baseline_head_ppo.parameters()) + list(self.shared_critic.baseline_attention.parameters())
-                if self.enable_memory: ppo_path_params += list(self.memory_module.parameters())
+                if self.enable_memory: ppo_path_params_list += list(self.memory_module.parameters())
                 if self.enable_iqn_distillation:
-                    ppo_path_params += list(self.shared_critic.value_distill_net.parameters())
-                    ppo_path_params += list(self.shared_critic.baseline_distill_net.parameters())
-                if self.enable_rnd: ppo_path_params += list(self.rnd_predictor_network.parameters())
-                gn_ppo = clip_grad_norm_(ppo_path_params, self.max_grad_norm)
+                    ppo_path_params_list += list(self.shared_critic.value_distill_net.parameters())
+                    ppo_path_params_list += list(self.shared_critic.baseline_distill_net.parameters())
+                if self.enable_rnd: ppo_path_params_list += list(self.rnd_predictor_network.parameters())
+                gn_ppo = clip_grad_norm_(ppo_path_params_list, self.max_grad_norm)
 
                 self.trunk_opt.step(); self.policy_opt.step()
                 self.value_distill_opt.step(); self.baseline_distill_opt.step()
                 if self.rnd_opt: self.rnd_opt.step()
 
-                logs_acc["policy"].append(pol_loss.item()); logs_acc["value_distill"].append(val_loss.item())
-                logs_acc["baseline_distill"].append(base_loss.item()); 
-                valid_ent_mb_mask = mask_mb.unsqueeze(-1).expand_as(ent_mb).bool()
-                logs_acc["entropy"].append(ent_mb[valid_ent_mb_mask].mean().item() if valid_ent_mb_mask.any() else 0.0)
-                logs_acc["grad_ppo"].append(gn_ppo.item() if torch.is_tensor(gn_ppo) else gn_ppo)
-                if self.enable_rnd: logs_acc["rnd"].append(rnd_loss.item())
+                logs_acc["policy_loss"].append(pol_loss.item()); logs_acc["value_distill_loss"].append(val_loss.item())
+                logs_acc["baseline_distill_loss"].append(base_loss.item()); 
+                
+                valid_ent_mask_mbna = mask_mbna.bool()
+                logs_acc["entropy_mean"].append(ent_mb[valid_ent_mask_mbna].mean().item() if valid_ent_mask_mbna.any() else 0.0)
+                logs_acc["grad_norm_ppo"].append(gn_ppo.item() if torch.is_tensor(gn_ppo) else gn_ppo)
+                
+                # Log new log_probs stats for this minibatch
+                if valid_ent_mask_mbna.any(): # Re-use mask, as it applies to new_lp_mb too
+                    valid_new_lp = new_lp_mb[valid_ent_mask_mbna]
+                    logs_acc["logp_new_mean"].append(valid_new_lp.mean().item())
+                    logs_acc["logp_new_min"].append(valid_new_lp.min().item())
+                    logs_acc["logp_new_max"].append(valid_new_lp.max().item())
+                else: # Add placeholders
+                    logs_acc["logp_new_mean"].append(0.0); logs_acc["logp_new_min"].append(0.0); logs_acc["logp_new_max"].append(0.0)
+
+                if self.enable_rnd: logs_acc["rnd_loss"].append(rnd_loss_mb.item())
             
+            # Step schedulers after each PPO epoch
             for sch_name_key in ["lr_trunk", "lr_policy", "lr_value_distill", "lr_baseline_distill"]:
                 if self.schedulers.get(sch_name_key): self.schedulers[sch_name_key].step()
             if self.enable_rnd and self.schedulers.get("lr_rnd_predictor"): self.schedulers["lr_rnd_predictor"].step()
+            
+            # Step value schedulers
             if self.schedulers.get("entropy_coeff"): self.entropy_coeff = self.schedulers["entropy_coeff"].step()
             if self.schedulers.get("policy_clip"): self.ppo_clip_range = self.schedulers["policy_clip"].step()
             if self.schedulers.get("value_clip"): self.value_clip_range = self.schedulers["value_clip"].step()
@@ -572,50 +808,41 @@ class MAPOCAAgent(Agent):
                 if iqn_batch_tuple is None: continue
 
                 s_feats_iqn_mb, ns_feats_iqn_mb, r_iqn_mb, d_iqn_mb, mask_iqn_mb, _, _ = iqn_batch_tuple
-                # Shapes from buffer: (iqn_B, T, NA, Feat), (iqn_B, T, 1), (iqn_B, T)
                 
                 iqn_mb_B, iqn_mb_T, iqn_mb_NA, iqn_mb_F = s_feats_iqn_mb.shape
+                valid_mask_flat = mask_iqn_mb.reshape(-1).bool() 
                 
-                # Flatten sequences and select valid steps using mask_iqn_mb
-                valid_mask_flat = mask_iqn_mb.reshape(-1).bool() # (iqn_B * T)
-                
-                # These are now features for valid (non-padded) timesteps across the sampled sequences
                 s_feats_iqn_valid_steps = s_feats_iqn_mb.reshape(iqn_mb_B * iqn_mb_T, iqn_mb_NA, iqn_mb_F)[valid_mask_flat]
                 ns_feats_iqn_valid_steps = ns_feats_iqn_mb.reshape(iqn_mb_B * iqn_mb_T, iqn_mb_NA, iqn_mb_F)[valid_mask_flat]
                 r_iqn_valid_steps = r_iqn_mb.reshape(iqn_mb_B * iqn_mb_T, 1)[valid_mask_flat]
                 d_iqn_valid_steps = d_iqn_mb.reshape(iqn_mb_B * iqn_mb_T, 1)[valid_mask_flat]
 
-                if s_feats_iqn_valid_steps.shape[0] == 0: continue # No valid steps in this minibatch
+                if s_feats_iqn_valid_steps.shape[0] == 0: continue 
                 
-                eff_iqn_b_steps = s_feats_iqn_valid_steps.shape[0] # Number of valid (state, next_state) items (each is a (NA,Feat) tensor)
-
-                # For value_iqn, aggregate agent features: (eff_iqn_b_steps, Feat)
+                eff_iqn_b_steps = s_feats_iqn_valid_steps.shape[0] 
                 s_val_feats_agg = s_feats_iqn_valid_steps.mean(dim=1) 
                 ns_val_feats_agg = ns_feats_iqn_valid_steps.mean(dim=1) 
                 
-                # For baseline_iqn, features are per-agent: (eff_iqn_b_steps * NA_from_data, Feat)
                 s_base_feats_per_agent = s_feats_iqn_valid_steps.reshape(-1, iqn_mb_F) 
                 ns_base_feats_per_agent = ns_feats_iqn_valid_steps.reshape(-1, iqn_mb_F) 
                 
-                r_val_iqn = r_iqn_valid_steps # (eff_iqn_b_steps, 1)
-                d_val_iqn = d_iqn_valid_steps # (eff_iqn_b_steps, 1)
+                r_val_iqn = r_iqn_valid_steps 
+                d_val_iqn = d_iqn_valid_steps 
                 r_base_iqn = r_iqn_valid_steps.repeat_interleave(iqn_mb_NA, dim=0) if s_base_feats_per_agent.shape[0] > 0 else torch.empty(0,1,device=self.device)
                 d_base_iqn = d_iqn_valid_steps.repeat_interleave(iqn_mb_NA, dim=0) if s_base_feats_per_agent.shape[0] > 0 else torch.empty(0,1,device=self.device)
 
-                # Sample taus for current and target estimations
                 taus_current_val = self._sample_taus(eff_iqn_b_steps, self.num_quantiles)
-                taus_next_val    = self._sample_taus(eff_iqn_b_steps, self.num_quantiles_prime) # num_quantiles_prime for target
+                taus_next_val    = self._sample_taus(eff_iqn_b_steps, self.num_quantiles_prime)
                 
                 value_iqn_loss = torch.tensor(0.0, device=self.device)
                 if eff_iqn_b_steps > 0:
-                    current_value_quantiles = self.shared_critic.value_iqn_net(s_val_feats_agg, taus_current_val) # (eff_iqn_b_steps, N)
-                    with torch.no_grad(): next_value_quantiles_target = self.target_value_iqn_net(ns_val_feats_agg, taus_next_val) # (eff_iqn_b_steps, N')
-                    # Bellman targets: (eff_iqn_b_steps, 1) + scalar * (eff_iqn_b_steps, 1) * (eff_iqn_b_steps, N') -> (eff_iqn_b_steps, N')
+                    current_value_quantiles = self.shared_critic.value_iqn_net(s_val_feats_agg, taus_current_val) 
+                    with torch.no_grad(): next_value_quantiles_target = self.target_value_iqn_net(ns_val_feats_agg, taus_next_val) 
                     value_bellman_targets = r_val_iqn + self.gamma * (1.0 - d_val_iqn) * next_value_quantiles_target.detach()
                     value_iqn_loss = self._compute_huber_quantile_loss(current_value_quantiles, value_bellman_targets, taus_current_val, self.iqn_kappa)
                 
                 baseline_iqn_loss = torch.tensor(0.0, device=self.device)
-                if s_base_feats_per_agent.shape[0] > 0: # If there are any per-agent features to process
+                if s_base_feats_per_agent.shape[0] > 0: 
                     eff_base_batch_size = s_base_feats_per_agent.shape[0]
                     taus_current_base = self._sample_taus(eff_base_batch_size, self.num_quantiles)
                     taus_next_base    = self._sample_taus(eff_base_batch_size, self.num_quantiles_prime)
@@ -627,7 +854,7 @@ class MAPOCAAgent(Agent):
                 total_iqn_loss = self.iqn_loss_coeff * (value_iqn_loss + baseline_iqn_loss)
 
                 self.value_iqn_opt.zero_grad(); self.baseline_iqn_opt.zero_grad()
-                if total_iqn_loss.requires_grad and total_iqn_loss.abs().item() > 1e-9 : # Only backward if loss is not trivial
+                if total_iqn_loss.requires_grad and total_iqn_loss.abs().item() > 1e-9 : 
                     total_iqn_loss.backward()
                     gn_val_iqn = clip_grad_norm_(self.shared_critic.value_iqn_net.parameters(), self.iqn_max_grad_norm)
                     gn_base_iqn = clip_grad_norm_(self.shared_critic.baseline_iqn_net.parameters(), self.iqn_max_grad_norm)
@@ -636,64 +863,80 @@ class MAPOCAAgent(Agent):
                                                    (gn_base_iqn.item() if torch.is_tensor(gn_base_iqn) else gn_base_iqn) ) / 2.0) if gn_val_iqn is not None and gn_base_iqn is not None else 0.0
                 num_iqn_batches_processed +=1
                 
-                logs_acc["value_iqn"].append(value_iqn_loss.item()); logs_acc["baseline_iqn"].append(baseline_iqn_loss.item())
+                logs_acc["value_iqn_loss"].append(value_iqn_loss.item()); logs_acc["baseline_iqn_loss"].append(baseline_iqn_loss.item())
             
             if num_iqn_batches_processed > 0: 
-                logs_acc["grad_iqn"].append(current_iqn_grad_norm_sum / num_iqn_batches_processed)
-            elif "grad_iqn" not in logs_acc or not logs_acc["grad_iqn"]: # Add 0 if no batches processed in this update
-                 logs_acc["grad_iqn"].append(0.0)
-
+                logs_acc["grad_norm_iqn"].append(current_iqn_grad_norm_sum / num_iqn_batches_processed)
+            elif "grad_norm_iqn" not in logs_acc or not logs_acc["grad_norm_iqn"]: 
+                 logs_acc["grad_norm_iqn"].append(0.0)
 
             if self.schedulers.get("lr_value_iqn"): self.schedulers["lr_value_iqn"].step()
             if self.schedulers.get("lr_baseline_iqn"): self.schedulers["lr_baseline_iqn"].step()
             if self._iqn_total_updates_counter % self.iqn_target_update_freq == 0: self._update_target_iqn_networks()
         
-        # --- Logging ---
-        logs = {k: (np.mean(v) if v else 0.0) for k,v in logs_acc.items()}
-        logs.update({
-            "raw_reward_mean": raw_ext_mean, "processed_reward_mean": proc_rew_mean, "return_mean": ret_mean, "return_std": ret_std,
-            "entropy_coeff": self.entropy_coeff, "ppo_clip": self.ppo_clip_range, "value_clip": self.value_clip_range, "max_grad_norm_ppo": self.max_grad_norm,
-            "lr_trunk": self.schedulers["lr_trunk"].get_last_lr()[0] if self.schedulers.get("lr_trunk") else lr_conf["lr_trunk"],
-            "lr_policy": self.schedulers["lr_policy"].get_last_lr()[0] if self.schedulers.get("lr_policy") else lr_conf["lr_policy"],
-            "lr_value_distill": self.schedulers["lr_value_distill"].get_last_lr()[0] if self.schedulers.get("lr_value_distill") else lr_conf["lr_value_distill"],
-            "lr_baseline_distill": self.schedulers["lr_baseline_distill"].get_last_lr()[0] if self.schedulers.get("lr_baseline_distill") else lr_conf["lr_baseline_distill"],
+        # --- Finalize Logs ---
+        # Average logs collected per minibatch/epoch
+        final_logs = {k: (np.mean(v) if v else 0.0) for k,v in logs_acc.items() if isinstance(v, list) and k not in ["popart_sample_raw_returns", "popart_sample_norm_val_targets", "popart_sample_old_val_norm", "popart_sample_old_val_denorm_for_gae"]}
+        # Add single-value logs (like PopArt samples) directly if they were stored as non-lists or if we want the last sample
+        for k_pop_sample in ["popart_sample_raw_returns", "popart_sample_norm_val_targets", "popart_sample_old_val_norm", "popart_sample_old_val_denorm_for_gae"]:
+            if k_pop_sample in logs_acc and logs_acc[k_pop_sample]:
+                final_logs[k_pop_sample] = np.mean(logs_acc[k_pop_sample])
+
+        final_logs.update({
+            "raw_reward_mean": raw_ext_mean, "processed_reward_mean": proc_rew_mean, 
+            "return_mean": ret_mean, "return_std": ret_std,
+            "entropy_coeff_curr": self.entropy_coeff, "ppo_clip_curr": self.ppo_clip_range, 
+            "value_clip_curr": self.value_clip_range, "max_grad_norm_ppo_curr": self.max_grad_norm,
+            "lr_trunk_curr": self.schedulers["lr_trunk"].get_last_lr()[0] if self.schedulers.get("lr_trunk") else lr_conf["lr_trunk"],
+            "lr_policy_curr": self.schedulers["lr_policy"].get_last_lr()[0] if self.schedulers.get("lr_policy") else lr_conf["lr_policy"],
+            "lr_value_distill_curr": self.schedulers["lr_value_distill"].get_last_lr()[0] if self.schedulers.get("lr_value_distill") else lr_conf["lr_value_distill"],
+            "lr_baseline_distill_curr": self.schedulers["lr_baseline_distill"].get_last_lr()[0] if self.schedulers.get("lr_baseline_distill") else lr_conf["lr_baseline_distill"],
         })
         if self.enable_iqn_distillation:
-            logs["lr_value_iqn"] = self.schedulers["lr_value_iqn"].get_last_lr()[0] if self.schedulers.get("lr_value_iqn") else lr_conf["lr_iqn"]
-            logs["lr_baseline_iqn"] = self.schedulers["lr_baseline_iqn"].get_last_lr()[0] if self.schedulers.get("lr_baseline_iqn") else lr_conf["lr_iqn"]
-            logs["iqn_max_grad_norm"] = self.iqn_max_grad_norm
-        if self.enable_rnd: logs["lr_rnd"] = self.schedulers["lr_rnd_predictor"].get_last_lr()[0] if self.schedulers.get("lr_rnd_predictor") else lr_conf["lr_rnd"]
-        if self.enable_popart:
-            logs.update({"popart_value_mu": self.value_popart.mu.item(), "popart_value_sigma": self.value_popart.sigma.item(),
-                         "popart_baseline_mu": self.baseline_popart.mu.item(), "popart_baseline_sigma": self.baseline_popart.sigma.item()})
-        return logs
+            final_logs["lr_value_iqn_curr"] = self.schedulers["lr_value_iqn"].get_last_lr()[0] if self.schedulers.get("lr_value_iqn") else lr_conf["lr_iqn"]
+            final_logs["lr_baseline_iqn_curr"] = self.schedulers["lr_baseline_iqn"].get_last_lr()[0] if self.schedulers.get("lr_baseline_iqn") else lr_conf["lr_iqn"]
+            final_logs["iqn_max_grad_norm_curr"] = self.iqn_max_grad_norm
+        if self.enable_rnd: 
+            final_logs["lr_rnd_curr"] = self.schedulers["lr_rnd_predictor"].get_last_lr()[0] if self.schedulers.get("lr_rnd_predictor") else lr_conf["lr_rnd"]
+        
+        return final_logs
 
     def _ppo_clip_loss(self, new_lp, old_lp, adv, clip_range, mask): 
-        # Ensure mask has same number of dims as new_lp for broadcasting before sum/mean
         if mask.ndim < new_lp.ndim: mask = mask.unsqueeze(-1).expand_as(new_lp)
-        ratio = torch.exp((new_lp - old_lp).clamp(-10,10))
-        s1 = ratio * adv; s2 = torch.clamp(ratio, 1-clip_range, 1+clip_range) * adv
+        ratio = torch.exp((new_lp - old_lp).clamp(-10,10)) # Clamping for stability
+        s1 = ratio * adv; s2 = torch.clamp(ratio, 1.0-clip_range, 1.0+clip_range) * adv
         loss_terms = -torch.min(s1,s2) * mask 
         return loss_terms.sum() / mask.sum().clamp(min=1e-8)
 
-    def _clipped_value_loss(self, old, new, target, clip_range, mask, reduction="mean"): 
-        if mask.ndim < new.ndim: mask = mask.unsqueeze(-1).expand_as(new)
-        clipped_new = old + (new - old).clamp(-clip_range, clip_range)
-        loss_terms = torch.max((new - target).pow(2), (clipped_new - target).pow(2))
+    def _clipped_value_loss(self, old_v_norm, new_v_norm, target_v_norm, clip_range, mask, reduction="mean"): 
+        if mask.ndim < new_v_norm.ndim: mask = mask.unsqueeze(-1).expand_as(new_v_norm)
+        # Clip the new value prediction based on the old value prediction
+        v_pred_clipped_norm = old_v_norm + (new_v_norm - old_v_norm).clamp(-clip_range, clip_range)
+        # Two potential losses: one with the original new_v_norm, one with the clipped version
+        vf_loss1 = (new_v_norm - target_v_norm).pow(2)
+        vf_loss2 = (v_pred_clipped_norm - target_v_norm).pow(2)
+        loss_terms = torch.max(vf_loss1, vf_loss2) # Take the worse of the two losses
         masked_loss_terms = loss_terms * mask 
         if reduction == "mean": return masked_loss_terms.sum() / mask.sum().clamp(min=1e-8) 
-        return masked_loss_terms
+        return masked_loss_terms # Should not happen with default reduction
 
     def _recompute_log_probs_from_features(self, feats_seq, actions_seq): # Unchanged
         B,T,NA,F = feats_seq.shape; flat_feats = feats_seq.reshape(B*T*NA, F)
-        if self.action_space_type == "discrete" and isinstance(self.action_dim, list) and len(self.action_dim) > 1: 
-            flat_actions = actions_seq.reshape(B*T*NA, self.total_action_dim_per_agent)
-        else: 
-             flat_actions = actions_seq.reshape(B*T*NA, self.action_dim if isinstance(self.action_dim, int) else self.action_dim[0] )
+        
+        # Determine the action dimension based on action_space_type and self.action_dim
+        if self.action_space_type == "discrete":
+            # For multi-discrete, total_action_dim_per_agent is the number of branches
+            action_dim_flat = self.total_action_dim_per_agent 
+        elif self.action_space_type in ["beta", "tanh_continuous", "gaussian"]:
+            action_dim_flat = self.action_dim # self.action_dim is an int for continuous
+        else:
+            raise ValueError(f"Unknown action_space_type: {self.action_space_type} in _recompute_log_probs_from_features")
+
+        flat_actions = actions_seq.reshape(B*T*NA, action_dim_flat)
         lp_flat, ent_flat = self.policy_net.recompute_log_probs(flat_feats, flat_actions)
         return lp_flat.reshape(B,T,NA), ent_flat.reshape(B,T,NA)
 
-    def parameters(self): # For PPO path global grad clipping
+    def parameters(self): # For PPO path global grad clipping - Unchanged
         ppo_path_params = list(self.embedding_net.parameters()) + list(self.policy_net.parameters()) + \
                           list(self.shared_critic.value_head_ppo.parameters()) + list(self.shared_critic.value_attention.parameters()) + \
                           list(self.shared_critic.baseline_head_ppo.parameters()) + list(self.shared_critic.baseline_attention.parameters())
