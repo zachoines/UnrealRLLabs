@@ -13,7 +13,7 @@
       "ObjectMass": 0.1,
       "GridSize": 25,
       "MaxSteps": 1024,
-      "MaxAgents": 4,
+      "MaxAgents": 8,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
         "bUseXYDistanceImprovement": false,
@@ -38,7 +38,7 @@
         "DefaultRadius": 1.0
       },
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 4,
+        "NumAgents": 8,
         "GridSize": 25,
         "MinHeight": -4.0,
         "MaxHeight": 4.0,
@@ -110,8 +110,8 @@
         },
         "agent": {
           "obs_size": 9,
-          "min": 4,
-          "max": 4
+          "min": 8,
+          "max": 8
         }
       },
       "action": {
@@ -190,28 +190,36 @@
       "lr_baseline": 0.00005,
       "lr_trunk": 0.00005,
       "lr_rnd_predictor": 0.00005,
-      "lr_iqn": 0.00005,
+      "lr_iqn": 0.00005, 
+      "lr_value_iqn": 0.00005,
+      "lr_baseline_iqn": 0.00005,
       "optimizer_betas": {
         "trunk": [0.9, 0.98],
         "policy": [0.9, 0.98],
         "value": [0.9, 0.98],
         "baseline": [0.9, 0.98],
         "iqn": [0.9,0.98],
+        "iqn_value": [0.9,0.98],
+        "iqn_baseline": [0.9,0.98],
         "rnd": [0.9, 0.98]
       },
       "weight_decay": {
-        "trunk": 1e-6,
+        "trunk": 1e-5,
         "policy": 1e-6,
         "value": 1e-6,
-        "baseline": 1e-6,
-        "iqn": 1e-5,
-        "rnd": 0.0
+        "baseline": 1e-5,
+        "iqn": 1e-6,
+        "iqn_value": 1e-6,
+        "iqn_baseline": 1e-5,
+        "rnd": 1e-5
       },
       "gamma": 0.99,
       "lambda": 0.95,
       "value_loss_coeff": 0.5,
-      "baseline_loss_coeff": 0.5,
+      "baseline_loss_coeff": 0.25,
       "iqn_loss_coeff": 0.25,
+      "value_iqn_loss_coeff": 0.25,
+      "baseline_iqn_loss_coeff": 0.25,
       "normalize_advantages": true,
       "clipped_value_loss": true,
       "max_grad_norm": 0.5,
@@ -230,7 +238,9 @@
         "lr_baseline": { "start_factor": 1.0, "end_factor": 0.1, "total_iters": 20000 },
         "lr_rnd_predictor": { "start_factor": 1.0, "end_factor": 0.1, "total_iters": 20000 },
         "lr_iqn": { "start_factor": 1.0, "end_factor": 0.1, "total_iters": 20000 },
-        "entropy_coeff": { "start_value": 0.001, "end_value": 0.0001, "total_iters": 20000 },
+        "lr_value_iqn": { "start_factor": 1.0, "end_factor": 0.1, "total_iters": 20000 },
+        "lr_baseline_iqn": { "start_factor": 1.0, "end_factor": 0.1, "total_iters": 20000 },
+        "entropy_coeff": { "start_value": 0.002, "end_value": 0.0001, "total_iters": 20000 },
         "value_clip": { "start_value": 0.1, "end_value": 0.05, "total_iters": 20000 },
         "policy_clip": { "start_value": 0.3, "end_value": 0.1, "total_iters": 20000 },
         "max_grad_norm": { "start_value": 1.0, "end_value": 0.5, "total_iters": 20000 }
@@ -239,7 +249,7 @@
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 4,
+            "num_agents": 8,
             "in_channels": 2,
             "h": 25,
             "w": 25,
@@ -334,14 +344,14 @@
     }
   },
   "train": {
-    "sequence_length": 32,
+    "sequence_length": 64,
     "pad_trajectories": true,
-    "batch_size": 256,
-    "buffer_size": 256,
-    "num_environments": 8,
+    "batch_size": 512,
+    "buffer_size": 512,
+    "num_environments": 4,
     "epochs": 3,
-    "mini_batch_size": 32,
-    "ActionRepeat": 3,
+    "mini_batch_size": 64,
+    "ActionRepeat": 1,
     "saveFrequency": 100,
     "iqn_target_update_freq": 10,
     "iqn_train_freq": 1,

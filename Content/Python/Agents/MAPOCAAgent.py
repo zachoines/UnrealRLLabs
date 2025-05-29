@@ -462,7 +462,7 @@ class MAPOCAAgent(Agent):
         huber_loss_matrix = torch.where(abs_td_errors <= kappa, 0.5 * td_errors.pow(2), kappa * (abs_td_errors - 0.5 * kappa))
         indicator = (td_errors < 0).float() # (B, N_curr, N_targ)
         # taus_for_current is (B, N_curr, 1). Need to align for broadcasted subtraction with indicator.
-        delta_weight = torch.abs(taus_for_current.unsqueeze(2) - indicator) # (B, N_curr, N_targ)
+        delta_weight = torch.abs(taus_for_current - indicator) # (B, N_curr, N_targ)
         loss = (delta_weight * huber_loss_matrix).mean() # Mean over all three dimensions
         return loss
 
