@@ -196,10 +196,8 @@ class MAPOCAAgent(Agent):
             self.iqn_kappa = iqn_params_from_critic_config.get("kappa", 1.0)
             self.lr_iqn = a_cfg.get("lr_iqn", 0.0001) # General LR for IQN components
 
-            # **MODIFIED: Separate loss coefficients for value and baseline IQN**
             self.value_iqn_loss_coeff = a_cfg.get("value_iqn_loss_coeff", a_cfg.get("iqn_loss_coeff", 0.25))
             self.baseline_iqn_loss_coeff = a_cfg.get("baseline_iqn_loss_coeff", a_cfg.get("iqn_loss_coeff", 0.25))
-            # Removed self.iqn_loss_coeff as it's now split
 
             self.iqn_target_update_freq = t_cfg.get("iqn_target_update_freq", 1000)
             self.iqn_polyak = iqn_params_from_critic_config.get("polyak_tau", 0.005)
@@ -225,7 +223,6 @@ class MAPOCAAgent(Agent):
         # --- Network Definitions ---
         emb_cfg = a_cfg["networks"]["MultiAgentEmbeddingNetwork"]
         self.embedding_net = MultiAgentEmbeddingNetwork(emb_cfg).to(device)
-        # **MODIFIED: Consistent naming for embedding output dimension**
         emb_out_dim = emb_cfg["cross_attention_feature_extractor"]["embed_dim"]
 
         self.enable_memory = a_cfg.get("enable_memory", False)
@@ -254,8 +251,6 @@ class MAPOCAAgent(Agent):
         else:
             raise ValueError(f"Unsupported policy_network type: {policy_type_str}")
 
-        # **MODIFIED: Pass emb_out_dim as feature_dim_for_iqn to SharedCritic**
-        # This ensures IQN components inside SharedCritic are correctly sized.
         critic_full_config["feature_dim_for_iqn"] = emb_out_dim
         self.shared_critic = SharedCritic(net_cfg=critic_full_config).to(device)
 
@@ -296,9 +291,8 @@ class MAPOCAAgent(Agent):
         # --- Optimizers ---
         lr_conf = { "lr_trunk": a_cfg.get("lr_trunk", a_cfg.get("lr_policy", self.lr_base)),
                     "lr_policy": a_cfg.get("lr_policy", self.lr_base),
-                    "lr_value_distill": a_cfg.get("lr_value", self.lr_base), # For PPO value head + value_distill_net + value_attention
-                    "lr_baseline_distill": a_cfg.get("lr_baseline", self.lr_base), # For PPO baseline head + baseline_distill_net + baseline_attention
-                    # **MODIFIED: Separate LRs for value and baseline IQN components**
+                    "lr_value_distill": a_cfg.get("lr_value", self.lr_base),
+                    "lr_baseline_distill": a_cfg.get("lr_baseline", self.lr_base),
                     "lr_value_iqn": a_cfg.get("lr_value_iqn", a_cfg.get("lr_iqn", self.lr_base)),
                     "lr_baseline_iqn": a_cfg.get("lr_baseline_iqn", a_cfg.get("lr_iqn", self.lr_base)),
                     "lr_rnd": a_cfg.get("lr_rnd_predictor", self.lr_base)}
@@ -308,22 +302,17 @@ class MAPOCAAgent(Agent):
         self.trunk_opt = optim.Adam(trunk_params, lr=lr_conf["lr_trunk"], betas=tuple(beta_conf.get("trunk", (0.9,0.98))), weight_decay=wd_conf.get("trunk",1e-5))
         self.policy_opt = optim.Adam(self.policy_net.parameters(), lr=lr_conf["lr_policy"], betas=tuple(beta_conf.get("policy",(0.9,0.98))), weight_decay=wd_conf.get("policy",1e-5))
 
-        # Parameters for the PPO value path (including distillation if enabled)
         val_dist_params = list(self.shared_critic.value_head_ppo.parameters()) + \
                           list(self.shared_critic.value_attention.parameters())
-        if self.enable_iqn_distillation:
-            val_dist_params += list(self.shared_critic.value_distill_net.parameters())
+        if self.enable_iqn_distillation: val_dist_params += list(self.shared_critic.value_distill_net.parameters())
         self.value_distill_opt = optim.Adam(val_dist_params, lr=lr_conf["lr_value_distill"], betas=tuple(beta_conf.get("value",(0.9,0.95))), weight_decay=wd_conf.get("value",1e-4))
 
-        # Parameters for the PPO baseline path (including distillation if enabled)
         base_dist_params = list(self.shared_critic.baseline_head_ppo.parameters()) + \
                            list(self.shared_critic.baseline_attention.parameters())
-        if self.enable_iqn_distillation:
-            base_dist_params += list(self.shared_critic.baseline_distill_net.parameters())
+        if self.enable_iqn_distillation: base_dist_params += list(self.shared_critic.baseline_distill_net.parameters())
         self.baseline_distill_opt = optim.Adam(base_dist_params, lr=lr_conf["lr_baseline_distill"], betas=tuple(beta_conf.get("baseline",(0.9,0.95))), weight_decay=wd_conf.get("baseline",1e-4))
 
         if self.enable_iqn_distillation:
-            # **MODIFIED: Separate optimizers for value_iqn_net and baseline_iqn_net**
             self.value_iqn_opt = optim.Adam(self.shared_critic.value_iqn_net.parameters(), lr=lr_conf["lr_value_iqn"], betas=tuple(beta_conf.get("iqn_value",(0.9,0.98))), weight_decay=wd_conf.get("iqn_value",0.0))
             self.baseline_iqn_opt = optim.Adam(self.shared_critic.baseline_iqn_net.parameters(), lr=lr_conf["lr_baseline_iqn"], betas=tuple(beta_conf.get("iqn_baseline",(0.9,0.98))), weight_decay=wd_conf.get("iqn_baseline",0.0))
         else:
@@ -352,7 +341,6 @@ class MAPOCAAgent(Agent):
         if self.schedulers["max_grad_norm"]: self.max_grad_norm = self.schedulers["max_grad_norm"].current_value()
 
         if self.enable_iqn_distillation and self.value_iqn_opt and self.baseline_iqn_opt:
-            # **MODIFIED: Schedulers for separate IQN LRs**
             self.schedulers["lr_value_iqn"] = LinearLR(self.value_iqn_opt, **sched_cfg.get("lr_value_iqn", sched_cfg.get("lr_iqn", def_lin_sched)))
             self.schedulers["lr_baseline_iqn"] = LinearLR(self.baseline_iqn_opt, **sched_cfg.get("lr_baseline_iqn", sched_cfg.get("lr_iqn", def_lin_sched)))
         if self.enable_rnd and self.rnd_opt:
@@ -372,7 +360,7 @@ class MAPOCAAgent(Agent):
             else:
                 raise ValueError(f"Unsupported policy_network type in config: {policy_type_override}")
         elif "continuous" in a_cfg:
-            self.action_space_type = "beta"
+            self.action_space_type = "beta" # Defaulting to beta if continuous and no override
             self.action_dim = len(a_cfg["continuous"])
         elif "discrete" in a_cfg:
             self.action_space_type = "discrete"
@@ -386,17 +374,13 @@ class MAPOCAAgent(Agent):
     def _apply_memory_seq(self, seq_feats: torch.Tensor, init_h: Optional[torch.Tensor], return_hidden: bool = False) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         if not self.memory_module: return (seq_feats, None) if return_hidden else seq_feats
         B, T, NA, F = seq_feats.shape; flat = seq_feats.reshape(B * NA, T, F)
-        # Ensure h0 is correctly shaped for GRU: (num_layers * num_directions, N, H_out)
-        # current init_h is (B, NA, Layers, Hidden) -> needs to be (Layers, B*NA, Hidden)
         h0_gru = None
         if init_h is not None:
-            # Reshape from (B, NA, Layers, Hidden) to (Layers, B*NA, Hidden)
             h0_gru = init_h.reshape(B * NA, self.memory_layers, self.memory_hidden).permute(1, 0, 2).contiguous()
 
         flat_out, h_n_gru = self.memory_module.forward_sequence(flat, h0_gru)
         out = flat_out.reshape(B, T, NA, self.memory_hidden)
         if return_hidden:
-            # Reshape h_n_gru from (Layers, B*NA, Hidden) back to (B, NA, Layers, Hidden) for consistent external use
             h_n_reshaped = h_n_gru.permute(1, 0, 2).reshape(B, NA, self.memory_layers, self.memory_hidden)
             return out, h_n_reshaped
         return out
@@ -406,51 +390,37 @@ class MAPOCAAgent(Agent):
 
     @torch.no_grad()
     def get_actions(self, states: Dict[str, torch.Tensor], dones: torch.Tensor, truncs: torch.Tensor, h_prev_batch: Optional[torch.Tensor] = None, eval: bool = False, record: bool = True) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], Optional[torch.Tensor]]:
-        # S_batch is always 1 for online inference; B_env is num_environments
         S_batch, B_env, NA_runtime = 1, states["agent"].shape[1] if "agent" in states else (states["central"].shape[1] if "central" in states else 1), self.num_agents
 
-        # Get base embeddings (B_env, NA, Emb)
-        emb, _ = self.embedding_net.get_base_embedding(states); emb = emb.squeeze(0) # Remove S_batch dim
+        emb, _ = self.embedding_net.get_base_embedding(states); emb = emb.squeeze(0)
 
-        h_next = None # Initialize h_next
+        h_next = None
         if self.memory_module:
-            if h_prev_batch is None: # Should be (B_env, NA, Layers, Hidden)
+            if h_prev_batch is None:
                 h_prev_batch = torch.zeros(B_env, NA_runtime, self.memory_layers, self.memory_hidden, device=self.device)
-
-            # Reshape for GRU: features (B_env*NA, Emb), h_prev (Layers, B_env*NA, Hidden)
             flat_emb = emb.reshape(B_env * NA_runtime, -1)
             h_prev_gru = h_prev_batch.reshape(B_env * NA_runtime, self.memory_layers, self.memory_hidden).permute(1,0,2).contiguous()
-
             flat_out, h_next_gru = self.memory_module.forward_step(flat_emb, h_prev_gru)
-            feats = flat_out.reshape(B_env, NA_runtime, -1) # (B_env, NA, TrunkDim)
-
-            # Reshape h_next back to (B_env, NA, Layers, Hidden)
+            feats = flat_out.reshape(B_env, NA_runtime, -1)
             h_next = h_next_gru.permute(1,0,2).reshape(B_env, NA_runtime, self.memory_layers, self.memory_hidden)
-
-            # Reset hidden state for done/truncated environments
-            # dones/truncs are (1, B_env, 1), need (B_env, 1, 1, 1) for broadcasting with h_next
             reset_mask = _bool_or(dones.squeeze(0), truncs.squeeze(0)).view(B_env, 1, 1, 1).float()
             h_next = h_next * (1.0 - reset_mask)
         else:
-            feats = emb # No memory, features are just embeddings (B_env, NA, Emb)
+            feats = emb
 
-        # Policy input: flatten agents (B_env*NA, TrunkDim or EmbDim)
         pol_in = feats.reshape(B_env * NA_runtime, -1)
-        act_flat, lp_flat, ent_flat = self.policy_net.get_actions(pol_in, eval) # act_flat depends on action type
+        act_flat, lp_flat, ent_flat = self.policy_net.get_actions(pol_in, eval)
 
-        # Reshape actions and log_probs/entropies back
-        if self.action_space_type == "discrete" and isinstance(self.action_dim, list) and len(self.action_dim) > 1: # MultiDiscrete
+        if self.action_space_type == "discrete" and isinstance(self.action_dim, list) and len(self.action_dim) > 1:
              actions_shaped = act_flat.reshape(B_env, NA_runtime, len(self.action_dim))
-        else: # Single Discrete or Continuous
+        else:
              actions_shaped = act_flat.reshape(B_env, NA_runtime, self.action_dim if isinstance(self.action_dim, int) else self.action_dim[0])
 
-        # Final actions for UE: (B_env, NA_runtime * total_action_dim_per_agent)
         actions_ue = actions_shaped.reshape(B_env, NA_runtime * self.total_action_dim_per_agent)
 
         logp = lp_flat.reshape(B_env, NA_runtime); ent = ent_flat.reshape(B_env, NA_runtime)
-
         if record and self.state_recorder and "central" in states and states["central"].ndim >=2 :
-            self.state_recorder.record_frame(states["central"][0,0].cpu().numpy().flatten()) # Assuming S_batch=1
+            self.state_recorder.record_frame(states["central"][0,0].cpu().numpy().flatten())
         return actions_ue, (logp,ent), h_next
 
     def _compute_huber_quantile_loss(self, current_quantiles, target_quantiles_detached, taus_for_current, kappa):
@@ -461,9 +431,10 @@ class MAPOCAAgent(Agent):
         abs_td_errors = torch.abs(td_errors)
         huber_loss_matrix = torch.where(abs_td_errors <= kappa, 0.5 * td_errors.pow(2), kappa * (abs_td_errors - 0.5 * kappa))
         indicator = (td_errors < 0).float() # (B, N_curr, N_targ)
-        # taus_for_current is (B, N_curr, 1). Need to align for broadcasted subtraction with indicator.
+        # **FIXED: Broadcasting for delta_weight**
+        # taus_for_current is (B, N_curr, 1). It correctly broadcasts with indicator (B, N_curr, N_targ).
         delta_weight = torch.abs(taus_for_current - indicator) # (B, N_curr, N_targ)
-        loss = (delta_weight * huber_loss_matrix).mean() # Mean over all three dimensions
+        loss = (delta_weight * huber_loss_matrix).mean() # Mean over all three dimensions (B, N_curr, N_targ)
         return loss
 
     def _update_target_iqn_networks(self):
@@ -486,7 +457,7 @@ class MAPOCAAgent(Agent):
             returns[:, t] = current_return * valid_mask_step
             gae = gae * valid_mask_step
         return returns
-    
+
     def update(self, padded_states_dict_seq: Dict[str, torch.Tensor], padded_actions_seq: torch.Tensor, padded_rewards_seq: torch.Tensor, padded_next_states_dict_seq: Dict[str, torch.Tensor], padded_dones_seq: torch.Tensor, padded_truncs_seq: torch.Tensor, initial_hidden_states_batch: Optional[torch.Tensor], attention_mask_batch: torch.Tensor) -> Dict[str, float]:
         B, T = attention_mask_batch.shape; NA = self.num_agents
         mask_bt = attention_mask_batch # (B, T)
@@ -531,66 +502,56 @@ class MAPOCAAgent(Agent):
 
         # --- NO-GRAD PASS for PPO GAE and preparing data for IQN Replay Buffer ---
         with torch.no_grad():
-            # Get base embeddings from observations
-            emb_s_seq, _ = self.embedding_net.get_base_embedding(padded_states_dict_seq)    # (B,T,NA,Emb)
-            emb_ns_seq, _ = self.embedding_net.get_base_embedding(padded_next_states_dict_seq) # (B,T,NA,Emb)
+            emb_s_seq, _ = self.embedding_net.get_base_embedding(padded_states_dict_seq)
+            emb_ns_seq, _ = self.embedding_net.get_base_embedding(padded_next_states_dict_seq)
 
-            # Apply memory module to get trunk features
             h_n_for_next_buffer = None
             if self.memory_module:
-                feats_s_seq, h_n_for_next_buffer = self._apply_memory_seq(emb_s_seq, initial_hidden_states_batch, return_hidden=True) # (B,T,NA,Trunk), (B,NA,Layers,Hidden)
-                feats_ns_seq = self._apply_memory_seq(emb_ns_seq, h_n_for_next_buffer) # (B,T,NA,Trunk)
+                feats_s_seq, h_n_for_next_buffer = self._apply_memory_seq(emb_s_seq, initial_hidden_states_batch, return_hidden=True)
+                feats_ns_seq = self._apply_memory_seq(emb_ns_seq, h_n_for_next_buffer)
             else:
-                feats_s_seq = self._apply_memory_seq(emb_s_seq, None) # Pass-through if no memory
+                feats_s_seq = self._apply_memory_seq(emb_s_seq, None)
                 feats_ns_seq = self._apply_memory_seq(emb_ns_seq, None)
 
-
-            # --- Prepare processed features for IQN Replay Buffer ---
-            # These features should be what the IQN heads inside SharedCritic expect as input.
             B_T_flat_dim = B * T
             B_T_NA_flat_dim = B * T * NA
 
-            # 1. For Centralized Value IQN:
-            # Input to shared_critic.values is (B_T_flat_dim, NA, FeatDim_AttnInput=trunk_dim)
-            # Output `aggregated_emb` is (B_T_flat_dim, emb_out_dim)
-            _val_input_s_flat = feats_s_seq.reshape(B_T_flat_dim, NA, -1)
-            _val_attn_out_s, _ = self.shared_critic.value_attention(_val_input_s_flat)
-            s_val_feats_agg_for_buffer = _val_attn_out_s.mean(dim=1).reshape(B, T, -1) # (B, T, emb_out_dim)
+            # 1. Features for Centralized Value IQN (s_val_feats_agg, ns_val_feats_agg)
+            # These are the `aggregated_emb` from `SharedCritic.values` logic
+            _val_input_s_flat_no_grad = feats_s_seq.reshape(B_T_flat_dim, NA, -1)
+            _val_attn_out_s_no_grad, _ = self.shared_critic.value_attention(_val_input_s_flat_no_grad)
+            s_val_feats_agg_for_buffer = _val_attn_out_s_no_grad.mean(dim=1).reshape(B, T, -1)
 
-            _val_input_ns_flat = feats_ns_seq.reshape(B_T_flat_dim, NA, -1)
-            _val_attn_out_ns, _ = self.shared_critic.value_attention(_val_input_ns_flat)
-            ns_val_feats_agg_for_buffer = _val_attn_out_ns.mean(dim=1).reshape(B, T, -1) # (B, T, emb_out_dim)
+            _val_input_ns_flat_no_grad = feats_ns_seq.reshape(B_T_flat_dim, NA, -1)
+            _val_attn_out_ns_no_grad, _ = self.shared_critic.value_attention(_val_input_ns_flat_no_grad)
+            ns_val_feats_agg_for_buffer = _val_attn_out_ns_no_grad.mean(dim=1).reshape(B, T, -1)
 
-            # 2. For Baseline IQN:
-            # Input to shared_critic.baselines is counterfactual_input (B_T_NA_flat_dim, SeqLen_A, FeatDim_AttnInput)
-            # Output `agent_emb_for_baseline` is (B_T_NA_flat_dim, emb_out_dim)
-            _base_comb_inputs_s = self.embedding_net.get_baseline_embeddings(feats_s_seq, padded_actions_seq) # (B,T,NA,A,trunk_dim)
-            _base_attn_input_s_flat = _base_comb_inputs_s.reshape(B_T_NA_flat_dim, NA, -1) # SeqLen_A is NA
-            _base_attn_out_s, _ = self.shared_critic.baseline_attention(_base_attn_input_s_flat)
-            s_base_feats_comb_agg_for_buffer = _base_attn_out_s.mean(dim=1).reshape(B, T, NA, -1) # (B,T,NA,emb_out_dim)
+            # 2. Features for Baseline IQN (s_base_feats_comb_agg, ns_base_feats_comb_agg)
+            # These are `agent_emb_for_baseline` from `SharedCritic.baselines` logic
+            _base_comb_inputs_s_no_grad = self.embedding_net.get_baseline_embeddings(feats_s_seq, padded_actions_seq)
+            _base_attn_input_s_flat_no_grad = _base_comb_inputs_s_no_grad.reshape(B_T_NA_flat_dim, NA, -1) # SeqLen_A is NA
+            _base_attn_out_s_no_grad, _ = self.shared_critic.baseline_attention(_base_attn_input_s_flat_no_grad)
+            s_base_feats_comb_agg_for_buffer = _base_attn_out_s_no_grad.mean(dim=1).reshape(B, T, NA, -1)
 
-            _base_comb_inputs_ns = self.embedding_net.get_baseline_embeddings(feats_ns_seq, torch.zeros_like(padded_actions_seq)) # Use zero actions for next state
-            _base_attn_input_ns_flat = _base_comb_inputs_ns.reshape(B_T_NA_flat_dim, NA, -1)
-            _base_attn_out_ns, _ = self.shared_critic.baseline_attention(_base_attn_input_ns_flat)
-            ns_base_feats_comb_agg_for_buffer = _base_attn_out_ns.mean(dim=1).reshape(B, T, NA, -1) # (B,T,NA,emb_out_dim)
+            _base_comb_inputs_ns_no_grad = self.embedding_net.get_baseline_embeddings(feats_ns_seq, torch.zeros_like(padded_actions_seq))
+            _base_attn_input_ns_flat_no_grad = _base_comb_inputs_ns_no_grad.reshape(B_T_NA_flat_dim, NA, -1) # SeqLen_A is NA
+            _base_attn_out_ns_no_grad, _ = self.shared_critic.baseline_attention(_base_attn_input_ns_flat_no_grad)
+            ns_base_feats_comb_agg_for_buffer = _base_attn_out_ns_no_grad.mean(dim=1).reshape(B, T, NA, -1)
 
             if self.enable_iqn_distillation and hasattr(self, 'iqn_replay_buffer') and self.iqn_replay_buffer.capacity > 0:
                  self.iqn_replay_buffer.push_batch(
                      s_val_feats_agg_for_buffer, ns_val_feats_agg_for_buffer,
                      s_base_feats_comb_agg_for_buffer, ns_base_feats_comb_agg_for_buffer,
-                     padded_actions_seq, # Keep actions for context if needed
+                     padded_actions_seq,
                      rewards_seq, padded_dones_seq,
                      attention_mask_batch, initial_hidden_states_batch, h_n_for_next_buffer
                  )
-            # --- End of IQN Replay Buffer Preparation ---
 
             taus_no_grad_val = self._sample_taus(B_T_flat_dim, self.num_quantiles) if self.enable_iqn_distillation else None
             taus_no_grad_base = self._sample_taus(B_T_NA_flat_dim, self.num_quantiles) if self.enable_iqn_distillation else None
 
-            old_logp_seq, _ = self._recompute_log_probs_from_features(feats_s_seq, padded_actions_seq) # (B,T,NA)
+            old_logp_seq, _ = self._recompute_log_probs_from_features(feats_s_seq, padded_actions_seq)
 
-            # Get PPO-style value and baseline predictions
-            # The inputs to .values() and .baselines() are the features *before* their specific attention and aggregation
             val_input_for_ppo_s_flat = feats_s_seq.reshape(B_T_flat_dim, NA, -1)
             val_critic_args_no_grad = (val_input_for_ppo_s_flat, taus_no_grad_val) if self.enable_iqn_distillation else (val_input_for_ppo_s_flat,)
             old_val_output_no_grad = self.shared_critic.values(*val_critic_args_no_grad)
@@ -604,7 +565,7 @@ class MAPOCAAgent(Agent):
             next_val_distilled_norm = next_val_distilled_norm.reshape(B,T,1)
 
             base_input_for_ppo_s_comb = self.embedding_net.get_baseline_embeddings(feats_s_seq, padded_actions_seq)
-            base_input_for_ppo_s_flat = base_input_for_ppo_s_comb.reshape(B_T_NA_flat_dim, NA, -1) # SeqLen_A is NA
+            base_input_for_ppo_s_flat = base_input_for_ppo_s_comb.reshape(B_T_NA_flat_dim, NA, -1)
             base_critic_args_no_grad = (base_input_for_ppo_s_flat, taus_no_grad_base) if self.enable_iqn_distillation else (base_input_for_ppo_s_flat,)
             old_base_output_no_grad = self.shared_critic.baselines(*base_critic_args_no_grad)
             old_base_distilled_norm = old_base_output_no_grad[0] if self.enable_iqn_distillation else old_base_output_no_grad
@@ -693,49 +654,39 @@ class MAPOCAAgent(Agent):
                 taus_for_ppo_mb_val = self._sample_taus(M_T_flat_dim, self.num_quantiles) if self.enable_iqn_distillation else None
                 taus_for_ppo_mb_base = self._sample_taus(M_T_NA_flat_dim, self.num_quantiles) if self.enable_iqn_distillation else None
 
-                # Policy and Critic Evaluation for the minibatch
-                # Get base embeddings for the current minibatch states
                 emb_s_mb, _ = self.embedding_net.get_base_embedding({k: v[mb_idx] for k,v in padded_states_dict_seq.items()})
-                # Get initial hidden states for the minibatch
                 init_h_mb = initial_hidden_states_batch[mb_idx] if initial_hidden_states_batch is not None and initial_hidden_states_batch.shape[0] == B else None
-                if init_h_mb is not None and init_h_mb.shape[0] != M : init_h_mb = init_h_mb[:M] # Ensure correct batch size for h0
+                if init_h_mb is not None and init_h_mb.shape[0] != M : init_h_mb = init_h_mb[:M]
+                feats_s_mb = self._apply_memory_seq(emb_s_mb, init_h_mb)
 
-                # Apply memory to get trunk features for the minibatch
-                feats_s_mb = self._apply_memory_seq(emb_s_mb, init_h_mb) # (M, T, NA, trunk_dim)
+                new_lp_mb, ent_mb = self._recompute_log_probs_from_features(feats_s_mb, padded_actions_seq[mb_idx])
 
-                # Recompute log probabilities and entropies for the policy
-                new_lp_mb, ent_mb = self._recompute_log_probs_from_features(feats_s_mb, padded_actions_seq[mb_idx]) # (M,T,NA)
-
-                # --- Value Path (PPO Critic Evaluation) ---
-                # Input for shared_critic.values is per-agent features before aggregation by value_attention
-                val_input_mb_for_ppo_flat = feats_s_mb.reshape(M_T_flat_dim, NA, -1) # (M*T, NA, trunk_dim)
+                val_input_mb_for_ppo_flat = feats_s_mb.reshape(M_T_flat_dim, NA, -1)
                 val_critic_args_mb = (val_input_mb_for_ppo_flat, taus_for_ppo_mb_val) if self.enable_iqn_distillation else (val_input_mb_for_ppo_flat,)
                 new_val_output_mb = self.shared_critic.values(*val_critic_args_mb)
                 new_val_distilled_norm_mb = new_val_output_mb[0] if self.enable_iqn_distillation else new_val_output_mb
                 new_val_distilled_norm_mb = new_val_distilled_norm_mb.reshape(M,T,1)
 
-                # --- Baseline Path (PPO Critic Evaluation) ---
-                # Input for shared_critic.baselines is the counterfactual combinatorial input
-                base_input_mb_comb = self.embedding_net.get_baseline_embeddings(feats_s_mb, padded_actions_seq[mb_idx]) # (M,T,NA,A,trunk_dim)
-                base_input_mb_for_ppo_flat = base_input_mb_comb.reshape(M_T_NA_flat_dim, NA, -1) # (M*T*NA, A_seq_len=NA, trunk_dim)
+                base_input_mb_comb = self.embedding_net.get_baseline_embeddings(feats_s_mb, padded_actions_seq[mb_idx])
+                base_input_mb_for_ppo_flat = base_input_mb_comb.reshape(M_T_NA_flat_dim, NA, -1)
                 base_critic_args_mb = (base_input_mb_for_ppo_flat, taus_for_ppo_mb_base) if self.enable_iqn_distillation else (base_input_mb_for_ppo_flat,)
                 new_base_output_mb = self.shared_critic.baselines(*base_critic_args_mb)
                 new_base_distilled_norm_mb = new_base_output_mb[0] if self.enable_iqn_distillation else new_base_output_mb
                 new_base_distilled_norm_mb = new_base_distilled_norm_mb.reshape(M,T,NA,1)
 
-
-                # Log PPO head outputs and IQN quantiles if distillation is enabled (for the first minibatch of the first epoch)
                 if self.enable_iqn_distillation and _epoch_ppo == 0 and mb_start == 0:
-                    # Value Distillation Logs
-                    _v_ppo_input_agg_mb_log = val_input_mb_for_ppo_flat.mean(dim=1) # (M*T, trunk_dim) - This is what value_head_ppo expects
-                    v_ppo_mb_norm_log = self.shared_critic.value_head_ppo(_v_ppo_input_agg_mb_log)
-                    value_quantiles_mb_norm_log = new_val_output_mb[1].reshape(M_T_flat_dim, self.num_quantiles) if len(new_val_output_mb) > 1 else None
+                    if self.enable_iqn_distillation and _epoch_ppo == 0 and mb_start == 0:
+                        with torch.no_grad():
+                            # For logging, get the PPO head output by calling it with its direct expected input
+                            # (which is the mean-aggregated output of its attention module)
+                            _v_ppo_input_agg_mb_log = self.shared_critic.value_attention(val_input_mb_for_ppo_flat)[0].mean(dim=1)
+                            v_ppo_mb_norm_log = self.shared_critic.value_head_ppo(_v_ppo_input_agg_mb_log)
+                            value_quantiles_mb_norm_log = new_val_output_mb[1].reshape(M_T_flat_dim, self.num_quantiles) if len(new_val_output_mb) > 1 else None
 
-                    # Baseline Distillation Logs
-                    _b_ppo_input_agg_mb_log = base_input_mb_for_ppo_flat.mean(dim=1) # (M*T*NA, trunk_dim) - This is what baseline_head_ppo expects
-                    b_ppo_mb_norm_log = self.shared_critic.baseline_head_ppo(_b_ppo_input_agg_mb_log)
-                    baseline_quantiles_mb_norm_log = new_base_output_mb[1].reshape(M_T_NA_flat_dim, self.num_quantiles) if len(new_base_output_mb) > 1 else None
-
+                            _b_ppo_input_agg_mb_log = self.shared_critic.baseline_attention(base_input_mb_for_ppo_flat)[0].mean(dim=1)
+                            b_ppo_mb_norm_log = self.shared_critic.baseline_head_ppo(_b_ppo_input_agg_mb_log)
+                            baseline_quantiles_mb_norm_log = new_base_output_mb[1].reshape(M_T_NA_flat_dim, self.num_quantiles) if len(new_base_output_mb) > 1 else None
+                    
                     valid_v_ppo_mask_mb = mask_mb.reshape(-1).bool()
                     if valid_v_ppo_mask_mb.any():
                         logs_acc["distill_val_v_ppo_mean"].append(v_ppo_mb_norm_log[valid_v_ppo_mask_mb].mean().item())
@@ -761,14 +712,15 @@ class MAPOCAAgent(Agent):
                          for k_db in ["distill_base_b_ppo_mean", "distill_base_b_ppo_std", "distill_base_quantiles_mean", "distill_base_quantiles_std", "distill_base_output_norm_mean", "distill_base_output_norm_std"]: logs_acc[k_db].append(0.0)
 
                 if self.action_space_type == "beta" and _epoch_ppo == 0 and mb_start == 0:
-                    policy_input_flat_mb = feats_s_mb.reshape(M*T*NA, -1)
-                    valid_policy_mask_flat_mb = mask_mbna.reshape(-1).bool()
-                    if valid_policy_mask_flat_mb.any():
-                        alpha_p, beta_p = self.policy_net.forward(policy_input_flat_mb[valid_policy_mask_flat_mb])
-                        logs_acc["policy_alpha_mean"].append(alpha_p.mean().item()); logs_acc["policy_alpha_std"].append(alpha_p.std().item())
-                        logs_acc["policy_beta_mean"].append(beta_p.mean().item()); logs_acc["policy_beta_std"].append(beta_p.std().item())
-                    else:
-                        for k_beta in ["policy_alpha_mean", "policy_alpha_std", "policy_beta_mean", "policy_beta_std"]: logs_acc[k_beta].append(0.0)
+                    with torch.no_grad():
+                        policy_input_flat_mb = feats_s_mb.reshape(M*T*NA, -1)
+                        valid_policy_mask_flat_mb = mask_mbna.reshape(-1).bool()
+                        if valid_policy_mask_flat_mb.any():
+                            alpha_p, beta_p = self.policy_net.forward(policy_input_flat_mb[valid_policy_mask_flat_mb])
+                            logs_acc["policy_alpha_mean"].append(alpha_p.mean().item()); logs_acc["policy_alpha_std"].append(alpha_p.std().item())
+                            logs_acc["policy_beta_mean"].append(beta_p.mean().item()); logs_acc["policy_beta_std"].append(beta_p.std().item())
+                        else:
+                            for k_beta in ["policy_alpha_mean", "policy_alpha_std", "policy_beta_mean", "policy_beta_std"]: logs_acc[k_beta].append(0.0)
 
                 old_lp_mb = old_logp_seq[mb_idx]
                 old_val_distilled_mb_norm = old_val_distilled_norm[mb_idx]
@@ -776,7 +728,7 @@ class MAPOCAAgent(Agent):
                 returns_mb = returns_seq[mb_idx]
 
                 new_base_denorm_distilled_mb = self.baseline_popart.denormalize_outputs(new_base_distilled_norm_mb) if self.enable_popart else new_base_distilled_norm_mb
-                adv = (returns_mb.unsqueeze(2).expand_as(new_base_distilled_norm_mb) - new_base_denorm_distilled_mb).squeeze(-1) # (M,T,NA)
+                adv = (returns_mb.unsqueeze(2).expand_as(new_base_distilled_norm_mb) - new_base_denorm_distilled_mb).squeeze(-1)
                 adv_mask_mbna = mask_mbna.bool()
                 if self.normalize_adv:
                     valid_adv_data = adv[adv_mask_mbna]
@@ -800,7 +752,7 @@ class MAPOCAAgent(Agent):
                 rnd_loss_mb = torch.tensor(0.0, device=self.device)
                 if self.enable_rnd and self.rnd_update_prop > 0.0:
                     valid_rnd_feats_mask_mbna_bool = mask_mbna.bool()
-                    flat_feats_mb_for_rnd = feats_s_mb.reshape(M*T*NA, -1) # Use trunk features
+                    flat_feats_mb_for_rnd = feats_s_mb.reshape(M*T*NA, -1)
                     valid_feats_mb_for_rnd = flat_feats_mb_for_rnd[valid_rnd_feats_mask_mbna_bool.reshape(-1)]
                     if valid_feats_mb_for_rnd.numel() > 0:
                         num_rnd_samples = valid_feats_mb_for_rnd.shape[0]
@@ -811,16 +763,14 @@ class MAPOCAAgent(Agent):
                             pred_rnd_val = self.rnd_predictor_network(selected_feats_for_rnd)
                             with torch.no_grad(): tgt_rnd_val = self.rnd_target_network(selected_feats_for_rnd)
                             rnd_loss_mb = F.mse_loss(pred_rnd_val, tgt_rnd_val); ppo_total_loss += rnd_loss_mb
-                            # RND grad norm is logged per PPO minibatch if RND loss is computed
                             logs_acc["grad_norm_rnd"].append(_get_avg_grad_mag(list(self.rnd_predictor_network.parameters())))
-
 
                 self.trunk_opt.zero_grad(); self.policy_opt.zero_grad()
                 self.value_distill_opt.zero_grad(); self.baseline_distill_opt.zero_grad()
                 if self.rnd_opt: self.rnd_opt.zero_grad()
                 ppo_total_loss.backward()
 
-                with torch.no_grad(): # Log grad norms for PPO components
+                with torch.no_grad():
                     logs_acc["grad_norm_trunk"].append(_get_avg_grad_mag(list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])))
                     logs_acc["grad_norm_policy"].append(_get_avg_grad_mag(list(self.policy_net.parameters())))
                     val_dist_params_list = list(self.shared_critic.value_head_ppo.parameters()) + list(self.shared_critic.value_attention.parameters())
@@ -830,12 +780,13 @@ class MAPOCAAgent(Agent):
                     if self.enable_iqn_distillation: base_dist_params_list += list(self.shared_critic.baseline_distill_net.parameters())
                     logs_acc["grad_norm_baseline_distill"].append(_get_avg_grad_mag(base_dist_params_list))
 
-                ppo_path_params_list = self.parameters() # Uses the Agent.parameters() method
+                ppo_path_params_list = self.parameters()
                 gn_ppo = clip_grad_norm_(ppo_path_params_list, self.max_grad_norm)
 
                 self.trunk_opt.step(); self.policy_opt.step()
                 self.value_distill_opt.step(); self.baseline_distill_opt.step()
-                if self.rnd_opt and rnd_loss_mb.requires_grad: self.rnd_opt.step() # Only step if RND loss was computed and backwarded
+                if self.rnd_opt and rnd_loss_mb.requires_grad and rnd_loss_mb.abs().item() > 1e-9: self.rnd_opt.step()
+
 
                 logs_acc["policy_loss"].append(pol_loss.item())
                 logs_acc["value_distill_loss"].append(val_loss.item())
@@ -852,7 +803,6 @@ class MAPOCAAgent(Agent):
                     logs_acc["logp_new_mean"].append(0.0); logs_acc["logp_new_min"].append(0.0); logs_acc["logp_new_max"].append(0.0)
                 if self.enable_rnd: logs_acc["rnd_loss"].append(rnd_loss_mb.item())
 
-            # Step PPO-related schedulers after each PPO epoch
             for sch_name_key in ["lr_trunk", "lr_policy", "lr_value_distill", "lr_baseline_distill"]:
                 if self.schedulers.get(sch_name_key): self.schedulers[sch_name_key].step()
             if self.enable_rnd and self.schedulers.get("lr_rnd_predictor"): self.schedulers["lr_rnd_predictor"].step()
@@ -860,126 +810,128 @@ class MAPOCAAgent(Agent):
             if self.schedulers.get("policy_clip"): self.ppo_clip_range = self.schedulers["policy_clip"].step()
             if self.schedulers.get("value_clip"): self.value_clip_range = self.schedulers["value_clip"].step()
             if self.schedulers.get("max_grad_norm"): self.max_grad_norm = self.schedulers["max_grad_norm"].step()
+        # --- End of PPO Training Loop ---
 
-            # --- IQN Training Loop ---
-            if self.enable_iqn_distillation and hasattr(self, 'iqn_replay_buffer') and len(self.iqn_replay_buffer) >= self.iqn_batch_size :
-                self._iqn_total_updates_counter +=1
-                current_val_iqn_grad_norm_sum = 0.0
-                current_base_iqn_grad_norm_sum = 0.0
-                num_iqn_batches_processed = 0
+        # --- IQN Training Loop ---
+        if self.enable_iqn_distillation and hasattr(self, 'iqn_replay_buffer') and len(self.iqn_replay_buffer) >= self.iqn_batch_size :
+            self._iqn_total_updates_counter +=1
+            current_val_iqn_grad_norm_sum = 0.0
+            current_base_iqn_grad_norm_sum = 0.0
+            num_iqn_batches_processed = 0
 
-                for _epoch_iqn in range(self.iqn_epochs):
-                    iqn_sample_tuple = self.iqn_replay_buffer.sample(self.iqn_batch_size)
-                    if iqn_sample_tuple is None: continue
+            for _epoch_iqn in range(self.iqn_epochs):
+                iqn_sample_tuple = self.iqn_replay_buffer.sample(self.iqn_batch_size)
+                if iqn_sample_tuple is None: continue
 
-                    s_val_agg_iqn_mb, ns_val_agg_iqn_mb, \
-                    s_base_agg_iqn_mb, ns_base_agg_iqn_mb, \
-                    _actions_iqn_mb, r_iqn_mb, d_iqn_mb, mask_iqn_mb, \
-                    _init_h_iqn_mb, _next_init_h_iqn_mb = iqn_sample_tuple # Actions, h_states not directly used in IQN loss here
+                # Unpack features that are already processed and aggregated for IQN heads
+                s_val_agg_iqn_mb, ns_val_agg_iqn_mb, \
+                s_base_agg_iqn_mb, ns_base_agg_iqn_mb, \
+                _actions_iqn_mb, r_iqn_mb, d_iqn_mb, mask_iqn_mb, \
+                _init_h_iqn_mb, _next_init_h_iqn_mb = iqn_sample_tuple
 
-                    iqn_mb_B, iqn_mb_T = mask_iqn_mb.shape # B is iqn_batch_size
-                    iqn_mb_NA = s_base_agg_iqn_mb.shape[2] # Num agents from baseline features
+                iqn_mb_B, iqn_mb_T = mask_iqn_mb.shape
+                iqn_mb_NA = s_base_agg_iqn_mb.shape[2] # Num agents from baseline features
 
-                    # --- Value IQN Loss ---
-                    # Reshape features for IQN value head: (B*T_valid, FeatureDim)
-                    valid_val_mask_flat = mask_iqn_mb.reshape(-1).bool()
-                    s_val_agg_valid = s_val_agg_iqn_mb.reshape(iqn_mb_B * iqn_mb_T, -1)[valid_val_mask_flat]
-                    ns_val_agg_valid = ns_val_agg_iqn_mb.reshape(iqn_mb_B * iqn_mb_T, -1)[valid_val_mask_flat]
-                    r_val_iqn_valid = r_iqn_mb.reshape(iqn_mb_B * iqn_mb_T, 1)[valid_val_mask_flat]
-                    d_val_iqn_valid = d_iqn_mb.reshape(iqn_mb_B * iqn_mb_T, 1)[valid_val_mask_flat]
+                # --- Value IQN Loss ---
+                # Reshape aggregated value features: (B_iqn*T_valid, FeatureDim_Agg_Val)
+                valid_val_mask_flat = mask_iqn_mb.reshape(-1).bool()
+                s_val_agg_valid = s_val_agg_iqn_mb.reshape(iqn_mb_B * iqn_mb_T, -1)[valid_val_mask_flat]
+                ns_val_agg_valid = ns_val_agg_iqn_mb.reshape(iqn_mb_B * iqn_mb_T, -1)[valid_val_mask_flat]
+                r_val_iqn_valid = r_iqn_mb.reshape(iqn_mb_B * iqn_mb_T, 1)[valid_val_mask_flat]
+                d_val_iqn_valid = d_iqn_mb.reshape(iqn_mb_B * iqn_mb_T, 1)[valid_val_mask_flat]
 
-                    value_iqn_loss = torch.tensor(0.0, device=self.device)
-                    if s_val_agg_valid.shape[0] > 0:
-                        eff_val_iqn_b_size = s_val_agg_valid.shape[0]
-                        taus_current_val = self._sample_taus(eff_val_iqn_b_size, self.num_quantiles)
-                        taus_next_val    = self._sample_taus(eff_val_iqn_b_size, self.num_quantiles_prime)
+                value_iqn_loss = torch.tensor(0.0, device=self.device)
+                if s_val_agg_valid.shape[0] > 0:
+                    eff_val_iqn_b_size = s_val_agg_valid.shape[0]
+                    taus_current_val = self._sample_taus(eff_val_iqn_b_size, self.num_quantiles)
+                    taus_next_val    = self._sample_taus(eff_val_iqn_b_size, self.num_quantiles_prime)
 
-                        current_value_quantiles = self.shared_critic.value_iqn_net(s_val_agg_valid, taus_current_val)
-                        with torch.no_grad():
-                            next_value_quantiles_target = self.target_value_iqn_net(ns_val_agg_valid, taus_next_val)
-                        value_bellman_targets = r_val_iqn_valid + self.gamma * (1.0 - d_val_iqn_valid) * next_value_quantiles_target.detach()
-                        value_iqn_loss = self._compute_huber_quantile_loss(current_value_quantiles, value_bellman_targets, taus_current_val, self.iqn_kappa)
-                    logs_acc["value_iqn_loss"].append(value_iqn_loss.item())
+                    current_value_quantiles = self.shared_critic.value_iqn_net(s_val_agg_valid, taus_current_val)
+                    with torch.no_grad():
+                        next_value_quantiles_target = self.target_value_iqn_net(ns_val_agg_valid, taus_next_val)
+                    value_bellman_targets = r_val_iqn_valid + self.gamma * (1.0 - d_val_iqn_valid) * next_value_quantiles_target.detach()
+                    value_iqn_loss = self._compute_huber_quantile_loss(current_value_quantiles, value_bellman_targets, taus_current_val, self.iqn_kappa)
+                logs_acc["value_iqn_loss"].append(value_iqn_loss.item())
 
-                    # --- Baseline IQN Loss ---
-                    # Reshape features for IQN baseline head: (B*T_valid*NA, FeatureDim)
-                    valid_base_mask_flat = mask_iqn_mb.unsqueeze(-1).expand(-1, -1, iqn_mb_NA).reshape(-1).bool()
-                    s_base_agg_valid = s_base_agg_iqn_mb.reshape(iqn_mb_B * iqn_mb_T * iqn_mb_NA, -1)[valid_base_mask_flat]
-                    ns_base_agg_valid = ns_base_agg_iqn_mb.reshape(iqn_mb_B * iqn_mb_T * iqn_mb_NA, -1)[valid_base_mask_flat]
-                    
-                    # Rewards and dones need to be repeated for each agent for baseline loss
-                    r_base_iqn_valid = r_iqn_mb.unsqueeze(2).expand(-1, -1, iqn_mb_NA, -1).reshape(iqn_mb_B*iqn_mb_T*iqn_mb_NA, 1)[valid_base_mask_flat]
-                    d_base_iqn_valid = d_iqn_mb.unsqueeze(2).expand(-1, -1, iqn_mb_NA, -1).reshape(iqn_mb_B*iqn_mb_T*iqn_mb_NA, 1)[valid_base_mask_flat]
+                # --- Baseline IQN Loss ---
+                # Reshape aggregated baseline features: (B_iqn*T_valid*NA, FeatureDim_Agg_Base)
+                valid_base_mask_flat = mask_iqn_mb.unsqueeze(-1).expand(-1, -1, iqn_mb_NA).reshape(-1).bool()
+                s_base_agg_valid = s_base_agg_iqn_mb.reshape(iqn_mb_B * iqn_mb_T * iqn_mb_NA, -1)[valid_base_mask_flat]
+                ns_base_agg_valid = ns_base_agg_iqn_mb.reshape(iqn_mb_B * iqn_mb_T * iqn_mb_NA, -1)[valid_base_mask_flat]
 
-                    baseline_iqn_loss = torch.tensor(0.0, device=self.device)
-                    if s_base_agg_valid.shape[0] > 0:
-                        eff_base_iqn_b_size = s_base_agg_valid.shape[0]
-                        taus_current_base = self._sample_taus(eff_base_iqn_b_size, self.num_quantiles)
-                        taus_next_base    = self._sample_taus(eff_base_iqn_b_size, self.num_quantiles_prime)
+                r_base_iqn_valid = r_iqn_mb.unsqueeze(2).expand(-1, -1, iqn_mb_NA, -1).reshape(iqn_mb_B*iqn_mb_T*iqn_mb_NA, 1)[valid_base_mask_flat]
+                d_base_iqn_valid = d_iqn_mb.unsqueeze(2).expand(-1, -1, iqn_mb_NA, -1).reshape(iqn_mb_B*iqn_mb_T*iqn_mb_NA, 1)[valid_base_mask_flat]
 
-                        current_baseline_quantiles = self.shared_critic.baseline_iqn_net(s_base_agg_valid, taus_current_base)
-                        with torch.no_grad():
-                            next_baseline_quantiles_target = self.target_baseline_iqn_net(ns_base_agg_valid, taus_next_base)
-                        baseline_bellman_targets = r_base_iqn_valid + self.gamma * (1.0 - d_base_iqn_valid) * next_baseline_quantiles_target.detach()
-                        baseline_iqn_loss = self._compute_huber_quantile_loss(current_baseline_quantiles, baseline_bellman_targets, taus_current_base, self.iqn_kappa)
-                    logs_acc["baseline_iqn_loss"].append(baseline_iqn_loss.item())
+                baseline_iqn_loss = torch.tensor(0.0, device=self.device)
+                if s_base_agg_valid.shape[0] > 0:
+                    eff_base_iqn_b_size = s_base_agg_valid.shape[0]
+                    taus_current_base = self._sample_taus(eff_base_iqn_b_size, self.num_quantiles)
+                    taus_next_base    = self._sample_taus(eff_base_iqn_b_size, self.num_quantiles_prime)
 
-                    # **MODIFIED: Apply separate loss coefficients and optimizers**
-                    if self.value_iqn_opt and value_iqn_loss.requires_grad and value_iqn_loss.abs().item() > 1e-9:
-                        self.value_iqn_opt.zero_grad()
-                        (self.value_iqn_loss_coeff * value_iqn_loss).backward()
-                        gn_val_iqn = clip_grad_norm_(self.shared_critic.value_iqn_net.parameters(), self.iqn_max_grad_norm)
-                        self.value_iqn_opt.step()
-                        current_val_iqn_grad_norm_sum += (gn_val_iqn.item() if torch.is_tensor(gn_val_iqn) else gn_val_iqn) if gn_val_iqn is not None else 0.0
-                    
-                    if self.baseline_iqn_opt and baseline_iqn_loss.requires_grad and baseline_iqn_loss.abs().item() > 1e-9:
-                        self.baseline_iqn_opt.zero_grad()
-                        (self.baseline_iqn_loss_coeff * baseline_iqn_loss).backward()
-                        gn_base_iqn = clip_grad_norm_(self.shared_critic.baseline_iqn_net.parameters(), self.iqn_max_grad_norm)
-                        self.baseline_iqn_opt.step()
-                        current_base_iqn_grad_norm_sum += (gn_base_iqn.item() if torch.is_tensor(gn_base_iqn) else gn_base_iqn) if gn_base_iqn is not None else 0.0
+                    current_baseline_quantiles = self.shared_critic.baseline_iqn_net(s_base_agg_valid, taus_current_base)
+                    with torch.no_grad():
+                        next_baseline_quantiles_target = self.target_baseline_iqn_net(ns_base_agg_valid, taus_next_base)
+                    baseline_bellman_targets = r_base_iqn_valid + self.gamma * (1.0 - d_base_iqn_valid) * next_baseline_quantiles_target.detach()
+                    baseline_iqn_loss = self._compute_huber_quantile_loss(current_baseline_quantiles, baseline_bellman_targets, taus_current_base, self.iqn_kappa)
+                logs_acc["baseline_iqn_loss"].append(baseline_iqn_loss.item())
 
-                    num_iqn_batches_processed +=1
+                # Backward pass and optimizer steps for IQN components
+                # Using separate loss coefficients
+                if self.value_iqn_opt and value_iqn_loss.requires_grad and value_iqn_loss.abs().item() > 1e-9:
+                    self.value_iqn_opt.zero_grad()
+                    (self.value_iqn_loss_coeff * value_iqn_loss).backward()
+                    gn_val_iqn = clip_grad_norm_(self.shared_critic.value_iqn_net.parameters(), self.iqn_max_grad_norm)
+                    self.value_iqn_opt.step()
+                    current_val_iqn_grad_norm_sum += (gn_val_iqn.item() if torch.is_tensor(gn_val_iqn) else gn_val_iqn) if gn_val_iqn is not None else 0.0
 
-                if num_iqn_batches_processed > 0:
-                    logs_acc["grad_norm_value_iqn"].append(current_val_iqn_grad_norm_sum / num_iqn_batches_processed)
-                    logs_acc["grad_norm_baseline_iqn"].append(current_base_iqn_grad_norm_sum / num_iqn_batches_processed)
-                else: # Add placeholders if no IQN batches were processed
-                    if "grad_norm_value_iqn" not in logs_acc or not logs_acc["grad_norm_value_iqn"]: logs_acc["grad_norm_value_iqn"].append(0.0)
-                    if "grad_norm_baseline_iqn" not in logs_acc or not logs_acc["grad_norm_baseline_iqn"]: logs_acc["grad_norm_baseline_iqn"].append(0.0)
+                if self.baseline_iqn_opt and baseline_iqn_loss.requires_grad and baseline_iqn_loss.abs().item() > 1e-9:
+                    self.baseline_iqn_opt.zero_grad()
+                    (self.baseline_iqn_loss_coeff * baseline_iqn_loss).backward()
+                    gn_base_iqn = clip_grad_norm_(self.shared_critic.baseline_iqn_net.parameters(), self.iqn_max_grad_norm)
+                    self.baseline_iqn_opt.step()
+                    current_base_iqn_grad_norm_sum += (gn_base_iqn.item() if torch.is_tensor(gn_base_iqn) else gn_base_iqn) if gn_base_iqn is not None else 0.0
+                num_iqn_batches_processed +=1
+
+            if num_iqn_batches_processed > 0:
+                logs_acc["grad_norm_value_iqn"].append(current_val_iqn_grad_norm_sum / num_iqn_batches_processed)
+                logs_acc["grad_norm_baseline_iqn"].append(current_base_iqn_grad_norm_sum / num_iqn_batches_processed)
+            else:
+                if "grad_norm_value_iqn" not in logs_acc or not logs_acc["grad_norm_value_iqn"]: logs_acc["grad_norm_value_iqn"].append(0.0)
+                if "grad_norm_baseline_iqn" not in logs_acc or not logs_acc["grad_norm_baseline_iqn"]: logs_acc["grad_norm_baseline_iqn"].append(0.0)
+
+            if self.schedulers.get("lr_value_iqn"): self.schedulers["lr_value_iqn"].step()
+            if self.schedulers.get("lr_baseline_iqn"): self.schedulers["lr_baseline_iqn"].step()
+            if self._iqn_total_updates_counter % self.iqn_target_update_freq == 0:
+                self._update_target_iqn_networks()
+        # --- End of IQN Training Loop ---
+
+        # --- Finalize Logs ---
+        final_logs = {k: (np.mean(v) if v else 0.0) for k,v in logs_acc.items() if isinstance(v, list) and k not in ["popart_sample_raw_returns", "popart_sample_norm_val_targets", "popart_sample_old_val_norm", "popart_sample_old_val_denorm_for_gae"]}
+        for k_pop_sample in ["popart_sample_raw_returns", "popart_sample_norm_val_targets", "popart_sample_old_val_norm", "popart_sample_old_val_denorm_for_gae"]:
+            if k_pop_sample in logs_acc and logs_acc[k_pop_sample] and isinstance(logs_acc[k_pop_sample][0], (np.ndarray, list)):
+                 final_logs[k_pop_sample] = np.mean([item for sublist in logs_acc[k_pop_sample] for item in sublist]).tolist() if logs_acc[k_pop_sample] else [] # Flatten list of lists/arrays
+            elif k_pop_sample in logs_acc and logs_acc[k_pop_sample]:
+                 final_logs[k_pop_sample] = np.mean(logs_acc[k_pop_sample])
 
 
-                if self.schedulers.get("lr_value_iqn"): self.schedulers["lr_value_iqn"].step()
-                if self.schedulers.get("lr_baseline_iqn"): self.schedulers["lr_baseline_iqn"].step()
-                if self._iqn_total_updates_counter % self.iqn_target_update_freq == 0:
-                    self._update_target_iqn_networks()
-            # --- End of IQN Training Loop ---
+        final_logs.update({
+            "raw_reward_mean": raw_ext_mean, "processed_reward_mean": proc_rew_mean,
+            "return_mean": ret_mean, "return_std": ret_std,
+            "entropy_coeff_curr": self.entropy_coeff, "ppo_clip_curr": self.ppo_clip_range,
+            "value_clip_curr": self.value_clip_range, "max_grad_norm_ppo_curr": self.max_grad_norm,
+            "lr_trunk_curr": self.schedulers["lr_trunk"].get_last_lr()[0] if self.schedulers.get("lr_trunk") else lr_conf.get("lr_trunk",0),
+            "lr_policy_curr": self.schedulers["lr_policy"].get_last_lr()[0] if self.schedulers.get("lr_policy") else lr_conf.get("lr_policy",0),
+            "lr_value_distill_curr": self.schedulers["lr_value_distill"].get_last_lr()[0] if self.schedulers.get("lr_value_distill") else lr_conf.get("lr_value_distill",0),
+            "lr_baseline_distill_curr": self.schedulers["lr_baseline_distill"].get_last_lr()[0] if self.schedulers.get("lr_baseline_distill") else lr_conf.get("lr_baseline_distill",0),
+        })
+        if self.enable_iqn_distillation:
+            final_logs["lr_value_iqn_curr"] = self.schedulers["lr_value_iqn"].get_last_lr()[0] if self.schedulers.get("lr_value_iqn") else lr_conf.get("lr_value_iqn",0)
+            final_logs["lr_baseline_iqn_curr"] = self.schedulers["lr_baseline_iqn"].get_last_lr()[0] if self.schedulers.get("lr_baseline_iqn") else lr_conf.get("lr_baseline_iqn",0)
+            final_logs["iqn_max_grad_norm_curr"] = self.iqn_max_grad_norm
+        if self.enable_rnd:
+            final_logs["lr_rnd_curr"] = self.schedulers["lr_rnd_predictor"].get_last_lr()[0] if self.schedulers.get("lr_rnd_predictor") else lr_conf.get("lr_rnd",0)
 
-            # --- Finalize Logs ---
-            final_logs = {k: (np.mean(v) if v else 0.0) for k,v in logs_acc.items() if isinstance(v, list) and k not in ["popart_sample_raw_returns", "popart_sample_norm_val_targets", "popart_sample_old_val_norm", "popart_sample_old_val_denorm_for_gae"]}
-            for k_pop_sample in ["popart_sample_raw_returns", "popart_sample_norm_val_targets", "popart_sample_old_val_norm", "popart_sample_old_val_denorm_for_gae"]:
-                if k_pop_sample in logs_acc and logs_acc[k_pop_sample]: # Check if list is not empty
-                    final_logs[k_pop_sample] = np.mean(logs_acc[k_pop_sample]).tolist() if isinstance(logs_acc[k_pop_sample][0], (np.ndarray, list)) else np.mean(logs_acc[k_pop_sample])
-
-
-            final_logs.update({
-                "raw_reward_mean": raw_ext_mean, "processed_reward_mean": proc_rew_mean,
-                "return_mean": ret_mean, "return_std": ret_std,
-                "entropy_coeff_curr": self.entropy_coeff, "ppo_clip_curr": self.ppo_clip_range,
-                "value_clip_curr": self.value_clip_range, "max_grad_norm_ppo_curr": self.max_grad_norm,
-                "lr_trunk_curr": self.schedulers["lr_trunk"].get_last_lr()[0] if self.schedulers.get("lr_trunk") else lr_conf["lr_trunk"],
-                "lr_policy_curr": self.schedulers["lr_policy"].get_last_lr()[0] if self.schedulers.get("lr_policy") else lr_conf["lr_policy"],
-                "lr_value_distill_curr": self.schedulers["lr_value_distill"].get_last_lr()[0] if self.schedulers.get("lr_value_distill") else lr_conf["lr_value_distill"],
-                "lr_baseline_distill_curr": self.schedulers["lr_baseline_distill"].get_last_lr()[0] if self.schedulers.get("lr_baseline_distill") else lr_conf["lr_baseline_distill"],
-            })
-            if self.enable_iqn_distillation:
-                final_logs["lr_value_iqn_curr"] = self.schedulers["lr_value_iqn"].get_last_lr()[0] if self.schedulers.get("lr_value_iqn") else lr_conf["lr_value_iqn"]
-                final_logs["lr_baseline_iqn_curr"] = self.schedulers["lr_baseline_iqn"].get_last_lr()[0] if self.schedulers.get("lr_baseline_iqn") else lr_conf["lr_baseline_iqn"]
-                final_logs["iqn_max_grad_norm_curr"] = self.iqn_max_grad_norm
-            if self.enable_rnd:
-                final_logs["lr_rnd_curr"] = self.schedulers["lr_rnd_predictor"].get_last_lr()[0] if self.schedulers.get("lr_rnd_predictor") else lr_conf["lr_rnd"]
-
-            return final_logs
+        return final_logs
 
     def _ppo_clip_loss(self, new_lp, old_lp, adv, clip_range, mask):
         if mask.ndim < new_lp.ndim: mask = mask.unsqueeze(-1).expand_as(new_lp)
@@ -1014,8 +966,8 @@ class MAPOCAAgent(Agent):
 
     def parameters(self): # For PPO path global grad clipping
         ppo_path_params = list(self.embedding_net.parameters()) + list(self.policy_net.parameters()) + \
-                        list(self.shared_critic.value_head_ppo.parameters()) + list(self.shared_critic.value_attention.parameters()) + \
-                        list(self.shared_critic.baseline_head_ppo.parameters()) + list(self.shared_critic.baseline_attention.parameters())
+                          list(self.shared_critic.value_head_ppo.parameters()) + list(self.shared_critic.value_attention.parameters()) + \
+                          list(self.shared_critic.baseline_head_ppo.parameters()) + list(self.shared_critic.baseline_attention.parameters())
         if self.enable_memory: ppo_path_params += list(self.memory_module.parameters())
         if self.enable_iqn_distillation:
             ppo_path_params += list(self.shared_critic.value_distill_net.parameters())
@@ -1023,5 +975,8 @@ class MAPOCAAgent(Agent):
         if self.enable_rnd: ppo_path_params += list(self.rnd_predictor_network.parameters())
         return ppo_path_params
 
-    def _get_policy_lr(self):
-        return float(np.mean([pg["lr"] for pg in self.policy_opt.param_groups]))
+    def _get_policy_lr(self): # Unchanged
+        # Safely get learning rate, defaulting to 0 if optimizer or param_groups are missing
+        if hasattr(self, 'policy_opt') and self.policy_opt and self.policy_opt.param_groups:
+            return float(np.mean([pg.get("lr", 0.0) for pg in self.policy_opt.param_groups]))
+        return 0.0
