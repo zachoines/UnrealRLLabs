@@ -741,7 +741,7 @@ class MAPOCAAgent(Agent):
                 ppo_total_loss.backward()
                 
                 # Log average gradient magnitudes for components
-                if _epoch_ppo == 0 and mb_start == 0: # Log only for the first minibatch of the first epoch
+                with torch.no_grad():
                     logs_acc["grad_norm_trunk"].append(_get_avg_grad_mag(list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])))
                     logs_acc["grad_norm_policy"].append(_get_avg_grad_mag(list(self.policy_net.parameters())))
                     logs_acc["grad_norm_value"].append(_get_avg_grad_mag(list(self.shared_critic.value_head_ppo.parameters()) + list(self.shared_critic.value_attention.parameters())))
@@ -771,8 +771,9 @@ class MAPOCAAgent(Agent):
                 self.value_distill_opt.step(); self.baseline_distill_opt.step()
                 if self.rnd_opt: self.rnd_opt.step()
 
-                logs_acc["policy_loss"].append(pol_loss.item()); logs_acc["value_distill_loss"].append(val_loss.item())
-                logs_acc["baseline_distill_loss"].append(base_loss.item()); 
+                logs_acc["policy_loss"].append(pol_loss.item()) 
+                logs_acc["value_distill_loss"].append(val_loss.item())
+                logs_acc["baseline_distill_loss"].append(base_loss.item())
                 
                 valid_ent_mask_mbna = mask_mbna.bool()
                 logs_acc["entropy_mean"].append(ent_mb[valid_ent_mask_mbna].mean().item() if valid_ent_mask_mbna.any() else 0.0)
