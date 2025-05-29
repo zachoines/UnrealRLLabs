@@ -44,7 +44,7 @@
         "MaxHeight": 4.0,
         "NumActions": 6,
         "bUseActionDelta": true,
-        "bAccumulatedWave": false,
+        "bAccumulatedWave": true,
         "AccumulatedWaveFadeGamma": 0.95,
         "VelMinMax": [
           -10.0,
@@ -200,17 +200,17 @@
         "rnd": [0.9, 0.98]
       },
       "weight_decay": {
-        "trunk": 0.0,
-        "policy": 0.0,
-        "value": 0.0,
-        "baseline": 0.0,
-        "iqn": 0.0,
+        "trunk": 1e-6,
+        "policy": 1e-6,
+        "value": 5e-5,
+        "baseline": 5e-5,
+        "iqn": 1e-5,
         "rnd": 0.0
       },
       "gamma": 0.99,
       "lambda": 0.95,
       "value_loss_coeff": 0.5,
-      "baseline_loss_coeff": 0.5,
+      "baseline_loss_coeff": 0.25,
       "iqn_loss_coeff": 0.25,
       "normalize_advantages": true,
       "clipped_value_loss": true,

@@ -422,7 +422,7 @@ class MAPOCAAgent(Agent):
             "entropy_mean": [], "grad_norm_ppo": [], "adv_mean": [], "adv_std": [],
             "logp_old_mean": [], "logp_old_min": [], "logp_old_max": [],
             "logp_new_mean": [], "logp_new_min": [], "logp_new_max": [],
-            "grad_norm_trunk": [], "grad_norm_policy": [], 
+            "grad_norm_trunk": [], "grad_norm_policy": [], "grad_norm_baseline": [], "grad_norm_value": [], 
             "grad_norm_value_distill": [], "grad_norm_baseline_distill": []
         }
         if self.enable_rnd:
@@ -744,6 +744,8 @@ class MAPOCAAgent(Agent):
                 if _epoch_ppo == 0 and mb_start == 0: # Log only for the first minibatch of the first epoch
                     logs_acc["grad_norm_trunk"].append(_get_avg_grad_mag(list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])))
                     logs_acc["grad_norm_policy"].append(_get_avg_grad_mag(list(self.policy_net.parameters())))
+                    logs_acc["grad_norm_value"].append(_get_avg_grad_mag(list(self.shared_critic.value_head_ppo.parameters()) + list(self.shared_critic.value_attention.parameters())))
+                    logs_acc["grad_norm_baseline"].append(_get_avg_grad_mag(list(self.shared_critic.baseline_head_ppo.parameters()) + list(self.shared_critic.baseline_attention.parameters())))
                     
                     val_dist_params_list = list(self.shared_critic.value_head_ppo.parameters()) + list(self.shared_critic.value_attention.parameters())
                     if self.enable_iqn_distillation: val_dist_params_list += list(self.shared_critic.value_distill_net.parameters())
