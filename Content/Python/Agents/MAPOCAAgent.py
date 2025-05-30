@@ -445,17 +445,44 @@ class MAPOCAAgent(Agent):
                 target_param.data.copy_(self.iqn_polyak * online_param.data + (1.0 - self.iqn_polyak) * target_param.data)
 
     def _compute_gae_with_padding(self, r: torch.Tensor, v: torch.Tensor, v_next: torch.Tensor, d: torch.Tensor, tr: torch.Tensor, mask_bt: torch.Tensor) -> torch.Tensor:
-        B, T, _ = r.shape; returns = torch.zeros_like(r)
-        gae = torch.zeros(B, 1, device=self.device); mask_bt_expanded = mask_bt.unsqueeze(-1)
+        B, T, _ = r.shape
+        returns = torch.zeros_like(r)
+        gae = torch.zeros(B, 1, device=self.device)
+        mask_bt_expanded = mask_bt.unsqueeze(-1) # (B, T, 1)
+
         for t in reversed(range(T)):
+            # valid_mask_step indicates if the current step 't' is part of the actual trajectory (not padding)
             valid_mask_step = mask_bt_expanded[:, t]
+
+            # valid_mask_next_step indicates if the next step 't+1' is part of the actual trajectory
+            # If t is the last step of the sequence (T-1), there is no valid next step for bootstrapping within this segment.
             valid_mask_next_step = mask_bt_expanded[:, t + 1] if t < T - 1 else torch.zeros_like(valid_mask_step)
-            non_terminal_and_valid_next = (1.0 - d[:, t]) * (1.0 - tr[:, t]) * valid_mask_next_step
-            delta = r[:, t] + self.gamma * v_next[:, t] * non_terminal_and_valid_next - v[:, t]
-            gae = delta + self.gamma * self.lmbda * non_terminal_and_valid_next * gae
+
+            # Condition for bootstrapping:
+            # - The current step 't' must not be a true terminal state (d[:, t] should be 0).
+            # - The next step 't+1' must be a valid step in the sequence (not padding).
+            # Truncation (tr[:, t]) does not prevent bootstrapping from V(s_t+1) if not also 'done'.
+            bootstrap_condition = (1.0 - d[:, t]) * valid_mask_next_step
+
+            # Calculate TD error (delta)
+            # v_next[:, t] is V(s_{t+1})
+            # v[:, t] is V(s_t)
+            delta = r[:, t] + self.gamma * v_next[:, t] * bootstrap_condition - v[:, t]
+
+            # Update GAE: A_t = delta_t + gamma * lambda * A_{t+1} (if s_t is not terminal and s_{t+1} is valid)
+            # The 'gae' variable here is A_{t+1} from the previous (later) timestep.
+            gae = delta + self.gamma * self.lmbda * bootstrap_condition * gae
+
+            # The return for the current step is GAE + V(s_t)
             current_return = gae + v[:, t]
+
+            # Store returns only for valid steps; zero out for padded steps
             returns[:, t] = current_return * valid_mask_step
+
+            # If the current step was padding, reset GAE for the next iteration (which is t-1)
+            # This ensures GAE doesn't propagate across padded sections.
             gae = gae * valid_mask_step
+            
         return returns
 
     def update(self, padded_states_dict_seq: Dict[str, torch.Tensor], padded_actions_seq: torch.Tensor, padded_rewards_seq: torch.Tensor, padded_next_states_dict_seq: Dict[str, torch.Tensor], padded_dones_seq: torch.Tensor, padded_truncs_seq: torch.Tensor, initial_hidden_states_batch: Optional[torch.Tensor], attention_mask_batch: torch.Tensor) -> Dict[str, float]:
