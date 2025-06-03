@@ -7,159 +7,218 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FFMpegWriter
+from typing import Dict, List, Any, Tuple
 
 class StateRecorder:
-    """
-    Records a multi-channel (num_channels x H x W) state each frame.
-    Assuming 2 channels after modifications:
-      - channel 0: height map in [-1..1]
-      - channel 1: luminance (grayscale) of overhead view in [0..1]
-
-    Saves an MP4 where each frame has two subplots:
-      (1) 3D surface of the height map
-      (2) 2D grayscale image of the luminance channel
-    """
-
-    def __init__(self, recorder_config: dict):
+    def __init__(self, recorder_config: Dict[str, Any]):
         self.config = recorder_config
-
-        map_cfg = self.config["height_map"]
-        self.H = map_cfg.get("grid_h", 50)
-        self.W = map_cfg.get("grid_w", 50)
-        # Expecting 2 channels now: Height + Luminance
-        self.num_channels = map_cfg.get("num_channels", 2)
-        self.height_idx = map_cfg.get("height_channel_index", 0)
-        # Luminance will be the channel after height if height_idx is 0
-        self.luminance_idx = self.height_idx + 1
-
-        self.clip_val = map_cfg.get("clip_value", None) # For height map
-
-        vid_cfg = self.config.get("video", {})
-        self.fps = vid_cfg.get("fps", 30)
-        self.output_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), # Assumes Train.py is in Content/Python
-            vid_cfg.get("output_path", "state_height_luminance.mp4")
-        )
-
-        self.auto_save_every = self.config.get("auto_save_every", None)
-        self.frames: list[tuple[np.ndarray, np.ndarray]] = []
-
-        self.Y, self.X = np.meshgrid(
-            np.arange(self.H),
-            np.arange(self.W),
-            indexing='ij'
-        )
-        print(f"[StateRecorder] Initialized for {self.num_channels} channels (H:{self.H}, W:{self.W}). Output: {self.output_path}")
-
-
-    def record_frame(self, central_state_vec: np.ndarray):
-        """
-        central_state_vec => (num_channels * H * W).
-        Reshapes to (num_channels, H, W).
-
-        channel 0 (self.height_idx)    => height
-        channel 1 (self.luminance_idx) => luminance of overhead
-        """
-        total_size = central_state_vec.size
-        expected_size = self.num_channels * self.H * self.W
-        if total_size < expected_size:
-            print(f"[StateRecorder] Record Frame: Not enough data. Have {total_size}, expected {expected_size} for {self.num_channels} channels.")
-            return
-        if self.num_channels < 2:
-            print(f"[StateRecorder] Record Frame: Not enough configured channels ({self.num_channels}) to extract height and luminance.")
+        self.is_enabled = self.config.get("enabled", False)
+        if not self.is_enabled:
+            print("[StateRecorder] Is disabled by config.")
             return
 
-        try:
-            data_3d = central_state_vec.reshape(self.num_channels, self.H, self.W)
-        except ValueError as e:
-            print(f"[StateRecorder] Record Frame: Error reshaping central_state_vec (size {total_size}) to ({self.num_channels}, {self.H}, {self.W}). Error: {e}")
-            return
-
-        # 1) Height map
-        if self.height_idx >= data_3d.shape[0]:
-            print(f"[StateRecorder] Error: height_idx {self.height_idx} out of bounds for data_3d shape {data_3d.shape}.")
-            return
-        height_map = data_3d[self.height_idx]
-        if self.clip_val is not None:
-            np.clip(height_map, -self.clip_val, self.clip_val, out=height_map)
-
-        # 2) Luminance map
-        if self.luminance_idx >= data_3d.shape[0]:
-            print(f"[StateRecorder] Warning: luminance_idx {self.luminance_idx} out of bounds for data_3d shape {data_3d.shape}. Using zeros for luminance.")
-            luminance_map = np.zeros((self.H, self.W), dtype=np.float32)
+        video_cfg = self.config.get("video_settings", {})
+        self.fps = video_cfg.get("fps", 15)
+        # Ensure output_path is correct relative to Train.py if it's a relative path
+        output_path_raw = video_cfg.get("output_path", "state_visualization.mp4")
+        if not os.path.isabs(output_path_raw):
+            # Assuming Train.py is in Content/Python, and output_path is relative to that
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # Up to Content/Python
+            self.output_path = os.path.join(base_dir, output_path_raw)
         else:
-            luminance_map = data_3d[self.luminance_idx]
+            self.output_path = output_path_raw
+            
+        self.dpi = video_cfg.get("dpi", 100)
+        self.auto_save_every = self.config.get("auto_save_every", None)
+        
+        self.components_to_visualize: List[Dict[str, Any]] = []
+        self.data_to_store_names: List[Tuple[str, str]] = [] # List of (source_key, component_name)
 
-        self.frames.append((height_map.copy(), luminance_map.copy()))
+        plot_idx_counter = 0
+        self.meshgrids: Dict[int, Tuple[np.ndarray, np.ndarray]] = {} # Store meshgrids by plot index
 
-        if (self.auto_save_every is not None) and (len(self.frames) >= self.auto_save_every):
-            self.save_video()
-            self.frames.clear()
+        for comp_def in self.config.get("components_to_record", []):
+            if comp_def.get("enabled", False):
+                self.data_to_store_names.append((comp_def["source_key"], comp_def["component_name"]))
+                
+                vis_type = comp_def.get("visualization_type", "none")
+                if vis_type != "none":
+                    comp_def["plot_idx"] = plot_idx_counter # Assign an index for subplotting
+                    self.components_to_visualize.append(comp_def)
+                    
+                    if vis_type == "3d_surface":
+                        shape_cfg = comp_def.get("shape_for_plot", {})
+                        h = shape_cfg.get("h", 0)
+                        w = shape_cfg.get("w", 0)
+                        if h > 0 and w > 0:
+                            Y, X = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
+                            self.meshgrids[plot_idx_counter] = (X, Y) # Store X, Y for this plot
+                        else:
+                            print(f"[StateRecorder] Warning: 3D surface plot for '{comp_def['component_name']}'"
+                                  f" needs 'shape_for_plot' with 'h' and 'w' > 0 in its config. Will attempt to infer from data.")
+                    plot_idx_counter += 1
+        
+        self.num_subplots = len(self.components_to_visualize)
+        self.frames: List[Dict[str, np.ndarray]] = [] # Stores dicts of component_name: data
+
+        if self.is_enabled and self.num_subplots > 0 :
+             print(f"[StateRecorder] Initialized. Will plot {self.num_subplots} components. Output: {self.output_path}")
+        elif self.is_enabled:
+             print(f"[StateRecorder] Initialized, but no components configured for visualization. Will only store data if specified.")
+
+
+    def record_frame(self, current_env_state_dict: Dict[str, Any]):
+        """
+        Records data for enabled components from the provided state dictionary.
+        current_env_state_dict is for a single environment, with numpy arrays.
+        e.g., {"central": {"height_map": np_array_HW, "gridobject_vectors": np_array_F}, 
+               "agent": np_array_NA_Obs}
+        """
+        if not self.is_enabled:
+            return
+
+        frame_data: Dict[str, np.ndarray] = {}
+        for source_key, component_name in self.data_to_store_names:
+            if source_key in current_env_state_dict:
+                source_data_dict_or_array = current_env_state_dict[source_key]
+                data_to_store = None
+                if isinstance(source_data_dict_or_array, dict): # e.g. "central"
+                    data_to_store = source_data_dict_or_array.get(component_name)
+                elif source_key == component_name: # e.g. "agent" data directly under its key
+                    data_to_store = source_data_dict_or_array
+                
+                if data_to_store is not None:
+                    # Ensure it's a numpy array and make a copy
+                    frame_data[f"{source_key}_{component_name}"] = np.array(data_to_store, copy=True)
+        
+        if frame_data: # Only add if we actually stored something
+            self.frames.append(frame_data)
+
+        if self.auto_save_every is not None and len(self.frames) >= self.auto_save_every:
+            self.save_video() # This will also clear frames
+
 
     def save_video(self):
-        if len(self.frames) == 0:
-            print("[StateRecorder] Save Video: No frames to save.")
+        if not self.is_enabled or self.num_subplots == 0 or not self.frames:
+            if self.is_enabled and not self.frames: print("[StateRecorder] Save Video: No frames to save.")
+            elif self.is_enabled and self.num_subplots == 0: print("[StateRecorder] Save Video: No components configured for visualization.")
+            self.frames.clear() # Clear frames even if not saving video
             return
 
         if shutil.which("ffmpeg") is None:
-            print("[StateRecorder] Save Video: FFmpeg is not installed or not in PATH. Please install FFmpeg.")
+            print("[StateRecorder] Save Video: FFmpeg is not installed or not in PATH. Cannot save video.")
+            self.frames.clear()
             return
 
         output_dir = os.path.dirname(self.output_path)
         if not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
 
-        fig = plt.figure(figsize=(12, 5.5)) # Adjusted for 2 plots, slightly less height
-
-        ax_surf = fig.add_subplot(1, 2, 1, projection='3d')
-        ax_surf.set_xlabel("X")
-        ax_surf.set_ylabel("Y")
-        ax_surf.set_zlabel("Height")
-        ax_surf.set_zlim(-1.5, 1.5)
-
-        ax_img = fig.add_subplot(1, 2, 2)
-        ax_img.set_xticks([])
-        ax_img.set_yticks([])
+        # Determine layout: try to make it squarish, or single row if few plots
+        ncols = self.num_subplots
+        nrows = 1
+        if self.num_subplots > 3: # Example: if more than 3, try 2 columns
+            ncols = 2 
+            nrows = (self.num_subplots + 1) // 2
+        if self.num_subplots > 4: # Example: if more than 4, try 3 columns
+            ncols = 3
+            nrows = (self.num_subplots + 2) // 3
+            
+        fig_width = 6 * ncols
+        fig_height = 5 * nrows
+        
+        fig = plt.figure(figsize=(fig_width, fig_height))
+        axes_list = []
+        for i, comp_viz_cfg in enumerate(self.components_to_visualize):
+            is_3d = comp_viz_cfg.get("visualization_type") == "3d_surface"
+            ax = fig.add_subplot(nrows, ncols, i + 1, projection='3d' if is_3d else None)
+            axes_list.append(ax)
 
         writer = FFMpegWriter(
             fps=self.fps,
-            metadata={"title": "TerraShift State (Height + Luminance)", "artist": "StateRecorder"},
-            extra_args=["-crf", "20", "-b:v", "3000k", "-pix_fmt", "yuv420p"] # Adjusted bitrate
+            metadata={"title": "TerraShift State Visualization", "artist": "StateRecorder"},
+            extra_args=["-crf", "20", "-b:v", "3000k", "-pix_fmt", "yuv420p"]
         )
         
         print(f"[StateRecorder] Attempting to save video to: {self.output_path} with {len(self.frames)} frames.")
 
-        with writer.saving(fig, self.output_path, dpi=100): # Adjusted DPI
-            surf_plot = None
-            img_plot = None
+        with writer.saving(fig, self.output_path, dpi=self.dpi):
+            plot_artists = [None] * self.num_subplots # To store surface/image artists for removal/update
 
-            for i, (height_map, luminance_map) in enumerate(self.frames):
-                if surf_plot is not None:
-                    surf_plot.remove()
-                surf_plot = ax_surf.plot_surface(
-                    self.X, self.Y, height_map,
-                    cmap='viridis', edgecolor='none', vmin=-1.0, vmax=1.0
-                )
-                ax_surf.set_title(f"Height Map") # Removed frame number for cleaner look per frame
+            for frame_idx, frame_data_dict in enumerate(self.frames):
+                for i, comp_viz_cfg in enumerate(self.components_to_visualize):
+                    ax = axes_list[i]
+                    ax.clear() # Clear previous frame's plot from this subplot
+                    
+                    data_key = f"{comp_viz_cfg['source_key']}_{comp_viz_cfg['component_name']}"
+                    component_data = frame_data_dict.get(data_key)
 
-                if img_plot is None:
-                    img_plot = ax_img.imshow(luminance_map, cmap='gray', vmin=0.0, vmax=1.0)
-                else:
-                    img_plot.set_data(luminance_map)
-                ax_img.set_title(f"Overhead Luminance")
+                    if component_data is None:
+                        ax.set_title(f"{comp_viz_cfg['plot_title']} (No Data)")
+                        continue
 
-                fig.suptitle(f"Frame {i+1}/{len(self.frames)}", fontsize=12)
-                plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout for suptitle
+                    ax.set_title(comp_viz_cfg["plot_title"])
+                    vis_type = comp_viz_cfg["visualization_type"]
+
+                    if vis_type == "3d_surface":
+                        if component_data.ndim == 2:
+                            H, W = component_data.shape
+                            # Get or create meshgrid for this plot_idx (or specific H,W)
+                            if comp_viz_cfg["plot_idx"] in self.meshgrids:
+                                X, Y = self.meshgrids[comp_viz_cfg["plot_idx"]]
+                                # Ensure meshgrid dimensions match data if dynamically inferred
+                                if X.shape[1] != W or Y.shape[0] != H :
+                                    print(f"Warning: Meshgrid size mismatch for {data_key}. Recreating.")
+                                    Y_new, X_new = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+                                    self.meshgrids[comp_viz_cfg["plot_idx"]] = (X_new, Y_new)
+                                    X, Y = X_new, Y_new
+                            elif comp_viz_cfg.get("shape_for_plot"): # Use explicitly defined shape if meshgrid wasn't precomputed
+                                shp = comp_viz_cfg["shape_for_plot"]
+                                Y_s, X_s = np.meshgrid(np.arange(shp["h"]), np.arange(shp["w"]), indexing='ij')
+                                X, Y = X_s, Y_s
+                            else: # Fallback: infer from data (might be slow if changing per frame)
+                               Y_fb, X_fb = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+                               X, Y = X_fb, Y_fb
+
+                            surf = ax.plot_surface(
+                                X, Y, component_data,
+                                cmap=comp_viz_cfg.get("cmap_3d", "viridis"),
+                                edgecolor='none',
+                                vmin=comp_viz_cfg.get("val_range_2d", [-1.0, 1.0])[0], # Use val_range_2d for consistency or add specific 3d range
+                                vmax=comp_viz_cfg.get("val_range_2d", [-1.0, 1.0])[1]
+                            )
+                            ax.set_zlim(comp_viz_cfg.get("z_lim_3d", [-1.5, 1.5]))
+                            plot_artists[i] = surf # Not strictly needed if clearing axes
+                        else:
+                            ax.text(0.5, 0.5, "Data not 2D for 3D plot", ha='center', va='center')
+                            
+                    elif vis_type == "2d_image_grey":
+                        val_range = comp_viz_cfg.get("val_range_2d", [0.0, 1.0])
+                        img = ax.imshow(
+                            component_data,
+                            cmap=comp_viz_cfg.get("cmap_2d", "gray"),
+                            vmin=val_range[0], vmax=val_range[1]
+                        )
+                        ax.set_xticks([])
+                        ax.set_yticks([])
+                        plot_artists[i] = img # Not strictly needed if clearing axes
+                    # Add other visualization types here ("none" is handled by not being in components_to_visualize)
+                
+                fig.suptitle(f"Frame {frame_idx + 1}/{len(self.frames)}", fontsize=12)
+                try:
+                    plt.tight_layout(rect=[0, 0, 1, 0.96]) # Adjust for suptitle
+                except Exception: # Sometimes tight_layout fails with 3D plots
+                    pass 
                 
                 try:
                     writer.grab_frame()
                 except Exception as e:
-                    print(f"[StateRecorder] Error grabbing frame {i+1}: {e}")
-                    # Decide if you want to break or continue
+                    print(f"[StateRecorder] Error grabbing frame {frame_idx + 1}: {e}")
                     break 
             
         plt.close(fig)
-        # Check if the file was actually created and has size
+        self.frames.clear() # Clear frames after saving or attempting to save
+
         if os.path.exists(self.output_path) and os.path.getsize(self.output_path) > 0:
             print(f"[StateRecorder] Video successfully saved to: {self.output_path}")
         else:

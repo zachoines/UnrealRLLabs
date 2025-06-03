@@ -26,8 +26,8 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
 
     MaxGridObjects = Config->GetOrDefaultInt(TEXT("MaxGridObjects"), MaxGridObjects);
     MarginXY = Config->GetOrDefaultNumber(TEXT("MarginXY"), MarginXY);
-    MinZ = Config->GetOrDefaultNumber(TEXT("MinZ"), MinZ);
-    MaxZ = Config->GetOrDefaultNumber(TEXT("MaxZ"), MaxZ);
+    MinZ = Config->GetOrDefaultNumber(TEXT("MinZ"), MinZ); // Used for OOB and Z-norm
+    MaxZ = Config->GetOrDefaultNumber(TEXT("MaxZ"), MaxZ); // Used for OOB and Z-norm
     MarginCells = Config->GetOrDefaultInt(TEXT("MarginCells"), MarginCells);
     ObjectScale = Config->GetOrDefaultNumber(TEXT("ObjectScale"), ObjectScale);
     ObjectMass = Config->GetOrDefaultNumber(TEXT("ObjectMass"), ObjectMass);
@@ -48,7 +48,26 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     GoalCollectRadius = Config->GetOrDefaultNumber(TEXT("GoalCollectRadius"), GoalCollectRadius);
     ObjectRadius = Config->GetOrDefaultNumber(TEXT("ObjectRadius"), ObjectRadius);
 
-    // Read GoalColors
+    // State Representation Config
+    bIncludeHeightMapInState = Config->GetOrDefaultBool(TEXT("bIncludeHeightMapInState"), true);
+    bIncludeOverheadImageInState = Config->GetOrDefaultBool(TEXT("bIncludeOverheadImageInState"), true);
+
+    // GridSize would have been set in SetReferences, use it for default if needed
+    int32 DefaultResH = GridSize > 0 ? GridSize : 25; // Default if GridSize not yet set
+    int32 DefaultResW = GridSize > 0 ? GridSize : 25;
+
+    StateHeightMapResolutionH = Config->GetOrDefaultInt(TEXT("StateHeightMapResolutionH"), DefaultResH);
+    StateHeightMapResolutionW = Config->GetOrDefaultInt(TEXT("StateHeightMapResolutionW"), DefaultResW);
+    StateOverheadImageResX = Config->GetOrDefaultInt(TEXT("StateOverheadImageResX"), OverheadCamResX);
+    StateOverheadImageResY = Config->GetOrDefaultInt(TEXT("StateOverheadImageResY"), OverheadCamResY);
+
+    // ***** Load NEW Grid Object Sequence State Config *****
+    bIncludeGridObjectSequenceInState = Config->GetOrDefaultBool(TEXT("bIncludeGridObjectSequenceInState"), false);
+    MaxGridObjectsForState = Config->GetOrDefaultInt(TEXT("MaxGridObjectsForState"), MaxGridObjects); // Default to MaxGridObjects
+    GridObjectFeatureSize = Config->GetOrDefaultInt(TEXT("GridObjectFeatureSize"), 9);
+    // ***** END OF LOADING NEW PARAMS *****
+
+
     if (Config->HasPath(TEXT("GoalColors")))
     {
         TArray<UEnvironmentConfig*> colorArr = Config->Get(TEXT("GoalColors"))->AsArrayOfConfigs();
@@ -63,8 +82,6 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
             }
         }
     }
-
-    // Read GridObjectColors
     if (Config->HasPath(TEXT("GridObjectColors")))
     {
         TArray<UEnvironmentConfig*> gridColArr = Config->Get(TEXT("GridObjectColors"))->AsArrayOfConfigs();
@@ -523,9 +540,6 @@ bool UStateManager::AllGridObjectsHandled() const
 // ------------------------------------------
 //   BuildCentralState
 // ------------------------------------------
-// ------------------------------------------
-//   BuildCentralState (Centered Visualization)
-// ------------------------------------------
 void UStateManager::BuildCentralState()
 {
     UWorld* w = (Grid) ? Grid->GetWorld() : nullptr;
@@ -540,71 +554,75 @@ void UStateManager::BuildCentralState()
         return;
     }
 
-    // Define the Z range specifically for visualization, centered around 0 local Z
-    // Use half of the configured total range
-    float VisualizationZRange = MaxZ;
-    float halfVisRange = VisualizationZRange * 0.5f;
-    float visMinZ = -halfVisRange;
-    float visMaxZ = halfVisRange;
+    // Determine the dimensions for the state's height map
+    // If bIncludeHeightMapInState is false, CurrentStateMapH/W will be based on physical GridSize,
+    int32 PhysicalGridSizeH = GridSize > 0 ? GridSize : 1;
+    int32 PhysicalGridSizeW = GridSize > 0 ? GridSize : 1;
 
-    // Keep trace distance large enough, independent of visualization range
-    // Use MinZ/MaxZ (OOB limits) or fixed large values to define trace extent
-    float traceDistUp = FMath::Abs(MaxZ) + 100.0f; // Little extra space
-    float traceDistDown = FMath::Abs(visMinZ) + 100.0f;
+    int32 CurrentStateMapH = bIncludeHeightMapInState ? (StateHeightMapResolutionH > 0 ? StateHeightMapResolutionH : PhysicalGridSizeH) : PhysicalGridSizeH;
+    int32 CurrentStateMapW = bIncludeHeightMapInState ? (StateHeightMapResolutionW > 0 ? StateHeightMapResolutionW : PhysicalGridSizeW) : PhysicalGridSizeW;
 
-    float halfPlatformSize = (GridSize > 0) ? (PlatformWorldSize.X * 0.5f) : 0.f;
-    FTransform GridTransform = Grid->GetActorTransform();
-    FMatrix2D HeightTmp(GridSize, GridSize, 0.f);
-
-    for (int32 row = 0; row < GridSize; row++)
-    {
-        for (int32 col = 0; col < GridSize; col++)
-        {
-            // 1. Calculate XY center in Grid's local space
-            float lx = (col + 0.5f) * CellSize - halfPlatformSize;
-            float ly = (row + 0.5f) * CellSize - halfPlatformSize;
-
-            // 2. Define trace start/end in Grid's local space (using robust distances)
-            FVector localStart(lx, ly, traceDistUp);
-            FVector localEnd(lx, ly, -traceDistDown);
-
-            // 3. Transform to world space for trace
-            FVector wStart = GridTransform.TransformPosition(localStart);
-            FVector wEnd = GridTransform.TransformPosition(localEnd);
-
-            FHitResult hit;
-            bool bHit = w->LineTraceSingleByChannel(hit, wStart, wEnd, ECC_Visibility);
-
-            float finalLocalZ = 0.f; // Default to 0 (relative Z) if no hit
-            if (bHit)
-            {
-                // 4. Transform hit point back to Grid's local space
-                FVector localHit = GridTransform.InverseTransformPosition(hit.ImpactPoint);
-                finalLocalZ = localHit.Z;
-            }
-
-            // 5. Clamp the local Z value based on the *visualization* range [visMinZ, visMaxZ]
-            float clampedVisZ = FMath::Clamp(finalLocalZ, visMinZ, visMaxZ);
-
-            // 6. Normalize the clamped *visualization* Z value to the range [-1, 1]
-            float norm = 0.f;
-            // Check if visualization range is valid
-            if (visMaxZ > visMinZ) {
-                // Map [visMinZ, visMaxZ] to [0, 1]
-                norm = (clampedVisZ - visMinZ) / (visMaxZ - visMinZ);
-            }
-            float mapped = (norm * 2.f) - 1.f; // Map [0, 1] to [-1, 1]
-            HeightTmp[row][col] = mapped;
-        }
+    // Ensure CurrentHeight and PreviousHeight matrices are correctly sized.
+    // This should ideally be done once after config load if sizes are static for the session.
+    if (CurrentHeight.GetNumRows() != CurrentStateMapH || CurrentHeight.GetNumColumns() != CurrentStateMapW) {
+        PreviousHeight.Resize(CurrentStateMapH, CurrentStateMapW, FMatrix2D::EInitialization::Zero);
+        CurrentHeight.Resize(CurrentStateMapH, CurrentStateMapW, FMatrix2D::EInitialization::Zero);
     }
 
-    // Update height maps
-    HeightTmp.Clip(-1, 1);
-    PreviousHeight = CurrentHeight;
-    CurrentHeight = HeightTmp;
+    FMatrix2D HeightTmp(CurrentStateMapH, CurrentStateMapW, 0.f);
 
-    // Capture overhead camera
-    if (OverheadCaptureActor)
+    if (bIncludeHeightMapInState) {
+        float halfPlatformSizeX = PlatformWorldSize.X * 0.5f;
+        float halfPlatformSizeY = PlatformWorldSize.Y * 0.5f;
+        FTransform GridTransform = Grid->GetActorTransform();
+
+        float VisualizationZRange = MaxZ;
+        float halfVisRange = VisualizationZRange * 0.5f;
+        float visMinZ = -halfVisRange;
+        float visMaxZ = halfVisRange;
+        float traceDistUp = FMath::Abs(MaxZ) + 100.0f;
+        float traceDistDown = FMath::Abs(visMinZ) + 100.0f;
+
+
+        for (int32 r_state = 0; r_state < CurrentStateMapH; ++r_state) {
+            for (int32 c_state = 0; c_state < CurrentStateMapW; ++c_state) {
+                // Map state grid cell (r_state, c_state) to a physical normalized position (0-1) on the platform
+                // Handle division by zero if CurrentStateMapW/H is 1
+                float norm_x_on_platform = (CurrentStateMapW > 1) ? (static_cast<float>(c_state) / (CurrentStateMapW - 1)) : 0.5f;
+                float norm_y_on_platform = (CurrentStateMapH > 1) ? (static_cast<float>(r_state) / (CurrentStateMapH - 1)) : 0.5f;
+
+                // Convert normalized platform coordinates to local coordinates relative to the Grid's center for tracing
+                float lx = (norm_x_on_platform - 0.5f) * PlatformWorldSize.X;
+                float ly = (norm_y_on_platform - 0.5f) * PlatformWorldSize.Y;
+
+                FVector localStart(lx, ly, traceDistUp);
+                FVector localEnd(lx, ly, -traceDistDown);
+
+                FVector wStart = GridTransform.TransformPosition(localStart);
+                FVector wEnd = GridTransform.TransformPosition(localEnd);
+
+                FHitResult hit;
+                // Consider adding trace complex true if needed: FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(TerraShiftStateTrace), true);
+                bool bHit = w->LineTraceSingleByChannel(hit, wStart, wEnd, ECC_Visibility);
+
+                float finalLocalZ = 0.f;
+                if (bHit) {
+                    FVector localHit = GridTransform.InverseTransformPosition(hit.ImpactPoint);
+                    finalLocalZ = localHit.Z;
+                }
+
+                float clampedVisZ = FMath::Clamp(finalLocalZ, visMinZ, visMaxZ);
+                float norm_height = (visMaxZ > visMinZ) ? (clampedVisZ - visMinZ) / (visMaxZ - visMinZ) : 0.f;
+                HeightTmp[r_state][c_state] = (norm_height * 2.f) - 1.f;
+            }
+        }
+        HeightTmp.Clip(-1.f, 1.f);
+    }
+
+    PreviousHeight = CurrentHeight;
+    CurrentHeight = HeightTmp; // HeightTmp will be empty if bIncludeHeightMapInState is false and it wasn't resized above
+
+    if (bIncludeOverheadImageInState && OverheadCaptureActor)
     {
         OverheadCaptureActor->GetCaptureComponent2D()->CaptureScene();
     }
@@ -616,29 +634,93 @@ void UStateManager::BuildCentralState()
 // ------------------------------------------
 TArray<float> UStateManager::GetCentralState()
 {
-    UWorld* w = (Grid) ? Grid->GetWorld() : nullptr;
-    float dt = (w) ? w->GetDeltaSeconds() : 0.f;
-
     TArray<float> outArr;
-    // (1) current height
-    outArr.Append(CurrentHeight.Data);
 
-    // (2) delta height
-    /*if (Step > 1 && dt > SMALL_NUMBER)
+    // 1. Append Height Map (if enabled)
+    if (bIncludeHeightMapInState && CurrentHeight.Num() > 0)
     {
-        FMatrix2D diff = ((CurrentHeight - PreviousHeight) / dt);
-        diff.Clip(-1, 1);
-        outArr.Append(diff.Data);
+        outArr.Append(CurrentHeight.GetData());
     }
-    else
+
+    // 2. Append Overhead Image (if enabled)
+    if (bIncludeOverheadImageInState && OverheadRenderTarget && OverheadCaptureActor)
     {
-        outArr.Append(PreviousHeight.Data);
-    }*/
+        TArray<float> overhead = CaptureOverheadImage();
+        if (overhead.Num() > 0) {
+            outArr.Append(overhead);
+        }
+    }
 
-    // (3) overhead camera
-    TArray<float> overhead = CaptureOverheadImage();
-    outArr.Append(overhead);
+    // 3. Append Grid Object Sequence (if enabled)
+    if (bIncludeGridObjectSequenceInState && MaxGridObjectsForState > 0 && GridObjectFeatureSize > 0)
+    {
+        const float HalfPlatformSizeX = (PlatformWorldSize.X > KINDA_SMALL_NUMBER) ? (PlatformWorldSize.X / 2.0f) : 1.0f;
+        const float HalfPlatformSizeY = (PlatformWorldSize.Y > KINDA_SMALL_NUMBER) ? (PlatformWorldSize.Y / 2.0f) : 1.0f;
 
+        const float ObjectZNormRangeMin = MinZ;
+        const float ObjectZNormRangeMax = MaxZ;
+        const float ObjectZNormRange = ObjectZNormRangeMax - ObjectZNormRangeMin;
+
+        const float MaxVelocityClip = 100.0f; // Hardcoded as per request
+
+        for (int32 i = 0; i < MaxGridObjectsForState; ++i)
+        {
+            // Check if object 'i' is valid and active.
+            // bHasActive is sized by MaxGridObjects (total manageable objects).
+            // We iterate up to MaxGridObjectsForState for the state representation.
+            if (bHasActive.IsValidIndex(i) && bHasActive[i] &&
+                ObjectMgr && ObjectMgr->GetGridObject(i) != nullptr)
+            {
+                FVector ObjPosLocal = GetCurrentPosition(i);
+
+                FVector GoalPosLocal = FVector::ZeroVector;
+                int32 GoalIdx = GetGoalIndex(i);
+                if (GoalManager && GoalIdx != -1)
+                {
+                    FVector GoalPosWorld = GoalManager->GetGoalLocation(GoalIdx);
+                    if (Platform)
+                    {
+                        GoalPosLocal = Platform->GetActorTransform().InverseTransformPosition(GoalPosWorld);
+                    }
+                }
+                FVector ObjVelLocal = GetCurrentVelocity(i);
+
+                // Normalize Object Position
+                float NormObjPosX = FMath::Clamp(ObjPosLocal.X / HalfPlatformSizeX, -1.0f, 1.0f);
+                float NormObjPosY = FMath::Clamp(ObjPosLocal.Y / HalfPlatformSizeY, -1.0f, 1.0f);
+                float NormObjPosZ = (ObjectZNormRange > KINDA_SMALL_NUMBER) ?
+                    FMath::Clamp(((ObjPosLocal.Z - ObjectZNormRangeMin) / ObjectZNormRange) * 2.0f - 1.0f, -1.0f, 1.0f) :
+                    0.0f;
+
+                // Normalize Goal Position
+                float NormGoalPosX = FMath::Clamp(GoalPosLocal.X / HalfPlatformSizeX, -1.0f, 1.0f);
+                float NormGoalPosY = FMath::Clamp(GoalPosLocal.Y / HalfPlatformSizeY, -1.0f, 1.0f);
+                float NormGoalPosZ = (ObjectZNormRange > KINDA_SMALL_NUMBER) ?
+                    FMath::Clamp(((GoalPosLocal.Z - ObjectZNormRangeMin) / ObjectZNormRange) * 2.0f - 1.0f, -1.0f, 1.0f) :
+                    0.0f;
+
+                float NormVelX = FMath::Clamp(ObjVelLocal.X, -MaxVelocityClip, MaxVelocityClip) / MaxVelocityClip;
+                float NormVelY = FMath::Clamp(ObjVelLocal.Y, -MaxVelocityClip, MaxVelocityClip) / MaxVelocityClip;
+                float NormVelZ = FMath::Clamp(ObjVelLocal.Z, -MaxVelocityClip, MaxVelocityClip) / MaxVelocityClip;
+
+                outArr.Add(NormObjPosX); outArr.Add(NormObjPosY); outArr.Add(NormObjPosZ);
+                outArr.Add(NormGoalPosX); outArr.Add(NormGoalPosY); outArr.Add(NormGoalPosZ);
+                outArr.Add(NormVelX); outArr.Add(NormVelY); outArr.Add(NormVelZ);
+
+                for (int32 pad_idx = 9; pad_idx < GridObjectFeatureSize; ++pad_idx)
+                {
+                    outArr.Add(0.0f);
+                }
+            }
+            else
+            {
+                for (int32 feat_idx = 0; feat_idx < GridObjectFeatureSize; ++feat_idx)
+                {
+                    outArr.Add(0.0f);
+                }
+            }
+        }
+    }
     return outArr;
 }
 
@@ -847,7 +929,7 @@ void UStateManager::SetupOverheadCamera()
     FRotator spawnRot = FRotator(-90.f, 0.f, 0.f); // Looking straight down
 
     FActorSpawnParameters sp;
-    sp.Owner = Platform; // Set owner to the platform
+    sp.Owner = Platform;
     OverheadCaptureActor = w->SpawnActor<ASceneCapture2D>(spawnLoc, spawnRot, sp);
 
     if (!OverheadCaptureActor)
@@ -856,49 +938,45 @@ void UStateManager::SetupOverheadCamera()
         return;
     }
 
+    // Use StateOverheadImageResX/Y if image is part of state, otherwise use general OverheadCamResX/Y
+    int32 TargetResX = bIncludeOverheadImageInState ? StateOverheadImageResX : OverheadCamResX;
+    int32 TargetResY = bIncludeOverheadImageInState ? StateOverheadImageResY : OverheadCamResY;
+
     // Configure the Render Target
-    OverheadRenderTarget = NewObject<UTextureRenderTarget2D>(this, TEXT("OverheadCameraRenderTarget")); // Added 'this' for proper UObject ownership
-    OverheadRenderTarget->RenderTargetFormat = RTF_RGBA8; // Using RGBA8 for BaseColor is fine, could use RTF_R8 for true greyscale if processed later
-    OverheadRenderTarget->InitAutoFormat(OverheadCamResX, OverheadCamResY);
-    OverheadRenderTarget->UpdateResourceImmediate(true); // Ensure it's ready
+    OverheadRenderTarget = NewObject<UTextureRenderTarget2D>(this, TEXT("OverheadCameraRenderTarget"));
+    OverheadRenderTarget->RenderTargetFormat = RTF_RGBA8;
+    OverheadRenderTarget->InitAutoFormat(TargetResX, TargetResY); // Use potentially decoupled resolution
+    OverheadRenderTarget->UpdateResourceImmediate(true);
 
     // Configure the Scene Capture Component
     USceneCaptureComponent2D* comp = OverheadCaptureActor->GetCaptureComponent2D();
     if (!comp)
     {
         UE_LOG(LogTemp, Error, TEXT("UStateManager::SetupOverheadCamera - OverheadCaptureActor is missing USceneCaptureComponent2D."));
-        OverheadCaptureActor->Destroy(); // Clean up spawned actor
+        OverheadCaptureActor->Destroy();
         OverheadCaptureActor = nullptr;
         return;
     }
 
-    comp->ProjectionType = ECameraProjectionMode::Perspective; // Or ECameraProjectionMode::Orthographic if preferred
+    comp->ProjectionType = ECameraProjectionMode::Perspective;
     comp->FOVAngle = OverheadCamFOV;
     comp->TextureTarget = OverheadRenderTarget;
-    comp->CaptureSource = ESceneCaptureSource::SCS_BaseColor; // Capturing unlit base color
+    comp->CaptureSource = ESceneCaptureSource::SCS_BaseColor;
 
-    // Performance: Limit MaxViewDistance if appropriate, ensures far-off objects aren't considered
-    comp->MaxViewDistanceOverride = OverheadCamDistance * 1.1f; // Slightly more than camera distance to ensure platform is captured
+    comp->MaxViewDistanceOverride = OverheadCamDistance * 1.1f;
 
-    // Explicitly set bCaptureEveryFrame and bCaptureOnMovement to false as we trigger manually
     comp->bCaptureEveryFrame = false;
     comp->bCaptureOnMovement = false;
 
-    // Performance: Adjust ShowFlags to disable unnecessary rendering features
-    // This is crucial for making the capture lightweight.
     FEngineShowFlags& ShowFlags = comp->ShowFlags;
     ShowFlags.SetAtmosphere(false);
-    ShowFlags.SetBSP(false); // If you don't use BSP geometry visible to this camera
+    ShowFlags.SetBSP(false);
     ShowFlags.SetDecals(false);
     ShowFlags.SetFog(false);
     ShowFlags.SetVolumetricFog(false);
-    ShowFlags.SetSkeletalMeshes(true); // Keep true if GridObjects or other relevant actors are skeletal
-    // If GridObjects are static meshes, you might disable this if no other skeletal meshes are needed
-    ShowFlags.SetStaticMeshes(true);  // Keep true for Columns, Platform, GridObjects (if static)
-    ShowFlags.SetTranslucency(false); // If translucent materials aren't needed in the capture
-
-    // For SCS_BaseColor, lighting and post-processing are generally not applied,
-    // but explicitly disabling them can prevent any overhead.
+    ShowFlags.SetSkeletalMeshes(true);
+    ShowFlags.SetStaticMeshes(true);
+    ShowFlags.SetTranslucency(false);
     ShowFlags.SetLighting(false);
     ShowFlags.SetPostProcessing(false);
     ShowFlags.SetDynamicShadows(false);
@@ -907,31 +985,24 @@ void UStateManager::SetupOverheadCamera()
     ShowFlags.SetReflectionEnvironment(false);
     ShowFlags.SetScreenSpaceReflections(false);
     ShowFlags.SetDistanceFieldAO(false);
-
-    ShowFlags.SetAntiAliasing(false); // AA might not be needed for a small observation texture
+    ShowFlags.SetAntiAliasing(false);
     ShowFlags.SetBloom(false);
     ShowFlags.SetLensFlares(false);
-    ShowFlags.SetMotionBlur(false); // Motion blur is irrelevant for a still capture
+    ShowFlags.SetMotionBlur(false);
     ShowFlags.SetDepthOfField(false);
-    ShowFlags.SetEyeAdaptation(false); // Not relevant for non-HDR captures
-
-    // Potentially keep if your base colors rely on it, but for SCS_BaseColor usually not.
+    ShowFlags.SetEyeAdaptation(false);
     ShowFlags.SetMaterials(true);
-    ShowFlags.SetInstancedStaticMeshes(true); // If using ISM for columns or other elements
+    ShowFlags.SetInstancedStaticMeshes(true);
     ShowFlags.SetInstancedGrass(false);
     ShowFlags.SetInstancedFoliage(false);
     ShowFlags.SetPaper2DSprites(false);
-    ShowFlags.SetParticles(false); // If no relevant particles in the overhead view
+    ShowFlags.SetParticles(false);
     ShowFlags.SetTextRender(false);
-    ShowFlags.SetLandscape(false); // If no landscape visible
+    ShowFlags.SetLandscape(false);
 
-    // Ensure the component is active so it can capture when CaptureScene() is called
     comp->SetActive(true);
-    OverheadCaptureActor->SetActorEnableCollision(false); // Camera actor itself doesn't need collision
+    OverheadCaptureActor->SetActorEnableCollision(false);
 }
-
-
-// Inside UStateManager::CaptureOverheadImage() const
 
 TArray<float> UStateManager::CaptureOverheadImage() const
 {

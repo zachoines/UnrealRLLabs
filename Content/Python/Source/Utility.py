@@ -368,7 +368,6 @@ class RunningMeanStdNormalizer:
         # Use the stored variance, which should be clamped >= 1e-8 from _update_single
         return (tensor_on_device - mean_reshaped) / torch.sqrt(var_reshaped + 1e-8)
     
-
 class PopArtNormalizer(nn.Module):
     def __init__(self, output_layer: nn.Linear, beta: float = 0.999, epsilon: float = 1e-5, device: torch.device = torch.device("cpu")):
         super().__init__()

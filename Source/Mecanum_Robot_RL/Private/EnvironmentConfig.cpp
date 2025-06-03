@@ -332,6 +332,33 @@ bool UEnvironmentConfig::GetOrDefaultBool(const FString& Path, bool DefaultVal)
     return Sub->AsBool();
 }
 
+
+// Add this function definition to EnvironmentConfig.cpp
+FString UEnvironmentConfig::GetOrDefaultString(const FString& Path, const FString& DefaultVal)
+{
+    if (!HasPath(Path))
+    {
+        return DefaultVal;
+    }
+
+    // Get() is not const-correct, so we might need a const_cast if 'this' is const,
+    // or ensure Get() can be called from a const context if it doesn't modify state.
+    // Assuming Get() is safe to call here or that this function is called on a non-const UEnvironmentConfig.
+    UEnvironmentConfig* Sub = Get(Path);
+    if (!Sub || !Sub->IsValid())
+    {
+        return DefaultVal;
+    }
+
+    if (Sub->InternalJsonValue.IsValid() && Sub->InternalJsonValue->Type != EJson::String)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("UEnvironmentConfig::GetOrDefaultString - Path '%s' exists but is not a string. Returning default."), *Path);
+        return DefaultVal;
+    }
+    return Sub->AsString(); // AsString() itself should handle IsValid() and type checks internally
+}
+
+
 TArray<float> UEnvironmentConfig::GetArrayOrDefault(const FString& Path, const TArray<float>& DefaultVal)
 {
     if (!HasPath(Path))

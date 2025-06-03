@@ -384,4 +384,42 @@ private:
 
     UPROPERTY()
     class UTextureRenderTarget2D* OverheadRenderTarget = nullptr;
+
+
+    // Add to UPROPERTY section for Config & Toggles
+
+    /** If true, the NxN height map will be included in the central state. */
+    UPROPERTY()
+    bool bIncludeHeightMapInState;
+
+    /** If true, the overhead camera image will be included in the central state. */
+    UPROPERTY()
+    bool bIncludeOverheadImageInState;
+
+    /** Resolution Height for the height map included in the state (if bIncludeHeightMapInState is true). */
+    UPROPERTY()
+    int32 StateHeightMapResolutionH;
+
+    /** Resolution Width for the height map included in the state (if bIncludeHeightMapInState is true). */
+    UPROPERTY()
+    int32 StateHeightMapResolutionW;
+
+    /** Resolution X for the overhead image included in the state (if bIncludeOverheadImageInState is true). */
+    UPROPERTY()
+    int32 StateOverheadImageResX;
+
+    /** Resolution Y for the overhead image included in the state (if bIncludeOverheadImageInState is true). */
+    UPROPERTY()
+    int32 StateOverheadImageResY;
+
+    UPROPERTY()
+    bool bIncludeGridObjectSequenceInState;
+
+    /** Maximum number of grid objects to include in the state sequence. */
+    UPROPERTY()
+    int32 MaxGridObjectsForState;
+
+    /** Number of features per grid object in the state sequence (e.g., 3 pos + 3 goal_loc + 3 vel = 9). */
+    UPROPERTY()
+    int32 GridObjectFeatureSize;
 };

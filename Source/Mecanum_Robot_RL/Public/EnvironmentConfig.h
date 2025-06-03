@@ -52,7 +52,7 @@ public:
     bool IsValid() const { return InternalJsonValue.IsValid(); }
 
     // -----------------------------
-    // NEW: "GetOrDefault" Methods
+    // "GetOrDefault" Methods
     // -----------------------------
     UFUNCTION(BlueprintCallable, Category = "Config")
     float GetOrDefaultNumber(const FString& Path, float DefaultVal);
@@ -62,6 +62,9 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Config")
     bool GetOrDefaultBool(const FString& Path, bool DefaultVal);
+
+    UFUNCTION(BlueprintCallable, Category = "Config")
+    FString GetOrDefaultString(const FString& Path, const FString& DefaultVal);
 
     /**
      * For numeric arrays. If the path is missing or invalid, returns DefaultVal.
@@ -79,10 +82,10 @@ public:
     // Called internally to wrap a sub-value in a new UEnvironmentConfig object.
     void Initialize(const TSharedPtr<FJsonValue>& InValue);
 
-private:
     // Internal JSON node we represent
     TSharedPtr<FJsonValue> InternalJsonValue;
 
+private:
     static TArray<FString> SplitPath(const FString& Path);
     TSharedPtr<FJsonValue> ResolvePath(
         const TSharedPtr<FJsonValue>& CurrentValue,
