@@ -204,7 +204,7 @@
         "lr_baseline_iqn": { "start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000 },
         "entropy_coeff": { "start_value": 0.005, "end_value": 0.001, "total_iters": 10000 },
         "value_clip": { "start_value": 0.01, "end_value": 0.001, "total_iters": 10000 },
-        "policy_clip": { "start_value": 0.4, "end_value": 0.1, "total_iters": 10000 },
+        "policy_clip": { "start_value": 0.2, "end_value": 0.1, "total_iters": 10000 },
         "max_grad_norm": { "start_value": 1.0, "end_value": 0.5, "total_iters": 10000 }
       },
       "networks": {
@@ -274,10 +274,10 @@
   },
   "train": {
     "sequence_length": 64, "pad_trajectories": true,
-    "batch_size": 512, "buffer_size": 512,
-    "num_environments": 4, "epochs": 4, "mini_batch_size": 8,
+    "batch_size": 1025, "buffer_size": 1025,
+    "num_environments": 8, "epochs": 4, "mini_batch_size": 16,
     "ActionRepeat": 1, "saveFrequency": 100,
     "iqn_target_update_freq": 5, "iqn_train_freq": 1,
-    "iqn_replay_buffer_size": 50000, "iqn_batch_size": 64, "iqn_epochs": 3
+    "iqn_replay_buffer_size": 50000, "iqn_batch_size": 128, "iqn_epochs": 3
   }
 }

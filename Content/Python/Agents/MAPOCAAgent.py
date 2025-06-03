@@ -233,10 +233,11 @@ class MAPOCAAgent(Agent):
             trunk_dim = emb_out_dim
 
         pol_cfg = net_cfg["policy_network"].copy()
+        policy_type_str = pol_cfg.pop("type", self.action_space_type_str_from_config)
         pol_cfg["in_features"] = trunk_dim
         pol_cfg["out_features"] = self.action_dim # Set by _determine_action_space
 
-        policy_type_str = pol_cfg.get("type", self.action_space_type_str_from_config) # Use determined type
+         # Use determined type
         if policy_type_str == "beta": self.policy_net = BetaPolicyNetwork(**pol_cfg).to(device)
         elif policy_type_str == "tanh_continuous": self.policy_net = TanhContinuousPolicyNetwork(**pol_cfg).to(device)
         elif policy_type_str == "gaussian": self.policy_net = GaussianPolicyNetwork(**pol_cfg).to(device)
