@@ -187,7 +187,6 @@ class MAPOCAAgent(Agent):
         self.lr_base = a_cfg.get("learning_rate", 3e-4)
         self.epochs = t_cfg.get("epochs", 4)
         self.mini_batch_size = t_cfg.get("mini_batch_size", 64)
-        self.no_grad_bs = a_cfg.get("no_grad_forward_batch_size", self.mini_batch_size)
 
         # --- Current values for schedulable parameters ---
         self.entropy_coeff = self.entropy_coeff_initial

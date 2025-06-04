@@ -43,13 +43,12 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
     GridSize = 50;
 
     // --- Default Reward Toggles & Scales ---
-    bUsePotentialShaping = false; // Default off
+    bUsePotentialShaping = false;
     PotentialShaping_Scale = 1.0f;
-    // Assuming user updated C++ to use PotentialShaping_Gamma from env config
-    PotentialShaping_Gamma = 0.99f; // Default gamma for potential shaping
+    PotentialShaping_Gamma = 0.99f;
 
     bUseVelAlignment = false;
-    bUseXYDistanceImprovement = false; // Changed default to false based on original code
+    bUseXYDistanceImprovement = false;
     bUseZAccelerationPenalty = false;
 
     VelAlign_Scale = 0.1f;
@@ -75,13 +74,12 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
 
 ATerraShiftEnvironment::~ATerraShiftEnvironment()
 {
-    // Destructor logic if needed
+
 }
 
 void ATerraShiftEnvironment::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
-    // Tick logic if needed
 }
 
 void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
@@ -97,7 +95,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
 
     // Setup folder paths for potential logging/debugging (Matches original)
     EnvironmentFolderPath = GetName();
-    SetFolderPath(*EnvironmentFolderPath); // Sets folder for this environment actor
+    SetFolderPath(*EnvironmentFolderPath);
 
     UEnvironmentConfig* EnvConfig = TerraShiftParams->EnvConfig;
 
@@ -133,7 +131,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
     UEnvironmentConfig* envSpecificCfg = EnvConfig->Get(TEXT("environment/params/TerraShiftEnvironment"));
     if (envSpecificCfg)
     {
-        // Potential Shaping Params (NEW)
+        // Potential Shaping Params
         bUsePotentialShaping = envSpecificCfg->GetOrDefaultBool(TEXT("bUsePotentialShaping"), false);
         PotentialShaping_Scale = envSpecificCfg->GetOrDefaultNumber(TEXT("PotentialShaping_Scale"), 1.0f);
         PotentialShaping_Gamma = envSpecificCfg->GetOrDefaultNumber(TEXT("PotentialShaping_Gamma"), 0.99f);
@@ -180,7 +178,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
         {
             PlatformWorldSize = Platform->PlatformMeshComponent->GetStaticMesh()->GetBounds().BoxExtent
                 * 2.f // BoxExtent is half-size
-                * Platform->GetActorScale3D(); // Apply scaling
+                * Platform->GetActorScale3D();
             PlatformCenter = Platform->GetActorLocation();
             CellSize = (GridSize > 0) ? PlatformWorldSize.X / static_cast<float>(GridSize) : 1.f; // Avoid division by zero
             UE_LOG(LogTemp, Log, TEXT("Platform World Size: %s, Cell Size: %f"), *PlatformWorldSize.ToString(), CellSize);
@@ -193,7 +191,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
     else
     {
         UE_LOG(LogTemp, Fatal, TEXT("Failed to spawn Platform Actor. Environment cannot initialize."));
-        return; // Stop initialization if platform fails
+        return;
     }
 
     // Spawn the grid actor
@@ -204,10 +202,10 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
         Grid = GetWorld()->SpawnActor<AGrid>(AGrid::StaticClass(), GridLocation, FRotator::ZeroRotator, SpawnParams);
         if (Grid)
         {
-            Grid->AttachToActor(Platform, FAttachmentTransformRules::KeepWorldTransform); // Attach to platform
+            Grid->AttachToActor(Platform, FAttachmentTransformRules::KeepWorldTransform);
             Grid->SetColumnMovementBounds(-MaxColumnHeight, MaxColumnHeight);
             Grid->InitializeGrid(GridSize, PlatformWorldSize.X, GridLocation);
-            // Grid->SetFolderPath(FName(*(EnvironmentFolderPath + "/Grid"))); // Remains commented out as in original
+            // Grid->SetFolderPath(FName(*(EnvironmentFolderPath + "/Grid")));
         }
         else
         {
@@ -219,8 +217,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
     GridObjectManager = GetWorld()->SpawnActor<AGridObjectManager>(AGridObjectManager::StaticClass());
     if (GridObjectManager)
     {
-        GridObjectManager->SetPlatformActor(Platform); // Provide reference to platform
-        // Set folder path for the manager actor itself (Matches original)
+        GridObjectManager->SetPlatformActor(Platform);
         GridObjectManager->SetFolderPath(FName(*(EnvironmentFolderPath + TEXT("/") + GridObjectManager->GetName())));
     }
     else
@@ -253,7 +250,6 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
         if (smCfg && StateManager)
         {
             StateManager->LoadConfig(smCfg);
-            // Update CurrentGridObjects based on actual config value (Matches original)
             CurrentGridObjects = StateManager->GetMaxGridObjects();
         }
         else if (!StateManager)
@@ -287,7 +283,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
 
     // --- Finalize Initialization ---
 
-    // Pass necessary references to the State Manager (Matches original)
+    // Pass necessary references to the State Manager
     if (StateManager)
     {
         StateManager->SetReferences(Platform, GridObjectManager, Grid, WaveSimulator, GoalManager);
@@ -300,16 +296,14 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
 FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
 {
     CurrentStep = 0;
-    CurrentAgents = NumAgents; // Set the number of active agents for this episode
+    CurrentAgents = NumAgents;
 
-    // Ensure CurrentGridObjects reflects the configuration (Matches original logic)
     if (StateManager)
     {
         CurrentGridObjects = StateManager->GetMaxGridObjects();
     }
     else
     {
-        // Should not happen if InitEnv succeeded, but handle defensively
         CurrentGridObjects = 1;
         UE_LOG(LogTemp, Error, TEXT("StateManager is null during ResetEnv."));
     }
@@ -320,9 +314,9 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
     // Reset the state manager (handles object positions, goals, agent states, etc.)
     if (StateManager)
     {
-        StateManager->Reset(CurrentGridObjects, CurrentAgents); // Original call
+        StateManager->Reset(CurrentGridObjects, CurrentAgents);
 
-        // Calculate initial potential AFTER state manager has reset object positions (NEW)
+        // Calculate initial potential AFTER state manager has reset object positions
         for (int32 i = 0; i < CurrentGridObjects; ++i)
         {
             PreviousPotential[i] = CalculatePotential(i);
@@ -333,7 +327,7 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
     UE_LOG(LogTemp, Verbose, TEXT("Environment Reset: Agents=%d, Objects=%d"), CurrentAgents, CurrentGridObjects);
 
     // Return the initial state after reset
-    return State(); // Original call
+    return State();
 }
 
 // Act, PostTransition, PreStep, PreTransition, PostStep, State, Done, Trunc match original functionality
@@ -413,24 +407,48 @@ FState ATerraShiftEnvironment::State()
 
 bool ATerraShiftEnvironment::Done()
 {
-    if (!Initialized || !StateManager) return true; // Should not happen post-init
+    if (!Initialized || !StateManager) return true; // Treat uninitialized as done to prevent errors
 
-    // MODIFICATION: For this request, Done() should always return false.
-    // Truncation will handle episode end.
+    // Episode is done if the StateManager determines all objects are handled (reached goal or fallen off)
+    // Only check after at least one step to allow initial state setup
+    /*if (CurrentStep > 0 && StateManager->AllGridObjectsHandled())
+    {
+        UE_LOG(LogTemp, Verbose, TEXT("Episode Done: All objects handled at step %d."), CurrentStep);
+        return true;
+    }
+
+    for (int32 ObjIndex = 0; ObjIndex < CurrentGridObjects; ++ObjIndex)
+    {
+        // StateManager->GetHasFallenOff(ObjIndex) directly queries the bFallenOff flag for the object.
+        if (StateManager->GetHasFallenOff(ObjIndex))
+        {
+            UE_LOG(LogTemp, Verbose, TEXT("ATerraShiftEnvironment::Done() - Object with index %d has fallen off. Episode considered Done at step %d."), ObjIndex, CurrentStep);
+            return true;
+        }
+    }
     return false;
-}
+    */
 
-bool ATerraShiftEnvironment::Trunc()
-{
-    if (!Initialized) return true; // Treat uninitialized as truncated
-
-    // Episode is truncated if the maximum step count is reached
     bool bTruncated = (CurrentStep >= MaxSteps);
     if (bTruncated)
     {
         UE_LOG(LogTemp, Verbose, TEXT("Episode Truncated: Max steps (%d) reached at step %d."), MaxSteps, CurrentStep);
     }
     return bTruncated;
+}
+
+bool ATerraShiftEnvironment::Trunc()
+{
+    // if (!Initialized) return true;
+
+    // Episode is truncated if the maximum step count is reached
+    /*bool bTruncated = (CurrentStep >= MaxSteps);
+    if (bTruncated)
+    {
+        UE_LOG(LogTemp, Verbose, TEXT("Episode Truncated: Max steps (%d) reached at step %d."), MaxSteps, CurrentStep);
+    }
+    return bTruncated;*/
+    return false;
 }
 
 
@@ -453,8 +471,7 @@ float ATerraShiftEnvironment::Reward()
         bool bShouldCollectTerminalReward = StateManager->GetShouldCollectReward(ObjIndex); // Flag indicating terminal state reached *this step*
 
         float currentPotential = 0.0f;
-        // Calculate potential based on the CURRENT state (after the last action) only if needed (NEW)
-        if (bUsePotentialShaping && bIsActive) // Calculate potential only for active objects if shaping is enabled
+        if (bUsePotentialShaping && bIsActive)
         {
             currentPotential = CalculatePotential(ObjIndex);
         }
@@ -469,24 +486,17 @@ float ATerraShiftEnvironment::Reward()
                 AccumulatedReward += FALL_OFF_PENALTY;
                 UE_LOG(LogTemp, Verbose, TEXT("Object %d: Fell off. Reward: %f"), ObjIndex, FALL_OFF_PENALTY);
                 if (bUsePotentialShaping && PreviousPotential.IsValidIndex(ObjIndex)) PreviousPotential[ObjIndex] = 0.0f;
-                // MODIFICATION: No continue, object will respawn and might get other rewards in the same step if logic allows
             }
-            else if (bHasReachedGoal) // Use else if because an object can't be both fallen off and reached goal in the same flag check
+            else if (bHasReachedGoal)
             {
                 AccumulatedReward += REACH_GOAL_REWARD;
                 UE_LOG(LogTemp, Verbose, TEXT("Object %d: Reached goal. Reward: %f"), ObjIndex, REACH_GOAL_REWARD);
                 if (bUsePotentialShaping && PreviousPotential.IsValidIndex(ObjIndex)) PreviousPotential[ObjIndex] = 0.0f;
-                // MODIFICATION: No continue
             }
-            // If an object was just marked for respawn due to goal/OOB, its bIsActive is now false.
-            // The logic below for active objects will naturally be skipped for it this step.
-            // It will become active again *after* RespawnGridObjects() is called (which happens in PreTransition after this Reward calc).
         }
 
 
         // If object is not active (and wasn't terminated this step), skip remaining rewards
-        // This check is important because an object becomes inactive once it hits a terminal state (goal/OOB)
-        // and is pending respawn.
         if (!bIsActive)
         {
             if (bUsePotentialShaping && PreviousPotential.IsValidIndex(ObjIndex)) PreviousPotential[ObjIndex] = 0.0f;
@@ -552,11 +562,11 @@ float ATerraShiftEnvironment::Reward()
                     if (distanceToGoal > KINDA_SMALL_NUMBER)
                     {
                         dirToObjectToGoal.Normalize();
-                        FVector velLocalNormalized = velLocal; // Use a copy for normalization
-                        velLocalNormalized.Normalize(); // Normalize the copy
+                        FVector velLocalNormalized = velLocal; 
+                        velLocalNormalized.Normalize();
                         float dotProduct = FVector::DotProduct(velLocalNormalized, dirToObjectToGoal);
-                        // Consider if velLocal.Size() is appropriate here or if it should be based on normalized vectors
-                        float alignReward = dotProduct * velLocal.Size(); // Original logic, scaled by magnitude
+                        // TODO:: Consider if velLocal.Size() is appropriate here or if it should be based on normalized vectors
+                        float alignReward = dotProduct * velLocal.Size(); 
                         ShapingSubReward += VelAlign_Scale * ThresholdAndClamp(alignReward, VelAlign_Min, VelAlign_Max);
                     }
                 }
@@ -574,7 +584,7 @@ float ATerraShiftEnvironment::Reward()
 float ATerraShiftEnvironment::ThresholdAndClamp(float value, float minThreshold, float maxClamp)
 {
     if (FMath::Abs(value) < minThreshold) return 0.f;
-    return FMath::Clamp(value, -maxClamp, maxClamp); // Clamp both positive and negative
+    return FMath::Clamp(value, -maxClamp, maxClamp);
 }
 
 /**

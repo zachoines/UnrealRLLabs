@@ -53,7 +53,7 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     bIncludeOverheadImageInState = Config->GetOrDefaultBool(TEXT("bIncludeOverheadImageInState"), true);
 
     // GridSize would have been set in SetReferences, use it for default if needed
-    int32 DefaultResH = GridSize > 0 ? GridSize : 25; // Default if GridSize not yet set
+    int32 DefaultResH = GridSize > 0 ? GridSize : 25;
     int32 DefaultResW = GridSize > 0 ? GridSize : 25;
 
     StateHeightMapResolutionH = Config->GetOrDefaultInt(TEXT("StateHeightMapResolutionH"), DefaultResH);
@@ -63,7 +63,7 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
 
     // ***** Load NEW Grid Object Sequence State Config *****
     bIncludeGridObjectSequenceInState = Config->GetOrDefaultBool(TEXT("bIncludeGridObjectSequenceInState"), false);
-    MaxGridObjectsForState = Config->GetOrDefaultInt(TEXT("MaxGridObjectsForState"), MaxGridObjects); // Default to MaxGridObjects
+    MaxGridObjectsForState = Config->GetOrDefaultInt(TEXT("MaxGridObjectsForState"), MaxGridObjects);
     GridObjectFeatureSize = Config->GetOrDefaultInt(TEXT("GridObjectFeatureSize"), 9);
     // ***** END OF LOADING NEW PARAMS *****
 
@@ -132,7 +132,6 @@ void UStateManager::SetReferences(
     PlatformCenter = Platform->GetActorLocation();
     CellSize = (GridSize > 0) ? (PlatformWorldSize.X / (float)GridSize) : 1.f;
 
-    // Create or re-init the OccupancyGrid
     if (!OccupancyGrid)
     {
         OccupancyGrid = NewObject<UOccupancyGrid>(this);
@@ -201,7 +200,6 @@ void UStateManager::Reset(int32 NumObjects, int32 CurrentAgents)
         CurrPos[i] = FVector::ZeroVector;
 
         RespawnTimer[i] = 0.f;
-        // RespawnDelays[i] = BaseRespawnDelay * i; // Stagger initial spawns
         RespawnDelays[i] = 0.0f; // For immediate first spawn if BaseRespawnDelay is 0
         if (BaseRespawnDelay > 0.0f) // If BaseRespawnDelay is configured, use it for initial staggering
         {
@@ -307,9 +305,13 @@ void UStateManager::UpdateGridObjectFlags()
     float minZLocal = PlatformCenter.Z + MinZ;
     float maxZLocal = PlatformCenter.Z + MaxZ;
 
+    // We now use GoalManager->IsInRadiusOf(...) to check "reached"
+    // so we can comment out occupant-based intersection
+    // bool bUseOccupancyForGoals = bUseRandomGoals; // We won't use it for "reached" check
+
     for (int32 i = 0; i < bHasActive.Num(); i++)
     {
-        if (!bHasActive[i]) // Only process if not already marked for respawn or truly inactive
+        if (!bHasActive[i])
             continue;
 
         AGridObject* Obj = ObjectMgr->GetGridObject(i);
@@ -318,35 +320,37 @@ void UStateManager::UpdateGridObjectFlags()
         FVector wPos = Obj->GetObjectLocation();
 
         // (1) Check if object reached its goal
-        if (!bHasReached[i]) // Only check if not already reached
+        if (!bHasReached[i])
         {
             int32 gIdx = ObjectGoalIndices[i];
             if (gIdx >= 0)
             {
+                // Distance-based approach with GoalManager
                 bool bInRadius = GoalManager->IsInRadiusOf(gIdx, wPos, GoalCollectRadius);
                 if (bInRadius)
                 {
-                    bHasActive[i] = false; // Mark as inactive to trigger respawn logic
+                    bHasActive[i] = false;
                     bHasReached[i] = true;
-                    bShouldCollect[i] = true; // For collecting reward
-                    bShouldResp[i] = true;    // MODIFICATION: Always respawn on goal
+                    bShouldCollect[i] = true;
 
-                    // Set RespawnTimer to meet condition for immediate respawn in RespawnGridObjects
-                    if (RespawnDelays.IsValidIndex(i)) {
-                        RespawnTimer[i] = RespawnDelays[i];
+                    if (bRemoveGridObjectOnGoalReached)
+                    {
+                        bShouldResp[i] = false;
+                    }
+                    else
+                    {
+                        bShouldResp[i] = true;
                     }
 
-
+                    // also remove occupant from "GridObjects"
                     OccupancyGrid->RemoveObject(i, FName("GridObjects"));
-                    ObjectMgr->DisableGridObject(i); // Disable the object to be respawned
-                    // Continue to OOB check is not logical if goal is reached
-                    continue; // Process next object
+                    ObjectMgr->DisableGridObject(i);
                 }
             }
         }
 
-        // (2) OOB Check (only if still active and not just reached goal)
-        if (bHasActive[i] && !bHasReached[i] && !bFallenOff[i])
+        // (2) OOB Check
+        if (!bFallenOff[i] && !bHasReached[i])
         {
             float dx = FMath::Abs(wPos.X - PlatformCenter.X);
             float dy = FMath::Abs(wPos.Y - PlatformCenter.Y);
@@ -364,18 +368,23 @@ void UStateManager::UpdateGridObjectFlags()
 
             if (bOOB)
             {
-                bHasActive[i] = false; // Mark as inactive
                 bFallenOff[i] = true;
-                bShouldCollect[i] = true; // For collecting penalty
-                bShouldResp[i] = true;    // MODIFICATION: Always respawn on OOB
+                bShouldCollect[i] = true;
 
-                // Set RespawnTimer for immediate respawn
-                if (RespawnDelays.IsValidIndex(i)) {
-                    RespawnTimer[i] = RespawnDelays[i];
+                if (bRemoveGridObjectOnOOB)
+                {
+                    bHasActive[i] = false;
+                    bShouldResp[i] = false;
+                    OccupancyGrid->RemoveObject(i, FName("GridObjects"));
+                    ObjectMgr->DisableGridObject(i);
                 }
-
-                OccupancyGrid->RemoveObject(i, FName("GridObjects"));
-                ObjectMgr->DisableGridObject(i); // Disable the object
+                else
+                {
+                    bHasActive[i] = false;
+                    bShouldResp[i] = true;
+                    OccupancyGrid->RemoveObject(i, FName("GridObjects"));
+                    ObjectMgr->DisableGridObject(i);
+                }
             }
         }
     }
@@ -551,44 +560,19 @@ void UStateManager::RespawnGridObjects()
 // ------------------------------------------
 bool UStateManager::AllGridObjectsHandled() const
 {
-    // MODIFICATION: For the requested behavior, this should always return false
-    // if we want the episode to only end due to MaxSteps.
-    // However, the original logic is retained here, commented out, for reference.
-    // The environment's Done() method will be primarily responsible.
-
-    /*
     if (bRemoveGridObjectOnGoalReached || bRemoveGridObjectOnOOB)
     {
         if (bHasActive.Contains(true)) return false;
-        if (bShouldResp.Contains(true)) return false; // If any object is pending respawn, not all handled.
-        return true; // All objects are inactive and none are waiting to respawn.
+        if (bShouldResp.Contains(true)) return false;
+        return true;
     }
-    // If objects are not removed but respawned on goal, and not removed on OOB (implies they respawn from OOB too)
-    // then the episode might never "end" based on object states alone if they keep respawning.
-    // This condition might need to be re-evaluated based on desired "game over" for such a setup.
-    // For now, if not removing, let's assume it implies infinite play until MaxSteps.
-    if (bRespawnGridObjectOnGoalReached && !bRemoveGridObjectOnOOB) {
-        return false; // Continuous play until MaxSteps
-    }
-
-    // If bUseRandomGoals and objects are NOT respawned on goal, and NOT removed on OOB (original logic)
     if (bUseRandomGoals && !bRespawnGridObjectOnGoalReached && !bRemoveGridObjectOnOOB)
     {
-        // This implies objects remain once a goal is reached, or if they fall off they also remain (and are inactive).
-        // The episode is done if all objects have reached their goal.
-        return !bHasReached.Contains(false); // Done if no object has 'false' in bHasReached
+        return !bHasReached.Contains(false);
     }
-    */
-    return false; // For the specific request, defer to MaxSteps via Trunc()
+    return false;
 }
 
-// ... (rest of the UStateManager.cpp file remains the same as provided in the context)
-// BuildCentralState, GetCentralState, GetAgentState, UpdateGridColumnsColors,
-// Accessors, GetColumnTopWorldLocation, SetupOverheadCamera, CaptureOverheadImage,
-// SpawnStationaryGoalPlatforms
-
-// Make sure to copy the rest of the file from the provided context starting from BuildCentralState
-// The following is a placeholder for the rest of the file content:
 
 // ------------------------------------------
 //   BuildCentralState
@@ -629,51 +613,51 @@ void UStateManager::BuildCentralState()
         float halfPlatformSizeY = PlatformWorldSize.Y * 0.5f;
         FTransform GridTransform = Grid->GetActorTransform();
 
-        float VisualizationZRange = MaxZ; // Use MaxZ as the upper bound for visualization range
-        float visMinZ = MinZ; // Use MinZ as the lower bound for visualization range
-        // Ensure visMaxZ is greater than visMinZ for normalization
-        float visMaxZ = MaxZ > MinZ ? MaxZ : MinZ + 1.0f; // Avoid division by zero if MaxZ <= MinZ
-
-        float traceDistUp = FMath::Abs(MaxZ) + 100.0f; // Trace from above MaxZ
-        // Trace down to below MinZ to capture hits within the full configured Z range
-        float traceDistDown = FMath::Abs(MinZ) + 100.0f;
+        float VisualizationZRange = MaxZ;
+        float halfVisRange = VisualizationZRange * 0.5f;
+        float visMinZ = -halfVisRange;
+        float visMaxZ = halfVisRange;
+        float traceDistUp = FMath::Abs(MaxZ) + 100.0f;
+        float traceDistDown = FMath::Abs(visMinZ) + 100.0f;
 
 
         for (int32 r_state = 0; r_state < CurrentStateMapH; ++r_state) {
             for (int32 c_state = 0; c_state < CurrentStateMapW; ++c_state) {
+                // Map state grid cell (r_state, c_state) to a physical normalized position (0-1) on the platform
+                // Handle division by zero if CurrentStateMapW/H is 1
                 float norm_x_on_platform = (CurrentStateMapW > 1) ? (static_cast<float>(c_state) / (CurrentStateMapW - 1)) : 0.5f;
                 float norm_y_on_platform = (CurrentStateMapH > 1) ? (static_cast<float>(r_state) / (CurrentStateMapH - 1)) : 0.5f;
 
+                // Convert normalized platform coordinates to local coordinates relative to the Grid's center for tracing
                 float lx = (norm_x_on_platform - 0.5f) * PlatformWorldSize.X;
                 float ly = (norm_y_on_platform - 0.5f) * PlatformWorldSize.Y;
 
-                FVector localStart(lx, ly, traceDistUp); // Start trace from well above MaxZ
-                FVector localEnd(lx, ly, -traceDistDown); // End trace well below MinZ
+                FVector localStart(lx, ly, traceDistUp);
+                FVector localEnd(lx, ly, -traceDistDown);
 
                 FVector wStart = GridTransform.TransformPosition(localStart);
                 FVector wEnd = GridTransform.TransformPosition(localEnd);
 
                 FHitResult hit;
+                // Consider adding trace complex true if needed: FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(TerraShiftStateTrace), true);
                 bool bHit = w->LineTraceSingleByChannel(hit, wStart, wEnd, ECC_Visibility);
 
-                float finalLocalZ = visMinZ; // Default to min Z if no hit
+                float finalLocalZ = 0.f;
                 if (bHit) {
                     FVector localHit = GridTransform.InverseTransformPosition(hit.ImpactPoint);
                     finalLocalZ = localHit.Z;
                 }
 
-                // Clamp and normalize based on the configured MinZ and MaxZ for state representation
-                float clampedZForState = FMath::Clamp(finalLocalZ, visMinZ, visMaxZ);
-                float norm_height = (visMaxZ > visMinZ) ? (clampedZForState - visMinZ) / (visMaxZ - visMinZ) : 0.f;
-                HeightTmp[r_state][c_state] = (norm_height * 2.f) - 1.f; // Map to [-1, 1]
+                float clampedVisZ = FMath::Clamp(finalLocalZ, visMinZ, visMaxZ);
+                float norm_height = (visMaxZ > visMinZ) ? (clampedVisZ - visMinZ) / (visMaxZ - visMinZ) : 0.f;
+                HeightTmp[r_state][c_state] = (norm_height * 2.f) - 1.f;
             }
         }
-        HeightTmp.Clip(-1.f, 1.f); // Ensure strict [-1, 1] bounds
+        HeightTmp.Clip(-1.f, 1.f);
     }
 
-
     PreviousHeight = CurrentHeight;
-    CurrentHeight = HeightTmp;
+    CurrentHeight = HeightTmp; // HeightTmp will be empty if bIncludeHeightMapInState is false and it wasn't resized above
 
     if (bIncludeOverheadImageInState && OverheadCaptureActor)
     {
@@ -710,19 +694,22 @@ TArray<float> UStateManager::GetCentralState()
         const float HalfPlatformSizeX = (PlatformWorldSize.X > KINDA_SMALL_NUMBER) ? (PlatformWorldSize.X / 2.0f) : 1.0f;
         const float HalfPlatformSizeY = (PlatformWorldSize.Y > KINDA_SMALL_NUMBER) ? (PlatformWorldSize.Y / 2.0f) : 1.0f;
 
-        const float ObjectZNormRangeMin = MinZ; // Use config MinZ
-        const float ObjectZNormRangeMax = MaxZ; // Use config MaxZ
-        const float ObjectZNormRange = (ObjectZNormRangeMax > ObjectZNormRangeMin) ? (ObjectZNormRangeMax - ObjectZNormRangeMin) : 1.0f;
+        const float ObjectZNormRangeMin = MinZ;
+        const float ObjectZNormRangeMax = MaxZ;
+        const float ObjectZNormRange = ObjectZNormRangeMax - ObjectZNormRangeMin;
 
-
-        const float MaxVelocityClip = 100.0f;
+        const float MaxVelocityClip = 100.0f; // Hardcoded as per request
 
         for (int32 i = 0; i < MaxGridObjectsForState; ++i)
         {
+            // Check if object 'i' is valid and active.
+            // bHasActive is sized by MaxGridObjects (total manageable objects).
+            // We iterate up to MaxGridObjectsForState for the state representation.
             if (bHasActive.IsValidIndex(i) && bHasActive[i] &&
                 ObjectMgr && ObjectMgr->GetGridObject(i) != nullptr)
             {
                 FVector ObjPosLocal = GetCurrentPosition(i);
+
                 FVector GoalPosLocal = FVector::ZeroVector;
                 int32 GoalIdx = GetGoalIndex(i);
                 if (GoalManager && GoalIdx != -1)
@@ -735,18 +722,23 @@ TArray<float> UStateManager::GetCentralState()
                 }
                 FVector ObjVelLocal = GetCurrentVelocity(i);
 
+                // Normalize Object Position
                 float NormObjPosX = FMath::Clamp(ObjPosLocal.X / HalfPlatformSizeX, -1.0f, 1.0f);
                 float NormObjPosY = FMath::Clamp(ObjPosLocal.Y / HalfPlatformSizeY, -1.0f, 1.0f);
-                float NormObjPosZ = FMath::Clamp(((ObjPosLocal.Z - ObjectZNormRangeMin) / ObjectZNormRange) * 2.0f - 1.0f, -1.0f, 1.0f);
+                float NormObjPosZ = (ObjectZNormRange > KINDA_SMALL_NUMBER) ?
+                    FMath::Clamp(((ObjPosLocal.Z - ObjectZNormRangeMin) / ObjectZNormRange) * 2.0f - 1.0f, -1.0f, 1.0f) :
+                    0.0f;
 
+                // Normalize Goal Position
                 float NormGoalPosX = FMath::Clamp(GoalPosLocal.X / HalfPlatformSizeX, -1.0f, 1.0f);
                 float NormGoalPosY = FMath::Clamp(GoalPosLocal.Y / HalfPlatformSizeY, -1.0f, 1.0f);
-                float NormGoalPosZ = FMath::Clamp(((GoalPosLocal.Z - ObjectZNormRangeMin) / ObjectZNormRange) * 2.0f - 1.0f, -1.0f, 1.0f);
+                float NormGoalPosZ = (ObjectZNormRange > KINDA_SMALL_NUMBER) ?
+                    FMath::Clamp(((GoalPosLocal.Z - ObjectZNormRangeMin) / ObjectZNormRange) * 2.0f - 1.0f, -1.0f, 1.0f) :
+                    0.0f;
 
-                float NormVelX = FMath::Clamp(ObjVelLocal.X / MaxVelocityClip, -1.0f, 1.0f);
-                float NormVelY = FMath::Clamp(ObjVelLocal.Y / MaxVelocityClip, -1.0f, 1.0f);
-                float NormVelZ = FMath::Clamp(ObjVelLocal.Z / MaxVelocityClip, -1.0f, 1.0f);
-
+                float NormVelX = FMath::Clamp(ObjVelLocal.X, -MaxVelocityClip, MaxVelocityClip) / MaxVelocityClip;
+                float NormVelY = FMath::Clamp(ObjVelLocal.Y, -MaxVelocityClip, MaxVelocityClip) / MaxVelocityClip;
+                float NormVelZ = FMath::Clamp(ObjVelLocal.Z, -MaxVelocityClip, MaxVelocityClip) / MaxVelocityClip;
 
                 outArr.Add(NormObjPosX); outArr.Add(NormObjPosY); outArr.Add(NormObjPosZ);
                 outArr.Add(NormGoalPosX); outArr.Add(NormGoalPosY); outArr.Add(NormGoalPosZ);
@@ -768,7 +760,6 @@ TArray<float> UStateManager::GetCentralState()
     }
     return outArr;
 }
-
 
 // ------------------------------------------
 //   GetAgentState
@@ -930,7 +921,7 @@ FVector UStateManager::GetColumnTopWorldLocation(int32 GridX, int32 GridY) const
     {
         return PlatformCenter + FVector(0, 0, 100.f); // Fallback
     }
-    int32 idx = GridX * GridSize + GridY; // Assuming GridSize is num columns
+    int32 idx = GridX * GridSize + GridY;
     if (Grid->Columns.IsValidIndex(idx))
     {
         AColumn* col = Grid->Columns[idx];
@@ -955,7 +946,7 @@ FVector UStateManager::GetColumnTopWorldLocation(int32 GridX, int32 GridY) const
             return FVector(colRootLocation.X, colRootLocation.Y, colRootLocation.Z + scaledHalfMeshHeight);
         }
     }
-    return PlatformCenter + FVector(0, 0, 100.f); // Fallback if column not found
+    return PlatformCenter + FVector(0, 0, 100.f);
 }
 
 

@@ -9,7 +9,7 @@
       "ObjectMass": 0.1,
       "GridSize": 25,
       "MaxSteps": 256,
-      "MaxAgents": 4,
+      "MaxAgents": 8,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
         "bUseXYDistanceImprovement": false,
@@ -34,7 +34,7 @@
         "DefaultRadius": 1.0
       },
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 4,
+        "NumAgents": 8,
         "GridSize": 25,
         "MinHeight": -4.0,
         "MaxHeight": 4.0,
@@ -59,15 +59,15 @@
         "ObjectScale": 0.1,
         "ObjectMass": 0.1,
         "MaxColumnHeight": 4.0,
-        "BaseRespawnDelay": 0.0,
+        "BaseRespawnDelay": 0.1,
         "OverheadCameraDistance": 100.0,
         "OverheadCameraFOV": 60.0,
         "OverheadCamResX": 25,
         "OverheadCamResY": 25,
         "bUseRandomGoals": true,
-        "bRemoveGridObjectOnGoalReached": true,
-        "bRemoveGridObjectOnOOB": true,
-        "bRespawnGridObjectOnGoalReached": false,
+        "bRemoveGridObjectOnGoalReached": false,
+        "bRemoveGridObjectOnOOB": false,
+        "bRespawnGridObjectOnGoalReached": true,
         "GoalRadius": 4,
         "ObjectRadius": 5,
         "GoalCollectRadius": 4,
@@ -108,8 +108,8 @@
         ],
         "agent": {
           "obs_size": 9,
-          "min": 4,
-          "max": 4
+          "min": 8,
+          "max": 8
         }
       },
       "action": {
@@ -171,12 +171,11 @@
       "rnd_params": {"output_size": 128, "hidden_size": 128, "intrinsic_reward_coeff": 0.001, "rnd_update_proportion": 0.25},
       "enable_iqn_distillation": true,
       "enable_popart": false,
-      "popart_beta": 0.999,
+      "popart_beta": 0.995,
       "popart_epsilon": 1e-5,
-      "no_grad_forward_batch_size": 16,
-      "learning_rate": 1e-4, "lr_policy": 1e-4, "lr_value": 1e-5,
-      "lr_baseline": 1e-5, "lr_trunk": 1e-4, "lr_rnd_predictor": 1e-5,
-      "lr_iqn": 1e-5, "lr_value_iqn": 1e-5, "lr_baseline_iqn": 1e-5,
+      "learning_rate": 1e-4, "lr_policy": 1e-4, "lr_value": 1e-4,
+      "lr_baseline": 1e-4, "lr_trunk": 1e-4, "lr_rnd_predictor": 1e-4,
+      "lr_iqn": 1e-4, "lr_value_iqn": 1e-4, "lr_baseline_iqn": 1e-4,
       "optimizer_betas": {
         "trunk": [0.9, 0.98], "policy": [0.9, 0.98], "value": [0.9, 0.98],
         "baseline": [0.9, 0.98], "iqn": [0.9,0.98], "iqn_value": [0.9,0.98],
@@ -186,7 +185,7 @@
         "trunk": 1e-6, "policy": 1e-6, "value": 1e-6, "baseline": 1e-6,
         "iqn": 1e-6, "iqn_value": 1e-6, "iqn_baseline": 1e-6, "rnd": 1e-6
       },
-      "gamma": 0.99, "lambda": 0.90,
+      "gamma": 0.99, "lambda": 0.95,
       "value_loss_coeff": 0.5, "baseline_loss_coeff": 0.25,
       "value_iqn_loss_coeff": 0.5, "baseline_iqn_loss_coeff": 0.25,
       "normalize_advantages": true, "clipped_value_loss": true,
@@ -207,21 +206,21 @@
         "lr_baseline_iqn": { "start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000 },
         "entropy_coeff": { "start_value": 0.005, "end_value": 0.001, "total_iters": 10000 },
         "value_clip": { "start_value": 0.2, "end_value": 0.1, "total_iters": 10000 },
-        "policy_clip": { "start_value": 0.2, "end_value": 0.1, "total_iters": 10000 },
+        "policy_clip": { "start_value": 0.3, "end_value": 0.1, "total_iters": 10000 },
         "max_grad_norm": { "start_value": 1.0, "end_value": 0.5, "total_iters": 10000 }
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 4,
+            "num_agents": 8,
             "embed_dim": 128,
             "num_heads": 8,
             "transformer_layers": 2,
             "dropout_rate": 0.0,
             "use_agent_id": true,
             "ff_hidden_factor": 2,
-            "id_num_freqs": 8,
+            "id_num_freqs": 16,
             "conv_init_scale": 1.0,
             "linear_init_scale": 1.0,
             "central_processing_configs": [
@@ -277,8 +276,8 @@
   },
   "train": {
     "sequence_length": 64, "pad_trajectories": true,
-    "batch_size": 1024, "buffer_size": 1024,
-    "num_environments": 8, "epochs": 4, "mini_batch_size": 16,
+    "batch_size": 512, "buffer_size": 512,
+    "num_environments": 4, "epochs": 4, "mini_batch_size": 16,
     "ActionRepeat": 1, "saveFrequency": 100,
     "iqn_target_update_freq": 5, "iqn_train_freq": 1,
     "iqn_replay_buffer_size": 50000, "iqn_batch_size": 128, "iqn_epochs": 3
