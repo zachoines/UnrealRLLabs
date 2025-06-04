@@ -138,7 +138,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
         PotentialShaping_Scale = envSpecificCfg->GetOrDefaultNumber(TEXT("PotentialShaping_Scale"), 1.0f);
         PotentialShaping_Gamma = envSpecificCfg->GetOrDefaultNumber(TEXT("PotentialShaping_Gamma"), 0.99f);
 
-        // Reward Toggles & Scales
+
         bUseVelAlignment = envSpecificCfg->GetOrDefaultBool(TEXT("bUseVelAlignment"), false);
         bUseXYDistanceImprovement = envSpecificCfg->GetOrDefaultBool(TEXT("bUseXYDistanceImprovement"), false);
         bUseZAccelerationPenalty = envSpecificCfg->GetOrDefaultBool(TEXT("bUseZAccelerationPenalty"), false);
@@ -329,6 +329,7 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
         }
     }
 
+
     UE_LOG(LogTemp, Verbose, TEXT("Environment Reset: Agents=%d, Objects=%d"), CurrentAgents, CurrentGridObjects);
 
     // Return the initial state after reset
@@ -412,26 +413,10 @@ FState ATerraShiftEnvironment::State()
 
 bool ATerraShiftEnvironment::Done()
 {
-    if (!Initialized || !StateManager) return true; // Treat uninitialized as done to prevent errors
+    if (!Initialized || !StateManager) return true; // Should not happen post-init
 
-    // Episode is done if the StateManager determines all objects are handled (reached goal or fallen off)
-    // Only check after at least one step to allow initial state setup
-    if (CurrentStep > 0 && StateManager->AllGridObjectsHandled())
-    {
-        UE_LOG(LogTemp, Verbose, TEXT("Episode Done: All objects handled at step %d."), CurrentStep);
-        return true;
-    }
-
-    for (int32 ObjIndex = 0; ObjIndex < CurrentGridObjects; ++ObjIndex)
-    {
-        // StateManager->GetHasFallenOff(ObjIndex) directly queries the bFallenOff flag for the object.
-        if (StateManager->GetHasFallenOff(ObjIndex))
-        {
-            UE_LOG(LogTemp, Verbose, TEXT("ATerraShiftEnvironment::Done() - Object with index %d has fallen off. Episode considered Done at step %d."), ObjIndex, CurrentStep);
-            return true;
-        }
-    }
-
+    // MODIFICATION: For this request, Done() should always return false.
+    // Truncation will handle episode end.
     return false;
 }
 
@@ -443,7 +428,7 @@ bool ATerraShiftEnvironment::Trunc()
     bool bTruncated = (CurrentStep >= MaxSteps);
     if (bTruncated)
     {
-        UE_LOG(LogTemp, Verbose, TEXT("Episode Truncated: Max steps (%d) reached."), MaxSteps);
+        UE_LOG(LogTemp, Verbose, TEXT("Episode Truncated: Max steps (%d) reached at step %d."), MaxSteps, CurrentStep);
     }
     return bTruncated;
 }
@@ -483,22 +468,28 @@ float ATerraShiftEnvironment::Reward()
             {
                 AccumulatedReward += FALL_OFF_PENALTY;
                 UE_LOG(LogTemp, Verbose, TEXT("Object %d: Fell off. Reward: %f"), ObjIndex, FALL_OFF_PENALTY);
-                if (bUsePotentialShaping) PreviousPotential[ObjIndex] = 0.0f; // Reset potential for this object for next episode (NEW)
-                continue; // No further rewards for this object this step
+                if (bUsePotentialShaping && PreviousPotential.IsValidIndex(ObjIndex)) PreviousPotential[ObjIndex] = 0.0f;
+                // MODIFICATION: No continue, object will respawn and might get other rewards in the same step if logic allows
             }
-            if (bHasReachedGoal)
+            else if (bHasReachedGoal) // Use else if because an object can't be both fallen off and reached goal in the same flag check
             {
                 AccumulatedReward += REACH_GOAL_REWARD;
                 UE_LOG(LogTemp, Verbose, TEXT("Object %d: Reached goal. Reward: %f"), ObjIndex, REACH_GOAL_REWARD);
-                if (bUsePotentialShaping) PreviousPotential[ObjIndex] = 0.0f; // Reset potential for this object for next episode (NEW)
-                continue; // No further rewards for this object this step
+                if (bUsePotentialShaping && PreviousPotential.IsValidIndex(ObjIndex)) PreviousPotential[ObjIndex] = 0.0f;
+                // MODIFICATION: No continue
             }
+            // If an object was just marked for respawn due to goal/OOB, its bIsActive is now false.
+            // The logic below for active objects will naturally be skipped for it this step.
+            // It will become active again *after* RespawnGridObjects() is called (which happens in PreTransition after this Reward calc).
         }
 
+
         // If object is not active (and wasn't terminated this step), skip remaining rewards
+        // This check is important because an object becomes inactive once it hits a terminal state (goal/OOB)
+        // and is pending respawn.
         if (!bIsActive)
         {
-            if (bUsePotentialShaping) PreviousPotential[ObjIndex] = 0.0f; // Ensure potential is reset if inactive mid-episode somehow (NEW)
+            if (bUsePotentialShaping && PreviousPotential.IsValidIndex(ObjIndex)) PreviousPotential[ObjIndex] = 0.0f;
             continue;
         }
 
@@ -507,36 +498,30 @@ float ATerraShiftEnvironment::Reward()
         AccumulatedReward += STEP_PENALTY;
 
         // --- 3. Potential-Based Shaping Reward (NEW) ---
-        if (bUsePotentialShaping)
+        if (bUsePotentialShaping && PreviousPotential.IsValidIndex(ObjIndex))
         {
             float prevPotential = PreviousPotential[ObjIndex];
-            // Shaping Reward = Scale * (gamma * Phi(s_t+1) - Phi(s_t))
-            // Using PotentialShaping_Gamma read from config
             float shapingReward = PotentialShaping_Scale * (PotentialShaping_Gamma * currentPotential - prevPotential);
             AccumulatedReward += shapingReward;
-
-            // IMPORTANT: Update PreviousPotential *after* using it, ready for the next step
             PreviousPotential[ObjIndex] = currentPotential;
         }
 
 
         // --- 4. Additional Dense Shaping Rewards (Matches original logic, uses configured toggles/scales) ---
-        float ShapingSubReward = 0.f; // Renamed from 'sub' in original for clarity
+        float ShapingSubReward = 0.f;
 
-        // 4A) XY Distance Improvement Reward
         if (bUseXYDistanceImprovement)
         {
             float previousDistance = StateManager->GetPreviousDistance(ObjIndex);
-            float currentDistance = StateManager->GetCurrentDistance(ObjIndex);
-            if (previousDistance > 0.f && currentDistance > 0.f)
+            float currentDistanceValue = StateManager->GetCurrentDistance(ObjIndex); // Renamed to avoid conflict
+            if (previousDistance > 0.f && currentDistanceValue > 0.f)
             {
-                float deltaDistance = (previousDistance - currentDistance); // PlatformWorldSize.X;
+                float deltaDistance = (previousDistance - currentDistanceValue);
                 float clampedDelta = ThresholdAndClamp(deltaDistance, DistImprove_Min, DistImprove_Max);
                 ShapingSubReward += DistImprove_Scale * clampedDelta;
             }
         }
 
-        // 4B) Z Acceleration Penalty
         if (bUseZAccelerationPenalty)
         {
             FVector previousVelocity = StateManager->GetPreviousVelocity(ObjIndex);
@@ -550,11 +535,10 @@ float ATerraShiftEnvironment::Reward()
             }
         }
 
-        // 4C) Velocity Alignment Reward
-        if (bUseVelAlignment) // Removed redundant bActive check from original as we check !bIsActive earlier
+        if (bUseVelAlignment)
         {
             int32 goalIndex = StateManager->GetGoalIndex(ObjIndex);
-            if (goalIndex >= 0)
+            if (goalIndex >= 0 && GoalManager) // Added GoalManager check
             {
                 FVector goalPosLocal = Platform->GetActorTransform().InverseTransformPosition(GoalManager->GetGoalLocation(goalIndex));
                 FVector objPosLocal = StateManager->GetCurrentPosition(ObjIndex);
@@ -568,19 +552,18 @@ float ATerraShiftEnvironment::Reward()
                     if (distanceToGoal > KINDA_SMALL_NUMBER)
                     {
                         dirToObjectToGoal.Normalize();
-                        velLocal.Normalize();
-                        float dotProduct = FVector::DotProduct(velLocal, dirToObjectToGoal);
-                        float alignReward = dotProduct * velLocal.Size();
+                        FVector velLocalNormalized = velLocal; // Use a copy for normalization
+                        velLocalNormalized.Normalize(); // Normalize the copy
+                        float dotProduct = FVector::DotProduct(velLocalNormalized, dirToObjectToGoal);
+                        // Consider if velLocal.Size() is appropriate here or if it should be based on normalized vectors
+                        float alignReward = dotProduct * velLocal.Size(); // Original logic, scaled by magnitude
                         ShapingSubReward += VelAlign_Scale * ThresholdAndClamp(alignReward, VelAlign_Min, VelAlign_Max);
                     }
                 }
             }
         }
-
-        AccumulatedReward += ShapingSubReward; // Add all shaping sub-rewards for this object
-
-    } // End of object loop
-
+        AccumulatedReward += ShapingSubReward;
+    }
     return AccumulatedReward;
 }
 
@@ -606,7 +589,6 @@ AMainPlatform* ATerraShiftEnvironment::SpawnPlatform(FVector Location)
         return nullptr;
     }
 
-    // Load the plane mesh and platform material (Consider moving paths to config or making properties)
     UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
     UMaterial* PlatformMaterial = LoadObject<UMaterial>(nullptr, TEXT("Material'/Game/Material/Platform_Material.Platform_Material'"));
 
@@ -618,7 +600,6 @@ AMainPlatform* ATerraShiftEnvironment::SpawnPlatform(FVector Location)
     if (!PlatformMaterial)
     {
         UE_LOG(LogTemp, Warning, TEXT("SpawnPlatform: Could not load Platform_Material. Using default material."));
-        // Platform will use default material
     }
 
     FActorSpawnParameters SpawnParams;
@@ -632,44 +613,29 @@ AMainPlatform* ATerraShiftEnvironment::SpawnPlatform(FVector Location)
     }
 
     SpawnedPlatform->InitializePlatform(PlaneMesh, PlatformMaterial);
-    // *** THE FIX: Reverted to KeepRelativeTransform ***
     SpawnedPlatform->AttachToActor(this, FAttachmentTransformRules::KeepRelativeTransform);
     return SpawnedPlatform;
 }
 
 
-/**
- * Calculates the potential function Phi(s) for a given object's state. (NEW)
- * Uses negative normalized distance to the goal as the potential.
- */
 float ATerraShiftEnvironment::CalculatePotential(int32 ObjIndex) const
 {
-    // Ensure StateManager is valid and the object index is within bounds
-    if (!StateManager || !PreviousPotential.IsValidIndex(ObjIndex) || !(PlatformWorldSize.X > 0)) // Added check for positive PlatformWorldSize.X
-    {
-        return 0.0f; // Return zero potential if state is invalid or platform size is zero
-    }
-
-    // Get current status - don't calculate potential for objects that are already terminal
-    bool bIsActive = StateManager->GetHasActive(ObjIndex);
-    if (!bIsActive)
-    {
-        return 0.0f; // Potential is 0 for inactive/terminal states
-    }
-
-
-    // Get the current distance to the goal for the object
-    float currentDistance = StateManager->GetCurrentDistance(ObjIndex);
-
-    // Handle invalid distance (e.g., before first calculation or if goal is invalid)
-    if (currentDistance < 0.f)
+    if (!StateManager || !PreviousPotential.IsValidIndex(ObjIndex) || !(PlatformWorldSize.X > KINDA_SMALL_NUMBER))
     {
         return 0.0f;
     }
 
-    // Potential is negative distance, normalized by platform width.
-    // Lower distance (better state) -> higher potential (less negative).
-    float potential = -currentDistance / PlatformWorldSize.X;
+    bool bIsActive = StateManager->GetHasActive(ObjIndex);
+    if (!bIsActive)
+    {
+        return 0.0f;
+    }
 
+    float currentDistance = StateManager->GetCurrentDistance(ObjIndex);
+    if (currentDistance < 0.f)
+    {
+        return 0.0f;
+    }
+    float potential = -currentDistance / PlatformWorldSize.X;
     return potential;
 }

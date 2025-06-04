@@ -1,14 +1,14 @@
 {
   "environment": {
-    "name": "TerraShift_Advanced_State",
-    "id": "TerraShift_AdvState_$(date +%Y%m%d_%H%M%S)",
+    "name": "TerraShift_Advanced_State_MaxRewards",
+    "id": "TerraShift_MaxRewards_$(date +%Y%m%d_%H%M%S)",
     "params": {
-      "PlatformSize": 1,
-      "MaxColumnHeight": 4,
+      "PlatformSize": 1.0,
+      "MaxColumnHeight": 4.0,
       "ObjectSize": [0.1, 0.1, 0.1],
       "ObjectMass": 0.1,
       "GridSize": 25,
-      "MaxSteps": 1024,
+      "MaxSteps": 256,
       "MaxAgents": 4,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
@@ -28,7 +28,7 @@
         "PotentialShaping_Scale": 1.0,
         "REACH_GOAL_REWARD": 1.0,
         "FALL_OFF_PENALTY": -1.0,
-        "STEP_PENALTY": -0.00001
+        "STEP_PENALTY": -0.0005
       },
       "GoalManager": {
         "DefaultRadius": 1.0
@@ -44,7 +44,7 @@
         "AccumulatedWaveFadeGamma": 0.95,
         "VelMinMax": [-10.0, 10.0],
         "AngVelRange": [-3.14, 3.14],
-        "AmpMinMax": [-2.5, 2.5],
+        "AmpMinMax": [-1.0, 1.0],
         "SigMinMax": [1.0, 5.0],
         "DeltaVelScale": 2.0,
         "DeltaAngVelScale": 0.628,
@@ -52,7 +52,7 @@
         "DeltaSigmaScale": 1.0
       },
       "StateManager": {
-        "MaxGridObjects": 3,
+        "MaxGridObjects": 4,
         "MarginXY": 1.5,
         "MinZ": -4.0,
         "MaxZ": 20.0,
@@ -69,10 +69,10 @@
         "bRemoveGridObjectOnOOB": true,
         "bRespawnGridObjectOnGoalReached": false,
         "GoalRadius": 4,
-        "ObjectRadius": 6,
-        "GoalCollectRadius": 14,
-        "GoalColors": [[1.0,0.0,0.0]],
-        "GridObjectColors": [[1.0,0.0,0.0]],
+        "ObjectRadius": 5,
+        "GoalCollectRadius": 4,
+        "GoalColors": [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0],[1.0,1.0,0.0]],
+        "GridObjectColors": [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0],[1.0,1.0,0.0]],
         "bIncludeHeightMapInState": true,
         "StateHeightMapResolutionH": 25,
         "StateHeightMapResolutionW": 25,
@@ -80,8 +80,8 @@
         "StateOverheadImageResX": 25,
         "StateOverheadImageResY": 25,
         "bIncludeGridObjectSequenceInState": true,
-        "MaxGridObjectsForState": 3, 
-        "GridObjectFeatureSize": 9 
+        "MaxGridObjectsForState": 4,
+        "GridObjectFeatureSize": 9
       }
     },
     "shape": {
@@ -103,7 +103,7 @@
             "name": "gridobject_sequence",
             "enabled": true,
             "type": "sequence",
-            "shape": { "max_length": 3, "feature_dim": 9 }
+            "shape": { "max_length": 4, "feature_dim": 9 }
           }
         ],
         "agent": {
@@ -122,8 +122,8 @@
       }
     }
   },
-  "StateRecorder_disabled": {
-    "enabled": true,
+  "StateRecorder": {
+    "enabled": false,
     "video_settings": {
       "fps": 15,
       "output_path": "Output/state_visualization.mp4",
@@ -145,16 +145,16 @@
       {
         "source_key": "central",
         "component_name": "gridobject_sequence",
-        "visualization_type": "none", 
+        "visualization_type": "none",
         "plot_title": "Grid Object Sequence Data",
-        "enabled": true 
+        "enabled": true
       },
       {
         "source_key": "central",
         "component_name": "greyscale_image",
         "visualization_type": "2d_image_grey",
         "plot_title": "Overhead View (Disabled by StateManager)",
-        "enabled": false, 
+        "enabled": false,
         "shape_for_plot": {"h": 25, "w": 25},
         "cmap_2d": "gray",
         "val_range_2d": [0.0, 1.0]
@@ -192,7 +192,10 @@
       "normalize_advantages": true, "clipped_value_loss": true,
       "max_grad_norm": 0.5, "iqn_max_grad_norm": 0.5,
       "ppo_clip_range": 0.2, "value_clip_range": 0.2, "entropy_coeff": 0.005,
-      "rewards_normalizer_disabled": { "warmup_steps": 2000, "epsilon": 1e-8 },
+      "rewards_normalizer": { 
+        "warmup_steps": 2000, 
+        "epsilon": 1e-8 
+      },
       "schedulers": {
         "lr_trunk": { "start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000 },
         "lr_policy": { "start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000 },
@@ -203,7 +206,7 @@
         "lr_value_iqn": { "start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000 },
         "lr_baseline_iqn": { "start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000 },
         "entropy_coeff": { "start_value": 0.005, "end_value": 0.001, "total_iters": 10000 },
-        "value_clip": { "start_value": 0.01, "end_value": 0.001, "total_iters": 10000 },
+        "value_clip": { "start_value": 0.2, "end_value": 0.1, "total_iters": 10000 },
         "policy_clip": { "start_value": 0.2, "end_value": 0.1, "total_iters": 10000 },
         "max_grad_norm": { "start_value": 1.0, "end_value": 0.5, "total_iters": 10000 }
       },
@@ -238,8 +241,8 @@
               },
               {
                 "name": "gridobject_sequence", "enabled": true, "type": "linear_sequence",
-                "input_feature_dim": 9, "max_seq_len_for_pos_enc": 3,
-                "linear_stem_hidden_sizes": [64, 64], 
+                "input_feature_dim": 9, "max_seq_len_for_pos_enc": 4,
+                "linear_stem_hidden_sizes": [64, 64],
                 "add_positional_encoding": true
               }
             ]
@@ -264,7 +267,7 @@
           "value_attention": {"embed_dim": 128, "num_heads": 8, "dropout": 0.0, "self_attention": true},
           "baseline_attention": {"embed_dim": 128, "num_heads": 8, "dropout": 0.0, "self_attention": true},
           "iqn_params": {
-            "num_quantiZZles": 32, "num_quantiles_prime": 32, "quantile_embedding_dim": 128,
+            "num_quantiles": 32, "num_quantiles_prime": 32, "quantile_embedding_dim": 128,
             "hidden_size": 128, "dropout_rate": 0.0, "kappa": 1.0, "polyak_tau": 0.005
           },
           "distillation_params": {"hidden_size": 128, "combination_method": "hadamard_product", "dropout_rate": 0.0}
@@ -274,7 +277,7 @@
   },
   "train": {
     "sequence_length": 64, "pad_trajectories": true,
-    "batch_size": 1025, "buffer_size": 1025,
+    "batch_size": 1024, "buffer_size": 1024,
     "num_environments": 8, "epochs": 4, "mini_batch_size": 16,
     "ActionRepeat": 1, "saveFrequency": 100,
     "iqn_target_update_freq": 5, "iqn_train_freq": 1,
