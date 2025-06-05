@@ -411,7 +411,7 @@ bool ATerraShiftEnvironment::Done()
 
     // Episode is done if the StateManager determines all objects are handled (reached goal or fallen off)
     // Only check after at least one step to allow initial state setup
-    /*if (CurrentStep > 0 && StateManager->AllGridObjectsHandled())
+    if (CurrentStep > 0 && StateManager->AllGridObjectsHandled())
     {
         UE_LOG(LogTemp, Verbose, TEXT("Episode Done: All objects handled at step %d."), CurrentStep);
         return true;
@@ -427,14 +427,14 @@ bool ATerraShiftEnvironment::Done()
         }
     }
     return false;
-    */
+    
 
-    bool bTruncated = (CurrentStep >= MaxSteps);
+    /*bool bTruncated = (CurrentStep >= MaxSteps);
     if (bTruncated)
     {
         UE_LOG(LogTemp, Verbose, TEXT("Episode Truncated: Max steps (%d) reached at step %d."), MaxSteps, CurrentStep);
     }
-    return bTruncated;
+    return bTruncated;*/
 }
 
 bool ATerraShiftEnvironment::Trunc()

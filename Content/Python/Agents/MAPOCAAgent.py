@@ -371,6 +371,42 @@ class MAPOCAAgent(Agent):
         self.value_clip_range = self.schedulers["value_clip"].current_value()
         self.max_grad_norm = self.schedulers["max_grad_norm"].current_value()
 
+    def save(self, location: str) -> None:
+        """Saves model and optimizer states to a file."""
+        checkpoint = {
+            'model_state_dict': self.state_dict(),
+            'optimizers_state_dict': {name: opt.state_dict() for name, opt in self.optimizers.items()}
+            #  could also save scheduler states
+            # 'schedulers_state_dict': {name: sched.state_dict() for name, sched in self.schedulers.items()}
+        }
+        torch.save(checkpoint, location)
+        print(f"Checkpoint saved to {location}")
+
+    def load(self, location: str) -> None:
+        """Loads model and optimizer states from a file."""
+        try:
+            checkpoint = torch.load(location, map_location=self.device)
+            self.load_state_dict(checkpoint['model_state_dict'])
+
+            if 'optimizers_state_dict' in checkpoint:
+                for name, state_dict in checkpoint['optimizers_state_dict'].items():
+                    if name in self.optimizers:
+                        self.optimizers[name].load_state_dict(state_dict)  # Use strict=False to ignore missing keys
+                    else:
+                        print(f"Warning: Optimizer '{name}' found in checkpoint but not in the current agent.")
+            
+            # Optionally load scheduler states here if they were saved
+            # if 'schedulers_state_dict' in checkpoint:
+            #     for name, state_dict in checkpoint['schedulers_state_dict'].items():
+            #         if name in self.schedulers:
+            #             self.schedulers[name].load_state_dict(state_dict)
+
+            print(f"Successfully loaded model and optimizers from {location}")
+        except FileNotFoundError:
+            print(f"Error: Checkpoint file not found at {location}")
+        except Exception as e:
+            print(f"Error loading checkpoint from {location}: {e}")
+            
 
     def _determine_action_space(self, action_config_top_level: Dict[str, Any]):
         # action_config_top_level is cfg["environment"]["shape"]["action"]
