@@ -182,6 +182,10 @@ class SharedMemoryInterface(EnvCommunicationInterface):
                 expected_comp_elements = max_len * feat_dim
                 if expected_comp_elements == comp_size and num_environments > 0 and max_len > 0 and feat_dim > 0:
                     reshaped_component_data = component_data_flat_all_envs.reshape(num_environments, max_len, feat_dim)
+                    
+                    # Generate padding mask: True where all features in the sequence are 0.
+                    padding_mask = torch.all(torch.from_numpy(reshaped_component_data) == 0, dim=-1)
+                    central_components_dict[f"{name}_padding_mask"] = padding_mask.contiguous().to(self.device)
                 else:
                      print(f"Warning: Shape mismatch for 'sequence' component '{name}'. Expected {max_len}x{feat_dim}={expected_comp_elements}, got size {comp_size}. Skipping reshape.")
             elif comp_type == "vector_legacy": 

@@ -546,8 +546,6 @@ class MAPOCAAgent(Agent):
         abs_td_errors = torch.abs(td_errors)
         huber_loss_matrix = torch.where(abs_td_errors <= kappa, 0.5 * td_errors.pow(2), kappa * (abs_td_errors - 0.5 * kappa))
         indicator = (td_errors < 0).float() # (B, N_curr, N_targ)
-        # **FIXED: Broadcasting for delta_weight**
-        # taus_for_current is (B, N_curr, 1). It correctly broadcasts with indicator (B, N_curr, N_targ).
         delta_weight = torch.abs(taus_for_current - indicator) # (B, N_curr, N_targ)
         loss = (delta_weight * huber_loss_matrix).mean() # Mean over all three dimensions (B, N_curr, N_targ)
         return loss
@@ -644,8 +642,22 @@ class MAPOCAAgent(Agent):
 
         # --- NO-GRAD PASS for PPO GAE and preparing data for IQN Replay Buffer ---
         with torch.no_grad():
-            emb_s_seq, _ = self.embedding_net.get_base_embedding(padded_states_dict_seq)
-            emb_ns_seq, _ = self.embedding_net.get_base_embedding(padded_next_states_dict_seq)
+
+            # Create a dictionary of padding masks to be passed to the network
+            # This makes the interface extensible to other masks in the future.
+            central_padding_masks_s = {
+                k.replace('_padding_mask', ''): v 
+                for k, v in padded_states_dict_seq.get("central", {}).items() 
+                if k.endswith('_padding_mask')
+            }
+            central_padding_masks_ns = {
+                k.replace('_padding_mask', ''): v 
+                for k, v in padded_next_states_dict_seq.get("central", {}).items() 
+                if k.endswith('_padding_mask')
+            }
+
+            emb_s_seq, _ = self.embedding_net.get_base_embedding(padded_states_dict_seq, central_component_padding_masks=central_padding_masks_s)
+            emb_ns_seq, _ = self.embedding_net.get_base_embedding(padded_next_states_dict_seq, central_component_padding_masks=central_padding_masks_ns)
 
             h_n_for_next_buffer = None
             if self.memory_module:
@@ -811,7 +823,14 @@ class MAPOCAAgent(Agent):
                     print(f"Skipping minibatch at epoch {_epoch_ppo}, start {mb_start} due to empty state after slicing.")
                     continue
 
-                emb_s_mb, _ = self.embedding_net.get_base_embedding(current_mb_states)
+                # Extract the padding mask for the current minibatch
+                mb_central_padding_masks = {
+                    k.replace('_padding_mask', ''): v[mb_idx]
+                    for k, v in padded_states_dict_seq.get("central", {}).items()
+                    if k.endswith('_padding_mask')
+                }
+
+                emb_s_mb, _ = self.embedding_net.get_base_embedding(current_mb_states, central_component_padding_masks=mb_central_padding_masks)
                 init_h_mb = initial_hidden_states_batch[mb_idx] if initial_hidden_states_batch is not None and initial_hidden_states_batch.shape[0] == B else None
                 if init_h_mb is not None and init_h_mb.shape[0] != M : init_h_mb = init_h_mb[:M]
                 feats_s_mb = self._apply_memory_seq(emb_s_mb, init_h_mb)
@@ -922,11 +941,10 @@ class MAPOCAAgent(Agent):
                             rnd_loss_mb = F.mse_loss(pred_rnd_val, tgt_rnd_val); ppo_total_loss += rnd_loss_mb
                             logs_acc["grad_norm_rnd"].append(_get_avg_grad_mag(list(self.rnd_predictor_network.parameters())))
 
-                # *** CORRECTED OPTIMIZER ACCESS ***
                 self.optimizers["trunk"].zero_grad()
                 self.optimizers["policy"].zero_grad()
-                self.optimizers["value_path"].zero_grad() # Corrected key
-                self.optimizers["baseline_path"].zero_grad() # Corrected key
+                self.optimizers["value_path"].zero_grad()
+                self.optimizers["baseline_path"].zero_grad()
                 if self.enable_rnd and "rnd_predictor" in self.optimizers and self.optimizers["rnd_predictor"]:
                     self.optimizers["rnd_predictor"].zero_grad()
                 

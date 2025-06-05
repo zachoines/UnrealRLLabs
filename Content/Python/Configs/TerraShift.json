@@ -1,7 +1,7 @@
 {
   "environment": {
-    "name": "TerraShift_Easy_SingleObject_IQN_HighDelta",
-    "id": "TerraShift_Easy_SingleObj_IQN_HighDelta_$(date +%Y%m%d_%H%M%S)",
+    "name": "TerraShift_8_Agent_4_Object_Test",
+    "id": "TerraShift_8A_4O_$(date +%Y%m%d_%H%M%S)",
     "params": {
       "PlatformSize": 1.0,
       "MaxColumnHeight": 4.0,
@@ -9,7 +9,7 @@
       "ObjectMass": 0.1,
       "GridSize": 25,
       "MaxSteps": 256,
-      "MaxAgents": 4,
+      "MaxAgents": 8,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
         "bUseXYDistanceImprovement": false,
@@ -34,7 +34,7 @@
         "DefaultRadius": 1.0
       },
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 4,
+        "NumAgents": 8,
         "GridSize": 25,
         "MinHeight": -4.0,
         "MaxHeight": 4.0,
@@ -52,7 +52,7 @@
         "DeltaSigmaScale": 15.0
       },
       "StateManager": {
-        "MaxGridObjects": 1,
+        "MaxGridObjects": 4,
         "MarginXY": 1.5,
         "MinZ": -4.0,
         "MaxZ": 20.0,
@@ -71,8 +71,18 @@
         "GoalRadius": 4,
         "ObjectRadius": 3,
         "GoalCollectRadius": 4.5,
-        "GoalColors": [[1.0,0.0,0.0]],
-        "GridObjectColors": [[0.0,1.0,0.0]],
+        "GoalColors": [
+          [1.0, 0.0, 0.0],
+          [0.0, 0.0, 1.0],
+          [1.0, 1.0, 0.0],
+          [0.0, 1.0, 1.0]
+        ],
+        "GridObjectColors": [
+          [1.0, 0.0, 0.0],
+          [0.0, 0.0, 1.0],
+          [1.0, 1.0, 0.0],
+          [0.0, 1.0, 1.0]
+        ],
         "bIncludeHeightMapInState": false,
         "StateHeightMapResolutionH": 25,
         "StateHeightMapResolutionW": 25,
@@ -80,7 +90,7 @@
         "StateOverheadImageResX": 25,
         "StateOverheadImageResY": 25,
         "bIncludeGridObjectSequenceInState": true,
-        "MaxGridObjectsForState": 1,
+        "MaxGridObjectsForState": 4,
         "GridObjectFeatureSize": 9
       }
     },
@@ -103,13 +113,13 @@
             "name": "gridobject_sequence",
             "enabled": true,
             "type": "sequence",
-            "shape": { "max_length": 1, "feature_dim": 9 }
+            "shape": { "max_length": 4, "feature_dim": 9 }
           }
         ],
         "agent": {
           "obs_size": 9,
-          "min": 4,
-          "max": 4
+          "min": 8,
+          "max": 8
         }
       },
       "action": {
@@ -187,7 +197,7 @@
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 4,
+            "num_agents": 8,
             "embed_dim": 128,
             "num_heads": 8,
             "transformer_layers": 1,
@@ -206,7 +216,7 @@
               },
               {
                 "name": "gridobject_sequence", "enabled": true, "type": "linear_sequence",
-                "input_feature_dim": 9, "max_seq_len_for_pos_enc": 1,
+                "input_feature_dim": 9, "max_seq_len_for_pos_enc": 4,
                 "linear_stem_hidden_sizes": [128, 128],
                 "add_positional_encoding": false
               }
