@@ -417,6 +417,7 @@ bool ATerraShiftEnvironment::Done()
         return true;
     }
 
+    /*
     for (int32 ObjIndex = 0; ObjIndex < CurrentGridObjects; ++ObjIndex)
     {
         // StateManager->GetHasFallenOff(ObjIndex) directly queries the bFallenOff flag for the object.
@@ -426,6 +427,7 @@ bool ATerraShiftEnvironment::Done()
             return true;
         }
     }
+    */
     return false;
     
 
@@ -439,16 +441,15 @@ bool ATerraShiftEnvironment::Done()
 
 bool ATerraShiftEnvironment::Trunc()
 {
-    // if (!Initialized) return true;
+    if (!Initialized) return true;
 
     // Episode is truncated if the maximum step count is reached
-    /*bool bTruncated = (CurrentStep >= MaxSteps);
+    bool bTruncated = (CurrentStep >= MaxSteps);
     if (bTruncated)
     {
         UE_LOG(LogTemp, Verbose, TEXT("Episode Truncated: Max steps (%d) reached at step %d."), MaxSteps, CurrentStep);
     }
-    return bTruncated;*/
-    return false;
+    return bTruncated;
 }
 
 
