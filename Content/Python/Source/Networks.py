@@ -1680,3 +1680,44 @@ class AgentIDPosEnc(nn.Module): # Included for completeness
         feats = self.sinusoidal_features(agent_ids.reshape(-1)) 
         out_lin = self.linear(feats) 
         return out_lin.view(*shape_in, self.id_embed_dim)
+    
+
+
+class ForwardDynamicsModel(nn.Module):
+    """A simple MLP to predict the next state's feature embedding."""
+    def __init__(self, embed_dim: int, action_dim: int, hidden_size: int = 256):
+        """
+        Initializes the forward dynamics model.
+
+        Args:
+            embed_dim (int): The dimension of the input state and output predicted state embeddings.
+            action_dim (int): The dimension of the action vector.
+            hidden_size (int): The size of the hidden layers in the MLP.
+        """
+        super().__init__()
+        # The network takes a concatenated state embedding and action vector as input.
+        self.net = nn.Sequential(
+            nn.Linear(embed_dim + action_dim, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, embed_dim) # Predicts an embedding of the same dimension as the input state.
+        )
+        # Apply a standard weight initialization.
+        self.apply(lambda m: init_weights_leaky_relu(m) if isinstance(m, nn.Linear) else None)
+
+    def forward(self, state_embed: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        """
+        Predicts the embedding of the next state.
+
+        Args:
+            state_embed (torch.Tensor): The feature embedding of the current state.
+            action (torch.Tensor): The action taken in the current state.
+
+        Returns:
+            torch.Tensor: The predicted feature embedding of the next state.
+        """
+        # Concatenate the state embedding and action to form the input.
+        x = torch.cat([state_embed, action], dim=-1)
+        return self.net(x)
+
