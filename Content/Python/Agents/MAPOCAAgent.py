@@ -150,18 +150,6 @@ class MAPOCAAgent(Agent):
         self._setup_schedulers(a_cfg)
 
     # --- Core Agent Interface Methods ---
-
-    def save(self, location: str) -> None:
-        """Saves the agent's state_dict, including all networks and optimizers."""
-        torch.save(self.state_dict(), location)
-        print(f"Agent model and optimizer states saved to {location}")
-
-    def load(self, location: str) -> None:
-        """Loads the agent's state_dict from a file."""
-        state = torch.load(location, map_location=self.device)
-        self.load_state_dict(state)
-        print(f"Agent model and optimizer states loaded from {location}")
-
     @torch.no_grad()
     def get_actions(self, states: Dict[str, Any], dones: Optional[torch.Tensor] = None, truncs: Optional[torch.Tensor] = None, eval: bool = False, h_prev_batch: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], Optional[torch.Tensor]]:
         """Inference-time method to get actions for the current state observations."""
@@ -215,21 +203,21 @@ class MAPOCAAgent(Agent):
             emb_ns_seq, _ = self.embedding_net.get_base_embedding(padded_next_states_dict_seq, central_component_padding_masks=ns_mask)
             feats_s_seq, h_n_for_next_buffer = self._apply_memory_seq(emb_s_seq, initial_hidden_states_batch, return_hidden=True)
             feats_ns_seq = self._apply_memory_seq(emb_ns_seq, h_n_for_next_buffer)
-            
+
+            old_val_norm, old_base_norm_placeholder, _, s_val_feats_agg, s_base_feats_agg = self._get_critic_outputs(feats_s_seq, padded_actions_seq, B, T, NA)
+            next_val_norm, _, _, ns_val_feats_agg, ns_base_feats_agg = self._get_critic_outputs(feats_ns_seq, torch.zeros_like(padded_actions_seq), B, T, NA)
+            # Note: old_base_norm will be recomputed with gradients later, so we use a placeholder name for the no_grad version.
+                    
             # --- Intrinsic Rewards & GAE ---
             intrinsic_rewards, intrinsic_stats = self._compute_intrinsic_rewards(feats_s_seq, padded_actions_seq, mask_btna)
-            self._log_intrinsic_reward_stats(logs_acc, intrinsic_stats) # Log the stats
+            self._log_intrinsic_reward_stats(logs_acc, intrinsic_stats)
             rewards_for_gae = rewards_seq + intrinsic_rewards.mean(dim=-1, keepdim=True)
-
-            # FIX: Pass the correct feature tensor as the first argument
-            old_val_norm, _, _ = self._get_critic_outputs(feats_s_seq, padded_actions_seq, B, T, NA)
-            next_val_norm, _, _ = self._get_critic_outputs(feats_ns_seq, torch.zeros_like(padded_actions_seq), B, T, NA)
             
             old_val_denorm = self.value_popart.denormalize_outputs(old_val_norm) if self.enable_popart else old_val_norm
             next_val_denorm = self.value_popart.denormalize_outputs(next_val_norm) if self.enable_popart else next_val_norm
             
             returns_seq = self._compute_gae_with_padding(rewards_for_gae, old_val_denorm, next_val_denorm, padded_dones_seq, padded_truncs_seq, attention_mask_batch)
-            
+
             if self.enable_popart: self._update_popart_stats(returns_seq, attention_mask_batch.unsqueeze(-1), mask_btna.unsqueeze(-1), logs_acc)
 
             valid_returns_mask = attention_mask_batch.unsqueeze(-1).bool()
@@ -242,8 +230,13 @@ class MAPOCAAgent(Agent):
             old_logp_seq, _ = self._recompute_log_probs_from_features(feats_s_seq, padded_actions_seq)
             if mask_btna.any(): logs_acc["mean/logp_old"].append(old_logp_seq[mask_btna.bool()].mean().item())
             
-            if self.enable_iqn_distillation and self.iqn_replay_buffer:
-                self._push_to_iqn_buffer(feats_s_seq, feats_ns_seq, padded_actions_seq, rewards_seq, padded_dones_seq, attention_mask_batch, initial_hidden_states_batch, h_n_for_next_buffer)
+            if self.enable_iqn_distillation:
+                self._push_to_iqn_buffer(
+                    s_val_feats_agg, ns_val_feats_agg, 
+                    s_base_feats_agg, ns_base_feats_agg,
+                    padded_actions_seq, rewards_seq, padded_dones_seq, 
+                    attention_mask_batch, initial_hidden_states_batch, h_n_for_next_buffer
+                )
 
         idx = np.arange(B)
         for _epoch in range(self.epochs):
@@ -267,11 +260,13 @@ class MAPOCAAgent(Agent):
 
                 new_lp_mb, ent_mb = self._recompute_log_probs_from_features(feats_s_mb, mb_actions)
                 
-                # FIX: Pass the correct feature tensor as the first argument
-                new_val_norm, new_base_norm, _ = self._get_critic_outputs(feats_s_mb, mb_actions, M, T, NA)
-                _, old_base_norm, _ = self._get_critic_outputs(feats_s_seq[mb_idx], mb_actions, M, T, NA)
-
-                adv = self._calculate_advantages(mb_returns, new_base_norm, mb_mask_btna)
+                # Recompute critic outputs FOR THE MINIBATCH with gradients enabled ---
+                new_val_norm, new_base_norm, _, _, _ = self._get_critic_outputs(feats_s_mb, mb_actions, M, T, NA)
+                
+                # The old baseline also needs to be recomputed for the minibatch to ensure its part of the graph for distillation loss, if any.
+                _, old_base_norm, _, _, _ = self._get_critic_outputs(feats_s_seq[mb_idx], mb_actions, M, T, NA)
+                adv = self._calculate_advantages(mb_returns, new_base_norm, mb_mask_btna, logs_acc)
+   
                 pol_loss = self._ppo_clip_loss(new_lp_mb, mb_old_logp.detach(), adv.detach(), self.ppo_clip_range, mb_mask_btna)
                 ent_loss = (-ent_mb * mb_mask_btna).sum() / mb_mask_btna.sum().clamp(min=1e-8)
 
@@ -295,8 +290,14 @@ class MAPOCAAgent(Agent):
                 
                 self._zero_all_grads()
                 total_loss.backward()
-                self._clip_and_step_optimizers()
-                self._log_minibatch_stats(logs_acc, pol_loss, val_loss, base_loss, ent_mb, adv, new_lp_mb, mb_mask_btna, rnd_loss, disagreement_loss, feats_s_mb)
+                total_grad_norm = self._clip_and_step_optimizers()
+                self._log_minibatch_stats(
+                    logs_acc, pol_loss, val_loss, base_loss, ent_mb, adv, new_lp_mb, 
+                    mb_mask_btna, rnd_loss, disagreement_loss, feats_s_mb, 
+                    total_grad_norm=total_grad_norm, 
+                    new_val_norm=new_val_norm, 
+                    new_base_norm=new_base_norm
+                )
 
         if self.enable_iqn_distillation:
             self._train_iqn_networks(logs_acc)
@@ -304,13 +305,14 @@ class MAPOCAAgent(Agent):
         self._step_schedulers()
         
         return self._finalize_logs(logs_acc)
+   
     # --- Initialization & Setup Helpers ---
 
     def _initialize_logs(self) -> Dict[str, List[float]]:
         """Initializes a dictionary to accumulate logs for one full update cycle."""
         logs_acc: Dict[str, List[Any]] = {
             "loss/policy": [], "loss/value": [], "loss/baseline": [], "loss/entropy": [],
-            "mean/advantage": [], "std/advantage": [],
+            "mean/advantage_unnormalized": [], "std/advantage_unnormalized": [],
             "mean/logp_old": [], "mean/logp_new": [],
             "mean/return": [], "std/return": [],
             "mean/value_prediction": [], "std/value_prediction": [],
@@ -318,38 +320,25 @@ class MAPOCAAgent(Agent):
             "grad_norm/value_path": [], "grad_norm/baseline_path": []
         }
         if self.enable_rnd:
-            logs_acc.update({
-                "loss/rnd": [], 
-                "reward/rnd_raw_mean": [], "reward/rnd_raw_std": [],
-                "reward/rnd_norm_mean": [], "reward/rnd_norm_std": [], 
-                "grad_norm/rnd_predictor": []
-            })
+            logs_acc.update({"loss/rnd": [], "reward/rnd_raw_mean": [], "reward/rnd_raw_std": [], "reward/rnd_norm_mean": [], "reward/rnd_norm_std": [], "grad_norm/rnd_predictor": []})
         if self.enable_disagreement:
-            logs_acc.update({
-                "loss/disagreement": [], 
-                "reward/disagreement_raw_mean": [], "reward/disagreement_raw_std": [],
-                "reward/disagreement_norm_mean": [], "reward/disagreement_norm_std": [], 
-                "grad_norm/disagreement_ensemble": []
-            })
+            logs_acc.update({"loss/disagreement": [], "reward/disagreement_raw_mean": [], "reward/disagreement_raw_std": [], "reward/disagreement_norm_mean": [], "reward/disagreement_norm_std": [], "grad_norm/disagreement_ensemble": []})
         if self.enable_iqn_distillation:
             logs_acc.update({
                 "loss/value_iqn": [], "loss/baseline_iqn": [],
                 "mean/value_quantiles": [], "std/value_quantiles": [],
                 "mean/baseline_quantiles": [], "std/baseline_quantiles": [],
-                "grad_norm/value_iqn": [], "grad_norm/baseline_iqn": []
+                "mean/distilled_value": [], "std/distilled_value": [],
+                "mean/distilled_baseline": [], "std/distilled_baseline": [],
+                "grad_norm/value_iqn": [], "grad_norm/baseline_iqn": [],
+                "grad_norm/distill_value": [], "grad_norm/distill_baseline": []
             })
         if self.enable_popart:
-            logs_acc.update({
-                "popart/value_mu": [], "popart/value_sigma": [],
-                "popart/baseline_mu": [], "popart/baseline_sigma": []
-            })
+            logs_acc.update({"popart/value_mu": [], "popart/value_sigma": [], "popart/baseline_mu": [], "popart/baseline_sigma": []})
         if self.action_space_type_str_from_config == "beta":
-            logs_acc.update({
-                "policy/alpha_mean": [], "policy/alpha_std": [],
-                "policy/beta_mean": [], "policy/beta_std": []
-            })
+            logs_acc.update({"policy/alpha_mean": [], "policy/alpha_std": [], "policy/beta_mean": [], "policy/beta_std": []})
         return logs_acc
-
+    
     def _determine_action_space(self, action_config: Dict):
         policy_type_override = self.config["agent"]["params"]["networks"]["policy_network"].get("type")
         action_spec = action_config.get("agent", action_config.get("central", {}))
@@ -439,22 +428,32 @@ class MAPOCAAgent(Agent):
         self.schedulers["value_clip"] = LinearValueScheduler(**sched_cfg.get("value_clip", {"start_value":self.value_clip_range, "end_value":self.value_clip_range, "total_iters":1}))
         self.schedulers["max_grad_norm"] = LinearValueScheduler(**sched_cfg.get("max_grad_norm", {"start_value":self.max_grad_norm, "end_value":self.max_grad_norm, "total_iters":1}))
     
-    def _calculate_advantages(self, returns_seq, baseline_seq, mask) -> torch.Tensor:
-        """Calculates the advantages, optionally normalizing them."""
+    def _calculate_advantages(self, returns_seq: torch.Tensor, baseline_seq: torch.Tensor, mask: torch.Tensor, logs_acc: Dict[str, List[float]]) -> torch.Tensor:
+        """
+        Calculates the advantages, logs stats for the unnormalized advantages,
+        and then returns the optionally normalized advantages.
+        """
         # The baseline is already denormalized if PopArt is used.
         advantages = returns_seq.unsqueeze(2).expand_as(baseline_seq) - baseline_seq
         
+        # Log stats of unnormalized advantages
+        valid_mask = mask.bool().unsqueeze(-1)
+        if valid_mask.any():
+            valid_advantages = advantages[valid_mask]
+            # These keys were added to _initialize_logs
+            logs_acc["mean/advantage_unnormalized"].append(valid_advantages.mean().item())
+            logs_acc["std/advantage_unnormalized"].append(valid_advantages.std().item())
+
         if self.normalize_adv:
-            # Normalize advantages only over the valid (non-padded) elements.
-            valid_advantages = advantages[mask.bool()]
+            # Re-fetch valid advantages in case it wasn't computed
+            valid_advantages = advantages[valid_mask]
             if valid_advantages.numel() > 1:
                 mean = valid_advantages.mean()
                 std = valid_advantages.std() + 1e-8
-                # Apply normalization back to the original tensor shape using the mask
-                advantages[mask.bool()] = (valid_advantages - mean) / std
+                advantages[valid_mask] = (valid_advantages - mean) / std
         
-        return advantages.squeeze(-1) # Return shape (B, T, NA)
-
+        return advantages.squeeze(-1)
+    
     def _compute_gae_with_padding(self, r: torch.Tensor, v: torch.Tensor, v_next: torch.Tensor, d: torch.Tensor, tr: torch.Tensor, mask_bt: torch.Tensor) -> torch.Tensor:
         """
         Computes Generalized Advantage Estimation (GAE) for sequences with padding.
@@ -554,37 +553,20 @@ class MAPOCAAgent(Agent):
         
         return total_loss / self.ensemble_size
 
-    def _push_to_iqn_buffer(self, feats_s_seq, feats_ns_seq, actions_seq, rewards_seq, dones_seq, attention_mask, initial_h, next_initial_h):
-        """Prepares and pushes experience to the IQN replay buffer."""
-        # This method is called from the `update` method's no-grad context.
-        # It aggregates the features needed for IQN training and pushes them to the buffer.
-        
-        # 1. Aggregate features for the centralized value IQN
-        # Input features are the trunk output for each agent: (B, T, NA, TrunkDim)
-        # We need to compute the attention-pooled embedding for the value head.
-        B, T, NA, _ = feats_s_seq.shape
-        s_val_input_flat = feats_s_seq.reshape(B * T, NA, -1)
-        s_val_attn_out, _ = self.shared_critic.value_attention(s_val_input_flat)
-        s_val_feats_agg = s_val_attn_out.mean(dim=1).reshape(B, T, -1)
-
-        ns_val_input_flat = feats_ns_seq.reshape(B * T, NA, -1)
-        ns_val_attn_out, _ = self.shared_critic.value_attention(ns_val_input_flat)
-        ns_val_feats_agg = ns_val_attn_out.mean(dim=1).reshape(B, T, -1)
-
-        # 2. Aggregate features for the counterfactual baseline IQN
-        # This involves creating the counterfactual inputs and passing them through the baseline attention.
-        s_base_comb_inputs = self.embedding_net.get_baseline_embeddings(feats_s_seq, actions_seq)
-        s_base_input_flat = s_base_comb_inputs.reshape(B * T * NA, NA, -1)
-        s_base_attn_out, _ = self.shared_critic.baseline_attention(s_base_input_flat)
-        s_base_feats_agg = s_base_attn_out.mean(dim=1).reshape(B, T, NA, -1)
-        
-        # For next-state baseline, we don't have a next action, so we use a zero-action placeholder.
-        ns_base_comb_inputs = self.embedding_net.get_baseline_embeddings(feats_ns_seq, torch.zeros_like(actions_seq))
-        ns_base_input_flat = ns_base_comb_inputs.reshape(B * T * NA, NA, -1)
-        ns_base_attn_out, _ = self.shared_critic.baseline_attention(ns_base_input_flat)
-        ns_base_feats_agg = ns_base_attn_out.mean(dim=1).reshape(B, T, NA, -1)
-
-        # 3. Push all the processed data to the replay buffer.
+    def _push_to_iqn_buffer(
+        self, 
+        s_val_feats_agg: torch.Tensor, 
+        ns_val_feats_agg: torch.Tensor, 
+        s_base_feats_agg: torch.Tensor, 
+        ns_base_feats_agg: torch.Tensor,
+        actions_seq: torch.Tensor, 
+        rewards_seq: torch.Tensor, 
+        dones_seq: torch.Tensor, 
+        attention_mask: torch.Tensor, 
+        initial_h: Optional[torch.Tensor], 
+        next_initial_h: Optional[torch.Tensor]
+    ):
+        """Pushes pre-computed features and trajectory data to the IQN replay buffer."""
         self.iqn_replay_buffer.push_batch(
             s_val_feats_agg, ns_val_feats_agg,
             s_base_feats_agg, ns_base_feats_agg,
@@ -626,23 +608,28 @@ class MAPOCAAgent(Agent):
 
         self._iqn_total_updates_counter += 1
         
+        # --- FIX: Move accumulators inside, as this is one self-contained training step ---
+        val_iqn_losses, base_iqn_losses = [], []
+        val_q_means, val_q_stds = [], []
+        base_q_means, base_q_stds = [], []
+        val_iqn_grads, base_iqn_grads = [], []
+
         for _epoch_iqn in range(self.iqn_epochs):
             sample = self.iqn_replay_buffer.sample(self.iqn_batch_size)
             if sample is None: continue
 
             s_val_agg, ns_val_agg, s_base_agg, ns_base_agg, _, r_seq, d_seq, mask, _, _ = sample
-
             B, T, NA, _ = s_base_agg.shape
-            valid_mask_flat = mask.view(-1).bool()
             
-            # --- Value IQN Loss Calculation ---
-            s_val_valid = s_val_agg.view(B * T, -1)[valid_mask_flat]
-            ns_val_valid = ns_val_agg.view(B * T, -1)[valid_mask_flat]
-            r_val_valid = r_seq.view(B * T, -1)[valid_mask_flat]
-            d_val_valid = d_seq.view(B * T, -1)[valid_mask_flat]
-
-            value_iqn_loss = torch.tensor(0.0, device=self.device)
+            # --- Value IQN Loss ---
+            valid_mask_val_flat = mask.view(-1).bool()
+            s_val_valid = s_val_agg.view(B * T, -1)[valid_mask_val_flat]
+            
             if s_val_valid.shape[0] > 0:
+                ns_val_valid = ns_val_agg.view(B * T, -1)[valid_mask_val_flat]
+                r_val_valid = r_seq.view(B * T, -1)[valid_mask_val_flat]
+                d_val_valid = d_seq.view(B * T, -1)[valid_mask_val_flat]
+                
                 eff_b_val = s_val_valid.shape[0]
                 taus_current_val = self._sample_taus(eff_b_val, self.num_quantiles)
                 taus_next_val = self._sample_taus(eff_b_val, self.num_quantiles_prime)
@@ -651,23 +638,22 @@ class MAPOCAAgent(Agent):
                 with torch.no_grad():
                     next_value_quantiles = self.target_value_iqn_net(ns_val_valid, taus_next_val)
                 
-                # --- Log Quantile Stats ---
-                logs_acc["mean/value_quantiles"].append(current_value_quantiles.mean().item())
-                logs_acc["std/value_quantiles"].append(current_value_quantiles.std().item())
-                
                 bellman_targets = r_val_valid + self.gamma * (1.0 - d_val_valid) * next_value_quantiles
                 value_iqn_loss = self._compute_huber_quantile_loss(current_value_quantiles, bellman_targets.detach(), taus_current_val)
-            logs_acc["loss/value_iqn"].append(value_iqn_loss.item())
-
-            # --- Baseline IQN Loss Calculation ---
+                
+                val_iqn_losses.append(value_iqn_loss.item())
+                val_q_means.append(current_value_quantiles.mean().item())
+                val_q_stds.append(current_value_quantiles.std().item())
+            
+            # --- Baseline IQN Loss ---
             valid_mask_base_flat = mask.unsqueeze(-1).expand(-1, -1, NA).reshape(-1).bool()
             s_base_valid = s_base_agg.view(B * T * NA, -1)[valid_mask_base_flat]
-            ns_base_valid = ns_base_agg.view(B * T * NA, -1)[valid_mask_base_flat]
-            r_base_valid = r_seq.unsqueeze(2).expand(-1, -1, NA, -1).reshape(B*T*NA, 1)[valid_mask_base_flat]
-            d_base_valid = d_seq.unsqueeze(2).expand(-1, -1, NA, -1).reshape(B*T*NA, 1)[valid_mask_base_flat]
 
-            baseline_iqn_loss = torch.tensor(0.0, device=self.device)
             if s_base_valid.shape[0] > 0:
+                ns_base_valid = ns_base_agg.view(B * T * NA, -1)[valid_mask_base_flat]
+                r_base_valid = r_seq.unsqueeze(2).expand(-1, -1, NA, -1).reshape(B*T*NA, 1)[valid_mask_base_flat]
+                d_base_valid = d_seq.unsqueeze(2).expand(-1, -1, NA, -1).reshape(B*T*NA, 1)[valid_mask_base_flat]
+
                 eff_b_base = s_base_valid.shape[0]
                 taus_current_base = self._sample_taus(eff_b_base, self.num_quantiles)
                 taus_next_base = self._sample_taus(eff_b_base, self.num_quantiles_prime)
@@ -676,33 +662,40 @@ class MAPOCAAgent(Agent):
                 with torch.no_grad():
                     next_baseline_quantiles = self.target_baseline_iqn_net(ns_base_valid, taus_next_base)
 
-                # --- Log Quantile Stats ---
-                logs_acc["mean/baseline_quantiles"].append(current_baseline_quantiles.mean().item())
-                logs_acc["std/baseline_quantiles"].append(current_baseline_quantiles.std().item())
-
                 baseline_bellman_targets = r_base_valid + self.gamma * (1.0 - d_base_valid) * next_baseline_quantiles
                 baseline_iqn_loss = self._compute_huber_quantile_loss(current_baseline_quantiles, baseline_bellman_targets.detach(), taus_current_base)
-            logs_acc["loss/baseline_iqn"].append(baseline_iqn_loss.item())
+                
+                base_iqn_losses.append(baseline_iqn_loss.item())
+                base_q_means.append(current_baseline_quantiles.mean().item())
+                base_q_stds.append(current_baseline_quantiles.std().item())
 
             # --- Optimization Step ---
-            total_iqn_loss = (self.value_iqn_loss_coeff * value_iqn_loss) + (self.baseline_iqn_loss_coeff * baseline_iqn_loss)
-            
-            self.optimizers["value_iqn"].zero_grad()
-            self.optimizers["baseline_iqn"].zero_grad()
-            total_iqn_loss.backward()
-            
-            gn_val_iqn = clip_grad_norm_(self.shared_critic.value_iqn_net.parameters(), self.iqn_max_grad_norm)
-            gn_base_iqn = clip_grad_norm_(self.shared_critic.baseline_iqn_net.parameters(), self.iqn_max_grad_norm)
-            logs_acc["grad_norm/value_iqn"].append(gn_val_iqn.item() if torch.is_tensor(gn_val_iqn) else gn_val_iqn)
-            logs_acc["grad_norm/baseline_iqn"].append(gn_base_iqn.item() if torch.is_tensor(gn_base_iqn) else gn_base_iqn)
-            
-            self.optimizers["value_iqn"].step()
-            self.optimizers["baseline_iqn"].step()
+            if 'value_iqn_loss' in locals() and 'baseline_iqn_loss' in locals():
+                total_iqn_loss = (self.value_iqn_loss_coeff * value_iqn_loss) + (self.baseline_iqn_loss_coeff * baseline_iqn_loss)
+                
+                self.optimizers["value_iqn"].zero_grad()
+                self.optimizers["baseline_iqn"].zero_grad()
+                if total_iqn_loss > 0:
+                    total_iqn_loss.backward()
+                    val_iqn_grads.append(_get_avg_grad_mag(self.shared_critic.value_iqn_net.parameters()))
+                    base_iqn_grads.append(_get_avg_grad_mag(self.shared_critic.baseline_iqn_net.parameters()))
+                    self.optimizers["value_iqn"].step()
+                    self.optimizers["baseline_iqn"].step()
+
+        # --- Append logs for the entire IQN training phase ---
+        if val_iqn_losses: logs_acc["loss/value_iqn"].append(np.mean(val_iqn_losses))
+        if base_iqn_losses: logs_acc["loss/baseline_iqn"].append(np.mean(base_iqn_losses))
+        if val_q_means: logs_acc["mean/value_quantiles"].append(np.mean(val_q_means))
+        if val_q_stds: logs_acc["std/value_quantiles"].append(np.mean(val_q_stds))
+        if base_q_means: logs_acc["mean/baseline_quantiles"].append(np.mean(base_q_means))
+        if base_q_stds: logs_acc["std/baseline_quantiles"].append(np.mean(base_q_stds))
+        if val_iqn_grads: logs_acc["grad_norm/value_iqn"].append(np.mean(val_iqn_grads))
+        if base_iqn_grads: logs_acc["grad_norm/baseline_iqn"].append(np.mean(base_iqn_grads))
 
         # --- Target Network Update ---
         if self._iqn_total_updates_counter % self.iqn_target_update_freq == 0:
             self._update_target_iqn_networks()
-    
+
     def _update_target_iqn_networks(self):
         """Performs a soft (Polyak) update of the IQN target networks."""
         if self.enable_iqn_distillation:
@@ -835,45 +828,56 @@ class MAPOCAAgent(Agent):
         """Generates random quantile fractions (taus) for IQN."""
         return torch.rand(batch_dim0_size, num_quantiles, 1, device=self.device)
     
-    def _get_critic_outputs(self, feats_seq: torch.Tensor, actions_seq: torch.Tensor, B: int, T: int, NA: int) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    def _get_critic_outputs(self, feats_seq: torch.Tensor, actions_seq: torch.Tensor, B: int, T: int, NA: int) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
-        Helper to get value, baseline, and optional quantile outputs from the shared critic.
+        Helper to get all critic-related outputs.
         
-        Args:
-            feats_seq (torch.Tensor): The feature embeddings to be evaluated (e.g., from s_t or s_t+1).
-                                      Shape: (B, T, NA, TrunkDim)
-            actions_seq (torch.Tensor): The actions corresponding to the features.
-                                        Shape: (B, T, NA, ActionDim)
-            B, T, NA (int): Batch, Time, and NumAgents dimensions for reshaping.
-
         Returns:
-            A tuple containing the normalized value, baseline, and optional value quantiles.
+            A tuple of (
+                value_distilled_or_ppo (Tensor),
+                baseline_distilled_or_ppo (Tensor),
+                value_quantiles (Tensor, optional),
+                s_val_feats_agg (Tensor, optional), -> FOR REPLAY BUFFER
+                s_base_feats_agg (Tensor, optional) -> FOR REPLAY BUFFER
+            )
         """
         B_T_flat = B * T
         B_T_NA_flat = B * T * NA
 
         # --- Value Path ---
-        # Reshape trunk features and get value predictions
         val_input_flat = feats_seq.reshape(B_T_flat, NA, -1)
-        taus_val = self._sample_taus(B_T_flat, self.num_quantiles) if self.enable_iqn_distillation else None
-        
-        # The critic's `values` method may or may not take taus, handle both cases
-        val_output = self.shared_critic.values(val_input_flat, taus_val) if self.enable_iqn_distillation else self.shared_critic.values(val_input_flat)
-        
-        val_distilled_norm = val_output[0] if self.enable_iqn_distillation else val_output
-        val_quantiles = val_output[1] if self.enable_iqn_distillation and len(val_output) > 1 else None
+        s_val_attn_out, _ = self.shared_critic.value_attention(val_input_flat)
+        s_val_feats_agg = s_val_attn_out.mean(dim=1)  # Shape: (B*T, H_embed)
 
         # --- Baseline Path ---
-        # Get counterfactual embeddings and then baseline predictions
         base_input_comb = self.embedding_net.get_baseline_embeddings(feats_seq, actions_seq)
         base_input_flat = base_input_comb.reshape(B_T_NA_flat, NA, -1)
-        taus_base = self._sample_taus(B_T_NA_flat, self.num_quantiles) if self.enable_iqn_distillation else None
+        s_base_attn_out, _ = self.shared_critic.baseline_attention(base_input_flat)
+        s_base_feats_agg = s_base_attn_out.mean(dim=1) # Shape: (B*T*NA, H_embed)
         
-        base_output = self.shared_critic.baselines(base_input_flat, taus_base) if self.enable_iqn_distillation else self.shared_critic.baselines(base_input_flat)
-        base_distilled_norm = base_output[0] if self.enable_iqn_distillation else base_output
+        if self.enable_iqn_distillation:
+            taus_val = self._sample_taus(B_T_flat, self.num_quantiles)
+            taus_base = self._sample_taus(B_T_NA_flat, self.num_quantiles)
+            
+            v_ppo = self.shared_critic.value_head_ppo(s_val_feats_agg)
+            value_quantiles = self.shared_critic.value_iqn_net(s_val_feats_agg, taus_val)
+            val_distilled_norm = self.shared_critic.value_distill_net(v_ppo, value_quantiles)
+
+            b_ppo = self.shared_critic.baseline_head_ppo(s_base_feats_agg)
+            baseline_quantiles = self.shared_critic.baseline_iqn_net(s_base_feats_agg, taus_base)
+            base_distilled_norm = self.shared_critic.baseline_distill_net(b_ppo, baseline_quantiles)
+        else:
+            val_distilled_norm = self.shared_critic.value_head_ppo(s_val_feats_agg)
+            base_distilled_norm = self.shared_critic.baseline_head_ppo(s_base_feats_agg)
+            value_quantiles = None
         
-        # Reshape outputs to match the original batch and sequence dimensions
-        return val_distilled_norm.reshape(B,T,1), base_distilled_norm.reshape(B,T,NA,1), val_quantiles
+        # Reshape all outputs
+        final_val = val_distilled_norm.reshape(B, T, 1)
+        final_base = base_distilled_norm.reshape(B, T, NA, 1)
+        final_s_val_feats = s_val_feats_agg.reshape(B, T, -1)
+        final_s_base_feats = s_base_feats_agg.reshape(B, T, NA, -1)
+
+        return final_val, final_base, value_quantiles, final_s_val_feats, final_s_base_feats
     
     # --- Optimization & Logging ---
     
@@ -882,12 +886,21 @@ class MAPOCAAgent(Agent):
         for opt in self.optimizers.values():
             opt.zero_grad()
 
-    def _clip_and_step_optimizers(self):
-        """Clips gradients and steps all optimizers."""
-        all_params = [p for opt in self.optimizers.values() for group in opt.param_groups for p in group['params']]
-        clip_grad_norm_(all_params, self.max_grad_norm)
-        for opt in self.optimizers.values():
+    def _clip_and_step_optimizers(self) -> float:
+        """Clips gradients for all optimizers together and steps them. Returns the total grad norm."""
+        # --- FIX: Group all PPO-related parameters for a single clipping op ---
+        # We exclude IQN, RND, and Disagreement optimizers here as they are handled separately.
+        ppo_optimizers = [self.optimizers["trunk"], self.optimizers["policy"], self.optimizers["value_path"], self.optimizers["baseline_path"]]
+        all_ppo_params = [p for opt in ppo_optimizers for group in opt.param_groups for p in group['params']]
+        
+        # This computes the total norm of all PPO-related gradients
+        total_grad_norm = clip_grad_norm_(all_ppo_params, self.max_grad_norm)
+        
+        # Step only the PPO optimizers
+        for opt in ppo_optimizers:
             opt.step()
+            
+        return total_grad_norm.item()
     
     def _step_schedulers(self):
         """Steps all learning rate and parameter schedulers."""
@@ -900,29 +913,40 @@ class MAPOCAAgent(Agent):
         self.value_clip_range = self.schedulers["value_clip"].step()
         self.max_grad_norm = self.schedulers["max_grad_norm"].step()
 
-    def _log_minibatch_stats(self, logs_acc, pol_loss, val_loss, base_loss, ent_mb, adv, new_lp_mb, mask_mbna, rnd_loss, disagreement_loss, feats_s_mb):
+    def _log_minibatch_stats(self, logs_acc, pol_loss, val_loss, base_loss, ent_mb, adv, new_lp_mb, mask_mbna, rnd_loss, disagreement_loss, feats_s_mb, total_grad_norm, new_val_norm=None, new_base_norm=None):
         """Accumulates statistics from a single minibatch into the logs dictionary."""
         # Core PPO Losses
         logs_acc["loss/policy"].append(pol_loss.item())
         logs_acc["loss/value"].append(val_loss.item())
         logs_acc["loss/baseline"].append(base_loss.item())
         
+        # --- FIX: Log the total gradient norm for PPO update ---
+        logs_acc["grad_norm/total"].append(total_grad_norm)
+
         # Policy Stats
         valid_mask = mask_mbna.bool()
         if valid_mask.any():
             logs_acc["loss/entropy"].append(ent_mb[valid_mask].mean().item())
-            logs_acc["mean/advantage"].append(adv[valid_mask].mean().item())
-            logs_acc["std/advantage"].append(adv[valid_mask].std().item())
             logs_acc["mean/logp_new"].append(new_lp_mb[valid_mask].mean().item())
         
         # Auxiliary Losses
         if self.enable_rnd: logs_acc["loss/rnd"].append(rnd_loss.item())
         if self.enable_disagreement: logs_acc["loss/disagreement"].append(disagreement_loss.item())
         
-        # --- FIX: Add Policy-Specific Logging ---
+        # Log distilled values if IQN is enabled
+        if self.enable_iqn_distillation and new_val_norm is not None and new_base_norm is not None:
+            valid_val_mask = mask_mbna.any(dim=-1, keepdim=True).bool()
+            if valid_val_mask.any():
+                logs_acc["mean/distilled_value"].append(new_val_norm[valid_val_mask].mean().item())
+                logs_acc["std/distilled_value"].append(new_val_norm[valid_val_mask].std().item())
+            valid_base_mask = mask_mbna.unsqueeze(-1).bool()
+            if valid_base_mask.any():
+                logs_acc["mean/distilled_baseline"].append(new_base_norm[valid_base_mask].mean().item())
+                logs_acc["std/distilled_baseline"].append(new_base_norm[valid_base_mask].std().item())
+
+        # Policy-Specific Logging
         if self.action_space_type_str_from_config == "beta":
             with torch.no_grad():
-                # Re-run the policy forward pass to get the distribution parameters
                 flat_feats = feats_s_mb.reshape(-1, feats_s_mb.shape[-1])
                 valid_feats = flat_feats[valid_mask.reshape(-1)]
                 if valid_feats.numel() > 0:
@@ -932,7 +956,7 @@ class MAPOCAAgent(Agent):
                     logs_acc["policy/beta_mean"].append(beta.mean().item())
                     logs_acc["policy/beta_std"].append(beta.std().item())
 
-        # Gradient Norms
+        # Component-wise Gradient Norms
         logs_acc["grad_norm/trunk"].append(_get_avg_grad_mag(list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])))
         logs_acc["grad_norm/policy"].append(_get_avg_grad_mag(list(self.policy_net.parameters())))
         
@@ -944,9 +968,13 @@ class MAPOCAAgent(Agent):
         if self.enable_iqn_distillation: baseline_path_params += list(self.shared_critic.baseline_distill_net.parameters())
         logs_acc["grad_norm/baseline_path"].append(_get_avg_grad_mag(baseline_path_params))
         
+        if self.enable_iqn_distillation:
+            logs_acc["grad_norm/distill_value"].append(_get_avg_grad_mag(self.shared_critic.value_distill_net.parameters()))
+            logs_acc["grad_norm/distill_baseline"].append(_get_avg_grad_mag(self.shared_critic.baseline_distill_net.parameters()))
+
         if self.enable_rnd: logs_acc["grad_norm/rnd_predictor"].append(_get_avg_grad_mag(self.rnd_predictor_network.parameters()))
         if self.enable_disagreement: logs_acc["grad_norm/disagreement_ensemble"].append(_get_avg_grad_mag(self.dynamics_ensemble.parameters()))
-    
+
     def _finalize_logs(self, logs_acc: Dict) -> Dict[str, float]:
         """
         Calculates the mean of all accumulated log values for the entire update step.
@@ -978,29 +1006,6 @@ class MAPOCAAgent(Agent):
         })
         
         return final_logs
-
-    def _initialize_logs(self) -> Dict[str, List[float]]:
-        """Initializes a dictionary to accumulate logs for one full update cycle."""
-        logs_acc: Dict[str, List[Any]] = {
-            "loss/policy": [], "loss/value": [], "loss/baseline": [], "loss/entropy": [],
-            "mean/advantage": [], "std/advantage": [],
-            "mean/logp_old": [], "mean/logp_new": [],
-            "mean/return": [], "std/return": [],
-            "mean/value_prediction": [], "std/value_prediction": [],
-            "grad_norm/total": [], "grad_norm/trunk": [], "grad_norm/policy": [],
-            "grad_norm/value_path": [], "grad_norm/baseline_path": []
-        }
-        if self.enable_rnd:
-            logs_acc.update({"loss/rnd": [], "reward/rnd_raw_mean": [], "reward/rnd_raw_std": [], "reward/rnd_norm_mean": [], "reward/rnd_norm_std": [], "grad_norm/rnd_predictor": []})
-        if self.enable_disagreement:
-            logs_acc.update({"loss/disagreement": [], "reward/disagreement_raw_mean": [], "reward/disagreement_raw_std": [], "reward/disagreement_norm_mean": [], "reward/disagreement_norm_std": [], "grad_norm/disagreement_ensemble": []})
-        if self.enable_iqn_distillation:
-            logs_acc.update({"loss/value_iqn": [], "loss/baseline_iqn": [], "mean/value_quantiles": [], "std/value_quantiles": [], "mean/baseline_quantiles": [], "std/baseline_quantiles": [], "grad_norm/value_iqn": [], "grad_norm/baseline_iqn": []})
-        if self.enable_popart:
-            logs_acc.update({"popart/value_mu": [], "popart/value_sigma": [], "popart/baseline_mu": [], "popart/baseline_sigma": []})
-        if self.action_space_type_str_from_config == "beta":
-            logs_acc.update({"policy/alpha_mean": [], "policy/alpha_std": [], "policy/beta_mean": [], "policy/beta_std": []})
-        return logs_acc
     
     # --- Save/Load ---
 

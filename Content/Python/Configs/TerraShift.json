@@ -158,7 +158,7 @@
       "schedulers": {
         "lr_trunk": { "start_factor": 1.0, "end_factor": 0.1, "total_iters": 50000 },
         "lr_policy": { "start_factor": 1.0, "end_factor": 0.1, "total_iters": 50000 },
-        "entropy_coeff": { "start_value": 0.001, "end_value": 0.0001, "total_iters": 50000 }
+        "entropy_coeff": { "start_value": 0.01, "end_value": 0.001, "total_iters": 50000 }
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
@@ -230,7 +230,7 @@
     "saveFrequency": 50,
     "iqn_target_update_freq": 3,
     "iqn_train_freq": 1,
-    "iqn_replay_buffer_size": 25000,
+    "iqn_replay_buffer_size": 50000,
     "iqn_batch_size": 64,
     "iqn_epochs": 3
   }

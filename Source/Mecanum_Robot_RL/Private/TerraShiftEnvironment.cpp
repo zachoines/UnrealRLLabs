@@ -417,7 +417,6 @@ bool ATerraShiftEnvironment::Done()
         return true;
     }
 
-    /*
     for (int32 ObjIndex = 0; ObjIndex < CurrentGridObjects; ++ObjIndex)
     {
         // StateManager->GetHasFallenOff(ObjIndex) directly queries the bFallenOff flag for the object.
@@ -427,10 +426,9 @@ bool ATerraShiftEnvironment::Done()
             return true;
         }
     }
-    */
+   
     return false;
-    
-
+  
     /*bool bTruncated = (CurrentStep >= MaxSteps);
     if (bTruncated)
     {
