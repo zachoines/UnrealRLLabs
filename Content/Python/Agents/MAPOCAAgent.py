@@ -88,6 +88,7 @@ class MAPOCAAgent(Agent):
         self.lmbda = a_cfg.get("lambda", 0.95)
         self.value_loss_coeff = a_cfg.get("value_loss_coeff", 0.5)
         self.baseline_loss_coeff = a_cfg.get("baseline_loss_coeff", 0.5)
+        self.disagreement_loss_coeff = a_cfg.get("disagreement_loss_coeff", 0.01)
         self.normalize_adv = a_cfg.get("normalize_advantages", True)
         self.lr_base = a_cfg.get("learning_rate", 3e-4)
         self.epochs = t_cfg.get("epochs", 4)
@@ -187,9 +188,16 @@ class MAPOCAAgent(Agent):
         NA = self.num_agents
         mask_btna = attention_mask_batch.unsqueeze(-1).expand(-1, -1, NA)
 
+        # --- REWARD PROCESSING AND LOGGING ---
         rewards_seq = padded_rewards_seq.clone()
+        valid_r_mask = attention_mask_batch.unsqueeze(-1).bool()
+
+        if valid_r_mask.any():
+            raw_rewards_to_log = padded_rewards_seq[valid_r_mask]
+            logs_acc["reward/raw_mean"].append(raw_rewards_to_log.mean().item())
+            logs_acc["reward/raw_std"].append(raw_rewards_to_log.std().item())
+
         if self.rewards_normalizer:
-            valid_r_mask = attention_mask_batch.unsqueeze(-1).bool()
             if valid_r_mask.any():
                 rewards_to_process = rewards_seq[valid_r_mask]
                 self.rewards_normalizer.update(rewards_to_process)
@@ -218,7 +226,10 @@ class MAPOCAAgent(Agent):
             
             returns_seq = self._compute_gae_with_padding(rewards_for_gae, old_val_denorm, next_val_denorm, padded_dones_seq, padded_truncs_seq, attention_mask_batch)
 
-            if self.enable_popart: self._update_popart_stats(returns_seq, attention_mask_batch.unsqueeze(-1), mask_btna.unsqueeze(-1), logs_acc)
+            if self.enable_popart:
+                self._update_popart_stats(returns_seq, attention_mask_batch.unsqueeze(-1), mask_btna.unsqueeze(-1))
+                self._log_popart_stats(logs_acc)
+
 
             valid_returns_mask = attention_mask_batch.unsqueeze(-1).bool()
             if valid_returns_mask.any():
@@ -286,7 +297,7 @@ class MAPOCAAgent(Agent):
                 feats_ns_mb = self._apply_memory_seq(emb_ns_mb, self._get_next_hidden_state(feats_s_mb, mb_init_h))
                 disagreement_loss = self._compute_disagreement_loss(feats_s_mb, mb_actions, feats_ns_mb, mb_mask_btna)
                 
-                total_loss = pol_loss + self.entropy_coeff * ent_loss + self.value_loss_coeff * val_loss + self.baseline_loss_coeff * base_loss + rnd_loss + disagreement_loss
+                total_loss = pol_loss + self.entropy_coeff * ent_loss + self.value_loss_coeff * val_loss + self.baseline_loss_coeff * base_loss + rnd_loss + (self.disagreement_loss_coeff * disagreement_loss)
                 
                 self._zero_all_grads()
                 total_loss.backward()
@@ -315,6 +326,7 @@ class MAPOCAAgent(Agent):
             "mean/advantage_unnormalized": [], "std/advantage_unnormalized": [],
             "mean/logp_old": [], "mean/logp_new": [],
             "mean/return": [], "std/return": [],
+            "reward/raw_mean": [], "reward/raw_std": [],
             "mean/value_prediction": [], "std/value_prediction": [],
             "grad_norm/total": [], "grad_norm/trunk": [], "grad_norm/policy": [],
             "grad_norm/value_path": [], "grad_norm/baseline_path": []
@@ -677,8 +689,17 @@ class MAPOCAAgent(Agent):
                 self.optimizers["baseline_iqn"].zero_grad()
                 if total_iqn_loss > 0:
                     total_iqn_loss.backward()
+
+                    # Combine parameters from both IQN optimizers for a single clipping operation
+                    iqn_params = list(self.shared_critic.value_iqn_net.parameters()) + \
+                                 list(self.shared_critic.baseline_iqn_net.parameters())
+                    
+                    # Clip the gradients of the IQN networks
+                    clip_grad_norm_(iqn_params, self.iqn_max_grad_norm)
+
                     val_iqn_grads.append(_get_avg_grad_mag(self.shared_critic.value_iqn_net.parameters()))
                     base_iqn_grads.append(_get_avg_grad_mag(self.shared_critic.baseline_iqn_net.parameters()))
+                    
                     self.optimizers["value_iqn"].step()
                     self.optimizers["baseline_iqn"].step()
 
@@ -1007,6 +1028,15 @@ class MAPOCAAgent(Agent):
         
         return final_logs
     
+    def _log_popart_stats(self, logs_acc: Dict[str, List[float]]):
+        """Helper to log the current stats of the PopArt normalizers."""
+        if not self.enable_popart: return
+        
+        logs_acc["popart/value_mu"].append(self.value_popart.mu.item())
+        logs_acc["popart/value_sigma"].append(self.value_popart.sigma.item())
+        logs_acc["popart/baseline_mu"].append(self.baseline_popart.mu.item())
+        logs_acc["popart/baseline_sigma"].append(self.baseline_popart.sigma.item())
+        
     # --- Save/Load ---
 
     def save(self, location: str) -> None:
