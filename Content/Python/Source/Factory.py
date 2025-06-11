@@ -18,7 +18,7 @@ class AgentEnvFactory:
 
         if agent_type == 'MA_POCA':
             agent = MAPOCAAgent(self.config, self.device)
-        elif agent_type == 'RND':  # <-- new condition
+        elif agent_type == 'RND':
             agent = RandomAgent(self.config, self.device)
         else:
             raise ValueError(f"Unknown agent type: {agent_type}")
