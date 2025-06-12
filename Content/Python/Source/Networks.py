@@ -494,12 +494,14 @@ class BetaPolicyNetwork(BasePolicyNetwork):
         self.action_dim = out_features
         self.min_concentration = min_concentration
 
-        # Shared MLP backbone
+        # Shared MLP backbone with LayerNorm and Dropout
         self.shared = nn.Sequential(
             nn.Linear(in_features, hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.GELU(),
             nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
             nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.GELU(),
             nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
         )
@@ -507,6 +509,7 @@ class BetaPolicyNetwork(BasePolicyNetwork):
         # Head for predicting raw alpha parameters
         self.alpha_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.GELU(),
             nn.Linear(hidden_size, out_features)
         )
@@ -514,12 +517,13 @@ class BetaPolicyNetwork(BasePolicyNetwork):
         # Head for predicting raw beta parameters
         self.beta_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.GELU(),
             nn.Linear(hidden_size, out_features)
         )
 
         # Initialize linear layers
-        self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
+        self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale))
 
         # Apply specific bias initialization to the output layers for alpha/beta params
         if hasattr(self.alpha_head[-1], 'bias'):
@@ -528,7 +532,7 @@ class BetaPolicyNetwork(BasePolicyNetwork):
              nn.init.constant_(self.beta_head[-1].bias, param_init_bias)
 
         # Precompute log(scale) for entropy calculation
-        self.log_scale = torch.log(torch.tensor(2.0)) # From AffineTransform(loc=-1, scale=2)
+        self.register_buffer('log_scale', torch.log(torch.tensor(2.0))) # From AffineTransform(loc=-1, scale=2)
 
     def _get_transformed_distribution(self, emb: torch.Tensor):
         """ Helper to create the Beta distribution scaled to [-1, 1]. """
@@ -566,10 +570,8 @@ class BetaPolicyNetwork(BasePolicyNetwork):
         # --- Calculate Entropy (Manual Workaround) ---
         # H[Transformed] = H[Base] + log|scale|
         base_entropy = dist.base_dist.entropy() # Entropy of Beta(alpha, beta)
-        # Ensure log_scale is on the same device as base_entropy
-        log_scale_term = self.log_scale.to(base_entropy.device)
         # Add log|scale| for each action dimension
-        entropies = (base_entropy + log_scale_term).sum(dim=-1)
+        entropies = (base_entropy + self.log_scale).sum(dim=-1)
 
         return actions, log_probs, entropies
 
@@ -587,12 +589,10 @@ class BetaPolicyNetwork(BasePolicyNetwork):
         # --- Calculate Entropy (Manual Workaround) ---
         # H[Transformed] = H[Base] + log|scale|
         base_entropy = dist.base_dist.entropy()
-        log_scale_term = self.log_scale.to(base_entropy.device)
-        entropies = (base_entropy + log_scale_term).sum(dim=-1)
+        entropies = (base_entropy + self.log_scale).sum(dim=-1)
 
         return log_probs, entropies
-
-
+    
 class FeedForwardBlock(nn.Module):
     """Transformer FFN sublayer: LN -> Linear -> GELU -> Dropout -> Linear -> Dropout + Residual"""
     def __init__(self, embed_dim: int, hidden_dim: int = None, dropout: float = 0.0):
@@ -780,13 +780,17 @@ class RNDPredictorNetwork(nn.Module):
     Random Network Distillation (RND) Predictor Network.
     This network is trained to predict the output of the RNDTargetNetwork.
     """
-    def __init__(self, input_size: int, output_size: int, hidden_size: int = 256):
+    def __init__(self, input_size, output_size, hidden_size=256, dropout_rate=0.1):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_size, hidden_size),
-            nn.GELU(),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
             nn.Linear(hidden_size, hidden_size),
-            nn.GELU(),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
             nn.Linear(hidden_size, output_size)
         )
         # Initialize weights (e.g., LeakyReLU-appropriate Kaiming normal)
@@ -1550,6 +1554,7 @@ class CrossAttentionFeatureExtractor(nn.Module):
             
         return agent_embed_final, final_self_attn_weights
 
+
 class MultiAgentEmbeddingNetwork(nn.Module):
     def __init__(self, net_cfg: Dict[str, Any], environment_config_for_shapes: Dict[str, Any]):
         """
@@ -1656,6 +1661,7 @@ class MultiAgentEmbeddingNetwork(nn.Module):
         else: 
             return baseline_input_final_flat.view(B_orig, A, A, H_baseline_feat)
 
+
 class AgentIDPosEnc(nn.Module): # Included for completeness
     """Sinusoidal positional encoder for integer agent IDs."""
     def __init__(self, num_freqs: int = 8, id_embed_dim: int = 32):
@@ -1682,10 +1688,9 @@ class AgentIDPosEnc(nn.Module): # Included for completeness
         return out_lin.view(*shape_in, self.id_embed_dim)
     
 
-
 class ForwardDynamicsModel(nn.Module):
     """A simple MLP to predict the next state's feature embedding."""
-    def __init__(self, embed_dim: int, action_dim: int, hidden_size: int = 256):
+    def __init__(self, embed_dim: int, action_dim: int, hidden_size: int = 256, dropout_rate=0.1):
         """
         Initializes the forward dynamics model.
 
@@ -1698,9 +1703,13 @@ class ForwardDynamicsModel(nn.Module):
         # The network takes a concatenated state embedding and action vector as input.
         self.net = nn.Sequential(
             nn.Linear(embed_dim + action_dim, hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.GELU(),
+            nn.Dropout(dropout_rate),
             nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.GELU(),
+            nn.Dropout(dropout_rate),
             nn.Linear(hidden_size, embed_dim) # Predicts an embedding of the same dimension as the input state.
         )
         # Apply a standard weight initialization.
@@ -1720,4 +1729,3 @@ class ForwardDynamicsModel(nn.Module):
         # Concatenate the state embedding and action to form the input.
         x = torch.cat([state_embed, action], dim=-1)
         return self.net(x)
-
