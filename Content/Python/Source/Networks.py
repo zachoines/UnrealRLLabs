@@ -1042,56 +1042,52 @@ class LinearNetwork(nn.Module):
 
 
 class StatesEncoder(nn.Module):
-    """Encodes state vector using two LinearNetwork blocks."""
-    def __init__(self, state_dim: int, hidden_size: int, output_size: int, **kwargs):
+    """Encodes a state vector using a 2-layer MLP with Norm and Dropout."""
+    def __init__(self, state_dim: int, hidden_size: int, output_size: int, dropout_rate: float = 0.1, **kwargs):
         super().__init__()
-        # Filter kwargs to pass to each LinearNetwork
-        # First block usually has activation & norm based on kwargs
-        kwargs_hidden = kwargs.copy()
-        # Second block (output) typically doesn't have activation/norm
-        kwargs_output = {k:v for k,v in kwargs.items() if k not in ['activation', 'layer_norm']}
-        kwargs_output['activation'] = False
-        kwargs_output['layer_norm'] = False
-
         self.net = nn.Sequential(
-            LinearNetwork(state_dim, hidden_size, **kwargs_hidden),
-            LinearNetwork(hidden_size, output_size, **kwargs_output)
+            nn.Linear(state_dim, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size, output_size)
         )
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
 
 class StatesActionsEncoder(nn.Module):
-    """Encodes concatenated state-action pair using two LinearNetwork blocks."""
-    def __init__(self, state_dim: int, action_dim: int, hidden_size: int, output_size: int, **kwargs):
+    """Encodes a concatenated state-action pair using a 2-layer MLP with Norm and Dropout."""
+    def __init__(self, state_dim: int, action_dim: int, hidden_size: int, output_size: int, dropout_rate: float = 0.1, **kwargs):
         super().__init__()
-        # Filter kwargs similarly to StatesEncoder
-        kwargs_hidden = kwargs.copy()
-        kwargs_output = {k:v for k,v in kwargs.items() if k not in ['activation', 'layer_norm']}
-        kwargs_output['activation'] = False
-        kwargs_output['layer_norm'] = False
-
         self.net = nn.Sequential(
-            LinearNetwork(state_dim + action_dim, hidden_size, **kwargs_hidden),
-            LinearNetwork(hidden_size, output_size, **kwargs_output)
+            nn.Linear(state_dim + action_dim, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size, output_size)
         )
 
     def forward(self, obs: torch.Tensor, act: torch.Tensor) -> torch.Tensor:
-        # Ensure correct broadcasting/expansion for concatenation
         if act.shape[:-1] != obs.shape[:-1]:
-             try:
-                 # Expand action dimensions (except the last) to match observation
-                 act_expanded = act.expand(*obs.shape[:-1], act.shape[-1])
-                 x = torch.cat([obs, act_expanded], dim=-1)
-             except RuntimeError as e:
-                 print(f"Error concatenating obs shape {obs.shape} and action shape {act.shape}: {e}")
-                 raise e
+            try:
+                act_expanded = act.expand(*obs.shape[:-1], act.shape[-1])
+                x = torch.cat([obs, act_expanded], dim=-1)
+            except RuntimeError as e:
+                print(f"Error concatenating obs shape {obs.shape} and action shape {act.shape}: {e}")
+                raise e
         else:
-            # Shapes already match for concatenation
             x = torch.cat([obs, act], dim=-1)
-        return self.net(x)
-    
+        return self.net(x) 
+
 
 class ResidualAttention(nn.Module):
     """

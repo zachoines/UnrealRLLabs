@@ -18,7 +18,7 @@
         "bUseVelAlignment": true,
         "bUseXYDistanceImprovement": false,
         "bUseZAccelerationPenalty": false,
-        "bUsePotentialShaping": true,
+        "bUsePotentialShaping": false,
         "PotentialShaping_Gamma": 0.99,
         "PotentialShaping_Scale": 10.0,
         "VelAlign_Scale": 0.001,
@@ -352,7 +352,7 @@
             "state_dim": 128,
             "hidden_size": 128,
             "output_size": 128,
-            "dropout_rate": 0.0,
+            "dropout_rate": 0.1,
             "activation": true,
             "layer_norm": true,
             "linear_init_scale": 1.0
@@ -362,7 +362,7 @@
             "action_dim": 6,
             "hidden_size": 128,
             "output_size": 128,
-            "dropout_rate": 0.0,
+            "dropout_rate": 0.1,
             "activation": true,
             "layer_norm": true,
             "linear_init_scale": 1.0
