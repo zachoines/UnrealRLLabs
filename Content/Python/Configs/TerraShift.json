@@ -1,7 +1,7 @@
 {
   "environment": {
-    "name": "TerraShift_8A_1O_Optimal_V8_NoHeightMap",
-    "id": "TerraShift_8A_1O_Optimal_V8_NoHeightMap_$(date +%Y%m%d_%H%M%S)",
+    "name": "TerraShift_8A_1O_Optimal_V8_WithHeightMap",
+    "id": "TerraShift_8A_1O_Optimal_V8_WithHeightMap_$(date +%Y%m%d_%H%M%S)",
     "params": {
       "PlatformSize": 1.0,
       "MaxColumnHeight": 4.0,
@@ -21,15 +21,15 @@
         "bUsePotentialShaping": false,
         "PotentialShaping_Gamma": 0.99,
         "PotentialShaping_Scale": 10.0,
-        "VelAlign_Scale": 0.001,
+        "VelAlign_Scale": 0.01,
         "VelAlign_Min": 0.0,
         "VelAlign_Max": 1.0,
         "DistImprove_Scale": 1.0,
         "DistImprove_Min": 0.0,
         "DistImprove_Max": 1.0,
-        "REACH_GOAL_REWARD": 1.0,
+        "REACH_GOAL_REWARD": 2.0,
         "FALL_OFF_PENALTY": -1.0,
-        "STEP_PENALTY": 0.0
+        "STEP_PENALTY": -0.0001
       },
       "GoalManager": {
         "DefaultRadius": 1.0
@@ -49,7 +49,7 @@
         ],
         "AngVelRange": [
           -3.14,
-          -3.14
+          3.14
         ],
         "AmpMinMax": [
           -4.0,
@@ -94,7 +94,7 @@
             0.0
           ]
         ],
-        "bIncludeHeightMapInState": false,
+        "bIncludeHeightMapInState": true,
         "StateHeightMapResolutionH": 25,
         "StateHeightMapResolutionW": 25,
         "bIncludeOverheadImageInState": false,
@@ -110,7 +110,7 @@
         "central": [
           {
             "name": "height_map",
-            "enabled": false,
+            "enabled": true,
             "type": "matrix2d",
             "shape": {
               "h": 25,
@@ -177,7 +177,25 @@
     }
   },
   "StateRecorder": {
-    "enabled": false
+    "enabled": false,
+    "video_settings": {
+        "output_path": "recordings/TerraShift.mp4",
+        "fps": 30,
+        "dpi": 150
+    },
+    "auto_save_every": 60,
+    "components_to_record": [
+        {
+            "enabled": false,
+            "source_key": "central",
+            "component_name": "height_map",
+            "visualization_type": "3d_surface",
+            "plot_title": "Height Map Visualization",
+            "shape_for_plot": { "h": 25, "w": 25, "c": 1 },
+            "z_lim_3d": [-1.5, 1.5],
+            "cmap_3d": "terrain"
+        }
+    ]
   },
   "agent": {
     "type": "MA_POCA",
@@ -224,11 +242,7 @@
         ]
       },
       "weight_decay": {
-        "default": 0.0,
-        "trunk": 1e-06,
-        "policy": 0.0,
-        "value_path": 0.0,
-        "baseline_path": 0.0
+        "default": 1e-06
       },
       "gamma": 0.99,
       "lambda": 0.9,
@@ -242,7 +256,7 @@
       "iqn_max_grad_norm": 0.5,
       "ppo_clip_range": 0.2,
       "value_clip_range": 0.2,
-      "entropy_coeff": 0.02,
+      "entropy_coeff": 0.1,
       "rewards_normalizer_disabled": {
         "warmup_steps": 0
       },
@@ -315,7 +329,7 @@
             "central_processing_configs": [
               {
                 "name": "height_map",
-                "enabled": false,
+                "enabled": true,
                 "type": "cnn",
                 "cnn_stem_channels": [
                   32,
@@ -425,13 +439,13 @@
     }
   },
   "train": {
-    "sequence_length": 8,
+    "sequence_length": 16,
     "pad_trajectories": true,
     "batch_size": 256,
     "buffer_size": 256,
-    "num_environments": 16,
+    "num_environments": 8,
     "epochs": 3,
-    "mini_batch_size": 32,
+    "mini_batch_size": 16,
     "ActionRepeat": 2,
     "saveFrequency": 50,
     "iqn_target_update_freq": 1,

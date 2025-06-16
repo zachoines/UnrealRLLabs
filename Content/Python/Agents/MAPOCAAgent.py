@@ -256,7 +256,7 @@ class MAPOCAAgent(Agent):
                 mb_idx = idx[mb_start : mb_start + self.mini_batch_size]; M = len(mb_idx)
                 if M == 0: continue
 
-                mb_states_dict = {"central": {k: v[mb_idx] for k, v in padded_states_dict_seq.get("central", {}).items() if v is not None}, "agent": padded_states_dict_seq.get("agent")[mb_idx] if "agent" in padded_states_dict_seq else None}
+                # --- Minibatch Data Preparation ---
                 mb_actions = padded_actions_seq[mb_idx]
                 mb_old_logp = old_logp_seq[mb_idx]
                 mb_old_val_norm = old_val_norm[mb_idx]
@@ -264,50 +264,65 @@ class MAPOCAAgent(Agent):
                 mb_init_h = initial_hidden_states_batch[mb_idx] if initial_hidden_states_batch is not None else None
                 mb_mask_btna = mask_btna[mb_idx]
                 
+                # Recompute features for the minibatch to ensure gradients flow correctly
+                mb_states_dict = {"central": {k: v[mb_idx] for k, v in padded_states_dict_seq.get("central", {}).items() if v is not None}, "agent": padded_states_dict_seq.get("agent")[mb_idx] if "agent" in padded_states_dict_seq else None}
                 s_mask_tensor = padded_states_dict_seq.get("central", {}).get("gridobject_sequence_mask")
                 mb_s_mask = {"gridobject_sequence_mask": s_mask_tensor[mb_idx]} if s_mask_tensor is not None else None
                 emb_s_mb, _ = self.embedding_net.get_base_embedding(mb_states_dict, central_component_padding_masks=mb_s_mask)
                 feats_s_mb = self._apply_memory_seq(emb_s_mb, mb_init_h)
 
+                # --- PPO Core Loss Calculation ---
                 new_lp_mb, ent_mb = self._recompute_log_probs_from_features(feats_s_mb, mb_actions)
-                
-                # Recompute critic outputs FOR THE MINIBATCH with gradients enabled ---
                 new_val_norm, new_base_norm, _, _, _ = self._get_critic_outputs(feats_s_mb, mb_actions, M, T, NA)
-                
-                # The old baseline also needs to be recomputed for the minibatch to ensure its part of the graph for distillation loss, if any.
                 _, old_base_norm, _, _, _ = self._get_critic_outputs(feats_s_seq[mb_idx], mb_actions, M, T, NA)
                 adv = self._calculate_advantages(mb_returns, new_base_norm, mb_mask_btna, logs_acc)
-   
+                
                 pol_loss = self._ppo_clip_loss(new_lp_mb, mb_old_logp.detach(), adv.detach(), self.ppo_clip_range, mb_mask_btna)
                 ent_loss = (-ent_mb * mb_mask_btna).sum() / mb_mask_btna.sum().clamp(min=1e-8)
-
                 val_targets = mb_returns if not self.enable_popart else self.value_popart.normalize_targets(mb_returns)
                 val_loss = self._clipped_value_loss(mb_old_val_norm.detach(), new_val_norm, val_targets.detach(), self.value_clip_range, attention_mask_batch[mb_idx].unsqueeze(-1))
-                
                 base_targets = mb_returns.unsqueeze(2).expand_as(new_base_norm)
                 if self.enable_popart: base_targets = self.baseline_popart.normalize_targets(base_targets)
                 base_loss = self._clipped_value_loss(old_base_norm.detach(), new_base_norm, base_targets.detach(), self.value_clip_range, mb_mask_btna.unsqueeze(-1))
                 
-                rnd_loss = self._compute_rnd_loss(feats_s_mb, mb_mask_btna)
+                # --- PPO Optimization Step ---
+                ppo_total_loss = pol_loss + self.entropy_coeff * ent_loss + self.value_loss_coeff * val_loss + self.baseline_loss_coeff * base_loss
                 
-                ns_mask_tensor = padded_next_states_dict_seq.get("central", {}).get("gridobject_sequence_mask")
-                mb_ns_mask = {"gridobject_sequence_mask": ns_mask_tensor[mb_idx]} if ns_mask_tensor is not None else None
-                mb_next_states_dict = {"central": {k: v[mb_idx] for k,v in padded_next_states_dict_seq.get("central", {}).items() if v is not None}, "agent": padded_next_states_dict_seq.get("agent")[mb_idx] if "agent" in padded_next_states_dict_seq else None}
-                emb_ns_mb, _ = self.embedding_net.get_base_embedding(mb_next_states_dict, central_component_padding_masks=mb_ns_mask)
-                feats_ns_mb = self._apply_memory_seq(emb_ns_mb, self._get_next_hidden_state(feats_s_mb, mb_init_h))
-                disagreement_loss = self._compute_disagreement_loss(feats_s_mb, mb_actions, feats_ns_mb, mb_mask_btna)
+                ppo_opts = [self.optimizers["trunk"], self.optimizers["policy"], self.optimizers["value_path"], self.optimizers["baseline_path"]]
+                for opt in ppo_opts: opt.zero_grad()
+                ppo_total_loss.backward()
+                total_grad_norm = self._clip_and_step_ppo_optimizers(ppo_opts)
                 
-                total_loss = pol_loss + self.entropy_coeff * ent_loss + self.value_loss_coeff * val_loss + self.baseline_loss_coeff * base_loss + rnd_loss + (self.disagreement_loss_coeff * disagreement_loss)
+                # --- Disagreement Ensemble Update Step ---
+                if self.enable_disagreement:
+                    ns_mask_tensor = padded_next_states_dict_seq.get("central", {}).get("gridobject_sequence_mask")
+                    mb_ns_mask = {"gridobject_sequence_mask": ns_mask_tensor[mb_idx]} if ns_mask_tensor is not None else None
+                    mb_next_states_dict = {"central": {k: v[mb_idx] for k,v in padded_next_states_dict_seq.get("central", {}).items() if v is not None}, "agent": padded_next_states_dict_seq.get("agent")[mb_idx] if "agent" in padded_next_states_dict_seq else None}
+                    emb_ns_mb, _ = self.embedding_net.get_base_embedding(mb_next_states_dict, central_component_padding_masks=mb_ns_mask)
+                    feats_ns_mb = self._apply_memory_seq(emb_ns_mb, self._get_next_hidden_state(feats_s_mb, mb_init_h))
+                    
+                    disagreement_loss = self._compute_disagreement_loss(feats_s_mb.detach(), mb_actions.detach(), feats_ns_mb.detach(), mb_mask_btna)
+                    if disagreement_loss.item() > 0:
+                        self.optimizers["disagreement_ensemble"].zero_grad()
+                        (self.disagreement_loss_coeff * disagreement_loss).backward()
+                        self.optimizers["disagreement_ensemble"].step()
+                else:
+                    disagreement_loss = torch.tensor(0.0)
+
+                # --- RND Predictor Update Step ---
+                if self.enable_rnd:
+                    rnd_loss = self._compute_rnd_loss(feats_s_mb.detach(), mb_mask_btna)
+                    if rnd_loss.item() > 0:
+                        self.optimizers["rnd_predictor"].zero_grad()
+                        rnd_loss.backward()
+                        self.optimizers["rnd_predictor"].step()
+                else:
+                    rnd_loss = torch.tensor(0.0)
                 
-                self._zero_all_grads()
-                total_loss.backward()
-                total_grad_norm = self._clip_and_step_optimizers()
                 self._log_minibatch_stats(
-                    logs_acc, pol_loss, val_loss, base_loss, ent_mb, adv, new_lp_mb, 
+                    logs_acc, pol_loss, val_loss, base_loss, ent_mb, new_lp_mb, 
                     mb_mask_btna, rnd_loss, disagreement_loss, feats_s_mb, 
-                    total_grad_norm=total_grad_norm, 
-                    new_val_norm=new_val_norm, 
-                    new_base_norm=new_base_norm
+                    total_grad_norm, new_val_norm, new_base_norm
                 )
 
         if self.enable_iqn_distillation:
@@ -402,6 +417,7 @@ class MAPOCAAgent(Agent):
         rnd_out_dim = rnd_cfg.get("output_size", 128)
         rnd_hid_dim = rnd_cfg.get("hidden_size", 256)
         self.rnd_target_network = RNDTargetNetwork(trunk_dim, rnd_out_dim, rnd_hid_dim).to(self.device)
+        for p in self.rnd_target_network.parameters(): p.requires_grad = False
         self.rnd_predictor_network = RNDPredictorNetwork(trunk_dim, rnd_out_dim, rnd_hid_dim).to(self.device)
 
     def _setup_disagreement(self, a_cfg, trunk_dim):
@@ -907,17 +923,12 @@ class MAPOCAAgent(Agent):
         for opt in self.optimizers.values():
             opt.zero_grad()
 
-    def _clip_and_step_optimizers(self) -> float:
-        """Clips gradients for all optimizers together and steps them. Returns the total grad norm."""
-        # --- FIX: Group all PPO-related parameters for a single clipping op ---
-        # We exclude IQN, RND, and Disagreement optimizers here as they are handled separately.
-        ppo_optimizers = [self.optimizers["trunk"], self.optimizers["policy"], self.optimizers["value_path"], self.optimizers["baseline_path"]]
+    def _clip_and_step_ppo_optimizers(self, ppo_optimizers: List[optim.Optimizer]) -> float:
+        """Clips gradients for PPO-related optimizers and steps them."""
         all_ppo_params = [p for opt in ppo_optimizers for group in opt.param_groups for p in group['params']]
         
-        # This computes the total norm of all PPO-related gradients
         total_grad_norm = clip_grad_norm_(all_ppo_params, self.max_grad_norm)
         
-        # Step only the PPO optimizers
         for opt in ppo_optimizers:
             opt.step()
             
@@ -934,14 +945,13 @@ class MAPOCAAgent(Agent):
         self.value_clip_range = self.schedulers["value_clip"].step()
         self.max_grad_norm = self.schedulers["max_grad_norm"].step()
 
-    def _log_minibatch_stats(self, logs_acc, pol_loss, val_loss, base_loss, ent_mb, adv, new_lp_mb, mask_mbna, rnd_loss, disagreement_loss, feats_s_mb, total_grad_norm, new_val_norm=None, new_base_norm=None):
+    def _log_minibatch_stats(self, logs_acc, pol_loss, val_loss, base_loss, ent_mb, new_lp_mb, mask_mbna, rnd_loss, disagreement_loss, feats_s_mb, total_grad_norm, new_val_norm=None, new_base_norm=None):
         """Accumulates statistics from a single minibatch into the logs dictionary."""
         # Core PPO Losses
         logs_acc["loss/policy"].append(pol_loss.item())
         logs_acc["loss/value"].append(val_loss.item())
         logs_acc["loss/baseline"].append(base_loss.item())
         
-        # --- FIX: Log the total gradient norm for PPO update ---
         logs_acc["grad_norm/total"].append(total_grad_norm)
 
         # Policy Stats
