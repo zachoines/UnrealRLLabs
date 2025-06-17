@@ -47,6 +47,7 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     GoalRadius = Config->GetOrDefaultNumber(TEXT("GoalRadius"), GoalRadius);
     GoalCollectRadius = Config->GetOrDefaultNumber(TEXT("GoalCollectRadius"), GoalCollectRadius);
     ObjectRadius = Config->GetOrDefaultNumber(TEXT("ObjectRadius"), ObjectRadius);
+    GridSize = Config->GetOrDefaultInt(TEXT("GridSize"), GridSize);
 
     // State Representation Config
     bIncludeHeightMapInState = Config->GetOrDefaultBool(TEXT("bIncludeHeightMapInState"), true);
@@ -205,13 +206,14 @@ void UStateManager::Reset(int32 NumObjects, int32 CurrentAgents)
         {
             RespawnDelays[i] = BaseRespawnDelay * static_cast<float>(i);
         }
-
-
     }
 
     // 3) Reset NxN height arrays & step counter
-    PreviousHeight = FMatrix2D(GridSize, GridSize, 0.f);
-    CurrentHeight = FMatrix2D(GridSize, GridSize, 0.f);
+    int32 StateH = (bIncludeHeightMapInState && StateHeightMapResolutionH > 0) ? StateHeightMapResolutionH : GridSize;
+    int32 StateW = (bIncludeHeightMapInState && StateHeightMapResolutionW > 0) ? StateHeightMapResolutionW : GridSize;
+
+    PreviousHeight = FMatrix2D(StateH, StateW, 0.f);
+    CurrentHeight = FMatrix2D(StateH, StateW, 0.f);
     Step = 0;
 
     // 4) Clear occupancy

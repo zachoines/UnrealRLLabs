@@ -382,67 +382,99 @@ bool USharedMemoryAgentCommunicator::HasCentralState() const
 int32 USharedMemoryAgentCommunicator::ComputeSingleEnvStateSize(int32 NumAgentsToConsider) const
 {
     int32 TotalSize = 0;
-    if (!LocalEnvConfig) return 0;
-
-    if (LocalEnvConfig->HasPath(TEXT("environment/shape/state/central")))
+    if (!LocalEnvConfig)
     {
-        UEnvironmentConfig* CentralConfigNode = LocalEnvConfig->Get(TEXT("environment/shape/state/central"));
-        if (CentralConfigNode && CentralConfigNode->IsValid())
+        UE_LOG(LogTemp, Error, TEXT("ComputeSingleEnvStateSize: LocalEnvConfig is null, cannot compute state size."));
+        return 0;
+    }
+
+    // Path to the central state definition in the JSON config.
+    const FString CentralStatePath = TEXT("environment/shape/state/central");
+
+    if (LocalEnvConfig->HasPath(CentralStatePath))
+    {
+        UEnvironmentConfig* CentralConfigNode = LocalEnvConfig->Get(CentralStatePath);
+
+        // Check for the new format, where "central" is an array of components.
+        if (CentralConfigNode && CentralConfigNode->IsValid() && CentralConfigNode->InternalJsonValue->Type == EJson::Array)
         {
-            if (CentralConfigNode->InternalJsonValue->Type == EJson::Array) // New format
+            TArray<UEnvironmentConfig*> CentralComponents = CentralConfigNode->AsArrayOfConfigs();
+            for (UEnvironmentConfig* CompConfig : CentralComponents)
             {
-                TArray<UEnvironmentConfig*> CentralComponents = CentralConfigNode->AsArrayOfConfigs();
-                for (UEnvironmentConfig* CompConfig : CentralComponents)
+                // Process each component only if it's valid and enabled.
+                if (CompConfig && CompConfig->IsValid() && CompConfig->GetOrDefaultBool(TEXT("enabled"), false))
                 {
-                    if (CompConfig && CompConfig->IsValid() && CompConfig->GetOrDefaultBool(TEXT("enabled"), false))
+                    FString CompName = CompConfig->GetOrDefaultString(TEXT("name"), TEXT("Unknown"));
+                    FString CompType = CompConfig->GetOrDefaultString(TEXT("type"), TEXT(""));
+                    UEnvironmentConfig* ShapeConfig = CompConfig->Get(TEXT("shape"));
+
+                    if (!ShapeConfig || !ShapeConfig->IsValid())
                     {
-                        FString CompType = CompConfig->GetOrDefaultString(TEXT("type"), TEXT(""));
-                        UEnvironmentConfig* ShapeConfig = CompConfig->Get(TEXT("shape"));
+                        UE_LOG(LogTemp, Warning, TEXT("ComputeSingleEnvStateSize: Central component '%s' is enabled but missing a valid 'shape' object."), *CompName);
+                        continue;
+                    }
 
-                        if (!ShapeConfig || !ShapeConfig->IsValid()) {
-                            UE_LOG(LogTemp, Warning, TEXT("ComputeSingleEnvStateSize: Central component '%s' is enabled but missing valid 'shape' object."), *CompConfig->GetOrDefaultString(TEXT("name"), TEXT("Unknown")));
-                            continue;
-                        }
+                    if (CompType.Equals(TEXT("matrix2d"), ESearchCase::IgnoreCase))
+                    {
+                        int32 h = 0;
+                        int32 w = 0;
 
-                        if (CompType.Equals(TEXT("matrix2d"), ESearchCase::IgnoreCase))
+                        // *** KEY FIX STARTS HERE ***
+                        // For the height map, use the specific resolution from the StateManager config to ensure consistency.
+                        if (CompName.Equals(TEXT("height_map"), ESearchCase::IgnoreCase))
                         {
-                            int32 h = ShapeConfig->GetOrDefaultInt(TEXT("h"), 0);
-                            int32 w = ShapeConfig->GetOrDefaultInt(TEXT("w"), 0);
-                            // int32 c = ShapeConfig->GetOrDefaultInt(TEXT("c"), 1); // Assuming c=1 or channels handled by flat size
-                            TotalSize += (h * w);
+                            const FString StateManagerResHPath = TEXT("environment/params/StateManager/StateHeightMapResolutionH");
+                            const FString StateManagerResWPath = TEXT("environment/params/StateManager/StateHeightMapResolutionW");
+
+                            // Use StateManager's specific resolution if available; otherwise, fall back to the shape defined in the component's own config.
+                            h = LocalEnvConfig->HasPath(StateManagerResHPath)
+                                ? LocalEnvConfig->Get(StateManagerResHPath)->AsInt()
+                                : ShapeConfig->GetOrDefaultInt(TEXT("h"), 0);
+
+                            w = LocalEnvConfig->HasPath(StateManagerResWPath)
+                                ? LocalEnvConfig->Get(StateManagerResWPath)->AsInt()
+                                : ShapeConfig->GetOrDefaultInt(TEXT("w"), 0);
                         }
-                        else if (CompType.Equals(TEXT("vector"), ESearchCase::IgnoreCase))
+                        else // For any other 2D matrix (e.g., greyscale_image), use its own shape definition.
                         {
-                            TotalSize += ShapeConfig->GetOrDefaultInt(TEXT("size"), 0);
+                            h = ShapeConfig->GetOrDefaultInt(TEXT("h"), 0);
+                            w = ShapeConfig->GetOrDefaultInt(TEXT("w"), 0);
                         }
-                        // ***** ADD THIS ELSE IF BLOCK for "sequence" *****
-                        else if (CompType.Equals(TEXT("sequence"), ESearchCase::IgnoreCase))
-                        {
-                            int32 max_length = ShapeConfig->GetOrDefaultInt(TEXT("max_length"), 0);
-                            int32 feature_dim = ShapeConfig->GetOrDefaultInt(TEXT("feature_dim"), 0);
-                            TotalSize += (max_length * feature_dim);
-                        }
-                        // ***** END OF ADDED BLOCK *****
+                        // *** KEY FIX ENDS HERE ***
+                        TotalSize += (h * w);
+                    }
+                    else if (CompType.Equals(TEXT("sequence"), ESearchCase::IgnoreCase))
+                    {
+                        int32 max_length = ShapeConfig->GetOrDefaultInt(TEXT("max_length"), 0);
+                        int32 feature_dim = ShapeConfig->GetOrDefaultInt(TEXT("feature_dim"), 0);
+                        TotalSize += (max_length * feature_dim);
+                    }
+                    else if (CompType.Equals(TEXT("vector"), ESearchCase::IgnoreCase))
+                    {
+                        TotalSize += ShapeConfig->GetOrDefaultInt(TEXT("size"), 0);
                     }
                 }
             }
-            else if (CentralConfigNode->InternalJsonValue->Type == EJson::Object && CentralConfigNode->HasPath(TEXT("obs_size"))) // Fallback to old format
-            {
-                UE_LOG(LogTemp, Warning, TEXT("ComputeSingleEnvStateSize: 'central' is in old object format. Using 'obs_size'. Please update config."));
-                TotalSize += CentralConfigNode->Get(TEXT("obs_size"))->AsInt();
-            }
-            else
-            {
-                UE_LOG(LogTemp, Warning, TEXT("ComputeSingleEnvStateSize: 'environment/shape/state/central' exists but is not a valid array or recognized old object format. Central state size contributions will be 0."));
-            }
+        }
+        // Fallback for old format where "central" was an object with "obs_size".
+        else if (CentralConfigNode && CentralConfigNode->IsValid() && CentralConfigNode->InternalJsonValue->Type == EJson::Object && CentralConfigNode->HasPath(TEXT("obs_size")))
+        {
+            UE_LOG(LogTemp, Warning, TEXT("ComputeSingleEnvStateSize: 'central' is in old object format. Using 'obs_size'. Please update config to the new array-based format."));
+            TotalSize += CentralConfigNode->Get(TEXT("obs_size"))->AsInt();
+        }
+        else
+        {
+            UE_LOG(LogTemp, Warning, TEXT("ComputeSingleEnvStateSize: '%s' path exists but is not a valid array or recognized old format. Central state contribution will be 0."), *CentralStatePath);
         }
     }
 
+    // Add agent-specific observation sizes for multi-agent setups.
     if (IsMultiAgent() && LocalEnvConfig->HasPath(TEXT("environment/shape/state/agent/obs_size")))
     {
         int32 AgentObsSize = LocalEnvConfig->Get(TEXT("environment/shape/state/agent/obs_size"))->AsInt();
         TotalSize += AgentObsSize * NumAgentsToConsider;
     }
+
     return TotalSize;
 }
 
