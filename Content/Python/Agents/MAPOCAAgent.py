@@ -135,16 +135,21 @@ class MAPOCAAgent(Agent):
         self.shared_critic = SharedCritic(net_cfg=critic_full_config).to(device)
 
         # --- Auxiliary Modules Setup ---
+        self.disagreement_cfg = a_cfg.get("disagreement_rewards")
+        self.rnd_cfg = a_cfg.get("rnd_rewards")
+
+        if self.disagreement_cfg:
+            self._setup_disagreement(self.disagreement_cfg, trunk_dim)
+
+        if self.rnd_cfg:
+            self._setup_rnd(self.rnd_cfg, trunk_dim)
+
         self.enable_iqn_distillation = a_cfg.get("enable_iqn_distillation", False)
         self.enable_popart = a_cfg.get("enable_popart", False)
-        self.enable_rnd = a_cfg.get("enable_rnd", False)
-        self.enable_disagreement = a_cfg.get("enable_disagreement", False)
 
         if self.enable_iqn_distillation: self._setup_iqn(a_cfg, t_cfg, critic_full_config)
         if self.enable_popart: self._setup_popart(a_cfg)
         else: self.rewards_normalizer = RunningMeanStdNormalizer(**a_cfg.get("rewards_normalizer", {}), device=device) if a_cfg.get("rewards_normalizer") else None
-        if self.enable_rnd: self._setup_rnd(a_cfg, trunk_dim)
-        if self.enable_disagreement: self._setup_disagreement(a_cfg, trunk_dim)
 
         # --- Final Setup Steps ---
         self._setup_optimizers(a_cfg)
@@ -294,7 +299,7 @@ class MAPOCAAgent(Agent):
                 total_grad_norm = self._clip_and_step_ppo_optimizers(ppo_opts)
                 
                 # --- Disagreement Ensemble Update Step ---
-                if self.enable_disagreement:
+                if self.disagreement_cfg:
                     ns_mask_tensor = padded_next_states_dict_seq.get("central", {}).get("gridobject_sequence_mask")
                     mb_ns_mask = {"gridobject_sequence_mask": ns_mask_tensor[mb_idx]} if ns_mask_tensor is not None else None
                     mb_next_states_dict = {"central": {k: v[mb_idx] for k,v in padded_next_states_dict_seq.get("central", {}).items() if v is not None}, "agent": padded_next_states_dict_seq.get("agent")[mb_idx] if "agent" in padded_next_states_dict_seq else None}
@@ -304,18 +309,17 @@ class MAPOCAAgent(Agent):
                     disagreement_loss = self._compute_disagreement_loss(feats_s_mb.detach(), mb_actions.detach(), feats_ns_mb.detach(), mb_mask_btna)
                     if disagreement_loss.item() > 0:
                         self.optimizers["disagreement_ensemble"].zero_grad()
-                        (self.disagreement_loss_coeff * disagreement_loss).backward()
+                        (self.disagreement_loss_coeff * disagreement_loss).backward() # Uses the coeff
                         self.optimizers["disagreement_ensemble"].step()
                 else:
                     disagreement_loss = torch.tensor(0.0)
 
                 # --- RND Predictor Update Step ---
-                if self.enable_rnd:
+                if self.rnd_cfg:
                     rnd_loss = self._compute_rnd_loss(feats_s_mb.detach(), mb_mask_btna)
-                    if rnd_loss.item() > 0:
-                        self.optimizers["rnd_predictor"].zero_grad()
-                        rnd_loss.backward()
-                        self.optimizers["rnd_predictor"].step()
+                    self.optimizers["rnd_predictor"].zero_grad()
+                    (self.rnd_loss_coeff * rnd_loss).backward()
+                    self.optimizers["rnd_predictor"].step()
                 else:
                     rnd_loss = torch.tensor(0.0)
                 
@@ -346,9 +350,9 @@ class MAPOCAAgent(Agent):
             "grad_norm/total": [], "grad_norm/trunk": [], "grad_norm/policy": [],
             "grad_norm/value_path": [], "grad_norm/baseline_path": []
         }
-        if self.enable_rnd:
+        if self.rnd_cfg:
             logs_acc.update({"loss/rnd": [], "reward/rnd_raw_mean": [], "reward/rnd_raw_std": [], "reward/rnd_norm_mean": [], "reward/rnd_norm_std": [], "grad_norm/rnd_predictor": []})
-        if self.enable_disagreement:
+        if self.disagreement_cfg:
             logs_acc.update({"loss/disagreement": [], "reward/disagreement_raw_mean": [], "reward/disagreement_raw_std": [], "reward/disagreement_norm_mean": [], "reward/disagreement_norm_std": [], "grad_norm/disagreement_ensemble": []})
         if self.enable_iqn_distillation:
             logs_acc.update({
@@ -409,25 +413,49 @@ class MAPOCAAgent(Agent):
             self.baseline_popart = PopArtNormalizer(self.shared_critic.baseline_head_ppo.output_layer, beta, eps, self.device)
         self.rewards_normalizer = None
 
-    def _setup_rnd(self, a_cfg, trunk_dim):
-        rnd_cfg = a_cfg.get("rnd_params", {})
-        self.intrinsic_reward_coeff = rnd_cfg.get("intrinsic_reward_coeff", 0.01)
-        self.rnd_update_prop = rnd_cfg.get("rnd_update_proportion", 0.25)
-        self.intrinsic_reward_normalizer = RunningMeanStdNormalizer(epsilon=1e-8, device=self.device)
-        rnd_out_dim = rnd_cfg.get("output_size", 128)
-        rnd_hid_dim = rnd_cfg.get("hidden_size", 256)
-        self.rnd_target_network = RNDTargetNetwork(trunk_dim, rnd_out_dim, rnd_hid_dim).to(self.device)
+    def _setup_rnd(self, rnd_cfg: Dict, trunk_dim: int):
+        """Sets up the RND module from its dedicated configuration dictionary."""
+        print("RND module ENABLED.")
+        self.rnd_reward_coeff = rnd_cfg.get("reward_coeff", 0.01)
+        self.rnd_loss_coeff = rnd_cfg.get("loss_coeff", 1.0) # New loss coefficient
+        self.rnd_update_prop = rnd_cfg.get("update_proportion", 0.25)
+        
+        # Conditionally create a DEDICATED normalizer for RND
+        self.normalize_rnd_reward = rnd_cfg.get("normalize_reward", True)
+        self.rnd_intrinsic_reward_normalizer = None
+        if self.normalize_rnd_reward:
+            self.rnd_intrinsic_reward_normalizer = RunningMeanStdNormalizer(epsilon=1e-8, device=self.device)
+        
+        # Setup RND networks from sub-config
+        network_cfg = rnd_cfg.get("network", {})
+        output_size = network_cfg.get("output_size", 128)
+        hidden_size = network_cfg.get("hidden_size", 256)
+        
+        self.rnd_target_network = RNDTargetNetwork(trunk_dim, output_size, hidden_size).to(self.device)
         for p in self.rnd_target_network.parameters(): p.requires_grad = False
-        self.rnd_predictor_network = RNDPredictorNetwork(trunk_dim, rnd_out_dim, rnd_hid_dim).to(self.device)
+        self.rnd_predictor_network = RNDPredictorNetwork(trunk_dim, output_size, hidden_size).to(self.device)
 
-    def _setup_disagreement(self, a_cfg, trunk_dim):
-        disagreement_cfg = a_cfg.get("disagreement_params", {})
+    def _setup_disagreement(self, disagreement_cfg: Dict, trunk_dim: int):
+        """Sets up the disagreement module from its dedicated configuration dictionary."""
+        print("Disagreement module ENABLED.")
+        self.disagreement_reward_coeff = disagreement_cfg.get("reward_coeff", 0.01)
+        self.disagreement_loss_coeff = disagreement_cfg.get("loss_coeff", 0.1)
+        
+        # Conditionally create the normalizer based on the toggle within the sub-config
+        self.normalize_disagreement_reward = disagreement_cfg.get("normalize_reward", True)
+        self.disagreement_intrinsic_reward_normalizer = None
         self.ensemble_size = disagreement_cfg.get("ensemble_size", 5)
-        self.disagreement_reward_coeff = disagreement_cfg.get("disagreement_reward_coeff", 0.01)
-        self.disagreement_intrinsic_reward_normalizer = RunningMeanStdNormalizer(epsilon=1e-8, device=self.device)
+        if self.normalize_disagreement_reward:
+            self.disagreement_intrinsic_reward_normalizer = RunningMeanStdNormalizer(epsilon=1e-8, device=self.device)
+
+        # Setup ensemble from network sub-config
+        network_cfg = disagreement_cfg.get("network", {})
+        hidden_size = network_cfg.get("hidden_size", 256)
+        ensemble_size = disagreement_cfg.get("ensemble_size", 5)
+
         self.dynamics_ensemble = nn.ModuleList([
-            ForwardDynamicsModel(trunk_dim, self.total_action_dim_per_agent, hidden_size=256)
-            for _ in range(self.ensemble_size)
+            ForwardDynamicsModel(trunk_dim, self.total_action_dim_per_agent, hidden_size=hidden_size)
+            for _ in range(ensemble_size)
         ]).to(self.device)
 
     def _setup_optimizers(self, a_cfg):
@@ -445,8 +473,8 @@ class MAPOCAAgent(Agent):
         if self.enable_iqn_distillation:
             self.optimizers["value_iqn"] = optim.AdamW(self.shared_critic.value_iqn_net.parameters(), lr=lr_conf["lr_value_iqn"], betas=tuple(beta_conf.get("iqn_value", default_betas)), weight_decay=wd_conf.get("iqn_value", 0.0))
             self.optimizers["baseline_iqn"] = optim.AdamW(self.shared_critic.baseline_iqn_net.parameters(), lr=lr_conf["lr_baseline_iqn"], betas=tuple(beta_conf.get("iqn_baseline", default_betas)), weight_decay=wd_conf.get("iqn_baseline", 0.0))
-        if self.enable_rnd: self.optimizers["rnd_predictor"] = optim.AdamW(self.rnd_predictor_network.parameters(), lr=lr_conf["lr_rnd_predictor"], betas=tuple(beta_conf.get("rnd", default_betas)), weight_decay=wd_conf.get("rnd", 0.0))
-        if self.enable_disagreement: self.optimizers["disagreement_ensemble"] = optim.AdamW(self.dynamics_ensemble.parameters(), lr=lr_conf["lr_disagreement"], betas=tuple(beta_conf.get("disagreement", default_betas)), weight_decay=wd_conf.get("disagreement", 0.0))
+        if self.rnd_cfg: self.optimizers["rnd_predictor"] = optim.AdamW(self.rnd_predictor_network.parameters(), lr=lr_conf["lr_rnd_predictor"], betas=tuple(beta_conf.get("rnd", default_betas)), weight_decay=wd_conf.get("rnd", 0.0))
+        if self.disagreement_cfg: self.optimizers["disagreement_ensemble"] = optim.AdamW(self.dynamics_ensemble.parameters(), lr=lr_conf["lr_disagreement"], betas=tuple(beta_conf.get("disagreement", default_betas)), weight_decay=wd_conf.get("disagreement", 0.0))
 
     def _setup_schedulers(self, a_cfg):
         sched_cfg = a_cfg.get("schedulers", {}); def_lin_sched = {"start_factor": 1.0, "end_factor": 1.0, "total_iters": 1}
@@ -542,7 +570,7 @@ class MAPOCAAgent(Agent):
     
     def _compute_rnd_loss(self, feats_seq, mask_btna) -> torch.Tensor:
         """Computes the loss for the RND predictor network."""
-        if not self.enable_rnd: return torch.tensor(0.0, device=self.device)
+        if not self.rnd_cfg: return torch.tensor(0.0, device=self.device)
 
         valid_mask_flat = mask_btna.reshape(-1).bool()
         flat_feats = feats_seq.reshape(-1, feats_seq.shape[-1])
@@ -565,7 +593,7 @@ class MAPOCAAgent(Agent):
 
     def _compute_disagreement_loss(self, feats_s_mb, actions_mb, feats_ns_mb, mask_mbna) -> torch.Tensor:
         """Computes the training loss for the forward dynamics ensemble."""
-        if not self.enable_disagreement: return torch.tensor(0.0, device=self.device)
+        if not self.disagreement_cfg: return torch.tensor(0.0, device=self.device)
 
         valid_mask_flat = mask_mbna.reshape(-1).bool()
         flat_feats_s = feats_s_mb.reshape(-1, feats_s_mb.shape[-1])[valid_mask_flat]
@@ -754,15 +782,14 @@ class MAPOCAAgent(Agent):
             if valid_baseline_targets.numel() > 0:
                  self.baseline_popart.update_stats(valid_baseline_targets)
     
-    def _compute_intrinsic_rewards(self, feats_seq, actions_seq, mask_btna) -> torch.Tensor:
+    def _compute_intrinsic_rewards(self, feats_seq, actions_seq, mask_btna) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Computes and combines all enabled intrinsic rewards (RND, Disagreement)."""
         B, T, NA, _ = feats_seq.shape
         total_intrinsic_rewards = torch.zeros(B, T, NA, device=self.device)
-        
-        # This function now returns a dictionary to hold stats for logging
         intrinsic_stats = {}
 
-        if self.enable_rnd and self.rnd_target_network and self.rnd_predictor_network:
+        # --- RND Reward Calculation ---
+        if self.rnd_cfg:
             flat_feats = feats_seq.reshape(B * T * NA, -1)
             with torch.no_grad():
                 target_features = self.rnd_target_network(flat_feats)
@@ -772,20 +799,23 @@ class MAPOCAAgent(Agent):
             rnd_rewards = rnd_errors.reshape(B, T, NA)
             
             valid_mask = mask_btna.bool()
-            if valid_mask.any() and self.intrinsic_reward_normalizer:
+            if valid_mask.any():
                 valid_rewards = rnd_rewards[valid_mask]
                 intrinsic_stats['rnd_raw_mean'] = valid_rewards.mean().item()
                 intrinsic_stats['rnd_raw_std'] = valid_rewards.std().item()
 
-                self.intrinsic_reward_normalizer.update(valid_rewards.unsqueeze(-1))
-                normalized_rewards = self.intrinsic_reward_normalizer.normalize(valid_rewards.unsqueeze(-1)).squeeze(-1)
+                final_rnd_rewards_for_agent = valid_rewards
+                if self.normalize_rnd_reward and self.rnd_intrinsic_reward_normalizer:
+                    self.rnd_intrinsic_reward_normalizer.update(valid_rewards.unsqueeze(-1))
+                    normalized_rewards = self.rnd_intrinsic_reward_normalizer.normalize(valid_rewards.unsqueeze(-1)).squeeze(-1)
+                    intrinsic_stats['rnd_norm_mean'] = normalized_rewards.mean().item()
+                    intrinsic_stats['rnd_norm_std'] = normalized_rewards.std().item()
+                    final_rnd_rewards_for_agent = normalized_rewards
                 
-                intrinsic_stats['rnd_norm_mean'] = normalized_rewards.mean().item()
-                intrinsic_stats['rnd_norm_std'] = normalized_rewards.std().item()
+                total_intrinsic_rewards[valid_mask] += self.rnd_reward_coeff * final_rnd_rewards_for_agent
 
-                total_intrinsic_rewards[valid_mask] += self.intrinsic_reward_coeff * normalized_rewards
-
-        if self.enable_disagreement and self.dynamics_ensemble:
+        # --- Disagreement Reward Calculation ---
+        if self.disagreement_cfg:
             flat_feats = feats_seq.reshape(B * T * NA, -1)
             flat_actions = actions_seq.reshape(B * T * NA, -1)
             
@@ -796,30 +826,31 @@ class MAPOCAAgent(Agent):
             disagreement_rewards = disagreement.reshape(B, T, NA)
 
             valid_mask = mask_btna.bool()
-            if valid_mask.any() and self.disagreement_intrinsic_reward_normalizer:
+            if valid_mask.any():
                 valid_rewards = disagreement_rewards[valid_mask]
                 intrinsic_stats['disagreement_raw_mean'] = valid_rewards.mean().item()
                 intrinsic_stats['disagreement_raw_std'] = valid_rewards.std().item()
 
-                self.disagreement_intrinsic_reward_normalizer.update(valid_rewards.unsqueeze(-1))
-                normalized_rewards = self.disagreement_intrinsic_reward_normalizer.normalize(valid_rewards.unsqueeze(-1)).squeeze(-1)
-                
-                intrinsic_stats['disagreement_norm_mean'] = normalized_rewards.mean().item()
-                intrinsic_stats['disagreement_norm_std'] = normalized_rewards.std().item()
+                final_disagreement_rewards_for_agent = valid_rewards
+                if self.normalize_disagreement_reward and self.disagreement_intrinsic_reward_normalizer:
+                    self.disagreement_intrinsic_reward_normalizer.update(valid_rewards.unsqueeze(-1))
+                    normalized_rewards = self.disagreement_intrinsic_reward_normalizer.normalize(valid_rewards.unsqueeze(-1)).squeeze(-1)
+                    intrinsic_stats['disagreement_norm_mean'] = normalized_rewards.mean().item()
+                    intrinsic_stats['disagreement_norm_std'] = normalized_rewards.std().item()
+                    final_disagreement_rewards_for_agent = normalized_rewards
 
-                total_intrinsic_rewards[valid_mask] += self.disagreement_reward_coeff * normalized_rewards
+                total_intrinsic_rewards[valid_mask] += self.disagreement_reward_coeff * final_disagreement_rewards_for_agent
                 
-        # Return both the final rewards and the dictionary of stats
         return total_intrinsic_rewards, intrinsic_stats
-
+    
     def _log_intrinsic_reward_stats(self, logs_acc, intrinsic_stats):
         """Helper to append intrinsic reward stats to the log accumulator."""
-        if self.enable_rnd:
+        if self.rnd_cfg:
             logs_acc["reward/rnd_raw_mean"].append(intrinsic_stats.get('rnd_raw_mean', 0.0))
             logs_acc["reward/rnd_raw_std"].append(intrinsic_stats.get('rnd_raw_std', 0.0))
             logs_acc["reward/rnd_norm_mean"].append(intrinsic_stats.get('rnd_norm_mean', 0.0))
             logs_acc["reward/rnd_norm_std"].append(intrinsic_stats.get('rnd_norm_std', 0.0))
-        if self.enable_disagreement:
+        if self.disagreement_cfg:
             logs_acc["reward/disagreement_raw_mean"].append(intrinsic_stats.get('disagreement_raw_mean', 0.0))
             logs_acc["reward/disagreement_raw_std"].append(intrinsic_stats.get('disagreement_raw_std', 0.0))
             logs_acc["reward/disagreement_norm_mean"].append(intrinsic_stats.get('disagreement_norm_mean', 0.0))
@@ -961,8 +992,8 @@ class MAPOCAAgent(Agent):
             logs_acc["mean/logp_new"].append(new_lp_mb[valid_mask].mean().item())
         
         # Auxiliary Losses
-        if self.enable_rnd: logs_acc["loss/rnd"].append(rnd_loss.item())
-        if self.enable_disagreement: logs_acc["loss/disagreement"].append(disagreement_loss.item())
+        if self.rnd_cfg: logs_acc["loss/rnd"].append(rnd_loss.item())
+        if self.disagreement_cfg: logs_acc["loss/disagreement"].append(disagreement_loss.item())
         
         # Log distilled values if IQN is enabled
         if self.enable_iqn_distillation and new_val_norm is not None and new_base_norm is not None:
@@ -1003,8 +1034,8 @@ class MAPOCAAgent(Agent):
             logs_acc["grad_norm/distill_value"].append(_get_avg_grad_mag(self.shared_critic.value_distill_net.parameters()))
             logs_acc["grad_norm/distill_baseline"].append(_get_avg_grad_mag(self.shared_critic.baseline_distill_net.parameters()))
 
-        if self.enable_rnd: logs_acc["grad_norm/rnd_predictor"].append(_get_avg_grad_mag(self.rnd_predictor_network.parameters()))
-        if self.enable_disagreement: logs_acc["grad_norm/disagreement_ensemble"].append(_get_avg_grad_mag(self.dynamics_ensemble.parameters()))
+        if self.rnd_cfg: logs_acc["grad_norm/rnd_predictor"].append(_get_avg_grad_mag(self.rnd_predictor_network.parameters()))
+        if self.disagreement_cfg: logs_acc["grad_norm/disagreement_ensemble"].append(_get_avg_grad_mag(self.dynamics_ensemble.parameters()))
 
     def _finalize_logs(self, logs_acc: Dict) -> Dict[str, float]:
         """
