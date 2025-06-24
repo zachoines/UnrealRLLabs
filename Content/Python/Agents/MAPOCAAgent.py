@@ -147,7 +147,7 @@ class MAPOCAAgent(Agent):
         self.enable_iqn_distillation = a_cfg.get("enable_iqn_distillation", False)
         self.enable_popart = a_cfg.get("enable_popart", False)
 
-        if self.enable_iqn_distillation: self._setup_iqn(a_cfg, t_cfg, critic_full_config)
+        if self.enable_iqn_distillation: self._setup_iqn(critic_full_config)
         if self.enable_popart: self._setup_popart(a_cfg)
         else: self.rewards_normalizer = RunningMeanStdNormalizer(**a_cfg.get("rewards_normalizer", {}), device=device) if a_cfg.get("rewards_normalizer") else None
 
@@ -384,20 +384,23 @@ class MAPOCAAgent(Agent):
             self.action_dim = [d["num_choices"] for d in action_spec["discrete"]]
             self.total_action_dim_per_agent = len(self.action_dim)
 
-    def _setup_iqn(self, a_cfg, t_cfg, critic_cfg):
+    def _setup_iqn(self, critic_cfg):
         iqn_params = critic_cfg.get("iqn_params", {})
         self.num_quantiles = iqn_params.get("num_quantiles", 32)
         self.num_quantiles_prime = iqn_params.get("num_quantiles_prime", self.num_quantiles)
         self.iqn_kappa = iqn_params.get("kappa", 1.0)
         self.iqn_polyak = iqn_params.get("polyak_tau", 0.005)
-        self.value_iqn_loss_coeff = a_cfg.get("value_iqn_loss_coeff", 0.25)
-        self.baseline_iqn_loss_coeff = a_cfg.get("baseline_iqn_loss_coeff", 0.25)
-        self.iqn_target_update_freq = t_cfg.get("iqn_target_update_freq", 10)
-        self.iqn_epochs = t_cfg.get("iqn_epochs", 1)
-        self.iqn_batch_size = t_cfg.get("iqn_batch_size", self.mini_batch_size)
-        self.iqn_max_grad_norm = a_cfg.get("iqn_max_grad_norm", self.max_grad_norm)
+
+        self.iqn_max_grad_norm = iqn_params.get("iqn_max_grad_norm", self.max_grad_norm)
+        self.iqn_epochs = iqn_params.get("iqn_epochs", 1)
+
+        self.value_iqn_loss_coeff = iqn_params.get("value_iqn_loss_coeff", 0.25)
+        self.baseline_iqn_loss_coeff = iqn_params.get("baseline_iqn_loss_coeff", 0.25)
+        self.iqn_target_update_freq = iqn_params.get("iqn_target_update_freq", 10)
+        self.iqn_batch_size = iqn_params.get("iqn_batch_size", self.mini_batch_size)
+        
         self._iqn_total_updates_counter = 0
-        self.iqn_replay_buffer = IQNReplayBuffer(t_cfg.get("iqn_replay_buffer_size", 10000), self.device)
+        self.iqn_replay_buffer = IQNReplayBuffer(iqn_params.get("iqn_replay_buffer_size", 10000), self.device)
         self.target_value_iqn_net = copy.deepcopy(self.shared_critic.value_iqn_net).to(self.device)
         self.target_baseline_iqn_net = copy.deepcopy(self.shared_critic.baseline_iqn_net).to(self.device)
         for p in self.target_value_iqn_net.parameters(): p.requires_grad = False

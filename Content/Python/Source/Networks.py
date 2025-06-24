@@ -631,14 +631,7 @@ class SharedCritic(nn.Module):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Extract IQN and Distillation specific configurations
-        # It's good practice to provide default empty dicts if keys might be missing
         iqn_config = net_cfg.get("iqn_params", {})
-        distillation_config = net_cfg.get("distillation_params", {})
-
-        # The feature_dim for IQN should be the dimension of embeddings
-        # that are fed into it (e.g., output of attention or input to ValueNetwork).
-        # This should be specified in the 'critic_network' part of the main JSON config.
-        feature_dim = net_cfg.get("feature_dim_for_iqn", 128) # Default if not specified
 
         # Original PPO-style value and baseline heads
         self.value_head_ppo = ValueNetwork(**net_cfg["value_head"])
@@ -650,31 +643,18 @@ class SharedCritic(nn.Module):
 
         # IQN Networks
         self.value_iqn_net = ImplicitQuantileNetwork(
-            feature_dim=feature_dim,
-            iqn_config=iqn_config,
-            linear_init_scale=net_cfg.get("linear_init_scale", 0.1), # Pass general init scale
-            dropout_rate=iqn_config.get("dropout_rate", 0.0) # Pass dropout if specified for IQN
+            **iqn_config.get("iqn_network", {})
         )
         self.baseline_iqn_net = ImplicitQuantileNetwork(
-            feature_dim=feature_dim,
-            iqn_config=iqn_config,
-            linear_init_scale=net_cfg.get("linear_init_scale", 0.1),
-            dropout_rate=iqn_config.get("dropout_rate", 0.0)
+            **iqn_config.get("iqn_network", {})
         )
 
         # Distillation Networks
-        num_quantiles = iqn_config.get("num_quantiles", 32)
         self.value_distill_net = DistillationNetwork(
-            num_quantiles=num_quantiles,
-            distillation_config=distillation_config,
-            linear_init_scale=net_cfg.get("linear_init_scale", 0.1),
-            dropout_rate=distillation_config.get("dropout_rate", 0.0)
+            **iqn_config.get("distillation_network", {})
         )
         self.baseline_distill_net = DistillationNetwork(
-            num_quantiles=num_quantiles,
-            distillation_config=distillation_config,
-            linear_init_scale=net_cfg.get("linear_init_scale", 0.1),
-            dropout_rate=distillation_config.get("dropout_rate", 0.0)
+            **iqn_config.get("distillation_network", {})
         )
 
         init_scale = net_cfg.get("linear_init_scale", 0.1)
@@ -814,17 +794,18 @@ class ImplicitQuantileNetwork(nn.Module):
     It predicts the quantile values of a state (or state-action) value distribution.
     """
     def __init__(self,
-                 feature_dim: int,        # Dimension of the input state/feature embeddings
-                 iqn_config: Dict[str, Any], # Dictionary containing IQN specific parameters
-                 linear_init_scale: float = 1.0,
-                 dropout_rate: float = 0.0):
+            feature_dim: int,
+            hidden_size: int = 128,
+            quantile_embedding_dim: int = 64,
+            linear_init_scale: float = 1.0,
+            num_quantiles: int = 32,
+            dropout_rate: float = 0.0
+        ):
         super().__init__()
         self.feature_dim = feature_dim
-        self.iqn_config = iqn_config
-
-        self.num_quantiles = iqn_config.get("num_quantiles", 32)
-        self.quantile_embedding_dim = iqn_config.get("quantile_embedding_dim", 64)
-        self.hidden_size = iqn_config.get("hidden_size", 128) # Hidden size for IQN's internal MLP
+        self.num_quantiles = num_quantiles
+        self.quantile_embedding_dim = quantile_embedding_dim
+        self.hidden_size = hidden_size
 
         # Cosine embedding layer for quantile fractions (τ)
         # This projects τ into a higher dimensional space using cosine basis functions.
@@ -939,15 +920,15 @@ class DistillationNetwork(nn.Module):
     and a set of quantile values (Z_tau) from an IQN into a single scalar output.
     """
     def __init__(self,
-                 num_quantiles: int,          # Number of quantile values from IQN (e.g., 32, 64)
-                 distillation_config: Dict[str, Any], # Config for this network
+                 num_quantiles: int,
+                 hidden_size: int = 128, 
+                 combination_method: str = "hadamard_product", # 'hadamard_product', 'concatenate', or 'average_iqn_concatenate'
                  linear_init_scale: float = 1.0,
                  dropout_rate: float = 0.0):
         super().__init__()
         self.num_quantiles = num_quantiles
-        self.distillation_config = distillation_config
-        self.hidden_size = distillation_config.get("hidden_size", 128)
-        self.combination_method = distillation_config.get("combination_method", "hadamard_product") # 'hadamard_product' or 'concatenate'
+        self.hidden_size = hidden_size
+        self.combination_method = combination_method
 
         # The input dimension to the first linear layer depends on the combination method
         if self.combination_method == "hadamard_product":
