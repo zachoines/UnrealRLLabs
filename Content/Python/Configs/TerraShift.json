@@ -1,7 +1,7 @@
 {
     "environment": {
-        "name": "TerraShift_16A_4O_MemSave_Test",
-        "id": "TerraShift_16A_4O_MemSave_Test_$(date +%Y%m%d_%H%M%S)",
+        "name": "TerraShift_8A_2O_Test",
+        "id": "TerraShift_8A_2O_Test_$(date +%Y%m%d_%H%M%S)",
         "params": {
             "PlatformSize": 1.0,
             "MaxColumnHeight": 6.0,
@@ -21,7 +21,7 @@
                 "bUsePotentialShaping": false,
                 "PotentialShaping_Gamma": 0.99,
                 "PotentialShaping_Scale": 1.0,
-                "VelAlign_Scale": 0.001,
+                "VelAlign_Scale": 0.1,
                 "VelAlign_Min": 0.0,
                 "VelAlign_Max": 100.0,
                 "DistImprove_Scale": 0.1,
@@ -30,9 +30,9 @@
                 "ZAccel_Scale_disabled": 0.0001,
                 "ZAccel_Min_disabled": 0.1,
                 "ZAccel_Max_disabled": 2000.0,
-                "REACH_GOAL_REWARD": 0.0,
-                "FALL_OFF_PENALTY": 0.0,
-                "STEP_PENALTY": -0.0001
+                "REACH_GOAL_REWARD": 1.0,
+                "FALL_OFF_PENALTY": -1.0,
+                "STEP_PENALTY": -0.001
             },
             "GoalManager": {
                 "DefaultRadius": 1.0
@@ -48,24 +48,24 @@
                 "AccumulatedWaveFadeGamma": 0.95,
                 "bWrapAroundEdges_disabled": true,
                 "VelMinMax": [
-                    -10.0,
-                    10.0
+                    -6.0,
+                    6.0
                 ],
                 "AngVelRange": [
                     -3.14,
                     3.14
                 ],
                 "AmpMinMax": [
-                    -5.0,
-                    5.0
+                    -3.0,
+                    3.0
                 ],
                 "SigMinMax": [
                     1.0,
-                    5.0
+                    4.0
                 ],
-                "DeltaVelScale": 4.0,
+                "DeltaVelScale": 3.0,
                 "DeltaAngVelScale": 1.256,
-                "DeltaAmpScale": 2.0,
+                "DeltaAmpScale": 1.5,
                 "DeltaSigmaScale": 1.0
             },
             "StateManager": {
@@ -73,7 +73,6 @@
                 "MarginXY": 1.5,
                 "MinZ": -4.0,
                 "MaxZ": 50.0,
-                "MarginCells_disabled": 2,
                 "ObjectScale": 0.15,
                 "ObjectMass": 0.1,
                 "MaxColumnHeight": 6.0,
@@ -134,7 +133,7 @@
                         "shape": {
                             "h": 60,
                             "w": 60,
-                            "c": 2
+                            "c": 1
                         }
                     },
                     {
@@ -235,10 +234,9 @@
                 "bias": true,
                 "dropout": 0.1
             },
-            "enable_iqn_distillation": true,
-          
-            "disagreement_rewards": {
-                "enabled": true,
+            "enable_iqn_distillation": false,
+            "disagreement_rewards_disabled": {
+                "enabled": false,
                 "reward_coeff": 0.001,
                 "loss_coeff": 0.1,
                 "normalize_reward": false,
@@ -247,7 +245,7 @@
                     "hidden_size": 256
                 }
             },
-            "rnd_rewards": {
+            "rnd_rewards_disabled": {
                 "enabled": false,
                 "reward_coeff": 0.01,
                 "loss_coeff": 1.0,
@@ -261,43 +259,29 @@
             "enable_popart": false,
             "popart_beta": 0.999,
             "popart_epsilon": 1e-05,
-            "learning_rate": 2e-05,
-            "lr_policy": 2e-05,
-            "lr_trunk": 2e-05,
-            "lr_value_path": 2e-05,
-            "lr_baseline_path": 2e-05,
-            "lr_value_iqn": 2e-05,
-            "lr_baseline_iqn": 2e-05,
-            "lr_rnd_predictor": 2e-05,
-            "lr_disagreement": 2e-05,
+            "learning_rate": 5e-05,
+            "lr_policy": 5e-05,
+            "lr_trunk": 5e-05,
+            "lr_value_path": 5e-05,
+            "lr_baseline_path": 5e-05,
+            "lr_value_iqn": 5e-05,
+            "lr_baseline_iqn": 5e-05,
+            "lr_rnd_predictor": 5e-05,
+            "lr_disagreement": 5e-05,
             "optimizer_betas": {
                 "default": [
-                    0.9,
-                    0.999
-                ],
-                "policy": [
-                    0.9,
-                    0.999
-                ],
-                "trunk": [
                     0.9,
                     0.999
                 ]
             },
             "weight_decay": {
-                "default": 1e-05,
-                "trunk": 1e-05,
-                "policy": 1e-04,
-                "value_path": 1e-04,
-                "baseline_path": 1e-04
+                "default": 1e-04
             },
             "gamma": 0.99,
-            "lmbda": 0.9,
+            "lambda": 0.95,
             "value_loss_coeff": 1.0,
             "baseline_loss_coeff": 0.25,
             "normalize_advantages": true,
-            "bUseMeanAdvantage_disabled": false,
-            "clipped_value_loss_disabled": true,
             "max_grad_norm": 0.5,
             "ppo_clip_range": 0.2,
             "value_clip_range": 0.2,
@@ -306,62 +290,62 @@
                 "lr_trunk": {
                     "start_factor": 1.0,
                     "end_factor": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 100000
                 },
                 "lr_policy": {
                     "start_factor": 1.0,
                     "end_factor": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 100000
                 },
                 "lr_value_path": {
                     "start_factor": 1.0,
                     "end_factor": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 100000
                 },
                 "lr_baseline_path": {
                     "start_factor": 1.0,
                     "end_factor": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 100000
                 },
                 "lr_value_iqn": {
                     "start_factor": 1.0,
                     "end_factor": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 100000
                 },
                 "lr_baseline_iqn": {
                     "start_factor": 1.0,
                     "end_factor": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 100000
                 },
                 "lr_rnd_predictor": {
                     "start_factor": 1.0,
                     "end_factor": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 100000
                 },
                 "lr_disagreement": {
                     "start_factor": 1.0,
                     "end_factor": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 100000
                 },
                 "entropy_coeff": {
                     "start_value": 0.01,
-                    "end_value": 0.001,
-                    "total_iters": 10000
+                    "end_value": 0.005,
+                    "total_iters": 100000
                 },
                 "policy_clip": {
                     "start_value": 0.3,
                     "end_value": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 100000
                 },
                 "value_clip": {
                     "start_value": 0.2,
                     "end_value": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 100000
                 },
                 "max_grad_norm_disabled": {
                     "start_value": 0.5,
                     "end_value": 0.5,
-                    "total_iters": 1
+                    "total_iters": 100000
                 }
             },
             "networks": {
@@ -410,8 +394,8 @@
                                 "enabled": true,
                                 "type": "linear_sequence",
                                 "linear_stem_hidden_sizes": [
-                                    128,
-                                    128
+                                    64,
+                                    64
                                 ],
                                 "add_positional_encoding": true
                             }
@@ -438,7 +422,7 @@
                 "policy_network": {
                     "type": "beta",
                     "in_features": 64,
-                    "hidden_size": 128,
+                    "hidden_size": 64,
                     "param_init_bias": 0.0,
                     "min_concentration": 1.001,
                     "linear_init_scale": 0.1,
@@ -448,12 +432,12 @@
                     "feature_dim_for_iqn": 64,
                     "value_head": {
                         "in_features": 64,
-                        "hidden_size": 128,
+                        "hidden_size": 64,
                         "dropout_rate": 0.1
                     },
                     "baseline_head": {
                         "in_features": 64,
-                        "hidden_size": 128,
+                        "hidden_size": 64,
                         "dropout_rate": 0.1
                     },
                     "value_attention": {
@@ -471,10 +455,8 @@
                     "iqn_params": {
                         "num_quantiles": 32,
                         "num_quantiles_prime": 32,
-
                         "kappa": 1.0,
                         "iqn_polyak": 0.005,
-
                         "iqn_epochs": 1,
                         "iqn_max_grad_norm": 0.5,
                         "value_iqn_loss_coeff": 0.5,
@@ -482,17 +464,16 @@
                         "iqn_target_update_freq": 1,
                         "iqn_batch_size": 64,
                         "iqn_replay_buffer_size": 50000,
-
                         "iqn_network": {
-                          "feature_dim": 64, 
-                          "hidden_size": 128,
-                          "quantile_embedding_dim": 128,
-                          "linear_init_scale": 1.0,
-                          "num_quantiles": 32,
-                          "dropout_rate": 0.0
+                            "feature_dim": 64,
+                            "hidden_size": 128,
+                            "quantile_embedding_dim": 128,
+                            "linear_init_scale": 1.0,
+                            "num_quantiles": 32,
+                            "dropout_rate": 0.0
                         },
                         "distillation_network": {
-                            "num_quantiles":32,
+                            "num_quantiles": 32,
                             "hidden_size": 128,
                             "combination_method": "hadamard_product",
                             "linear_init_scale": 1.0,
@@ -506,24 +487,24 @@
     "train": {
         "sequence_length": 8,
         "pad_trajectories": true,
-        "batch_size": 256,
-        "buffer_size": 256,
-        "num_environments": 4,
-        "epochs": 2,
-        "mini_batch_size": 8,
-        "ActionRepeat": 4,
+        "batch_size": 128,
+        "buffer_size": 128,
+        "num_environments": 6,
+        "epochs": 3,
+        "mini_batch_size": 16,
+        "ActionRepeat": 6,
         "saveFrequency": 50,
         "state_normalizer": {
-            "enabled": false,
-            "clip": 10.0,
+            "enabled": true,
+            "clip": 100.0,
             "epsilon": 1e-08,
-            "warmup_steps": 128
+            "warmup_steps": 10240
         },
         "rewards_normalizer": {
             "enabled": false,
             "gamma_disabled": 0.99,
-            "clip": 10.0,
-            "warmup_steps_disabled": 0,
+            "clip": 100.0,
+            "warmup_steps_disabled": 10240,
             "epsilon": 1e-08
         }
     }

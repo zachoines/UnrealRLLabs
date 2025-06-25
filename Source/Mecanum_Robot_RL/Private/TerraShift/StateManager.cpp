@@ -28,7 +28,7 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     MarginXY = Config->GetOrDefaultNumber(TEXT("MarginXY"), MarginXY);
     MinZ = Config->GetOrDefaultNumber(TEXT("MinZ"), MinZ); // Used for OOB and Z-norm
     MaxZ = Config->GetOrDefaultNumber(TEXT("MaxZ"), MaxZ); // Used for OOB and Z-norm
-    MarginCells = Config->GetOrDefaultInt(TEXT("MarginCells"), MarginCells);
+   
     ObjectScale = Config->GetOrDefaultNumber(TEXT("ObjectScale"), ObjectScale);
     ObjectMass = Config->GetOrDefaultNumber(TEXT("ObjectMass"), ObjectMass);
     MaxColumnHeight = Config->GetOrDefaultNumber(TEXT("MaxColumnHeight"), MaxColumnHeight);

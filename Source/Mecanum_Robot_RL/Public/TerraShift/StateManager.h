@@ -235,9 +235,6 @@ private:
     float MaxZ = 100.f;
 
     UPROPERTY()
-    int32 MarginCells = 4;
-
-    UPROPERTY()
     float ObjectScale = 0.1f;
 
     UPROPERTY()
