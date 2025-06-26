@@ -12,13 +12,13 @@
             ],
             "ObjectMass": 0.1,
             "GridSize": 15,
-            "MaxSteps": 512,
-            "MaxAgents": 16,
+            "MaxSteps": 256,
+            "MaxAgents": 8,
             "TerraShiftEnvironment": {
-                "bUseVelAlignment": true,
+                "bUseVelAlignment": false,
                 "bUseXYDistanceImprovement": false,
                 "bUseZAccelerationPenalty": false,
-                "bUsePotentialShaping": false,
+                "bUsePotentialShaping": true,
                 "PotentialShaping_Gamma": 0.99,
                 "PotentialShaping_Scale": 1.0,
                 "VelAlign_Scale": 0.1,
@@ -27,18 +27,19 @@
                 "DistImprove_Scale": 0.1,
                 "DistImprove_Min": 0.0,
                 "DistImprove_Max": 1.0,
-                "ZAccel_Scale_disabled": 0.0001,
-                "ZAccel_Min_disabled": 0.1,
-                "ZAccel_Max_disabled": 2000.0,
-                "REACH_GOAL_REWARD": 1.0,
-                "FALL_OFF_PENALTY": -1.0,
-                "STEP_PENALTY": -0.001
+                "ZAccel_Scale": 0.0001,
+                "ZAccel_Min": 0.1,
+                "ZAccel_Max": 2000.0,
+
+                "SlotReward_Active": -0.001,
+                "SlotReward_GoalReached": 0.01,
+                "SlotReward_OutOfBounds": -0.01
             },
             "GoalManager": {
                 "DefaultRadius": 1.0
             },
             "MultiAgentGaussianWaveHeightMap": {
-                "NumAgents": 16,
+                "NumAgents": 8,
                 "GridSize": 15,
                 "MinHeight": -6.0,
                 "MaxHeight": 6.0,
@@ -48,28 +49,28 @@
                 "AccumulatedWaveFadeGamma": 0.95,
                 "bWrapAroundEdges_disabled": true,
                 "VelMinMax": [
-                    -6.0,
-                    6.0
+                    -8.0,
+                    8.0
                 ],
                 "AngVelRange": [
                     -3.14,
                     3.14
                 ],
                 "AmpMinMax": [
-                    -3.0,
-                    3.0
+                    -6.0,
+                    6.0
                 ],
                 "SigMinMax": [
                     1.0,
-                    4.0
+                    3.0
                 ],
-                "DeltaVelScale": 3.0,
-                "DeltaAngVelScale": 1.256,
-                "DeltaAmpScale": 1.5,
-                "DeltaSigmaScale": 1.0
+                "DeltaVelScale": 8.0,
+                "DeltaAngVelScale": 3.14,
+                "DeltaAmpScale": 6,
+                "DeltaSigmaScale": 2.0
             },
             "StateManager": {
-                "MaxGridObjects": 4,
+                "MaxGridObjects": 1,
                 "MarginXY": 1.5,
                 "MinZ": -4.0,
                 "MaxZ": 50.0,
@@ -119,7 +120,7 @@
                 "StateOverheadImageResX": 60,
                 "StateOverheadImageResY": 60,
                 "bIncludeGridObjectSequenceInState": true,
-                "MaxGridObjectsForState": 4,
+                "MaxGridObjectsForState": 1,
                 "GridObjectFeatureSize": 9
             }
         },
@@ -151,15 +152,15 @@
                         "enabled": true,
                         "type": "sequence",
                         "shape": {
-                            "max_length": 4,
+                            "max_length": 1,
                             "feature_dim": 9
                         }
                     }
                 ],
                 "agent": {
                     "obs_size": 9,
-                    "min": 16,
-                    "max": 16
+                    "min": 8,
+                    "max": 8
                 }
             },
             "action": {
@@ -256,18 +257,18 @@
                     "hidden_size": 256
                 }
             },
-            "enable_popart": false,
+            "enable_popart": true,
             "popart_beta": 0.999,
-            "popart_epsilon": 1e-05,
-            "learning_rate": 5e-05,
-            "lr_policy": 5e-05,
-            "lr_trunk": 5e-05,
-            "lr_value_path": 5e-05,
-            "lr_baseline_path": 5e-05,
-            "lr_value_iqn": 5e-05,
-            "lr_baseline_iqn": 5e-05,
-            "lr_rnd_predictor": 5e-05,
-            "lr_disagreement": 5e-05,
+            "popart_epsilon": 1e-04,
+            "learning_rate": 1e-04,
+            "lr_policy": 1e-04,
+            "lr_trunk": 1e-04,
+            "lr_value_path": 1e-04,
+            "lr_baseline_path": 1e-04,
+            "lr_value_iqn": 1e-04,
+            "lr_baseline_iqn": 1e-04,
+            "lr_rnd_predictor": 1e-04,
+            "lr_disagreement": 1e-04,
             "optimizer_betas": {
                 "default": [
                     0.9,
@@ -275,10 +276,10 @@
                 ]
             },
             "weight_decay": {
-                "default": 1e-04
+                "default": 1e-03
             },
             "gamma": 0.99,
-            "lambda": 0.95,
+            "lmbda": 0.95,
             "value_loss_coeff": 1.0,
             "baseline_loss_coeff": 0.25,
             "normalize_advantages": true,
@@ -333,7 +334,7 @@
                     "total_iters": 100000
                 },
                 "policy_clip": {
-                    "start_value": 0.3,
+                    "start_value": 0.2,
                     "end_value": 0.1,
                     "total_iters": 100000
                 },
@@ -352,14 +353,14 @@
                 "MultiAgentEmbeddingNetwork": {
                     "cross_attention_feature_extractor": {
                         "agent_obs_size": 9,
-                        "num_agents": 16,
+                        "num_agents": 8,
                         "embed_dim": 64,
                         "num_heads": 4,
                         "transformer_layers": 2,
                         "dropout_rate": 0.1,
                         "use_agent_id": true,
                         "ff_hidden_factor": 2,
-                        "id_num_freqs": 16,
+                        "id_num_freqs": 8,
                         "conv_init_scale": 1.0,
                         "linear_init_scale": 1.0,
                         "central_processing_configs": [
@@ -492,7 +493,7 @@
         "num_environments": 6,
         "epochs": 3,
         "mini_batch_size": 16,
-        "ActionRepeat": 6,
+        "ActionRepeat": 2,
         "saveFrequency": 50,
         "state_normalizer": {
             "enabled": true,
@@ -503,8 +504,8 @@
         "rewards_normalizer": {
             "enabled": false,
             "gamma_disabled": 0.99,
-            "clip": 100.0,
-            "warmup_steps_disabled": 10240,
+            "clip": 10.0,
+            "warmup_steps_disabled": 0,
             "epsilon": 1e-08
         }
     }

@@ -85,7 +85,7 @@ class MAPOCAAgent(Agent):
 
         # --- Core Hyperparameters ---
         self.gamma = a_cfg.get("gamma", 0.99)
-        self.lmbda = a_cfg.get("lambda", 0.95)
+        self.lmbda = a_cfg.get("lmbda", 0.95)
         self.value_loss_coeff = a_cfg.get("value_loss_coeff", 0.5)
         self.baseline_loss_coeff = a_cfg.get("baseline_loss_coeff", 0.5)
         self.disagreement_loss_coeff = a_cfg.get("disagreement_loss_coeff", 0.01)
