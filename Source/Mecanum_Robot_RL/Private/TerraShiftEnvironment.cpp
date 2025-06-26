@@ -149,7 +149,11 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
     }
 
     GridObjectManager = GetWorld()->SpawnActor<AGridObjectManager>(AGridObjectManager::StaticClass());
-    if (GridObjectManager) GridObjectManager->SetPlatformActor(Platform);
+    if (GridObjectManager)
+{
+    GridObjectManager->SetPlatformActor(Platform);
+    GridObjectManager->SetFolderPath(FName(*(EnvironmentFolderPath + TEXT("/") + GridObjectManager->GetName())));
+}
 
     UEnvironmentConfig* waveCfg = EnvConfig->Get(TEXT("environment/params/MultiAgentGaussianWaveHeightMap"));
     if (waveCfg && WaveSimulator) WaveSimulator->InitializeFromConfig(waveCfg);
@@ -167,6 +171,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
     {
         GoalManager->InitializeFromConfig(gmCfg);
         GoalManager->AttachToActor(Platform, FAttachmentTransformRules::KeepWorldTransform);
+        GoalManager->SetFolderPath(FName(*(EnvironmentFolderPath + TEXT("/") + GoalManager->GetName())));
     }
 
     if (StateManager) StateManager->SetReferences(Platform, GridObjectManager, Grid, WaveSimulator, GoalManager);

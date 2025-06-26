@@ -70,7 +70,7 @@
                 "DeltaSigmaScale": 2.0
             },
             "StateManager": {
-                "MaxGridObjects": 1,
+                "MaxGridObjects": 4,
                 "MarginXY": 1.5,
                 "MinZ": -4.0,
                 "MaxZ": 50.0,
@@ -120,7 +120,7 @@
                 "StateOverheadImageResX": 60,
                 "StateOverheadImageResY": 60,
                 "bIncludeGridObjectSequenceInState": true,
-                "MaxGridObjectsForState": 1,
+                "MaxGridObjectsForState": 4,
                 "GridObjectFeatureSize": 9
             }
         },
@@ -152,7 +152,7 @@
                         "enabled": true,
                         "type": "sequence",
                         "shape": {
-                            "max_length": 1,
+                            "max_length": 4,
                             "feature_dim": 9
                         }
                     }
@@ -235,15 +235,15 @@
                 "bias": true,
                 "dropout": 0.1
             },
-            "enable_iqn_distillation": false,
-            "disagreement_rewards_disabled": {
+            "enable_iqn_distillation": true,
+            "disagreement_rewards": {
                 "enabled": false,
-                "reward_coeff": 0.001,
+                "reward_coeff": 0.01,
                 "loss_coeff": 0.1,
                 "normalize_reward": false,
-                "ensemble_size": 5,
+                "ensemble_size": 10,
                 "network": {
-                    "hidden_size": 256
+                    "hidden_size": 128
                 }
             },
             "rnd_rewards_disabled": {
@@ -261,14 +261,14 @@
             "popart_beta": 0.999,
             "popart_epsilon": 1e-04,
             "learning_rate": 1e-04,
-            "lr_policy": 1e-04,
-            "lr_trunk": 1e-04,
+            "lr_policy": 2.5e-05,
+            "lr_trunk": 5e-05,
             "lr_value_path": 1e-04,
             "lr_baseline_path": 1e-04,
             "lr_value_iqn": 1e-04,
             "lr_baseline_iqn": 1e-04,
             "lr_rnd_predictor": 1e-04,
-            "lr_disagreement": 1e-04,
+            "lr_disagreement": 2.5e-05,
             "optimizer_betas": {
                 "default": [
                     0.9,
@@ -343,7 +343,7 @@
                     "end_value": 0.1,
                     "total_iters": 100000
                 },
-                "max_grad_norm_disabled": {
+                "max_grad_norm": {
                     "start_value": 0.5,
                     "end_value": 0.5,
                     "total_iters": 100000
@@ -426,7 +426,7 @@
                     "hidden_size": 64,
                     "param_init_bias": 0.0,
                     "min_concentration": 1.001,
-                    "linear_init_scale": 0.1,
+                    "linear_init_scale": 1.0,
                     "dropout_rate": 0.1
                 },
                 "critic_network": {
@@ -434,12 +434,12 @@
                     "value_head": {
                         "in_features": 64,
                         "hidden_size": 64,
-                        "dropout_rate": 0.1
+                        "dropout_rate": 1.0
                     },
                     "baseline_head": {
                         "in_features": 64,
                         "hidden_size": 64,
-                        "dropout_rate": 0.1
+                        "dropout_rate": 1.0
                     },
                     "value_attention": {
                         "embed_dim": 64,
@@ -490,10 +490,10 @@
         "pad_trajectories": true,
         "batch_size": 128,
         "buffer_size": 128,
-        "num_environments": 6,
+        "num_environments": 8,
         "epochs": 3,
         "mini_batch_size": 16,
-        "ActionRepeat": 2,
+        "ActionRepeat": 4,
         "saveFrequency": 50,
         "state_normalizer": {
             "enabled": true,
