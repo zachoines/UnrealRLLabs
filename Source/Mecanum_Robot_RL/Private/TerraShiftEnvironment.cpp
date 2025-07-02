@@ -258,12 +258,9 @@ bool ATerraShiftEnvironment::Done()
 
 bool ATerraShiftEnvironment::Trunc()
 {
-    if (!Initialized) return true;
+    if (!Initialized && !!bTerminateOnMaxSteps) return true;
+    if (bTerminateOnMaxSteps) return false;
     bool bTruncated = (CurrentStep >= MaxSteps);
-    if (bTruncated)
-    {
-        UE_LOG(LogTemp, Verbose, TEXT("Episode Truncated: Max steps (%d) reached at step %d."), MaxSteps, CurrentStep);
-    }
     return bTruncated;
 }
 
