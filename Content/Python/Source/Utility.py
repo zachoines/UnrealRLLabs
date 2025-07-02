@@ -217,12 +217,13 @@ class RunningMeanStdNormalizer:
     - The 'normalize()' method always uses the current (potentially frozen) statistics.
     """
 
-    def __init__(self, warmup_steps: int = 0, epsilon: float = 1e-4, device: torch.device = torch.device("cpu")):
+    def __init__(self, warmup_steps: int = 0, epsilon: float = 1e-4, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.float32):
         self.device = device
         self.epsilon = epsilon 
         self.warmup_steps = warmup_steps
-        self.update_calls_count = 0 # Tracks total number of calls to update()
-        self.stats: Dict[str, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {} # mean, var, count
+        self.update_calls_count = 0  # Tracks total number of calls to update()
+        self.stats: Dict[str, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}  # mean, var, count
+        self.dtype = dtype
 
     def update(self, x: Union[torch.Tensor, Dict[str, torch.Tensor]]):
         """
@@ -300,6 +301,7 @@ class RunningMeanStdNormalizer:
                                f"Stored normalizer fdim: {mean.shape[-1]}, input tensor fdim: {num_features}")
 
         flat_tensor = tensor.reshape(-1, num_features)
+        flat_tensor = flat_tensor.to(self.dtype)
         batch_n = flat_tensor.shape[0]
         if batch_n == 0: return
 
@@ -361,13 +363,13 @@ class RunningMeanStdNormalizer:
                 f"Input tensor features: {tensor_on_device.shape[-1]}, "
                 f"Normalizer features: {mean.shape[-1]}. Input shape: {tensor.shape}"
             )
-        
-        mean_reshaped = mean.unsqueeze(0) 
+
+        mean_reshaped = mean.unsqueeze(0)
         var_reshaped  = var.unsqueeze(0)
 
         # Use the stored variance, which should be clamped >= 1e-8 from _update_single
-        return (tensor_on_device - mean_reshaped) / torch.sqrt(var_reshaped + 1e-8)
-    
+        return ((tensor_on_device - mean_reshaped) / torch.sqrt(var_reshaped + 1e-8)).to(self.dtype)
+
 class PopArtNormalizer(nn.Module):
     def __init__(self, output_layer: nn.Linear, beta: float = 0.999, epsilon: float = 1e-5, device: torch.device = torch.device("cpu")):
         super().__init__()

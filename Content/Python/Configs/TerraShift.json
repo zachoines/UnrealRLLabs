@@ -297,7 +297,7 @@
             "baseline_loss_coeff": 0.25,
             "normalize_advantages": true,
             "max_grad_norm": 0.5,
-            "ppo_clip_range": 0.3,
+            "ppo_clip_range": 0.2,
             "value_clip_range": 0.01,
             "entropy_coeff": 0.1,
             "schedulers": {
@@ -342,7 +342,7 @@
                     "total_iters": 10000
                 },
                 "entropy_coeff": {
-                    "start_value": 0.1,
+                    "start_value": 0.05,
                     "end_value": 0.005,
                     "total_iters": 10000
                 },
@@ -447,13 +447,13 @@
                     "value_head": {
                         "in_features": 64,
                         "hidden_size": 64,
-                        "dropout_rate": 1.0,
+                        "dropout_rate": 0.1,
                         "output_layer_init_gain": 0.1
                     },
                     "baseline_head": {
                         "in_features": 64,
                         "hidden_size": 64,
-                        "dropout_rate": 1.0,
+                        "dropout_rate": 0.1,
                         "output_layer_init_gain": 0.1
                     },
                     "value_attention": {
@@ -507,21 +507,12 @@
         "buffer_size": 512,
         "num_environments": 8,
         "epochs": 2,
-        "mini_batch_size": 32,
+        "mini_batch_size": 64,
         "ActionRepeat": 1,
         "saveFrequency": 50,
-        "state_normalizer_disabled": {
-            "enabled": false,
-            "clip": 100.0,
+        "states_normalizer": {
             "epsilon": 1e-08,
             "warmup_steps": 0
-        },
-        "rewards_normalizer_disabled": {
-            "enabled": false,
-            "gamma_disabled": 0.99,
-            "clip": 10.0,
-            "warmup_steps_disabled": 0,
-            "epsilon": 1e-08
         }
     }
 }

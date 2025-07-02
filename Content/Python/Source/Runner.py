@@ -129,7 +129,7 @@ class RLRunner:
         self.completed_segments: List[List[TrajectorySegment]] = [[] for _ in range(self.num_envs)]
 
         norm_cfg = trn_cfg.get("states_normalizer", None)
-        self.state_normalizer = RunningMeanStdNormalizer(**norm_cfg, device=self.device) if norm_cfg else None
+        self.state_normalizer = RunningMeanStdNormalizer(**norm_cfg, device=self.device, dtype=torch.float32) if norm_cfg else None
 
         self.writer = SummaryWriter()
         self.update_idx = 0
@@ -195,22 +195,39 @@ class RLRunner:
                     )
                     self.current_segments[e].initial_hidden_state = self.current_memory_hidden_states[e].clone()
         
-        states_for_agent_action = current_states_dict 
+        states_for_agent_action = current_states_dict
         if self.state_normalizer:
-            normalized_states_for_agent_action: Dict[str, Any] = {}
+            # --- Update Step ---
             if has_central_state:
-                normalized_states_for_agent_action["central"] = {}
-                for comp_name, comp_tensor in current_states_dict["central"].items():
-                    self.state_normalizer.update(comp_tensor, key=f"central_{comp_name}")
-                    normalized_states_for_agent_action["central"][comp_name] = \
-                        self.state_normalizer.normalize(comp_tensor, key=f"central_{comp_name}")
+                central_float_states_to_update = {
+                    k: v for k, v in current_states_dict["central"].items() if torch.is_floating_point(v)
+                }
+                if central_float_states_to_update:
+                    self.state_normalizer.update(central_float_states_to_update)
             
+            if has_agent_state and torch.is_floating_point(current_states_dict["agent"]):
+                self.state_normalizer.update({"agent": current_states_dict["agent"]})
+            
+            # --- Normalize Step ---
+            normalized_states = {}
+            if has_central_state:
+                # Separate the float tensors from other types (like the boolean mask).
+                central_states = current_states_dict["central"]
+                central_float_states = {k: v for k, v in central_states.items() if torch.is_floating_point(v)}
+                central_other_states = {k: v for k, v in central_states.items() if not torch.is_floating_point(v)}
+
+                # Normalize ONLY the float tensors.
+                normalized_central_floats = self.state_normalizer.normalize(central_float_states)
+
+                # Recombine the normalized floats with the other tensors (the mask).
+                normalized_states["central"] = {**normalized_central_floats, **central_other_states}
+
             if has_agent_state:
-                self.state_normalizer.update(current_states_dict["agent"], key="agent")
-                normalized_states_for_agent_action["agent"] = \
-                    self.state_normalizer.normalize(current_states_dict["agent"], key="agent")
+                normalized_states["agent"] = self.state_normalizer.normalize(
+                    {"agent": current_states_dict["agent"]}
+                )["agent"]
             
-            states_for_agent_action = normalized_states_for_agent_action
+            states_for_agent_action = normalized_states
 
         states_for_agent_action_batched: Dict[str, Any] = {}
         if has_central_state: # Check if 'central' key exists after potential normalization
@@ -380,7 +397,44 @@ class RLRunner:
             if hasattr(self.agentComm, 'update_received_event') and self.agentComm.update_received_event:
                  win32event.SetEvent(self.agentComm.update_received_event) # Corrected call
             return
+        
+        if self.state_normalizer:
+            # --- Update Step ---
+            # (Update logic for batch_obs_update and batch_nobs_update remains as before)
+            if "central" in batch_obs_update:
+                central_obs_to_update = {k: v for k, v in batch_obs_update["central"].items() if torch.is_floating_point(v)}
+                if central_obs_to_update: self.state_normalizer.update(central_obs_to_update)
+            if "agent" in batch_obs_update and torch.is_floating_point(batch_obs_update["agent"]):
+                self.state_normalizer.update({"agent": batch_obs_update["agent"]})
+            if "central" in batch_nobs_update:
+                central_nobs_to_update = {k: v for k, v in batch_nobs_update["central"].items() if torch.is_floating_point(v)}
+                if central_nobs_to_update: self.state_normalizer.update(central_nobs_to_update)
+            if "agent" in batch_nobs_update and torch.is_floating_point(batch_nobs_update["agent"]):
+                self.state_normalizer.update({"agent": batch_nobs_update["agent"]})
+
+            # --- Normalize Step ---
+            # Normalize batch_obs_update
+            central_obs = batch_obs_update.get("central", {})
+            obs_float_states = {k: v for k, v in central_obs.items() if torch.is_floating_point(v)}
+            obs_other_states = {k: v for k, v in central_obs.items() if not torch.is_floating_point(v)}
+            normalized_obs_floats = self.state_normalizer.normalize(obs_float_states)
             
+            normalized_batch_obs = {"central": {**normalized_obs_floats, **obs_other_states}}
+            if "agent" in batch_obs_update:
+                normalized_batch_obs["agent"] = self.state_normalizer.normalize({"agent": batch_obs_update["agent"]})["agent"]
+            batch_obs_update = normalized_batch_obs
+
+            # Normalize batch_nobs_update
+            central_nobs = batch_nobs_update.get("central", {})
+            nobs_float_states = {k: v for k, v in central_nobs.items() if torch.is_floating_point(v)}
+            nobs_other_states = {k: v for k, v in central_nobs.items() if not torch.is_floating_point(v)}
+            normalized_nobs_floats = self.state_normalizer.normalize(nobs_float_states)
+
+            normalized_batch_nobs = {"central": {**normalized_nobs_floats, **nobs_other_states}}
+            if "agent" in batch_nobs_update:
+                normalized_batch_nobs["agent"] = self.state_normalizer.normalize({"agent": batch_nobs_update["agent"]})["agent"]
+            batch_nobs_update = normalized_batch_nobs
+
         logs = self.agent.update(
             batch_obs_update, batch_act_update, batch_rew_update, batch_nobs_update,
             batch_done_update, batch_trunc_update, batch_init_h_update, batch_attn_mask_update
