@@ -41,9 +41,10 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     OverheadCamResY = Config->GetOrDefaultInt(TEXT("OverheadCameraResY"), OverheadCamResY);
 
     bUseRandomGoals = Config->GetOrDefaultBool(TEXT("bUseRandomGoals"), true);
-    bRemoveGridObjectOnGoalReached = Config->GetOrDefaultBool(TEXT("bRemoveGridObjectOnGoalReached"), false);
-    bRemoveGridObjectOnOOB = Config->GetOrDefaultBool(TEXT("bRemoveGridObjectOnOOB"), false);
-    bRespawnGridObjectOnGoalReached = Config->GetOrDefaultBool(TEXT("bRespawnGridObjectOnGoalReached"), false);
+    bRespawnOnGoal = Config->GetOrDefaultBool(TEXT("bRespawnOnGoal"), true);
+    bRespawnOnOOB = Config->GetOrDefaultBool(TEXT("bRespawnOnOOB"), true);
+    bTerminateOnAllGoalsReached = Config->GetOrDefaultBool(TEXT("bTerminateOnAllGoalsReached"), false);
+    bTerminateOnMaxSteps = Config->GetOrDefaultBool(TEXT("bTerminateOnMaxSteps"), true);
 
     GoalRadius = Config->GetOrDefaultNumber(TEXT("GoalRadius"), GoalRadius);
     GoalCollectRadius = Config->GetOrDefaultNumber(TEXT("GoalCollectRadius"), GoalCollectRadius);
@@ -282,14 +283,14 @@ void UStateManager::UpdateGridObjectFlags()
             {
                 ObjectSlotStates[i] = EObjectSlotState::GoalReached;
                 bShouldCollect[i] = true;
-                bShouldResp[i] = bRespawnGridObjectOnGoalReached;
+                bShouldResp[i] = bRespawnOnGoal; // Use the new toggle
 
-                if (bRemoveGridObjectOnGoalReached || !bShouldResp[i])
+                if (!bShouldResp[i])
                 {
                     ObjectMgr->DisableGridObject(i);
                     OccupancyGrid->RemoveObject(i, FName("GridObjects"));
                 }
-                continue; // Skip to next object, as its state is now terminal
+                continue;
             }
         }
 
@@ -303,9 +304,9 @@ void UStateManager::UpdateGridObjectFlags()
         {
             ObjectSlotStates[i] = EObjectSlotState::OutOfBounds;
             bShouldCollect[i] = true;
-            bShouldResp[i] = !bRemoveGridObjectOnOOB; // Respawn unless told to remove
+            bShouldResp[i] = bRespawnOnOOB;
 
-            if (bRemoveGridObjectOnOOB || !bShouldResp[i])
+            if (!bShouldResp[i])
             {
                 ObjectMgr->DisableGridObject(i);
                 OccupancyGrid->RemoveObject(i, FName("GridObjects"));
@@ -434,24 +435,9 @@ void UStateManager::RespawnGridObjects()
 // ------------------------------------------
 bool UStateManager::AllGridObjectsHandled() const
 {
-    // If we remove objects and don't respawn them, the episode is done when no objects are active or waiting to respawn.
-    if ((bRemoveGridObjectOnGoalReached && !bRespawnGridObjectOnGoalReached) || bRemoveGridObjectOnOOB)
-    {
-        for (int32 i = 0; i < MaxGridObjects; ++i)
-        {
-            if (GetObjectSlotState(i) == EObjectSlotState::Active || GetObjectSlotState(i) == EObjectSlotState::Empty)
-            {
-                // If any slot is still active OR empty (meaning it could still be spawned into), not done.
-                return false;
-            }
-        }
-        return true; // All slots are terminal (GoalReached or OutOfBounds)
-    }
-
-    // If objects are not removed, the episode is done when all objects have reached a goal.
     for (int32 i = 0; i < MaxGridObjects; ++i)
     {
-        if (GetObjectSlotState(i) != EObjectSlotState::GoalReached)
+        if (GetObjectSlotState(i) == EObjectSlotState::Active || GetObjectSlotState(i) == EObjectSlotState::Empty)
         {
             return false;
         }

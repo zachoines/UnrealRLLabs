@@ -192,9 +192,10 @@ private:
     UPROPERTY() float MaxColumnHeight = 4.f;
     UPROPERTY() float BaseRespawnDelay = 0.25f;
     UPROPERTY() bool bUseRandomGoals = true;
-    UPROPERTY() bool bRemoveGridObjectOnGoalReached = false;
-    UPROPERTY() bool bRemoveGridObjectOnOOB = false;
-    UPROPERTY() bool bRespawnGridObjectOnGoalReached = false;
+    UPROPERTY() bool bRespawnOnGoal;
+    UPROPERTY() bool bRespawnOnOOB;
+    UPROPERTY() bool bTerminateOnAllGoalsReached;
+    UPROPERTY() bool bTerminateOnMaxSteps;
     UPROPERTY() float GoalRadius = 1.f;
     UPROPERTY() float GoalCollectRadius = 6.f;
     UPROPERTY() float ObjectRadius = 1.f;

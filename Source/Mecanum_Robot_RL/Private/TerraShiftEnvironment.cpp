@@ -55,11 +55,6 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
     ZAccel_Min = 0.1f;
     ZAccel_Max = 2000.f;
 
-    //lot-based rewards
-    SlotReward_Active = -0.001f;
-    SlotReward_GoalReached = 0.01f;
-    SlotReward_OutOfBounds = -0.01f;
-
     PlatformWorldSize = FVector::ZeroVector;
     PlatformCenter = FVector::ZeroVector;
     CellSize = 1.0f;
@@ -120,10 +115,9 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
         ZAccel_Min = envSpecificCfg->GetOrDefaultNumber(TEXT("ZAccel_Min"), 0.1f);
         ZAccel_Max = envSpecificCfg->GetOrDefaultNumber(TEXT("ZAccel_Max"), 2000.f);
 
-        // Load new slot-based rewards
-        SlotReward_Active = envSpecificCfg->GetOrDefaultNumber(TEXT("SlotReward_Active"), -0.001f);
-        SlotReward_GoalReached = envSpecificCfg->GetOrDefaultNumber(TEXT("SlotReward_GoalReached"), 0.01f);
-        SlotReward_OutOfBounds = envSpecificCfg->GetOrDefaultNumber(TEXT("SlotReward_OutOfBounds"), -0.01f);
+        EventReward_GoalReached = envSpecificCfg->GetOrDefaultNumber(TEXT("EventReward_GoalReached"), 10.0f);
+        EventReward_OutOfBounds = envSpecificCfg->GetOrDefaultNumber(TEXT("EventReward_OutOfBounds"), -10.0f);
+        TimeStepPenalty = envSpecificCfg->GetOrDefaultNumber(TEXT("TimeStepPenalty"), -0.001f);
     }
 
     TerraShiftRoot->SetWorldLocation(TerraShiftParams->Location);
@@ -163,6 +157,12 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
     {
         StateManager->LoadConfig(smCfg);
         CurrentGridObjects = StateManager->GetMaxGridObjects();
+    }
+
+    if (smCfg)
+    {
+        bTerminateOnAllGoalsReached = smCfg->GetOrDefaultBool(TEXT("bTerminateOnAllGoalsReached"), false);
+        bTerminateOnMaxSteps = smCfg->GetOrDefaultBool(TEXT("bTerminateOnMaxSteps"), true);
     }
 
     UEnvironmentConfig* gmCfg = EnvConfig->Get(TEXT("environment/params/GoalManager"));
@@ -242,11 +242,17 @@ FState ATerraShiftEnvironment::State()
 bool ATerraShiftEnvironment::Done()
 {
     if (!Initialized || !StateManager) return true;
-    if (CurrentStep > 0 && StateManager->AllGridObjectsHandled())
+
+    if (bTerminateOnAllGoalsReached && StateManager->AllGridObjectsHandled())
     {
-        UE_LOG(LogTemp, Verbose, TEXT("Episode Done: All objects handled at step %d."), CurrentStep);
         return true;
     }
+
+    if (bTerminateOnMaxSteps && CurrentStep >= MaxSteps)
+    {
+        return true;
+    }
+
     return false;
 }
 
@@ -263,25 +269,48 @@ bool ATerraShiftEnvironment::Trunc()
 
 float ATerraShiftEnvironment::Reward()
 {
-    if (!Initialized || !StateManager) return 0.f;
+    // --- Initial Safety Checks ---
+    if (!Initialized || !StateManager)
+    {
+        return 0.f;
+    }
 
     float DeltaTime = GetWorld()->GetDeltaSeconds();
-    if (DeltaTime < KINDA_SMALL_NUMBER) return 0.f;
-
-    float AccumulatedReward = 0.f;
-
-    for (int ObjIndex = 0; ObjIndex < CurrentGridObjects; ObjIndex++)
+    if (DeltaTime < KINDA_SMALL_NUMBER)
     {
-        EObjectSlotState SlotState = StateManager->GetObjectSlotState(ObjIndex);
-        float ShapingSubReward = 0.f;
+        return 0.f;
+    }
 
-        switch (SlotState)
+    // --- Reward Calculation ---
+
+    // Start with the global, constant penalty applied at each time step.
+    float AccumulatedReward = TimeStepPenalty;
+
+    // Iterate through each grid object to calculate its contribution to the reward.
+    for (int32 ObjIndex = 0; ObjIndex < CurrentGridObjects; ++ObjIndex)
+    {
+        // Check for one-time events (Goal Reached / Out of Bounds)
+        if (StateManager->GetShouldCollectReward(ObjIndex))
         {
-        case EObjectSlotState::Active:
-            AccumulatedReward += SlotReward_Active;
+            if (StateManager->GetHasReachedGoal(ObjIndex))
+            {
+                AccumulatedReward += EventReward_GoalReached;
+            }
+            else if (StateManager->GetHasFallenOff(ObjIndex))
+            {
+                AccumulatedReward += EventReward_OutOfBounds;
+            }
+            // Reset the flag to ensure this event reward is only given once.
+            StateManager->SetShouldCollectReward(ObjIndex, false);
+        }
 
-            // --- ALL DENSE SHAPING REWARDS GO HERE ---
-            // Only calculate these complex rewards if the object is active.
+        // --- Dense Shaping Rewards (only for active objects) ---
+        EObjectSlotState SlotState = StateManager->GetObjectSlotState(ObjIndex);
+        if (SlotState == EObjectSlotState::Active)
+        {
+            float ShapingSubReward = 0.f;
+
+            // 1. Potential-based shaping to encourage progress towards the goal.
             if (bUsePotentialShaping)
             {
                 float currentPotential = CalculatePotential(ObjIndex);
@@ -291,6 +320,8 @@ float ATerraShiftEnvironment::Reward()
                     PreviousPotential[ObjIndex] = currentPotential;
                 }
             }
+
+            // 2. Reward for decreasing the XY-distance to the goal.
             if (bUseXYDistanceImprovement)
             {
                 float previousDistance = StateManager->GetPreviousDistance(ObjIndex);
@@ -301,6 +332,8 @@ float ATerraShiftEnvironment::Reward()
                     ShapingSubReward += DistImprove_Scale * ThresholdAndClamp(deltaDistance, DistImprove_Min, DistImprove_Max);
                 }
             }
+
+            // 3. Penalty for excessive upward Z-axis acceleration.
             if (bUseZAccelerationPenalty)
             {
                 FVector previousVelocity = StateManager->GetPreviousVelocity(ObjIndex);
@@ -312,6 +345,8 @@ float ATerraShiftEnvironment::Reward()
                     ShapingSubReward -= ZAccel_Scale * ThresholdAndClamp(upwardZAcceleration, ZAccel_Min, ZAccel_Max);
                 }
             }
+
+            // 4. Reward for aligning the object's velocity vector towards its goal.
             if (bUseVelAlignment)
             {
                 int32 goalIndex = StateManager->GetGoalIndex(ObjIndex);
@@ -330,24 +365,18 @@ float ATerraShiftEnvironment::Reward()
                     }
                 }
             }
-            break;
 
-        case EObjectSlotState::GoalReached:
-            AccumulatedReward += SlotReward_GoalReached;
-            if (bUsePotentialShaping && PreviousPotential.IsValidIndex(ObjIndex)) PreviousPotential[ObjIndex] = 0.f;
-            break;
-
-        case EObjectSlotState::OutOfBounds:
-            AccumulatedReward += SlotReward_OutOfBounds;
-            if (bUsePotentialShaping && PreviousPotential.IsValidIndex(ObjIndex)) PreviousPotential[ObjIndex] = 0.f;
-            break;
-
-        case EObjectSlotState::Empty:
-            if (bUsePotentialShaping && PreviousPotential.IsValidIndex(ObjIndex)) PreviousPotential[ObjIndex] = 0.f;
-            break;
+            AccumulatedReward += ShapingSubReward;
         }
-        AccumulatedReward += ShapingSubReward;
+        else // Reset potential for non-active objects
+        {
+            if (bUsePotentialShaping && PreviousPotential.IsValidIndex(ObjIndex))
+            {
+                PreviousPotential[ObjIndex] = 0.f;
+            }
+        }
     }
+
     return AccumulatedReward;
 }
 

@@ -116,10 +116,22 @@ private:
     UPROPERTY() float ZAccel_Min;
     UPROPERTY() float ZAccel_Max;
 
-    // Fixed-Slot Reward Parameters **
-    UPROPERTY() float SlotReward_Active;
-    UPROPERTY() float SlotReward_GoalReached;
-    UPROPERTY() float SlotReward_OutOfBounds;
+    // Event-based rewards
+    UPROPERTY()
+    float EventReward_GoalReached;
+
+    UPROPERTY()
+    float EventReward_OutOfBounds;
+
+    UPROPERTY()
+    float TimeStepPenalty;
+
+    // Termination toggles
+    UPROPERTY()
+    bool bTerminateOnAllGoalsReached;
+
+    UPROPERTY()
+    bool bTerminateOnMaxSteps;
 
     // --- Runtime State for Potential Shaping ---
     UPROPERTY()
