@@ -31,13 +31,22 @@ class TrajectorySegment:
         self.rewards: List[torch.Tensor] = []
         self.dones: List[torch.Tensor] = []
         self.truncs: List[torch.Tensor] = []
+        # newly stored values required by MA-POCA update
+        self.log_probs: List[torch.Tensor] = []
+        self.values: List[torch.Tensor] = []
+        self.baselines: List[torch.Tensor] = []
+        self.entropies: List[torch.Tensor] = []
+        self.returns: List[torch.Tensor] = []
         self.initial_hidden_state: Optional[torch.Tensor] = None
 
     def is_full(self) -> bool:
         return self.enable_padding and self.true_sequence_length >= self.max_segment_length
 
-    def add_step(self, obs: Dict[str, Any], act: torch.Tensor, rew: torch.Tensor, 
-                 next_obs: Dict[str, Any], done: torch.Tensor, trunc: torch.Tensor):
+    def add_step(self, obs: Dict[str, Any], act: torch.Tensor, rew: torch.Tensor,
+                 next_obs: Dict[str, Any], done: torch.Tensor, trunc: torch.Tensor,
+                 log_prob: Optional[torch.Tensor] = None, value: Optional[torch.Tensor] = None,
+                 baseline: Optional[torch.Tensor] = None, entropy: Optional[torch.Tensor] = None,
+                 ret: Optional[torch.Tensor] = None):
         if self.is_full():
             print("RLRunner warn: add_step called on full segment")
             return
@@ -47,11 +56,21 @@ class TrajectorySegment:
         self.rewards.append(rew)
         self.dones.append(done)
         self.truncs.append(trunc)
+        if log_prob is not None: self.log_probs.append(log_prob)
+        if value is not None: self.values.append(value)
+        if baseline is not None: self.baselines.append(baseline)
+        if entropy is not None: self.entropies.append(entropy)
+        if ret is not None: self.returns.append(ret)
         self.true_sequence_length += 1
+
+    def set_returns(self, returns: List[torch.Tensor]):
+        """Assign calculated returns to this segment."""
+        self.returns = returns
 
     def tensors_for_collation(self) -> Tuple[
         List[Dict[str, Any]], List[torch.Tensor], List[torch.Tensor],
         List[Dict[str, Any]], List[torch.Tensor], List[torch.Tensor],
+        List[torch.Tensor], List[torch.Tensor], List[torch.Tensor], List[torch.Tensor], List[torch.Tensor],
         Optional[torch.Tensor], int
     ]:
         return (
@@ -61,6 +80,11 @@ class TrajectorySegment:
             self.next_observations,
             self.dones,
             self.truncs,
+            self.log_probs,
+            self.values,
+            self.baselines,
+            self.entropies,
+            self.returns,
             self.initial_hidden_state,
             self.true_sequence_length,
         )
@@ -125,8 +149,15 @@ class RLRunner:
         if self.enable_memory and self.current_memory_hidden_states is not None:
             for e in range(self.num_envs):
                 self.current_segments[e].initial_hidden_state = self.current_memory_hidden_states[e].clone()
-        
+
+        # lists of segments that form the currently running episode for each environment
+        self.current_episode_segments: List[List[TrajectorySegment]] = [[] for _ in range(self.num_envs)]
+
+        # segments that have completed and have computed returns, ready for update
         self.completed_segments: List[List[TrajectorySegment]] = [[] for _ in range(self.num_envs)]
+
+        # per-environment pending step buffers storing info collected at get_actions time
+        self.pending_steps: List[List[Dict[str, Any]]] = [[] for _ in range(self.num_envs)]
 
         norm_cfg = trn_cfg.get("states_normalizer", None)
         self.state_normalizer = RunningMeanStdNormalizer(**norm_cfg, device=self.device, dtype=torch.float32) if norm_cfg else None
@@ -134,6 +165,43 @@ class RLRunner:
         self.writer = SummaryWriter()
         self.update_idx = 0
         print(f"RLRunner initialised (envs: {self.num_envs}, device: {self.device})")
+
+    def _finalize_episode(self, env_index: int):
+        """Compute returns for all segments of a finished episode."""
+        episode_segments = self.current_episode_segments[env_index]
+        if not episode_segments:
+            return
+
+        # gather episode level tensors
+        rewards = []
+        values = []
+        baselines = []
+        dones = []
+        truncs = []
+        for seg in episode_segments:
+            rewards.extend(seg.rewards)
+            values.extend(seg.values)
+            baselines.extend(seg.baselines)
+            dones.extend(seg.dones)
+            truncs.extend(seg.truncs)
+
+        r_t = torch.stack(rewards, dim=0).unsqueeze(0)  # (1,T,1)
+        v_t = torch.stack(values, dim=0).unsqueeze(0)
+        b_t = torch.stack(baselines, dim=0).unsqueeze(0)
+        d_t = torch.stack(dones, dim=0).unsqueeze(0)
+        tr_t = torch.stack(truncs, dim=0).unsqueeze(0)
+
+        with torch.no_grad():
+            returns = self.agent.compute_returns(r_t, v_t, b_t, d_t, tr_t)
+        returns_ep = returns.squeeze(0)
+        step_idx = 0
+        for seg in episode_segments:
+            seg_returns = returns_ep[step_idx : step_idx + seg.true_sequence_length]
+            seg.set_returns([r for r in seg_returns])
+            step_idx += seg.true_sequence_length
+            self.completed_segments[env_index].append(seg)
+
+        episode_segments.clear()
 
 
     def start(self):
@@ -255,17 +323,36 @@ class RLRunner:
             return
 
 
-        actions_ue_flat, (log_probs, entropies), next_h = self.agent.get_actions(
-            states_for_agent_action_batched, 
-            dones=dones_from_comm, 
+        actions_ue_flat, (log_probs, entropies, values, baselines), next_h = self.agent.get_actions(
+            states_for_agent_action_batched,
+            dones=dones_from_comm,
             truncs=truncs_from_comm,
             h_prev_batch=self.current_memory_hidden_states if self.enable_memory else None,
-        ) 
+        )
 
         if self.enable_memory and next_h is not None:
             self.current_memory_hidden_states = next_h 
 
         self.agentComm.send_actions(actions_ue_flat)
+
+        # store per‑environment step info to match rewards later
+        actions_shaped = actions_ue_flat.view(self.num_envs, self.num_agents_cfg, -1)
+        for e in range(self.num_envs):
+            obs_e: Dict[str, Any] = {}
+            if "central" in current_states_dict:
+                obs_e["central"] = {k: v[e].clone() for k, v in current_states_dict["central"].items()}
+            if "agent" in current_states_dict:
+                obs_e["agent"] = current_states_dict["agent"][e].clone()
+
+            step_info = {
+                "obs": obs_e,
+                "action": actions_shaped[e].clone(),
+                "log_prob": log_probs[e].clone(),
+                "entropy": entropies[e].clone(),
+                "value": values[e].clone(),
+                "baseline": baselines[e].clone(),
+            }
+            self.pending_steps[e].append(step_info)
         
         # Pass the unbatched, potentially normalized state dict to StateRecorder
         if self.state_recorder:
@@ -328,39 +415,53 @@ class RLRunner:
         if has_agent_ns:
             ns_dict_permuted["agent"] = ns_dict["agent"].permute(1, 0, 2, 3).contiguous()
 
-        actions_tensor_p = actions_tensor.permute(1, 0, *range(2,actions_tensor.ndim)).contiguous() 
-        rewards_tensor_p = rewards_tensor.permute(1, 0, 2).contiguous() 
-        dones_tensor_p = dones_tensor.permute(1, 0, 2).contiguous()     
-        truncs_tensor_p = truncs_tensor.permute(1, 0, 2).contiguous()  
+        actions_tensor_p = actions_tensor.permute(1, 0, *range(2,actions_tensor.ndim)).contiguous()
+        rewards_tensor_p = rewards_tensor.permute(1, 0, 2).contiguous()
+        dones_tensor_p = dones_tensor.permute(1, 0, 2).contiguous()
+        truncs_tensor_p = truncs_tensor.permute(1, 0, 2).contiguous()
 
         for e in range(NumEnv): 
             for t in range(B_ue): 
-                obs_step: Dict[str, Any] = {}
-                if has_central_s and "central" in s_dict_permuted:
-                    obs_step["central"] = {
-                        k: v_tensor[e, t] for k,v_tensor in s_dict_permuted["central"].items() # Corrected v to v_tensor
-                    }
-                if has_agent_s and "agent" in s_dict_permuted:
-                    obs_step["agent"] = s_dict_permuted["agent"][e,t]
-                
                 next_obs_step: Dict[str, Any] = {}
                 if has_central_ns and "central" in ns_dict_permuted:
                     next_obs_step["central"] = {
-                        k: v_tensor[e, t] for k,v_tensor in ns_dict_permuted["central"].items() # Corrected v to v_tensor
+                        k: v_tensor[e, t] for k,v_tensor in ns_dict_permuted["central"].items()
                     }
                 if has_agent_ns and "agent" in ns_dict_permuted:
                     next_obs_step["agent"] = ns_dict_permuted["agent"][e,t]
 
-                action_step = actions_tensor_p[e,t] 
-                reward_step = rewards_tensor_p[e,t] 
-                done_step = dones_tensor_p[e,t]     
-                trunc_step = truncs_tensor_p[e,t]  
+                reward_step = rewards_tensor_p[e,t]
+                done_step = dones_tensor_p[e,t]
+                trunc_step = truncs_tensor_p[e,t]
 
-                self.current_segments[e].add_step(obs_step, action_step, reward_step, next_obs_step, done_step, trunc_step)
+                step_info = self.pending_steps[e].pop(0) if self.pending_steps[e] else None
+                if step_info is None:
+                    continue
+                obs_step = step_info["obs"]
+                action_step = step_info["action"]
+                logp_step = step_info["log_prob"]
+                ent_step = step_info["entropy"]
+                val_step = step_info["value"]
+                base_step = step_info["baseline"]
+
+                self.current_segments[e].add_step(
+                    obs_step,
+                    action_step,
+                    reward_step,
+                    next_obs_step,
+                    done_step,
+                    trunc_step,
+                    logp_step,
+                    val_step,
+                    base_step,
+                    ent_step,
+                )
                 
                 term_now = (done_step.item() > 0.5) or (trunc_step.item() > 0.5)
                 if self.current_segments[e].is_full() or term_now:
-                    self.completed_segments[e].append(self.current_segments[e])
+                    self.current_episode_segments[e].append(self.current_segments[e])
+                    if term_now:
+                        self._finalize_episode(e)
                     self.current_segments[e] = TrajectorySegment(
                         self.num_agents_cfg, self.device, self.pad_trajectories, self.sequence_length
                     )
@@ -371,7 +472,7 @@ class RLRunner:
             for e in range(NumEnv):
                 seg = self.current_segments[e]
                 if seg.true_sequence_length > 0:
-                    self.completed_segments[e].append(seg)
+                    self.current_episode_segments[e].append(seg)
                     self.current_segments[e] = TrajectorySegment(
                         self.num_agents_cfg, self.device, self.pad_trajectories, self.sequence_length
                     )
@@ -388,11 +489,23 @@ class RLRunner:
                  win32event.SetEvent(self.agentComm.update_received_event) # Corrected call
             return
 
-        batch_obs_update, batch_act_update, batch_rew_update, batch_nobs_update, \
-        batch_done_update, batch_trunc_update, batch_init_h_update, batch_attn_mask_update = \
-            self._collate_and_pad_sequences(all_completed_segments)
+        (
+            batch_obs_update,
+            batch_act_update,
+            batch_rew_update,
+            batch_nobs_update,
+            batch_done_update,
+            batch_trunc_update,
+            batch_logp_update,
+            batch_val_update,
+            batch_base_update,
+            batch_entropy_update,
+            batch_returns_update,
+            batch_init_h_update,
+            batch_attn_mask_update,
+        ) = self._collate_and_pad_sequences(all_completed_segments)
 
-        if not batch_rew_update.numel(): 
+        if not batch_returns_update.numel():
             print("RLRunner: collation resulted in empty batch. Skipping agent update.")
             if hasattr(self.agentComm, 'update_received_event') and self.agentComm.update_received_event:
                  win32event.SetEvent(self.agentComm.update_received_event) # Corrected call
@@ -436,8 +549,18 @@ class RLRunner:
             batch_nobs_update = normalized_batch_nobs
 
         logs = self.agent.update(
-            batch_obs_update, batch_act_update, batch_rew_update, batch_nobs_update,
-            batch_done_update, batch_trunc_update, batch_init_h_update, batch_attn_mask_update
+            batch_obs_update,
+            batch_act_update,
+            batch_returns_update,
+            batch_logp_update,
+            batch_val_update,
+            batch_base_update,
+            batch_entropy_update,
+            batch_nobs_update,
+            batch_done_update,
+            batch_trunc_update,
+            batch_init_h_update,
+            batch_attn_mask_update,
         )
         self._log_step(logs)
 
@@ -452,12 +575,17 @@ class RLRunner:
 
     def _collate_and_pad_sequences(self, segments: List[TrajectorySegment]) -> Tuple[
         Dict[str, Any], torch.Tensor, torch.Tensor, Dict[str, Any],
-        torch.Tensor, torch.Tensor, Optional[torch.Tensor], torch.Tensor
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+        Optional[torch.Tensor], torch.Tensor
     ]:
-        if not segments: 
+        if not segments:
             empty_dict: Dict[str, Any] = {}
             empty_tensor = torch.empty(0, device=self.device)
-            return empty_dict, empty_tensor, empty_tensor, empty_dict, empty_tensor, empty_tensor, None, empty_tensor
+            return (
+                empty_dict, empty_tensor, empty_tensor, empty_dict,
+                empty_tensor, empty_tensor, empty_tensor, empty_tensor,
+                empty_tensor, empty_tensor, empty_tensor, None, empty_tensor
+            )
 
         target_seq_len = self.sequence_length if self.pad_trajectories else max(s.true_sequence_length for s in segments)
         
@@ -483,7 +611,9 @@ class RLRunner:
             batch_observations["agent"] = []
             batch_next_observations["agent"] = []
         
-        A_list, R_list, D_list, TR_list, H_list, lens_list = [], [], [], [], [], []
+        A_list, R_list, D_list, TR_list = [], [], [], []
+        LP_list, V_list, B_list, ENT_list, RET_list = [], [], [], [], []
+        H_list, lens_list = [], []
 
         def _get_dummy_shape_and_dtype(obs_example_dict: Dict[str, Any], key_path: List[str]) -> Tuple[Tuple, torch.dtype]:
             # Helper to get shape and dtype from a potentially nested example observation
@@ -529,7 +659,7 @@ class RLRunner:
         first_segment_first_obs_example = segments[0].observations[0] if segments and segments[0].observations else {}
 
         for seg in segments:
-            obs_steps, act_steps, rew_steps, next_obs_steps, done_steps, trunc_steps, h0_step, len_step = seg.tensors_for_collation()
+            obs_steps, act_steps, rew_steps, next_obs_steps, done_steps, trunc_steps, logp_steps, val_steps, base_steps, ent_steps, ret_steps, h0_step, len_step = seg.tensors_for_collation()
             lens_list.append(min(len_step, target_seq_len))
 
             if expect_agent:
@@ -547,10 +677,15 @@ class RLRunner:
                     central_comp_next_obs_sequence = [ns.get("central", {}).get(comp_key) for ns in next_obs_steps if ns.get("central", {}).get(comp_key) is not None]
                     batch_next_observations["central"][comp_key].append(_pad_sequence_of_tensors(central_comp_next_obs_sequence, ref_obs_for_shape=first_segment_first_obs_example, ref_key_path=["central", comp_key]))
             
-            A_list.append(_pad_sequence_of_tensors(act_steps, ref_obs_for_shape=None)) # Actions usually don't need shape ref from obs
+            A_list.append(_pad_sequence_of_tensors(act_steps, ref_obs_for_shape=None))
             R_list.append(_pad_sequence_of_tensors(rew_steps, ref_obs_for_shape=None))
-            D_list.append(_pad_sequence_of_tensors(done_steps, pad_val=1.0, ref_obs_for_shape=None)) 
+            D_list.append(_pad_sequence_of_tensors(done_steps, pad_val=1.0, ref_obs_for_shape=None))
             TR_list.append(_pad_sequence_of_tensors(trunc_steps, pad_val=1.0, ref_obs_for_shape=None))
+            LP_list.append(_pad_sequence_of_tensors(logp_steps, ref_obs_for_shape=None))
+            V_list.append(_pad_sequence_of_tensors(val_steps, ref_obs_for_shape=None))
+            B_list.append(_pad_sequence_of_tensors(base_steps, ref_obs_for_shape=None))
+            ENT_list.append(_pad_sequence_of_tensors(ent_steps, ref_obs_for_shape=None))
+            RET_list.append(_pad_sequence_of_tensors(ret_steps, ref_obs_for_shape=None))
             
             if self.enable_memory and h0_step is not None: H_list.append(h0_step)
 
@@ -582,6 +717,11 @@ class RLRunner:
         batch_rewards = stack_if_not_empty(R_list)
         batch_dones = stack_if_not_empty(D_list)
         batch_truncs = stack_if_not_empty(TR_list)
+        batch_logp = stack_if_not_empty(LP_list)
+        batch_values = stack_if_not_empty(V_list)
+        batch_baselines = stack_if_not_empty(B_list)
+        batch_entropies = stack_if_not_empty(ENT_list)
+        batch_returns = stack_if_not_empty(RET_list)
         
         batch_initial_h = torch.stack(H_list, dim=0) if (self.enable_memory and H_list) else None
         
@@ -590,8 +730,21 @@ class RLRunner:
         for i, l_eff in enumerate(lens_list):
             attention_mask[i, :l_eff] = 1.0
             
-        return (final_batch_obs, batch_actions, batch_rewards, final_batch_nobs,
-                batch_dones, batch_truncs, batch_initial_h, attention_mask)
+        return (
+            final_batch_obs,
+            batch_actions,
+            batch_rewards,
+            final_batch_nobs,
+            batch_dones,
+            batch_truncs,
+            batch_logp,
+            batch_values,
+            batch_baselines,
+            batch_entropies,
+            batch_returns,
+            batch_initial_h,
+            attention_mask,
+        )
 
     def _log_step(self, logs: Dict[str, Any]):
         for k, v_val in logs.items():
