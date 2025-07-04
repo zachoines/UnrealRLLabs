@@ -157,8 +157,23 @@ class MAPOCAAgent(Agent):
 
     # --- Core Agent Interface Methods ---
     @torch.no_grad()
-    def get_actions(self, states: Dict[str, Any], dones: Optional[torch.Tensor] = None, truncs: Optional[torch.Tensor] = None, eval: bool = False, h_prev_batch: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], Optional[torch.Tensor]]:
-        """Inference-time method to get actions for the current state observations."""
+    def get_actions(
+        self,
+        states: Dict[str, Any],
+        dones: Optional[torch.Tensor] = None,
+        truncs: Optional[torch.Tensor] = None,
+        eval: bool = False,
+        h_prev_batch: Optional[torch.Tensor] = None,
+    ) -> Tuple[
+        torch.Tensor,
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+        Optional[torch.Tensor],
+    ]:
+        """Inference-time method to get actions for the current state observations.
+
+        Returns the UE-flattened actions along with log-probabilities, entropies,
+        predicted values, and baselines used for PPO/MA-POCA updates.
+        """
         s_mask = {"gridobject_sequence_mask": states.get("central", {}).get("gridobject_sequence_mask")}
         emb_SBEA, _ = self.embedding_net.get_base_embedding(states, central_component_padding_masks=s_mask)
         emb_E_A_Embed = emb_SBEA.squeeze(0)
@@ -184,30 +199,48 @@ class MAPOCAAgent(Agent):
         actions_ue_flat_output = actions_shaped.reshape(B_env, -1)
         log_probs_output = log_probs_flat.view(B_env, NA_runtime)
         entropies_output = entropies_flat.view(B_env, NA_runtime)
-        
-        return actions_ue_flat_output, (log_probs_output, entropies_output), h_next_gru_shaped
+
+        with torch.no_grad():
+            feats_seq = feats_for_policy.unsqueeze(1)  # (B,1,NA,F)
+            act_seq = actions_shaped.unsqueeze(1)
+            val_norm, base_norm, _, _, _ = self._get_critic_outputs(feats_seq, act_seq, B_env, 1, NA_runtime)
+
+        values_output = val_norm.squeeze(1)
+        baselines_output = base_norm.squeeze(1)
+
+        return (
+            actions_ue_flat_output,
+            (log_probs_output, entropies_output, values_output, baselines_output),
+            h_next_gru_shaped,
+        )
     
-    def update(self, padded_states_dict_seq: Dict[str, torch.Tensor], padded_actions_seq: torch.Tensor, padded_rewards_seq: torch.Tensor, padded_next_states_dict_seq: Dict[str, torch.Tensor], padded_dones_seq: torch.Tensor, padded_truncs_seq: torch.Tensor, initial_hidden_states_batch: Optional[torch.Tensor], attention_mask_batch: torch.Tensor) -> Dict[str, float]:
+    def update(
+        self,
+        padded_states_dict_seq: Dict[str, torch.Tensor],
+        padded_actions_seq: torch.Tensor,
+        padded_returns_seq: torch.Tensor,
+        old_log_probs_seq: torch.Tensor,
+        old_values_seq: torch.Tensor,
+        old_baselines_seq: torch.Tensor,
+        old_entropies_seq: torch.Tensor,
+        padded_next_states_dict_seq: Dict[str, torch.Tensor],
+        padded_dones_seq: torch.Tensor,
+        padded_truncs_seq: torch.Tensor,
+        initial_hidden_states_batch: Optional[torch.Tensor],
+        attention_mask_batch: torch.Tensor,
+    ) -> Dict[str, float]:
         logs_acc = self._initialize_logs()
         B, T = attention_mask_batch.shape
         NA = self.num_agents
         mask_btna = attention_mask_batch.unsqueeze(-1).expand(-1, -1, NA)
 
-        # --- REWARD PROCESSING AND LOGGING ---
-        rewards_seq = padded_rewards_seq.clone()
-        valid_r_mask = attention_mask_batch.unsqueeze(-1).bool()
+        valid_returns_mask = attention_mask_batch.unsqueeze(-1).bool()
+        if valid_returns_mask.any():
+            logs_acc["mean/return"].append(padded_returns_seq[valid_returns_mask].mean().item())
+            logs_acc["std/return"].append(padded_returns_seq[valid_returns_mask].std().item())
 
-        if valid_r_mask.any():
-            raw_rewards_to_log = padded_rewards_seq[valid_r_mask]
-            logs_acc["reward/raw_mean"].append(raw_rewards_to_log.mean().item())
-            logs_acc["reward/raw_std"].append(raw_rewards_to_log.std().item())
-
-        if self.rewards_normalizer:
-            if valid_r_mask.any():
-                rewards_to_process = rewards_seq[valid_r_mask]
-                self.rewards_normalizer.update(rewards_to_process)
-                normalized_rewards = self.rewards_normalizer.normalize(rewards_to_process).squeeze(-1)
-                rewards_seq[valid_r_mask] = normalized_rewards.to(rewards_seq.dtype)
+        if mask_btna.any():
+            logs_acc["mean/logp_old"].append(old_log_probs_seq[mask_btna.bool()].mean().item())
 
         with torch.no_grad():
             s_mask = {"gridobject_sequence_mask": padded_states_dict_seq.get("central", {}).get("gridobject_sequence_mask")}
@@ -217,42 +250,37 @@ class MAPOCAAgent(Agent):
             feats_s_seq, h_n_for_next_buffer = self._apply_memory_seq(emb_s_seq, initial_hidden_states_batch, return_hidden=True)
             feats_ns_seq = self._apply_memory_seq(emb_ns_seq, h_n_for_next_buffer)
 
-            old_val_norm, old_base_norm_placeholder, _, s_val_feats_agg, s_base_feats_agg = self._get_critic_outputs(feats_s_seq, padded_actions_seq, B, T, NA)
-            next_val_norm, _, _, ns_val_feats_agg, ns_base_feats_agg = self._get_critic_outputs(feats_ns_seq, torch.zeros_like(padded_actions_seq), B, T, NA)
-            # Note: old_base_norm will be recomputed with gradients later, so we use a placeholder name for the no_grad version.
-                    
-            # --- Intrinsic Rewards & GAE ---
+            _, _, _, s_val_feats_agg, s_base_feats_agg = self._get_critic_outputs(feats_s_seq, padded_actions_seq, B, T, NA)
+            _, _, _, ns_val_feats_agg, ns_base_feats_agg = self._get_critic_outputs(feats_ns_seq, torch.zeros_like(padded_actions_seq), B, T, NA)
+
             intrinsic_rewards, intrinsic_stats = self._compute_intrinsic_rewards(feats_s_seq, padded_actions_seq, mask_btna)
             self._log_intrinsic_reward_stats(logs_acc, intrinsic_stats)
-            rewards_for_gae = rewards_seq + intrinsic_rewards.mean(dim=-1, keepdim=True)
-            
-            old_val_denorm = self.value_popart.denormalize_outputs(old_val_norm) if self.enable_popart else old_val_norm
-            next_val_denorm = self.value_popart.denormalize_outputs(next_val_norm) if self.enable_popart else next_val_norm
-            
-            returns_seq = self._compute_gae_with_padding(rewards_for_gae, old_val_denorm, next_val_denorm, padded_dones_seq, padded_truncs_seq, attention_mask_batch)
 
             if self.enable_popart:
-                self._update_popart_stats(returns_seq, attention_mask_batch.unsqueeze(-1), mask_btna.unsqueeze(-1))
+                self._update_popart_stats(padded_returns_seq, attention_mask_batch.unsqueeze(-1), mask_btna.unsqueeze(-1))
                 self._log_popart_stats(logs_acc)
 
-
-            valid_returns_mask = attention_mask_batch.unsqueeze(-1).bool()
-            if valid_returns_mask.any():
-                logs_acc["mean/return"].append(returns_seq[valid_returns_mask].mean().item())
-                logs_acc["std/return"].append(returns_seq[valid_returns_mask].std().item())
-                logs_acc["mean/value_prediction"].append(old_val_denorm[valid_returns_mask].mean().item())
-                logs_acc["std/value_prediction"].append(old_val_denorm[valid_returns_mask].std().item())
-            
-            old_logp_seq, _ = self._recompute_log_probs_from_features(feats_s_seq, padded_actions_seq)
-            if mask_btna.any(): logs_acc["mean/logp_old"].append(old_logp_seq[mask_btna.bool()].mean().item())
-            
             if self.enable_iqn_distillation:
                 self._push_to_iqn_buffer(
-                    s_val_feats_agg, ns_val_feats_agg, 
-                    s_base_feats_agg, ns_base_feats_agg,
-                    padded_actions_seq, rewards_seq, padded_dones_seq, 
-                    attention_mask_batch, initial_hidden_states_batch, h_n_for_next_buffer
+                    s_val_feats_agg,
+                    ns_val_feats_agg,
+                    s_base_feats_agg,
+                    ns_base_feats_agg,
+                    padded_actions_seq,
+                    padded_returns_seq,
+                    padded_dones_seq,
+                    attention_mask_batch,
+                    initial_hidden_states_batch,
+                h_n_for_next_buffer,
                 )
+
+        baseline_denorm = (
+            self.baseline_popart.denormalize_outputs(old_baselines_seq)
+            if self.enable_popart
+            else old_baselines_seq
+        )
+        baseline_denorm = baseline_denorm.squeeze(-1)
+        advantages_seq = self._calculate_advantages(padded_returns_seq, baseline_denorm, mask_btna, logs_acc)
 
         idx = np.arange(B)
         for _epoch in range(self.epochs):
@@ -263,9 +291,11 @@ class MAPOCAAgent(Agent):
 
                 # --- Minibatch Data Preparation ---
                 mb_actions = padded_actions_seq[mb_idx]
-                mb_old_logp = old_logp_seq[mb_idx]
-                mb_old_val_norm = old_val_norm[mb_idx]
-                mb_returns = returns_seq[mb_idx]
+                mb_old_logp = old_log_probs_seq[mb_idx]
+                mb_old_val_norm = old_values_seq[mb_idx]
+                mb_old_base_norm = old_baselines_seq[mb_idx]
+                mb_returns = padded_returns_seq[mb_idx]
+                mb_adv = advantages_seq[mb_idx]
                 mb_init_h = initial_hidden_states_batch[mb_idx] if initial_hidden_states_batch is not None else None
                 mb_mask_btna = mask_btna[mb_idx]
                 
@@ -279,16 +309,14 @@ class MAPOCAAgent(Agent):
                 # --- PPO Core Loss Calculation ---
                 new_lp_mb, ent_mb = self._recompute_log_probs_from_features(feats_s_mb, mb_actions)
                 new_val_norm, new_base_norm, _, _, _ = self._get_critic_outputs(feats_s_mb, mb_actions, M, T, NA)
-                _, old_base_norm, _, _, _ = self._get_critic_outputs(feats_s_seq[mb_idx], mb_actions, M, T, NA)
-                adv = self._calculate_advantages(mb_returns, new_base_norm, mb_mask_btna, logs_acc)
                 
-                pol_loss = self._ppo_clip_loss(new_lp_mb, mb_old_logp.detach(), adv.detach(), self.ppo_clip_range, mb_mask_btna)
+                pol_loss = self._ppo_clip_loss(new_lp_mb, mb_old_logp.detach(), mb_adv.detach(), self.ppo_clip_range, mb_mask_btna)
                 ent_loss = (-ent_mb * mb_mask_btna).sum() / mb_mask_btna.sum().clamp(min=1e-8)
                 val_targets = mb_returns if not self.enable_popart else self.value_popart.normalize_targets(mb_returns)
                 val_loss = self._clipped_value_loss(mb_old_val_norm.detach(), new_val_norm, val_targets.detach(), self.value_clip_range, attention_mask_batch[mb_idx].unsqueeze(-1))
                 base_targets = mb_returns.unsqueeze(2).expand_as(new_base_norm)
                 if self.enable_popart: base_targets = self.baseline_popart.normalize_targets(base_targets)
-                base_loss = self._clipped_value_loss(old_base_norm.detach(), new_base_norm, base_targets.detach(), self.value_clip_range, mb_mask_btna.unsqueeze(-1))
+                base_loss = self._clipped_value_loss(mb_old_base_norm.detach(), new_base_norm, base_targets.detach(), self.value_clip_range, mb_mask_btna.unsqueeze(-1))
                 
                 # --- PPO Optimization Step ---
                 ppo_total_loss = pol_loss + self.entropy_coeff * ent_loss + self.value_loss_coeff * val_loss + self.baseline_loss_coeff * base_loss
@@ -492,11 +520,17 @@ class MAPOCAAgent(Agent):
         Calculates the advantages, logs stats for the unnormalized advantages,
         and then returns the optionally normalized advantages.
         """
+        # Ensure inputs are shaped as (B,T) for returns and (B,T,NA) for baseline
+        if returns_seq.dim() == 3:
+            returns_seq = returns_seq.squeeze(-1)
+
+        baseline_seq = baseline_seq.squeeze(-1) if baseline_seq.dim() == 4 else baseline_seq
+
         # The baseline is already denormalized if PopArt is used.
         advantages = returns_seq.unsqueeze(2).expand_as(baseline_seq) - baseline_seq
         
         # Log stats of unnormalized advantages
-        valid_mask = mask.bool().unsqueeze(-1)
+        valid_mask = mask.bool()
         if valid_mask.any():
             valid_advantages = advantages[valid_mask]
             # These keys were added to _initialize_logs
@@ -510,8 +544,8 @@ class MAPOCAAgent(Agent):
                 mean = valid_advantages.mean()
                 std = valid_advantages.std() + 1e-8
                 advantages[valid_mask] = (valid_advantages - mean) / std
-        
-        return advantages.squeeze(-1)
+
+        return advantages.squeeze(-1) if advantages.dim() == 4 else advantages
     
     def _compute_gae_with_padding(self, r: torch.Tensor, v: torch.Tensor, v_next: torch.Tensor, d: torch.Tensor, tr: torch.Tensor, mask_bt: torch.Tensor) -> torch.Tensor:
         """
@@ -548,6 +582,25 @@ class MAPOCAAgent(Agent):
             gae = gae * valid_mask_step
             
         return returns
+
+    def compute_returns(
+        self,
+        rewards: torch.Tensor,
+        values: torch.Tensor,
+        dones: torch.Tensor,
+        truncs: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute episode returns using GAE on unpadded sequences."""
+        v_denorm = self.value_popart.denormalize_outputs(values) if self.enable_popart else values
+
+        if rewards.shape[-1] == 1 and v_denorm.shape[-1] > 1:
+            rewards = rewards.expand_as(v_denorm)
+
+        v_next = torch.zeros_like(v_denorm)
+        v_next[:, :-1] = v_denorm[:, 1:]
+
+        mask_bt = torch.ones(rewards.shape[0], rewards.shape[1], device=self.device)
+        return self._compute_gae_with_padding(rewards, v_denorm, v_next, dones, truncs, mask_bt)
 
     def _ppo_clip_loss(self, new_lp, old_lp, adv, clip_range, mask):
         """Calculates the PPO clipped surrogate objective loss."""
