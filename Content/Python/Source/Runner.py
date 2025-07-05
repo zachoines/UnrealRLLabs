@@ -200,51 +200,6 @@ class RLRunner:
 
         episode_segments.clear()
 
-    def _finalize_rollout(self, env_index: int, bootstrap_value: torch.Tensor):
-        """Finalize an unfinished rollout by bootstrapping the last state."""
-        segments = self.current_episode_segments[env_index]
-        if self.current_segments[env_index].true_sequence_length > 0:
-            segments.append(self.current_segments[env_index])
-        if not segments:
-            return
-
-        rewards: List[torch.Tensor] = []
-        values: List[torch.Tensor] = []
-        dones: List[torch.Tensor] = []
-        truncs: List[torch.Tensor] = []
-        for seg in segments:
-            rewards.extend(seg.rewards)
-            values.extend(seg.values)
-            dones.extend(seg.dones)
-            truncs.extend(seg.truncs)
-
-        r_t = torch.stack(rewards, dim=0).unsqueeze(0)
-        v_t = torch.stack(values, dim=0).unsqueeze(0)
-        d_t = torch.stack(dones, dim=0).unsqueeze(0)
-        tr_t = torch.stack(truncs, dim=0).unsqueeze(0)
-
-        with torch.no_grad():
-            returns = self.agent.compute_bootstrapped_returns(
-                r_t, v_t, d_t, tr_t, bootstrap_value.view(1, 1)
-            )
-        returns_ep = returns.squeeze(0)
-
-        step_idx = 0
-        for seg in segments:
-            seg_returns = returns_ep[step_idx : step_idx + seg.true_sequence_length]
-            seg.set_returns([r for r in seg_returns])
-            step_idx += seg.true_sequence_length
-            self.completed_segments[env_index].append(seg)
-
-        segments.clear()
-        self.current_segments[env_index] = TrajectorySegment(
-            self.num_agents_cfg, self.device, self.pad_trajectories, self.sequence_length
-        )
-        if self.enable_memory and self.current_memory_hidden_states is not None:
-            self.current_segments[env_index].initial_hidden_state = (
-                self.current_memory_hidden_states[env_index].clone()
-            )
-
 
     def start(self):
         while True:
@@ -296,9 +251,14 @@ class RLRunner:
 
         if self.enable_memory and self.current_memory_hidden_states is not None:
             for e in range(self.num_envs):
-                if (dones[e] > 0.5) or (truncs[e] > 0.5):
-                    # reset memory for new episode but postpone segment finalization
-                    self.current_memory_hidden_states[e].zero_()
+                if (dones[e] > 0.5) or (truncs[e] > 0.5): 
+                    self.current_memory_hidden_states[e].zero_() 
+                    if self.current_segments[e].true_sequence_length > 0:
+                        self.completed_segments[e].append(self.current_segments[e])
+                    self.current_segments[e] = TrajectorySegment(
+                        self.num_agents_cfg, self.device, self.pad_trajectories, self.sequence_length
+                    )
+                    self.current_segments[e].initial_hidden_state = self.current_memory_hidden_states[e].clone()
         
         states_for_agent_action = current_states_dict
         if self.state_normalizer:
@@ -420,8 +380,8 @@ class RLRunner:
         self.update_idx += 1
         print(f"RLRunner update {self.update_idx}")
 
-        # retrieve experiences (states are ignored except for bootstrapping)
-        states_tensor, next_states_tensor, _, rewards_tensor, dones_tensor, truncs_tensor = self.agentComm.get_experiences()
+        # retrieve experiences mainly for rewards; states are reconstructed from cached data
+        _, _, _, rewards_tensor, dones_tensor, truncs_tensor = self.agentComm.get_experiences()
         
         if not rewards_tensor.numel(): # No experiences received
             print("RLRunner: no experiences received in update. Skipping.")
@@ -436,48 +396,6 @@ class RLRunner:
         rewards_tensor_p = rewards_tensor.permute(1, 0, 2).contiguous()
         dones_tensor_p = dones_tensor.permute(1, 0, 2).contiguous()
         truncs_tensor_p = truncs_tensor.permute(1, 0, 2).contiguous()
-
-        # --- Bootstrap value for final next states ---
-        bootstrap_states: Dict[str, Any] = {}
-        if next_states_tensor.get("central"):
-            bootstrap_states["central"] = {
-                k: v[B_ue - 1] for k, v in next_states_tensor["central"].items()
-            }
-        if next_states_tensor.get("agent") is not None:
-            bootstrap_states["agent"] = next_states_tensor["agent"][B_ue - 1]
-
-        if self.state_normalizer and bootstrap_states:
-            normalized_bootstrap: Dict[str, Any] = {}
-            if "central" in bootstrap_states:
-                central = bootstrap_states["central"]
-                central_float = {k: v for k, v in central.items() if torch.is_floating_point(v)}
-                central_other = {k: v for k, v in central.items() if not torch.is_floating_point(v)}
-                norm_c = self.state_normalizer.normalize(central_float)
-                normalized_bootstrap["central"] = {**norm_c, **central_other}
-            if "agent" in bootstrap_states:
-                normalized_bootstrap["agent"] = self.state_normalizer.normalize({"agent": bootstrap_states["agent"]})["agent"]
-            bootstrap_states = normalized_bootstrap
-
-        bootstrap_states_batched: Dict[str, Any] = {}
-        if "central" in bootstrap_states:
-            bootstrap_states_batched["central"] = {k: v.unsqueeze(0) for k, v in bootstrap_states["central"].items()}
-        if "agent" in bootstrap_states:
-            bootstrap_states_batched["agent"] = bootstrap_states["agent"].unsqueeze(0)
-
-        bootstrap_dones = dones_tensor[B_ue - 1].unsqueeze(0)
-        bootstrap_truncs = truncs_tensor[B_ue - 1].unsqueeze(0)
-
-        with torch.no_grad():
-            if bootstrap_states_batched:
-                _, (_, _, bootstrap_values, _), _ = self.agent.get_actions(
-                    bootstrap_states_batched,
-                    dones=bootstrap_dones,
-                    truncs=bootstrap_truncs,
-                    eval=True,
-                    h_prev_batch=self.current_memory_hidden_states if self.enable_memory else None,
-                )
-            else:
-                bootstrap_values = torch.zeros(NumEnv, 1, device=self.device)
 
         for e in range(NumEnv):
             for t in range(B_ue):
@@ -529,10 +447,6 @@ class RLRunner:
                     )
                     if self.enable_memory and self.current_memory_hidden_states is not None:
                          self.current_segments[e].initial_hidden_state = self.current_memory_hidden_states[e].clone()
-
-        # finalize any remaining segments using bootstrapped value
-        for e in range(NumEnv):
-            self._finalize_rollout(e, bootstrap_values[e])
         
         all_completed_segments = [seg for env_segments in self.completed_segments for seg in env_segments]
         for env_segments in self.completed_segments: 
