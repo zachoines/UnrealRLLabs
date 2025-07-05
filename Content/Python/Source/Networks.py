@@ -559,9 +559,13 @@ class BetaPolicyNetwork(BasePolicyNetwork):
         return alpha, beta
 
     def get_actions(self, emb: torch.Tensor, eval: bool = False):
-        """ Samples actions or returns mean, computes log_probs and entropy. """
+        """Samples actions or returns mean, computes log_probs and entropy."""
         dist = self._get_transformed_distribution(emb)
-        actions = dist.mean if eval else dist.rsample()
+        if eval:
+            actions = dist.mean
+        else:
+            # Beta distribution lacks rsample; use non-reparameterized sample
+            actions = dist.rsample() if getattr(dist, "has_rsample", False) else dist.sample()
 
         # --- Calculate Log Probability ---
         # TransformedDistribution correctly handles the Jacobian for log_prob
