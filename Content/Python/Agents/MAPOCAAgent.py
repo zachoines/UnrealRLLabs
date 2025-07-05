@@ -219,6 +219,7 @@ class MAPOCAAgent(Agent):
         padded_states_dict_seq: Dict[str, torch.Tensor],
         padded_actions_seq: torch.Tensor,
         padded_returns_seq: torch.Tensor,
+        padded_rewards_seq: torch.Tensor,
         old_log_probs_seq: torch.Tensor,
         old_values_seq: torch.Tensor,
         old_baselines_seq: torch.Tensor,
@@ -234,10 +235,20 @@ class MAPOCAAgent(Agent):
         NA = self.num_agents
         mask_btna = attention_mask_batch.unsqueeze(-1).expand(-1, -1, NA)
 
-        valid_returns_mask = attention_mask_batch.unsqueeze(-1).bool()
-        if valid_returns_mask.any():
-            logs_acc["mean/return"].append(padded_returns_seq[valid_returns_mask].mean().item())
-            logs_acc["std/return"].append(padded_returns_seq[valid_returns_mask].std().item())
+        valid_mask = attention_mask_batch.unsqueeze(-1).bool()
+        if valid_mask.any():
+            logs_acc["mean/return"].append(padded_returns_seq[valid_mask].mean().item())
+            logs_acc["std/return"].append(padded_returns_seq[valid_mask].std().item())
+            logs_acc["reward/raw_mean"].append(padded_rewards_seq[valid_mask].mean().item())
+            logs_acc["reward/raw_std"].append(padded_rewards_seq[valid_mask].std().item())
+
+            value_denorm = (
+                self.value_popart.denormalize_outputs(old_values_seq)
+                if self.enable_popart
+                else old_values_seq
+            )
+            logs_acc["mean/value_prediction"].append(value_denorm[valid_mask].mean().item())
+            logs_acc["std/value_prediction"].append(value_denorm[valid_mask].std().item())
 
         if mask_btna.any():
             logs_acc["mean/logp_old"].append(old_log_probs_seq[mask_btna.bool()].mean().item())
@@ -255,6 +266,7 @@ class MAPOCAAgent(Agent):
 
             intrinsic_rewards, intrinsic_stats = self._compute_intrinsic_rewards(feats_s_seq, padded_actions_seq, mask_btna)
             self._log_intrinsic_reward_stats(logs_acc, intrinsic_stats)
+            padded_returns_seq = padded_returns_seq + intrinsic_rewards.mean(dim=-1, keepdim=True)
 
             if self.enable_popart:
                 self._update_popart_stats(padded_returns_seq, attention_mask_batch.unsqueeze(-1), mask_btna.unsqueeze(-1))
