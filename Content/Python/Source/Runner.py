@@ -521,6 +521,7 @@ class RLRunner:
             batch_obs_update,
             batch_act_update,
             batch_returns_update,
+            batch_rew_update,
             batch_logp_update,
             batch_val_update,
             batch_base_update,
