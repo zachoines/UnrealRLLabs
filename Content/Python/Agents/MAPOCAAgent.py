@@ -189,6 +189,9 @@ class MAPOCAAgent(Agent):
             feats_for_policy = feats_flat_from_gru.reshape(B_env, NA_runtime, -1)
             h_next_gru_shaped = h_next_gru_flat.permute(1,0,2).reshape(B_env, NA_runtime, self.memory_layers, self.memory_hidden)
             if dones is not None and truncs is not None:
+                # RLRunner zeros the hidden state before calling this method
+                # when a new episode begins. We additionally mask the *next*
+                # hidden state so that subsequent timesteps also start fresh.
                 reset_mask = (dones.squeeze(0) > 0.5) | (truncs.squeeze(0) > 0.5)
                 h_next_gru_shaped = h_next_gru_shaped * (1.0 - reset_mask.view(B_env, 1, 1, 1).float())
 
@@ -610,6 +613,27 @@ class MAPOCAAgent(Agent):
 
         v_next = torch.zeros_like(v_denorm)
         v_next[:, :-1] = v_denorm[:, 1:]
+
+        mask_bt = torch.ones(rewards.shape[0], rewards.shape[1], device=self.device)
+        return self._compute_gae_with_padding(rewards, v_denorm, v_next, dones, truncs, mask_bt)
+
+    def compute_bootstrapped_returns(
+        self,
+        rewards: torch.Tensor,
+        values: torch.Tensor,
+        dones: torch.Tensor,
+        truncs: torch.Tensor,
+        bootstrap_value: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute returns for a truncated rollout using the provided bootstrap value."""
+        v_denorm = self.value_popart.denormalize_outputs(values) if self.enable_popart else values
+
+        if rewards.shape[-1] == 1 and v_denorm.shape[-1] > 1:
+            rewards = rewards.expand_as(v_denorm)
+
+        v_next = torch.zeros_like(v_denorm)
+        v_next[:, :-1] = v_denorm[:, 1:]
+        v_next[:, -1] = bootstrap_value
 
         mask_bt = torch.ones(rewards.shape[0], rewards.shape[1], device=self.device)
         return self._compute_gae_with_padding(rewards, v_denorm, v_next, dones, truncs, mask_bt)
