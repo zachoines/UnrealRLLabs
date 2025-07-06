@@ -462,12 +462,12 @@ class RLRunner:
 
         bootstrap_states_batched: Dict[str, Any] = {}
         if "central" in bootstrap_states:
-            bootstrap_states_batched["central"] = {k: v.unsqueeze(0) for k, v in bootstrap_states["central"].items()}
+            bootstrap_states_batched["central"] = bootstrap_states["central"]
         if "agent" in bootstrap_states:
-            bootstrap_states_batched["agent"] = bootstrap_states["agent"].unsqueeze(0)
+            bootstrap_states_batched["agent"] = bootstrap_states["agent"]
 
-        bootstrap_dones = dones_tensor[B_ue - 1].unsqueeze(0)
-        bootstrap_truncs = truncs_tensor[B_ue - 1].unsqueeze(0)
+        bootstrap_dones = dones_tensor[B_ue - 1]
+        bootstrap_truncs = truncs_tensor[B_ue - 1]
 
         with torch.no_grad():
             if bootstrap_states_batched:
