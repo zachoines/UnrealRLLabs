@@ -614,6 +614,27 @@ class MAPOCAAgent(Agent):
         mask_bt = torch.ones(rewards.shape[0], rewards.shape[1], device=self.device)
         return self._compute_gae_with_padding(rewards, v_denorm, v_next, dones, truncs, mask_bt)
 
+    def compute_bootstrapped_returns(
+        self,
+        rewards: torch.Tensor,
+        values: torch.Tensor,
+        dones: torch.Tensor,
+        truncs: torch.Tensor,
+        bootstrap_value: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute returns for a truncated rollout using the provided bootstrap value."""
+        v_denorm = self.value_popart.denormalize_outputs(values) if self.enable_popart else values
+
+        if rewards.shape[-1] == 1 and v_denorm.shape[-1] > 1:
+            rewards = rewards.expand_as(v_denorm)
+
+        v_next = torch.zeros_like(v_denorm)
+        v_next[:, :-1] = v_denorm[:, 1:]
+        v_next[:, -1] = bootstrap_value
+
+        mask_bt = torch.ones(rewards.shape[0], rewards.shape[1], device=self.device)
+        return self._compute_gae_with_padding(rewards, v_denorm, v_next, dones, truncs, mask_bt)
+
     def _ppo_clip_loss(self, new_lp, old_lp, adv, clip_range, mask):
         """Calculates the PPO clipped surrogate objective loss."""
         ratio = torch.exp((new_lp - old_lp).clamp(-10, 10))
