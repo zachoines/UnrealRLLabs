@@ -225,7 +225,7 @@ class RLRunner:
 
         with torch.no_grad():
             returns = self.agent.compute_bootstrapped_returns(
-                r_t, v_t, d_t, tr_t, bootstrap_value.view(1, 1)
+                r_t, v_t, d_t, tr_t, bootstrap_value.view(1, -1)
             )
         returns_ep = returns.squeeze(0)
 
