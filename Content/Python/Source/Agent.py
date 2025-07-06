@@ -30,3 +30,4 @@ class Agent(nn.Module):
                 param_norm = p.grad.data.norm(2)
                 total += param_norm.item() ** 2
         return torch.tensor(total**0.5)
+        

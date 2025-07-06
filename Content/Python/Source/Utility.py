@@ -1,9 +1,13 @@
+# NOTICE: This file includes modifications generated with the assistance of generative AI (VSCode Copilot Assistant).
+# Original code structure and logic by the project author.
+# The modifications are intended to enhance the functionality and performance of the code.
+# The author has reviewed all changes for correctness.
 import torch
 import torch.nn as nn
 import torch.nn.init as init
 import torch.nn.functional as F
 import numpy as np
-from typing import Union, Dict
+from typing import Union, Dict, Tuple
 
 def create_2d_sin_cos_pos_emb(h: int, w: int, embed_dim: int, device: torch.device):
     """
@@ -204,123 +208,219 @@ class RunningMeanStdNormalizer:
     Dictionary-capable normalizer that tracks running mean/variance for each key's
     last-dimension 'features'. Also works on a single Tensor.
 
-    - If you pass a single Tensor x => shape (..., features), it stores stats under "__single__".
-    - If you pass a dictionary of Tensors => each value shape (..., features),
-      it tracks each dictionary key separately.
-
-    Each update() call does a standard running mean/variance calculation on the *flattened*
-    data except for the last dimension. So for shape (B,T,..., features), we gather
-    B*T*... samples across each feature dimension.
+    Warmup behavior (Statistics Gathering Cutoff Interpretation):
+    - If 'warmup_steps' > 0:
+        - During the first 'warmup_steps' calls to 'update()', statistics are accumulated.
+        - After 'warmup_steps' calls to 'update()', statistics become frozen and are no longer updated.
+    - If 'warmup_steps' == 0:
+        - Statistics are updated indefinitely with every call to 'update()'.
+    - The 'normalize()' method always uses the current (potentially frozen) statistics.
     """
 
-    def __init__(self, warmup_steps: int = 0, epsilon: float = 1e-4, device: torch.device = torch.device("cpu")):
-        """
-        :param epsilon: initial count to avoid divide-by-zero
-        :param device: store mean/var on this device
-        """
+    def __init__(self, warmup_steps: int = 0, epsilon: float = 1e-4, device: torch.device = torch.device("cpu"), dtype: torch.dtype = torch.float32):
         self.device = device
-        self.epsilon = epsilon
+        self.epsilon = epsilon 
         self.warmup_steps = warmup_steps
-        self.current_step = 0
-
-        # stats[key] = (mean: Tensor, var: Tensor, count: float)
-        # single Tensors store under key="__single__"
-        self.stats = {}
+        self.update_calls_count = 0  # Tracks total number of calls to update()
+        self.stats: Dict[str, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}  # mean, var, count
+        self.dtype = dtype
 
     def update(self, x: Union[torch.Tensor, Dict[str, torch.Tensor]]):
         """
         Incorporate new data into the running mean+var.
-        Usually, you'd pass single states from get_states() (which might be shape (1,NumEnv,features) or so).
-        
-        If 'x' is a dict => we handle each key's last dimension separately.
-        If 'x' is a single Tensor => store in self.stats["__single__"].
+        Updates statistics if warmup_steps == 0 OR if warmup_steps > 0 and update_calls_count < warmup_steps.
         """
-        # Stop calling update if warmup steps have been exceeded
-        if self.warmup_steps > 0:
-            self.current_step += 1
-            skip_update = self.warmup_steps < self.current_step
-            if skip_update:
-                return
+        
+        should_update_this_call = False
+        if self.warmup_steps == 0: # No cutoff, always update
+            should_update_this_call = True
+        elif self.update_calls_count < self.warmup_steps: # Within warmup/gathering period
+            should_update_this_call = True
+        
+        # Increment total calls regardless, to track progression against warmup_steps
+        # This ensures that even if should_update_this_call becomes false,
+        # we know we've passed the warmup_steps threshold.
+        self.update_calls_count +=1 
 
+        if not should_update_this_call:
+            return # Statistics are frozen
+
+        # Proceed to update stats
         if isinstance(x, torch.Tensor):
-            self._update_single(x, key="__single__")
+            if x.numel() > 0:
+                self._update_single(x, key="__single__")
         elif isinstance(x, dict):
             for k, v in x.items():
-                self._update_single(v, key=k)
+                if v is not None and v.numel() > 0:
+                    self._update_single(v, key=k)
         else:
             raise ValueError("Unsupported type for update: must be Tensor or dict of Tensors.")
 
     def normalize(self, x: Union[torch.Tensor, Dict[str, torch.Tensor]]
                  ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
         """
-        Returns a normalized version of 'x' using the stored stats for each key.
-        - If 'x' is single => use stats["__single__"] if it exists.
-        - If 'x' is dict => for each k => stats[k].
-        We flatten all but last dim, subtract mean, divide sqrt(var+1e-8).
+        Returns a normalized version of 'x' using the current stored stats for each key.
+        Normalization is always applied based on the latest statistics (which might be frozen).
         """
         if isinstance(x, torch.Tensor):
+            if x.numel() == 0: return x
             return self._normalize_single(x, key="__single__")
         elif isinstance(x, dict):
             out = {}
             for k,v in x.items():
-                out[k] = self._normalize_single(v, key=k)
+                if v is not None:
+                    if v.numel() == 0: out[k] = v
+                    else: out[k] = self._normalize_single(v, key=k)
+                else:
+                    out[k] = None
             return out
         else:
             raise ValueError("Unsupported type for normalize: must be Tensor or dict of Tensors.")
 
-    # ---------------------------------------------------------------------
-    #                          Internal Methods
-    # ---------------------------------------------------------------------
-
     def _update_single(self, tensor: torch.Tensor, key: str):
-        """
-        Flatten all but last dimension => shape(N, features).
-        Update running mean & var for this 'key'.
-        """
         tensor = tensor.to(self.device)
 
-        # create empty stats if not found
+        if tensor.ndim == 0: 
+            tensor = tensor.view(1, 1)
+        elif tensor.ndim == 1: 
+            tensor = tensor.unsqueeze(-1)
+        
+        num_features = tensor.shape[-1]
+
         if key not in self.stats:
-            fdim = tensor.shape[-1]
-            mean_ = torch.zeros(fdim, device=self.device)
-            var_  = torch.ones(fdim, device=self.device)
-            count_= self.epsilon
+            mean_ = torch.zeros(num_features, device=self.device, dtype=tensor.dtype)
+            var_  = torch.ones(num_features, device=self.device, dtype=tensor.dtype)
+            # Initialize count with epsilon. Note: count is a scalar tensor.
+            count_= torch.full((1,), self.epsilon, device=self.device, dtype=torch.float64)
             self.stats[key] = (mean_, var_, count_)
 
-        mean, var, cnt = self.stats[key]
+        mean, var, count = self.stats[key]
+        
+        if mean.shape[-1] != num_features:
+            raise RuntimeError(f"Feature dimension mismatch for key '{key}' during update. "
+                               f"Stored normalizer fdim: {mean.shape[-1]}, input tensor fdim: {num_features}")
 
-        # Flatten => shape(N, features)
-        flat = tensor.view(-1, tensor.shape[-1])
-        batch_mean = flat.mean(dim=0)
-        batch_var  = flat.var(dim=0, unbiased=True)
-        batch_count= flat.size(0)
+        flat_tensor = tensor.reshape(-1, num_features)
+        flat_tensor = flat_tensor.to(self.dtype)
+        batch_n = flat_tensor.shape[0]
+        if batch_n == 0: return
 
+        batch_mean = flat_tensor.mean(dim=0)
+        batch_var = flat_tensor.var(dim=0, unbiased=True) if batch_n > 1 else torch.zeros_like(batch_mean)
+
+        if torch.isnan(batch_mean).any() or torch.isnan(batch_var).any():
+            print(f"RunningMeanStdNormalizer Warning: NaN in batch stats for key '{key}'. Skipping update.")
+            return
+
+        # Welford's algorithm for updating mean and variance
+        total_count_prev = count # This is a scalar tensor, e.g., tensor(100.001)
+        # batch_n is an int. For tensor operations, ensure consistent types or explicit casting.
+        total_count_new = total_count_prev + float(batch_n) 
+        
         delta = batch_mean - mean
-        new_count = cnt + batch_count
+        new_mean = mean + delta * (float(batch_n) / total_count_new.clamp(min=1e-8)) # Use 1e-8 for count clamp too
+        
+        # M2 = var * count (approximately, for running sum of squares of differences)
+        # More stable update for variance:
+        m_a = var * total_count_prev 
+        m_b = batch_var * float(batch_n)
+        
+        # Ensure terms in division are not zero
+        clamped_total_count_new = total_count_new.clamp(min=1e-8)
+        new_var = (m_a + m_b + torch.square(delta) * (total_count_prev * float(batch_n)) / clamped_total_count_new) / clamped_total_count_new
+        new_var = torch.clamp(new_var, min=1e-8) # Clamp variance to a small positive to avoid sqrt(0) in normalize
 
-        # standard formula
-        new_mean = mean + delta * (batch_count / new_count)
-        m_a = var * cnt
-        m_b = batch_var * batch_count
-        M2  = m_a + m_b + delta**2 * cnt * batch_count / new_count
-        new_var = M2 / new_count
+        self.stats[key] = (new_mean, new_var, total_count_new)
 
-        self.stats[key] = (new_mean, new_var, new_count)
 
     def _normalize_single(self, tensor: torch.Tensor, key: str) -> torch.Tensor:
-        """
-        Normalizes 'tensor' (shape => (..., features)) using self.stats[key].
-        If stats not exist for 'key', returns tensor as is.
-        """
-        if key not in self.stats:
-            # no stats => return unmodified
-            return tensor
+        if key not in self.stats: 
+            # This can happen if normalize is called before any updates for this key,
+            # or if warmup_steps=0 and update was never called.
+            # Initialize with default stats if not present, then normalize.
+            # This makes normalize more robust if called on a "cold" normalizer.
+            print(f"RunningMeanStdNormalizer Info: normalize called for key '{key}' but no stats found. Initializing default stats.")
+            if tensor.ndim == 0: temp_fdim = 1
+            elif tensor.ndim == 1: temp_fdim = 1 # Assuming (M,) is M samples of 1 feature
+            else: temp_fdim = tensor.shape[-1]
+            
+            temp_mean = torch.zeros(temp_fdim, device=self.device, dtype=tensor.dtype)
+            temp_var = torch.ones(temp_fdim, device=self.device, dtype=tensor.dtype)
+            # Epsilon is for the count, not directly for var here, but using 1e-8 for sqrt is good
+            return (tensor.to(self.device) - temp_mean.unsqueeze(0)) / torch.sqrt(temp_var.unsqueeze(0) + 1e-8)
 
-        mean, var, cnt = self.stats[key]
-        # shape => (features,). broadcast to tensor's last dimension
-        bshape = [1]*(tensor.dim()-1) + [tensor.shape[-1]]
-        mean_ = mean.view(*bshape)
-        var_  = var.view(*bshape)
+        mean, var, count = self.stats[key]
+        tensor_on_device = tensor.to(self.device)
 
-        # (x - mean)/ sqrt(var + 1e-8)
-        return (tensor.to(self.device) - mean_) / torch.sqrt(var_ + 1e-8)
+        if tensor_on_device.ndim == 0:
+            tensor_on_device = tensor_on_device.view(1, 1)
+        elif tensor_on_device.ndim == 1:
+            tensor_on_device = tensor_on_device.unsqueeze(-1)
+        
+        if tensor_on_device.shape[-1] != mean.shape[-1]:
+            raise RuntimeError(
+                f"Feature dimension mismatch in _normalize_single for key '{key}'. "
+                f"Input tensor features: {tensor_on_device.shape[-1]}, "
+                f"Normalizer features: {mean.shape[-1]}. Input shape: {tensor.shape}"
+            )
+
+        mean_reshaped = mean.unsqueeze(0)
+        var_reshaped  = var.unsqueeze(0)
+
+        # Use the stored variance, which should be clamped >= 1e-8 from _update_single
+        return ((tensor_on_device - mean_reshaped) / torch.sqrt(var_reshaped + 1e-8)).to(self.dtype)
+
+class PopArtNormalizer(nn.Module):
+    def __init__(self, output_layer: nn.Linear, beta: float = 0.999, epsilon: float = 1e-5, device: torch.device = torch.device("cpu")):
+        super().__init__()
+        self.output_layer = output_layer # The final linear layer of the value head
+        self.beta = beta         # For EMA of mean and second moment
+        self.epsilon = epsilon   # For numerical stability
+        self.device = device
+
+        # Running statistics for the raw returns (targets)
+        self.register_buffer('mu', torch.zeros(1, device=self.device))
+        self.register_buffer('nu', torch.ones(1, device=self.device)) # Second moment E[X^2]
+        self.register_buffer('sigma', torch.ones(1, device=self.device))
+        self.register_buffer('count', torch.tensor(0.0, device=self.device)) # Using float for potentially large counts with EMA
+
+    @torch.no_grad()
+    def update_stats(self, raw_targets_batch: torch.Tensor):
+        # raw_targets_batch should be a flat tensor of raw (unnormalized) returns
+        if raw_targets_batch.numel() == 0:
+            return
+
+        batch_mu = raw_targets_batch.mean()
+        batch_nu = (raw_targets_batch ** 2).mean()
+
+        # Exponential Moving Average (EMA) update for stability
+        # If count is small, weigh new batch more heavily
+        # For very first batch, directly set stats, or use a scheme to rapidly adapt.
+        if self.count < 10: # Initialize with first few batches directly or with high weight
+             current_beta = 0.1 # Or some other aggressive initial beta
+        else:
+             current_beta = self.beta
+
+        new_mu = current_beta * self.mu + (1 - current_beta) * batch_mu
+        new_nu = current_beta * self.nu + (1 - current_beta) * batch_nu
+        
+        self.count += raw_targets_batch.numel() # Can track total elements seen
+
+        old_mu = self.mu.clone()
+        old_sigma = self.sigma.clone()
+
+        self.mu.copy_(new_mu)
+        self.nu.copy_(new_nu)
+        self.sigma.copy_(torch.sqrt(self.nu - self.mu**2).clamp(min=self.epsilon))
+
+        # Adapt the output layer of the associated value network
+        if torch.is_tensor(self.output_layer.weight) and torch.is_tensor(self.output_layer.bias): # Check if parameters exist
+            self.output_layer.weight.data.mul_(old_sigma / self.sigma)
+            self.output_layer.bias.data.mul_(old_sigma / self.sigma)
+            self.output_layer.bias.data.add_((old_mu - self.mu) / self.sigma)
+
+    def normalize_targets(self, raw_targets: torch.Tensor) -> torch.Tensor:
+        return (raw_targets - self.mu) / self.sigma
+
+    def denormalize_outputs(self, normalized_outputs: torch.Tensor) -> torch.Tensor:
+        return normalized_outputs * self.sigma + self.mu

@@ -1,18 +1,25 @@
-# NOTICE: This file includes modifications generated with the assistance of generative AI.
+# NOTICE: This file includes modifications generated with the assistance of generative AI (VSCode Copilot Assistant).
 # Original code structure and logic by the project author.
+# The modifications are intended to enhance the functionality and performance of the code.
+# The author has reviewed all changes for correctness.
 import math
 import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
-from typing import Dict, Union, List, Any
+from typing import Dict, Union, List, Any, Optional, Tuple
 from torch.distributions import Beta, AffineTransform, Normal, TransformedDistribution
 from torch.distributions.transforms import TanhTransform
 from abc import ABC, abstractmethod
 
 # Assuming Utility functions are correctly imported from your project structure
-from .Utility import init_weights_leaky_relu, init_weights_gelu_linear, init_weights_gelu_conv, create_2d_sin_cos_pos_emb
+from .Utility import (
+    init_weights_leaky_relu, 
+    init_weights_gelu_linear, 
+    init_weights_gelu_conv, 
+    create_2d_sin_cos_pos_emb
+)
 
 class BasePolicyNetwork(nn.Module, ABC):
     """Abstract base class for policy networks (discrete or continuous)."""
@@ -153,179 +160,49 @@ class DiscretePolicyNetwork(BasePolicyNetwork):
             return log_probs, entropies
 
 
-class LinearNetwork(nn.Module):
-    """Simple MLP block: Linear -> [Dropout] -> [GELU] -> [LayerNorm]"""
-    def __init__(self,
-                 in_features: int,
-                 out_features: int,
-                 dropout_rate: float = 0.0,
-                 activation: bool = True,
-                 layer_norm: bool = False,
-                 linear_init_scale: float = 1.0):
-        super().__init__()
-        layers = []
-        linear_layer = nn.Linear(in_features, out_features)
-        layers.append(linear_layer)
-        # Dropout is applied *after* the linear layer, before activation/norm
-        if dropout_rate > 0.0:
-            layers.append(nn.Dropout(dropout_rate))
-        if activation:
-            layers.append(nn.GELU())
-        if layer_norm:
-            # LayerNorm is applied on the output features
-            layers.append(nn.LayerNorm(out_features))
-        self.model = nn.Sequential(*layers)
-        # Apply initialization only to the Linear layer within this block
-        init_weights_gelu_linear(linear_layer, scale=linear_init_scale)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.model(x)
-
-
-class StatesEncoder(nn.Module):
-    """Encodes state vector using two LinearNetwork blocks."""
-    def __init__(self, state_dim: int, hidden_size: int, output_size: int, **kwargs):
-        super().__init__()
-        # Filter kwargs to pass to each LinearNetwork
-        # First block usually has activation & norm based on kwargs
-        kwargs_hidden = kwargs.copy()
-        # Second block (output) typically doesn't have activation/norm
-        kwargs_output = {k:v for k,v in kwargs.items() if k not in ['activation', 'layer_norm']}
-        kwargs_output['activation'] = False
-        kwargs_output['layer_norm'] = False
-
-        self.net = nn.Sequential(
-            LinearNetwork(state_dim, hidden_size, **kwargs_hidden),
-            LinearNetwork(hidden_size, output_size, **kwargs_output)
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
-class StatesActionsEncoder(nn.Module):
-    """Encodes concatenated state-action pair using two LinearNetwork blocks."""
-    def __init__(self, state_dim: int, action_dim: int, hidden_size: int, output_size: int, **kwargs):
-        super().__init__()
-        # Filter kwargs similarly to StatesEncoder
-        kwargs_hidden = kwargs.copy()
-        kwargs_output = {k:v for k,v in kwargs.items() if k not in ['activation', 'layer_norm']}
-        kwargs_output['activation'] = False
-        kwargs_output['layer_norm'] = False
-
-        self.net = nn.Sequential(
-            LinearNetwork(state_dim + action_dim, hidden_size, **kwargs_hidden),
-            LinearNetwork(hidden_size, output_size, **kwargs_output)
-        )
-
-    def forward(self, obs: torch.Tensor, act: torch.Tensor) -> torch.Tensor:
-        # Ensure correct broadcasting/expansion for concatenation
-        if act.shape[:-1] != obs.shape[:-1]:
-             try:
-                 # Expand action dimensions (except the last) to match observation
-                 act_expanded = act.expand(*obs.shape[:-1], act.shape[-1])
-                 x = torch.cat([obs, act_expanded], dim=-1)
-             except RuntimeError as e:
-                 print(f"Error concatenating obs shape {obs.shape} and action shape {act.shape}: {e}")
-                 raise e
-        else:
-            # Shapes already match for concatenation
-            x = torch.cat([obs, act], dim=-1)
-        return self.net(x)
-
-
 class ValueNetwork(nn.Module):
     """MLP predicting a scalar value from input features, with optional dropout."""
-    def __init__(self, in_features: int, hidden_size: int, dropout_rate: float = 0.0, linear_init_scale: float = 1.0):
+    def __init__(self, in_features: int, hidden_size: int, dropout_rate: float = 0.0,
+                 linear_init_scale: float = 1.0, # General scale for hidden layers
+                 output_layer_init_gain: Optional[float] = None): # Specific gain for the output layer
         super().__init__()
-        self.value_net = nn.Sequential(
-            nn.Linear(in_features, hidden_size),
-            nn.GELU(),
-            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.GELU(),
-            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
-            nn.Linear(hidden_size, 1) # Output a single scalar value
-        )
-        # Apply initialization to all linear layers
-        self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
+        
+        # Define layers individually for more control over initialization
+        self.fc1 = nn.Linear(in_features, hidden_size)
+        self.act1 = nn.GELU()
+        self.dropout1 = nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity()
+        
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.act2 = nn.GELU()
+        self.dropout2 = nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity()
+        
+        self.output_layer = nn.Linear(hidden_size, 1) # Outputs a single scalar value
+
+        # Initialize hidden layers using the general linear_init_scale
+        # Assuming init_weights_gelu_linear is available in the scope
+        init_weights_gelu_linear(self.fc1, scale=linear_init_scale)
+        init_weights_gelu_linear(self.fc2, scale=linear_init_scale)
+
+        # Specific initialization for the output layer
+        if output_layer_init_gain is not None:
+            init.orthogonal_(self.output_layer.weight, gain=output_layer_init_gain)
+            if self.output_layer.bias is not None:
+                init.zeros_(self.output_layer.bias)
+        else:
+            # Fallback to the general init scale if specific gain is not provided for the output layer
+            init_weights_gelu_linear(self.output_layer, scale=linear_init_scale)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.value_net(x)
-
-
-class ResidualAttention(nn.Module):
-    """
-    Multi-Head Attention block with residual connection and pre-LayerNorm.
-    Supports both self-attention and cross-attention.
-    """
-    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0, self_attention: bool = False):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.self_attention = self_attention
-
-        # Linear projections for Q, K, V
-        self.query_proj = nn.Linear(embed_dim, embed_dim)
-        self.key_proj   = nn.Linear(embed_dim, embed_dim)
-        self.value_proj = nn.Linear(embed_dim, embed_dim)
-
-        # Layer normalization applied *before* projections (Pre-LN)
-        self.norm_q = nn.LayerNorm(embed_dim)
-        self.norm_k = nn.LayerNorm(embed_dim)
-        self.norm_v = nn.LayerNorm(embed_dim)
-
-        # Multi-Head Attention layer (dropout applied to attention weights)
-        self.mha = nn.MultiheadAttention(
-            embed_dim, num_heads, batch_first=True, dropout=dropout
-        )
-        # Layer normalization applied *after* the residual connection (Post-LN)
-        self.norm_out = nn.LayerNorm(embed_dim)
-
-    def forward(self, x_q, x_k=None, x_v=None):
-        """
-        Forward pass for the attention block.
-
-        Args:
-            x_q (torch.Tensor): Query tensor.
-            x_k (torch.Tensor, optional): Key tensor. If None and self_attention=True, uses x_q.
-                                         If None and self_attention=False, defaults to x_q.
-            x_v (torch.Tensor, optional): Value tensor. If None and self_attention=True, uses x_q.
-                                         If None and self_attention=False, defaults to x_k.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: Output tensor after attention and residual connection,
-                                             and attention weights.
-        """
-        # Determine K, V based on attention type and provided inputs
-        if self.self_attention:
-            # In self-attention, K and V are typically derived from Q
-            key_input = x_q if x_k is None else x_k
-            value_input = x_q if x_v is None else x_v
-        else: # Cross-attention
-            key_input = x_q if x_k is None else x_k # Default K to Q if not provided
-            value_input = key_input if x_v is None else x_v # Default V to K if not provided
-
-        # Apply pre-LayerNorm
-        qn = self.norm_q(x_q)
-        kn = self.norm_k(key_input)
-        vn = self.norm_v(value_input)
-
-        # Linear projections
-        q_proj = self.query_proj(qn)
-        k_proj = self.key_proj(kn)
-        v_proj = self.value_proj(vn)
-
-        # Multi-Head Attention computation
-        # MHA expects query, key, value arguments
-        attn_out, attn_weights = self.mha(q_proj, k_proj, v_proj, need_weights=True)
-
-        # Residual connection: Add attention output to original query input
-        out = x_q + attn_out
-        # Apply post-LayerNorm
-        out = self.norm_out(out)
-
-        return out, attn_weights
+        x = self.fc1(x)
+        x = self.act1(x)
+        x = self.dropout1(x)
+        
+        x = self.fc2(x)
+        x = self.act2(x)
+        x = self.dropout2(x)
+        
+        x = self.output_layer(x)
+        return x
 
 
 class TanhContinuousPolicyNetwork(BasePolicyNetwork):
@@ -617,12 +494,14 @@ class BetaPolicyNetwork(BasePolicyNetwork):
         self.action_dim = out_features
         self.min_concentration = min_concentration
 
-        # Shared MLP backbone
+        # Shared MLP backbone with LayerNorm and Dropout
         self.shared = nn.Sequential(
             nn.Linear(in_features, hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.GELU(),
             nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
             nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.GELU(),
             nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
         )
@@ -630,6 +509,7 @@ class BetaPolicyNetwork(BasePolicyNetwork):
         # Head for predicting raw alpha parameters
         self.alpha_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.GELU(),
             nn.Linear(hidden_size, out_features)
         )
@@ -637,12 +517,13 @@ class BetaPolicyNetwork(BasePolicyNetwork):
         # Head for predicting raw beta parameters
         self.beta_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.GELU(),
             nn.Linear(hidden_size, out_features)
         )
 
         # Initialize linear layers
-        self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
+        self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale))
 
         # Apply specific bias initialization to the output layers for alpha/beta params
         if hasattr(self.alpha_head[-1], 'bias'):
@@ -651,7 +532,7 @@ class BetaPolicyNetwork(BasePolicyNetwork):
              nn.init.constant_(self.beta_head[-1].bias, param_init_bias)
 
         # Precompute log(scale) for entropy calculation
-        self.log_scale = torch.log(torch.tensor(2.0)) # From AffineTransform(loc=-1, scale=2)
+        self.register_buffer('log_scale', torch.log(torch.tensor(2.0))) # From AffineTransform(loc=-1, scale=2)
 
     def _get_transformed_distribution(self, emb: torch.Tensor):
         """ Helper to create the Beta distribution scaled to [-1, 1]. """
@@ -678,9 +559,14 @@ class BetaPolicyNetwork(BasePolicyNetwork):
         return alpha, beta
 
     def get_actions(self, emb: torch.Tensor, eval: bool = False):
-        """ Samples actions or returns mean, computes log_probs and entropy. """
+        """Samples actions or returns mean, computes log_probs and entropy."""
         dist = self._get_transformed_distribution(emb)
-        actions = dist.mean if eval else dist.rsample()
+        if eval:
+            base_mean = dist.base_dist.mean
+            actions = dist.transforms[0](base_mean)
+        else:
+            # Beta distribution may lack rsample; use non-reparameterized sample when needed
+            actions = dist.rsample() if getattr(dist, "has_rsample", False) else dist.sample()
 
         # --- Calculate Log Probability ---
         # TransformedDistribution correctly handles the Jacobian for log_prob
@@ -689,10 +575,8 @@ class BetaPolicyNetwork(BasePolicyNetwork):
         # --- Calculate Entropy (Manual Workaround) ---
         # H[Transformed] = H[Base] + log|scale|
         base_entropy = dist.base_dist.entropy() # Entropy of Beta(alpha, beta)
-        # Ensure log_scale is on the same device as base_entropy
-        log_scale_term = self.log_scale.to(base_entropy.device)
         # Add log|scale| for each action dimension
-        entropies = (base_entropy + log_scale_term).sum(dim=-1)
+        entropies = (base_entropy + self.log_scale).sum(dim=-1)
 
         return actions, log_probs, entropies
 
@@ -710,11 +594,10 @@ class BetaPolicyNetwork(BasePolicyNetwork):
         # --- Calculate Entropy (Manual Workaround) ---
         # H[Transformed] = H[Base] + log|scale|
         base_entropy = dist.base_dist.entropy()
-        log_scale_term = self.log_scale.to(base_entropy.device)
-        entropies = (base_entropy + log_scale_term).sum(dim=-1)
+        entropies = (base_entropy + self.log_scale).sum(dim=-1)
 
         return log_probs, entropies
-
+    
 class FeedForwardBlock(nn.Module):
     """Transformer FFN sublayer: LN -> Linear -> GELU -> Dropout -> Linear -> Dropout + Residual"""
     def __init__(self, embed_dim: int, hidden_dim: int = None, dropout: float = 0.0):
@@ -743,444 +626,1088 @@ class FeedForwardBlock(nn.Module):
 
 class SharedCritic(nn.Module):
     """
-    Shared critic architecture using ResidualAttention for both state value (V)
-    and counterfactual baseline (B) estimation.
+    Shared critic architecture.
+    MODIFIED to integrate IQN and Distillation networks for value and baseline.
+    It now expects its main config (net_cfg) to contain sub-configs for
+    iqn_params and distillation_params, and feature_dim for IQNs.
     """
     def __init__(self, net_cfg: Dict[str, Any]):
         super().__init__()
-        # Initialize sub-modules using configurations passed via spread operator
-        self.value_head = ValueNetwork(**net_cfg["value_head"])
-        self.baseline_head = ValueNetwork(**net_cfg["baseline_head"])
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Extract IQN and Distillation specific configurations
+        iqn_config = net_cfg.get("iqn_params", {})
+
+        # Original PPO-style value and baseline heads
+        self.value_head_ppo = ValueNetwork(**net_cfg["value_head"])
+        self.baseline_head_ppo = ValueNetwork(**net_cfg["baseline_head"])
+
+        # Attention mechanisms
         self.value_attention = ResidualAttention(**net_cfg["value_attention"])
         self.baseline_attention = ResidualAttention(**net_cfg['baseline_attention'])
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # IQN Networks
+        self.value_iqn_net = ImplicitQuantileNetwork(
+            **iqn_config.get("iqn_network", {})
+        )
+        self.baseline_iqn_net = ImplicitQuantileNetwork(
+            **iqn_config.get("iqn_network", {})
+        )
+
+        # Distillation Networks
+        self.value_distill_net = DistillationNetwork(
+            **iqn_config.get("distillation_network", {})
+        )
+        self.baseline_distill_net = DistillationNetwork(
+            **iqn_config.get("distillation_network", {})
+        )
+
         init_scale = net_cfg.get("linear_init_scale", 0.1)
-        # Apply initialization specifically to Linear layers within this module
-        self.apply(lambda m: init_weights_gelu_linear(m, scale=init_scale) if isinstance(m, nn.Linear) else None)
+        # Apply initialization to attention layers if they don't do it internally
+        # Assuming ValueNetwork, ImplicitQuantileNetwork, DistillationNetwork handle their own init.
+        self.value_attention.apply(lambda m: init_weights_gelu_linear(m, scale=init_scale) if isinstance(m, nn.Linear) and not isinstance(m, nn.LayerNorm) else None)
+        self.baseline_attention.apply(lambda m: init_weights_gelu_linear(m, scale=init_scale) if isinstance(m, nn.Linear) and not isinstance(m, nn.LayerNorm) else None)
 
-    def values(self, x: torch.Tensor) -> torch.Tensor:
+    def values(self, x: torch.Tensor, taus: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Computes the centralized state value V(s).
-        Input x shape: (..., A, H) where ... are batch dimensions (e.g., S, E or MB).
-        Output shape: (..., 1)
-        """
-        input_shape = x.shape
-        H = input_shape[-1] # Embedding dimension
-        A = input_shape[-2] # Number of agents
-        leading_dims = input_shape[:-2] # Batch dimensions
-        B = int(np.prod(leading_dims)) # Flattened batch size
+        Computes the centralized state value V(s) using IQN and Distillation.
+        Input x shape: (..., A, H_input_to_attention)
+        taus shape: (B_flat, num_quantiles_for_IQN_input, 1) or (B_flat * num_quantiles, 1)
 
-        # Reshape for attention: (B, A, H)
-        x_flat = x.reshape(B, A, H)
-        # Apply self-attention over agent embeddings
-        attn_out, _ = self.value_attention(x_flat) # -> (B, A, H)
-        # Aggregate features across agents (e.g., mean pooling)
-        aggregated_emb = attn_out.mean(dim=1) # -> (B, H)
-        # Predict value from aggregated embedding
-        vals = self.value_head(aggregated_emb) # -> (B, 1)
-        # Reshape back to original leading dimensions
-        vals = vals.view(*leading_dims, 1)
-        return vals
-
-    def baselines(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Computes the per-agent counterfactual baseline B(s, a).
-        Input x shape: (..., A, SeqLen, H) where SeqLen is typically A.
-                       ... are batch dimensions (e.g., S, E or MB).
-        Output shape: (..., A, 1)
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]:
+                - v_distilled: Distilled scalar state value. Shape: (..., 1)
+                - value_quantiles: Quantile values from IQN. Shape: (B_flat, num_quantiles)
         """
         input_shape = x.shape
-        H = input_shape[-1]  # Embedding dimension
-        SeqLen = input_shape[-2] # Sequence length for attention (usually A)
-        A = input_shape[-3]   # Agent dimension
-        leading_dims = input_shape[:-3] # Batch dimensions
-        B = int(np.prod(leading_dims)) # Flattened batch size
+        # H_attention_out is the output dim of attention, which is feature_dim for IQN
+        H_attention_out = self.value_attention.embed_dim
+        A = input_shape[-2]
+        leading_dims = input_shape[:-2]
+        B_flat = int(np.prod(leading_dims))
 
-        # Reshape for attention: flatten batch and agent dims -> (B*A, SeqLen, H)
-        x_flat = x.reshape(B * A, SeqLen, H)
-        # Apply self-attention over the sequence dimension (groupmates + self obs)
-        x_attn, _ = self.baseline_attention(x_flat) # -> (B*A, SeqLen, H)
-        # Aggregate features across the sequence dimension (e.g., mean pooling)
-        agent_emb = x_attn.mean(dim=1)  # -> (B*A, H)
-        # Predict baseline value for each agent's aggregated context
-        base = self.baseline_head(agent_emb) # -> (B*A, 1)
-        # Reshape back to original leading dimensions + agent dimension
-        base = base.view(*leading_dims, A, 1)
-        return base
+        x_flat = x.reshape(B_flat, A, x.shape[-1]) # x.shape[-1] is input dim to attention
+        attn_out, _ = self.value_attention(x_flat)  # (B_flat, A, H_attention_out)
+        aggregated_emb = attn_out.mean(dim=1)      # (B_flat, H_attention_out)
+
+        v_ppo = self.value_head_ppo(aggregated_emb) # (B_flat, 1)
+        value_quantiles = self.value_iqn_net(aggregated_emb, taus) # (B_flat, num_quantiles)
+        v_distilled = self.value_distill_net(v_ppo, value_quantiles) # (B_flat, 1)
+
+        v_distilled_reshaped = v_distilled.view(*leading_dims, 1)
+        return v_distilled_reshaped, value_quantiles
+
+    def baselines(self, x: torch.Tensor, taus: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Computes the per-agent counterfactual baseline B(s, a_j) using IQN and Distillation.
+        Input x shape: (..., A, SeqLen, H_input_to_attention)
+        taus shape: (B_flat*A, num_quantiles_for_IQN_input, 1) or (B_flat*A * num_quantiles, 1)
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]:
+                - b_distilled: Distilled scalar baseline values. Shape: (..., A, 1)
+                - baseline_quantiles: Quantile values from IQN. Shape: (B_flat*A, num_quantiles)
+        """
+        input_shape = x.shape
+        H_attention_out = self.baseline_attention.embed_dim
+        SeqLen = input_shape[-2]
+        A = input_shape[-3]
+        leading_dims = input_shape[:-3]
+        B_flat = int(np.prod(leading_dims))
+
+        x_flat_for_attn = x.reshape(B_flat * A, SeqLen, x.shape[-1])
+        x_attn, _ = self.baseline_attention(x_flat_for_attn) # (B_flat*A, SeqLen, H_attention_out)
+        agent_emb_for_baseline = x_attn.mean(dim=1)          # (B_flat*A, H_attention_out)
+
+        b_ppo = self.baseline_head_ppo(agent_emb_for_baseline) # (B_flat*A, 1)
+        baseline_quantiles = self.baseline_iqn_net(agent_emb_for_baseline, taus) # (B_flat*A, num_quantiles)
+        b_distilled = self.baseline_distill_net(b_ppo, baseline_quantiles) # (B_flat*A, 1)
+
+        b_distilled_reshaped = b_distilled.view(*leading_dims, A, 1)
+        return b_distilled_reshaped, baseline_quantiles
 
 
-class AgentIDPosEnc(nn.Module):
+class RNDTargetNetwork(nn.Module):
+    """
+    Random Network Distillation (RND) Target Network.
+    Its weights are fixed after random initialization.
+    """
+    def __init__(self, input_size: int, output_size: int, hidden_size: int = 256):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, output_size)
+        )
+        # Initialize weights (e.g., LeakyReLU-appropriate Kaiming normal)
+        # The specific initialization can be tuned.
+        self.apply(lambda m: init_weights_leaky_relu(m, negative_slope=0.01) if isinstance(m, nn.Linear) else None)
+
+        # Target network weights are fixed after random initialization
+        for param in self.parameters():
+            param.requires_grad = False
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass for the RND target network.
+        Args:
+            x (torch.Tensor): Input tensor (e.g., state/feature embeddings).
+        Returns:
+            torch.Tensor: Output random features.
+        """
+        return self.net(x)
+
+
+class RNDPredictorNetwork(nn.Module):
+    """
+    Random Network Distillation (RND) Predictor Network.
+    This network is trained to predict the output of the RNDTargetNetwork.
+    """
+    def __init__(self, input_size, output_size, hidden_size=256, dropout_rate=0.1):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size, output_size)
+        )
+        # Initialize weights (e.g., LeakyReLU-appropriate Kaiming normal)
+        # The specific initialization can be tuned.
+        self.apply(lambda m: init_weights_leaky_relu(m, negative_slope=0.01) if isinstance(m, nn.Linear) else None)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass for the RND predictor network.
+        Args:
+            x (torch.Tensor): Input tensor (e.g., state/feature embeddings).
+        Returns:
+            torch.Tensor: Predicted random features.
+        """
+        return self.net(x)
+    
+
+class ImplicitQuantileNetwork(nn.Module):
+    """
+    Implicit Quantile Network (IQN) for distributional reinforcement learning.
+    It predicts the quantile values of a state (or state-action) value distribution.
+    """
+    def __init__(self,
+            feature_dim: int,
+            hidden_size: int = 128,
+            quantile_embedding_dim: int = 64,
+            linear_init_scale: float = 1.0,
+            num_quantiles: int = 32,
+            dropout_rate: float = 0.0
+        ):
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.num_quantiles = num_quantiles
+        self.quantile_embedding_dim = quantile_embedding_dim
+        self.hidden_size = hidden_size
+
+        # Cosine embedding layer for quantile fractions (τ)
+        # This projects τ into a higher dimensional space using cosine basis functions.
+        # See equation (4) in the IQN paper (Dabney et al., 2018).
+        self.cosine_embedding_layer = nn.Linear(self.quantile_embedding_dim, self.feature_dim)
+        # Pre-calculate i * pi for cosine embeddings for efficiency
+        # self.i_pi = nn.Parameter(torch.arange(1, self.quantile_embedding_dim + 1, dtype=torch.float32) * math.pi, requires_grad=False)
+        # A common way is to pre-calculate a range of i:
+        self.register_buffer('i_pi_values', torch.arange(0, self.quantile_embedding_dim, dtype=torch.float32) * math.pi)
+
+
+        # MLP to process the merged state and quantile embeddings
+        self.merge_mlp = nn.Sequential(
+            nn.Linear(self.feature_dim, self.hidden_size),
+            nn.GELU(), # Or GELU, consistent with your other networks
+            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity()
+        )
+
+        # Output layer that predicts the quantile values
+        self.output_layer = nn.Linear(self.hidden_size, 1) # Outputs a single value per quantile sample
+
+        # Initialize weights
+        # Cosine embedding layer might have specific init, but Linear with GELU-like init is a reasonable start
+        init_weights_gelu_linear(self.cosine_embedding_layer, scale=linear_init_scale)
+        self.merge_mlp.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
+        init_weights_gelu_linear(self.output_layer, scale=linear_init_scale)
+
+
+    def embed_quantiles(self, taus: torch.Tensor) -> torch.Tensor:
+        """
+        Embeds quantile fractions τ using cosine basis functions.
+        Args:
+            taus (torch.Tensor): Tensor of quantile fractions τ, shape (BatchSize, NumQuantilesToEmbed, 1)
+                                 or (BatchSize * NumQuantilesToEmbed, 1).
+                                 The τ values should be in [0, 1].
+        Returns:
+            torch.Tensor: Embedded quantile fractions, shape (BatchSize, NumQuantilesToEmbed, feature_dim)
+                          or (BatchSize * NumQuantilesToEmbed, feature_dim).
+        """
+        # Ensure taus has a trailing dimension if it's flat
+        if taus.dim() == 1: # (BatchSize * NumQuantilesToEmbed)
+            taus_unsqueezed = taus.unsqueeze(-1)
+        elif taus.dim() == 2: # (BatchSize, NumQuantilesToEmbed)
+            taus_unsqueezed = taus.unsqueeze(-1) # -> (BatchSize, NumQuantilesToEmbed, 1)
+        else:
+            taus_unsqueezed = taus
+
+        # Cosine embedding: cos(i * pi * τ)
+        # taus_unsqueezed shape: (..., 1)
+        # self.i_pi_values shape: (quantile_embedding_dim,)
+        # Broadcasting taus_unsqueezed with self.i_pi_values
+        # (..., 1) * (quantile_embedding_dim,) -> (..., quantile_embedding_dim)
+        cosine_features = torch.cos(taus_unsqueezed * self.i_pi_values.view(1, -1).to(taus_unsqueezed.device))
+        
+        # Project cosine features to feature_dim
+        quantile_embeddings = F.gelu(self.cosine_embedding_layer(cosine_features)) # (..., feature_dim)
+        return quantile_embeddings
+
+    def forward(self, state_features: torch.Tensor, taus: torch.Tensor) -> torch.Tensor:
+        """
+        Predicts quantile values for the given state features and quantile fractions.
+
+        Args:
+            state_features (torch.Tensor): State or feature embeddings from the main network.
+                                           Shape: (BatchSize, feature_dim).
+            taus (torch.Tensor): Quantile fractions τ to sample.
+                                 Shape: (BatchSize, num_quantiles_to_sample_for_this_forward_pass, 1)
+                                 or (BatchSize * num_quantiles_to_sample_for_this_forward_pass, 1).
+                                 The `num_quantiles_to_sample_for_this_forward_pass` is typically `self.num_quantiles`
+                                 during training for loss calculation, or a different number (e.g., for evaluation if needed).
+
+        Returns:
+            torch.Tensor: Predicted quantile values. Shape: (BatchSize, num_quantiles_to_sample_for_this_forward_pass).
+        """
+        batch_size = state_features.shape[0]
+        
+        # Embed quantile fractions
+        # taus might come in as (B, N_taus, 1) or (B * N_taus, 1)
+        # If taus is (B * N_taus, 1), state_features needs to be repeated
+        # If taus is (B, N_taus, 1), state_features needs to be unsqueezed and repeated
+
+        if taus.dim() == 2 and taus.shape[0] == batch_size * self.num_quantiles: # (B * N_taus, 1)
+            num_sampled_taus_per_state = self.num_quantiles
+            state_features_expanded = state_features.repeat_interleave(num_sampled_taus_per_state, dim=0) # (B * N_taus, feature_dim)
+            quantile_embeddings = self.embed_quantiles(taus) # (B * N_taus, feature_dim)
+        elif taus.dim() == 3 and taus.shape[0] == batch_size: # (B, N_taus, 1)
+            num_sampled_taus_per_state = taus.shape[1]
+            state_features_expanded = state_features.unsqueeze(1).expand(-1, num_sampled_taus_per_state, -1) # (B, N_taus, feature_dim)
+            quantile_embeddings = self.embed_quantiles(taus) # (B, N_taus, feature_dim)
+            # Reshape for element-wise product and MLP
+            state_features_expanded = state_features_expanded.reshape(-1, self.feature_dim)
+            quantile_embeddings = quantile_embeddings.reshape(-1, self.feature_dim)
+        else:
+            raise ValueError(f"Unsupported taus shape: {taus.shape} for state_features shape: {state_features.shape}")
+
+        # Element-wise product of state features and quantile embeddings
+        merged_features = state_features_expanded * quantile_embeddings # (B * N_taus, feature_dim)
+
+        # Pass through MLP
+        x = self.merge_mlp(merged_features) # (B * N_taus, hidden_size)
+        quantile_values = self.output_layer(x)   # (B * N_taus, 1)
+
+        # Reshape to (BatchSize, num_sampled_taus_per_state)
+        quantile_values = quantile_values.view(batch_size, num_sampled_taus_per_state)
+
+        return quantile_values
+    
+
+class DistillationNetwork(nn.Module):
+    """
+    Distills information from a scalar PPO-style value/baseline (V_ppo)
+    and a set of quantile values (Z_tau) from an IQN into a single scalar output.
+    """
+    def __init__(self,
+                 num_quantiles: int,
+                 hidden_size: int = 128, 
+                 combination_method: str = "hadamard_product", # 'hadamard_product', 'concatenate', or 'average_iqn_concatenate'
+                 linear_init_scale: float = 1.0,
+                 dropout_rate: float = 0.0):
+        super().__init__()
+        self.num_quantiles = num_quantiles
+        self.hidden_size = hidden_size
+        self.combination_method = combination_method
+
+        # The input dimension to the first linear layer depends on the combination method
+        if self.combination_method == "hadamard_product":
+            # V_ppo (scalar) is expanded and multiplied element-wise with IQN quantiles (vector)
+            # So, the input features to the MLP will be num_quantiles
+            self.input_dim_to_mlp = self.num_quantiles
+        elif self.combination_method == "concatenate":
+            # V_ppo (scalar, becomes 1 feature) is concatenated with IQN quantiles (num_quantiles features)
+            self.input_dim_to_mlp = 1 + self.num_quantiles
+        elif self.combination_method == "average_iqn_concatenate":
+            # V_ppo (scalar) is concatenated with the mean of IQN quantiles (scalar)
+            self.input_dim_to_mlp = 1 + 1
+        else:
+            raise ValueError(f"Unsupported combination_method: {self.combination_method}")
+
+        self.mlp = nn.Sequential(
+            nn.Linear(self.input_dim_to_mlp, self.hidden_size),
+            nn.GELU(), # Or GELU
+            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
+            nn.Linear(self.hidden_size, self.hidden_size),
+            nn.GELU(), # Or GELU
+            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
+            nn.Linear(self.hidden_size, 1) # Outputs a single distilled scalar value
+        )
+
+        # Initialize weights
+        self.mlp.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
+
+    def forward(self, v_ppo: torch.Tensor, quantile_values: torch.Tensor) -> torch.Tensor:
+        """
+        Combines V_ppo and quantile_values and processes them to output a distilled scalar value.
+
+        Args:
+            v_ppo (torch.Tensor): Scalar value output from the original PPO-style head.
+                                  Shape: (BatchSize, 1).
+            quantile_values (torch.Tensor): Quantile values from the IQN.
+                                            Shape: (BatchSize, num_quantiles).
+
+        Returns:
+            torch.Tensor: The distilled scalar value. Shape: (BatchSize, 1).
+        """
+        batch_size = v_ppo.shape[0]
+        if v_ppo.shape != (batch_size, 1):
+            raise ValueError(f"Expected v_ppo shape ({batch_size}, 1), got {v_ppo.shape}")
+        if quantile_values.shape != (batch_size, self.num_quantiles):
+            raise ValueError(f"Expected quantile_values shape ({batch_size}, {self.num_quantiles}), got {quantile_values.shape}")
+
+        if self.combination_method == "hadamard_product":
+            # Expand v_ppo to match the shape of quantile_values for element-wise product
+            v_ppo_expanded = v_ppo.expand_as(quantile_values) # (BatchSize, num_quantiles)
+            combined_input = v_ppo_expanded * quantile_values  # (BatchSize, num_quantiles)
+        elif self.combination_method == "concatenate":
+            combined_input = torch.cat([v_ppo, quantile_values], dim=-1) # (BatchSize, 1 + num_quantiles)
+        elif self.combination_method == "average_iqn_concatenate":
+            mean_quantile_value = quantile_values.mean(dim=1, keepdim=True) # (BatchSize, 1)
+            combined_input = torch.cat([v_ppo, mean_quantile_value], dim=-1) # (BatchSize, 2)
+        else:
+            # This case should have been caught in __init__
+            raise ValueError(f"Unsupported combination_method: {self.combination_method}")
+
+        distilled_value = self.mlp(combined_input) # (BatchSize, 1)
+        return distilled_value
+    
+
+class LinearNetwork(nn.Module):
+    """Simple MLP block: Linear -> [Dropout] -> [GELU] -> [LayerNorm]"""
+    def __init__(self,
+                 in_features: int,
+                 out_features: int,
+                 dropout_rate: float = 0.0,
+                 activation: bool = True,
+                 layer_norm: bool = False,
+                 linear_init_scale: float = 1.0):
+        super().__init__()
+        layers = []
+        linear_layer = nn.Linear(in_features, out_features)
+        layers.append(linear_layer)
+        # Dropout is applied *after* the linear layer, before activation/norm
+        if dropout_rate > 0.0:
+            layers.append(nn.Dropout(dropout_rate))
+        if activation:
+            layers.append(nn.GELU())
+        if layer_norm:
+            # LayerNorm is applied on the output features
+            layers.append(nn.LayerNorm(out_features))
+        self.model = nn.Sequential(*layers)
+        # Apply initialization only to the Linear layer within this block
+        init_weights_gelu_linear(linear_layer, scale=linear_init_scale)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
+
+class StatesEncoder(nn.Module):
+    """Encodes a state vector using a 2-layer MLP with Norm and Dropout."""
+    def __init__(self, state_dim: int, hidden_size: int, output_size: int, dropout_rate: float = 0.1, **kwargs):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size, output_size)
+        )
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class StatesActionsEncoder(nn.Module):
+    """Encodes a concatenated state-action pair using a 2-layer MLP with Norm and Dropout."""
+    def __init__(self, state_dim: int, action_dim: int, hidden_size: int, output_size: int, dropout_rate: float = 0.1, **kwargs):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_dim + action_dim, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size, output_size)
+        )
+
+    def forward(self, obs: torch.Tensor, act: torch.Tensor) -> torch.Tensor:
+        if act.shape[:-1] != obs.shape[:-1]:
+            try:
+                act_expanded = act.expand(*obs.shape[:-1], act.shape[-1])
+                x = torch.cat([obs, act_expanded], dim=-1)
+            except RuntimeError as e:
+                print(f"Error concatenating obs shape {obs.shape} and action shape {act.shape}: {e}")
+                raise e
+        else:
+            x = torch.cat([obs, act], dim=-1)
+        return self.net(x) 
+
+
+class ResidualAttention(nn.Module):
+    """
+    Multi-Head Attention block with residual connection and pre-LayerNorm.
+    Supports both self-attention and cross-attention.
+    """
+    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0, self_attention: bool = False):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.self_attention = self_attention
+
+        # --- Sub-layers ---
+        # Projections for Query, Key, Value
+        self.query_proj = nn.Linear(embed_dim, embed_dim)
+        self.key_proj   = nn.Linear(embed_dim, embed_dim)
+        self.value_proj = nn.Linear(embed_dim, embed_dim)
+
+        # Layer Normalization (Pre-LN architecture)
+        self.norm_q = nn.LayerNorm(embed_dim)
+        self.norm_k = nn.LayerNorm(embed_dim)
+        self.norm_v = nn.LayerNorm(embed_dim)
+
+        # The core attention mechanism
+        self.mha = nn.MultiheadAttention(
+            embed_dim, num_heads, batch_first=True, dropout=dropout
+        )
+        
+        # Final Layer Normalization after residual connection
+        self.norm_out = nn.LayerNorm(embed_dim)
+
+    def forward(self, x_q, x_k=None, x_v=None, key_padding_mask: Optional[torch.Tensor] = None):
+        """
+        Forward pass for the attention block.
+        Accepts an optional key_padding_mask to ignore padded elements in the key/value sequences.
+        """
+        # Determine Key and Value inputs. For self-attention, they are the same as the Query.
+        if self.self_attention:
+            key_input = x_q if x_k is None else x_k
+            value_input = x_q if x_v is None else x_v
+        else: # Cross-attention
+            key_input = x_q if x_k is None else x_k
+            value_input = key_input if x_v is None else x_v
+
+        # --- Pre-LN: Normalize inputs before attention ---
+        qn = self.norm_q(x_q)
+        kn = self.norm_k(key_input)
+        vn = self.norm_v(value_input)
+
+        # Project Query, Key, Value
+        q_proj = self.query_proj(qn)
+        k_proj = self.key_proj(kn)
+        v_proj = self.value_proj(vn)
+
+        # --- Core Multi-Head Attention ---
+        # The key_padding_mask (True for padded) tells MHA which keys to ignore.
+        attn_out, attn_weights = self.mha(
+            q_proj, k_proj, v_proj,
+            key_padding_mask=key_padding_mask,
+            need_weights=True
+        )
+
+        # --- FIX FOR NaN PROPAGATION ---
+        # If all keys are masked, the softmax in MHA results in NaN.
+        # We replace any resulting NaNs with 0.0 to prevent network failure.
+        # This means "attending to nothing" results in a zero-vector output.
+        attn_out = torch.nan_to_num(attn_out, nan=0.0)
+
+        # --- Add & Norm: Apply residual connection and final normalization ---
+        out = x_q + attn_out
+        out = self.norm_out(out)
+
+        return out, attn_weights
+
+
+class LinearSequenceEmbedder(nn.Module):
+    def __init__(self, name: str, input_feature_dim: int, max_seq_len_for_pos_enc: int,
+                 linear_stem_hidden_sizes: List[int], embed_dim: int, dropout_rate: float,
+                 linear_init_scale: float, add_positional_encoding: bool = True):
+        super().__init__()
+        self.name = name
+        self.embed_dim = embed_dim
+        self.add_positional_encoding = add_positional_encoding
+        self.input_arity = 2 # For SeqLen, FeatDim
+
+        layers = []
+        prev_dim = input_feature_dim
+        for h_dim in linear_stem_hidden_sizes:
+            layers.extend([
+                nn.Linear(prev_dim, h_dim),
+                nn.LayerNorm(h_dim), # LayerNorm on hidden features
+                nn.GELU(),
+                nn.Dropout(dropout_rate) if dropout_rate > 0 else nn.Identity()
+            ])
+            prev_dim = h_dim
+        layers.append(nn.Linear(prev_dim, embed_dim))
+        self.mlp_stem = nn.Sequential(*layers)
+        
+        if self.add_positional_encoding:
+             self.pos_emb_1d = nn.Parameter(
+                 create_2d_sin_cos_pos_emb(max_seq_len_for_pos_enc, 1, embed_dim, torch.device("cpu")).squeeze(1),
+                 requires_grad=False
+             )
+        else:
+            self.pos_emb_1d = None
+
+        self.mlp_stem.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
+
+
+    def forward(self, x: torch.Tensor, padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # x shape: (B_eff, SeqLen, input_feature_dim)
+        # padding_mask shape: (B_eff, SeqLen), True where padded
+        B_eff, S, _ = x.shape
+
+        # --- Process through MLP ---
+        embedded_seq = self.mlp_stem(x)
+
+        # --- Add Positional Encoding ---
+        if self.add_positional_encoding and self.pos_emb_1d is not None:
+            if self.pos_emb_1d.device != embedded_seq.device:
+                 self.pos_emb_1d.data = self.pos_emb_1d.data.to(embedded_seq.device)
+            
+            pos_to_add = self.pos_emb_1d[:S, :].unsqueeze(0)
+            embedded_seq = embedded_seq + pos_to_add
+        
+        # --- FIX FOR NaN GENERATION ---
+        # Apply the padding mask AFTER all embedding and positional encoding steps.
+        # This zeroes out the final embeddings for padded sequence elements,
+        if padding_mask is not None:
+            # `padding_mask` is True for PADDED entries. We want a mask where VALID entries are 1.
+            valid_mask = ~padding_mask.unsqueeze(-1) # Shape: (B_eff, SeqLen, 1)
+            embedded_seq = embedded_seq * valid_mask.float() # Zero out the padded embeddings
+
+        return embedded_seq
+    
+
+class LinearVectorEmbedder(nn.Module):
+    """Processes a single vector input and projects it to embed_dim, outputting (B, 1, embed_dim)."""
+    def __init__(self, name: str, input_feature_dim: int, 
+                 linear_stem_hidden_sizes: List[int], embed_dim: int, 
+                 dropout_rate: float, linear_init_scale: float):
+        super().__init__()
+        self.name = name
+        self.embed_dim = embed_dim
+        self.input_arity = 1 # For FeatDim
+
+        layers = []
+        prev_dim = input_feature_dim
+        for h_dim in linear_stem_hidden_sizes:
+            layers.extend([
+                nn.Linear(prev_dim, h_dim),
+                nn.LayerNorm(h_dim),
+                nn.GELU(),
+                nn.Dropout(dropout_rate) if dropout_rate > 0 else nn.Identity()
+            ])
+            prev_dim = h_dim
+        layers.append(nn.Linear(prev_dim, embed_dim))
+        self.mlp_stem = nn.Sequential(*layers)
+        self.mlp_stem.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x shape: (B_eff, input_feature_dim)
+        embedded_vector = self.mlp_stem(x) # (B_eff, embed_dim)
+        return embedded_vector.unsqueeze(1) # (B_eff, 1, embed_dim) - treat as sequence of length 1
+
+
+class CNNSpatialEmbedder(nn.Module):
+    """
+    Processes a single image-like central input (e.g., height map, grayscale image)
+    through a CNN stem, flattens it into a patch sequence, adds positional embeddings,
+    and projects to the main embedding dimension.
+    """
+    def __init__(self, name: str, 
+                 input_channels_data: int, # Number of channels in the input data tensor (e.g., 1 for grayscale, 3 for RGB)
+                 initial_h: int, initial_w: int, # For reference/validation
+                 cnn_stem_channels: List[int], cnn_stem_kernels: List[int],
+                 cnn_stem_strides: List[int], cnn_stem_group_norms: List[int],
+                 target_pool_scale: int, 
+                 embed_dim: int, dropout_rate: float, conv_init_scale: float,
+                 add_spatial_coords: bool = True):
+        super().__init__()
+        self.name = name
+        self.target_pool_scale = target_pool_scale
+        self.embed_dim = embed_dim
+        self.add_spatial_coords = add_spatial_coords
+        self.data_input_channels = input_channels_data 
+
+        self.effective_cnn_input_channels = self.data_input_channels + 2 if self.add_spatial_coords else self.data_input_channels
+        
+        if self.effective_cnn_input_channels <= 0:
+            raise ValueError(f"CNNSpatialEmbedder '{name}': effective_cnn_input_channels must be > 0, got {self.effective_cnn_input_channels} (data_channels: {self.data_input_channels}, add_spatial_coords: {self.add_spatial_coords})")
+
+        cnn_layers = []
+        prev_c = self.effective_cnn_input_channels
+        for i, out_c in enumerate(cnn_stem_channels):
+            if out_c <= 0 or cnn_stem_group_norms[i] <= 0 or out_c % cnn_stem_group_norms[i] != 0 :
+                raise ValueError(f"CNNSpatialEmbedder '{name}': group_norms[{i}] ({cnn_stem_group_norms[i]}) must be > 0 and divide cnn_channels[{i}] ({out_c}) which also must be > 0.")
+            cnn_layers.extend([
+                nn.Conv2d(prev_c, out_c, kernel_size=cnn_stem_kernels[i], stride=cnn_stem_strides[i], padding=cnn_stem_kernels[i]//2),
+                nn.GroupNorm(cnn_stem_group_norms[i], out_c),
+                nn.GELU(),
+                nn.Dropout2d(dropout_rate) if dropout_rate > 0 else nn.Identity()
+            ])
+            prev_c = out_c
+        self.cnn_stem = nn.Sequential(*cnn_layers)
+
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((target_pool_scale, target_pool_scale))
+        self.projection = nn.Conv2d(prev_c, embed_dim, kernel_size=1) 
+        self.layer_norm = nn.LayerNorm(embed_dim)
+        
+        self.pos_emb = nn.Parameter(
+            create_2d_sin_cos_pos_emb(target_pool_scale, target_pool_scale, embed_dim, torch.device("cpu")),
+            requires_grad=False
+        )
+
+        self.cnn_stem.apply(lambda m: init_weights_gelu_conv(m, scale=conv_init_scale) if isinstance(m, nn.Conv2d) else None)
+        init_weights_gelu_conv(self.projection, scale=conv_init_scale)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Input x expected by CNNSpatialEmbedder should be (EffectiveBatch, self.data_input_channels, H, W)
+        # OR (EffectiveBatch, H, W) if self.data_input_channels == 1.
+        
+        # Handle input tensor that might be 3D (B_eff, H, W) for single-channel data
+        if x.ndim == 3: # Implicit C=1
+            if self.data_input_channels != 1:
+                raise ValueError(
+                    f"CNNSpatialEmbedder '{self.name}': Received 3D input (B,H,W), implying C=1, "
+                    f"but module configured for data_input_channels={self.data_input_channels}."
+                )
+            x = x.unsqueeze(1)  # Add channel dimension: (EffectiveBatch, 1, H, W)
+        elif x.ndim != 4:
+            raise ValueError(
+                f"CNNSpatialEmbedder '{self.name}': Expected 3D or 4D input, got {x.ndim}D tensor with shape {x.shape}."
+            )
+        
+        B_eff, C_tensor, H, W = x.shape
+        
+        if C_tensor != self.data_input_channels:
+            raise ValueError(
+                f"CNNSpatialEmbedder '{self.name}': Input tensor has {C_tensor} channels, "
+                f"but module configured for data_input_channels={self.data_input_channels}."
+            )
+
+        if self.add_spatial_coords:
+            row_coords = torch.linspace(-1, 1, steps=H, device=x.device, dtype=x.dtype).view(1, 1, H, 1).expand(B_eff, 1, H, W)
+            col_coords = torch.linspace(-1, 1, steps=W, device=x.device, dtype=x.dtype).view(1, 1, 1, W).expand(B_eff, 1, H, W)
+            x_processed = torch.cat([x, row_coords, col_coords], dim=1) 
+        else:
+            x_processed = x
+            
+        if x_processed.shape[1] != self.effective_cnn_input_channels:
+             raise ValueError(
+                 f"CNNSpatialEmbedder '{self.name}': Effective input channels to CNN mismatch after spatial coord handling. "
+                 f"Got {x_processed.shape[1]}, expected {self.effective_cnn_input_channels}"
+            )
+
+        features = self.cnn_stem(x_processed)         
+        pooled = self.adaptive_pool(features)         
+        projected = self.projection(pooled)           
+        
+        patches = projected.view(B_eff, self.embed_dim, -1).transpose(1, 2).contiguous()
+        patches = self.layer_norm(patches)
+        
+        current_pos_emb = self.pos_emb.to(patches.device) # Ensure device match
+        patches = patches + current_pos_emb.unsqueeze(0) 
+        
+        return patches
+
+
+class CrossAttentionFeatureExtractor(nn.Module):
+    def __init__(
+        self,
+        agent_obs_size: int,
+        num_agents: int,
+        embed_dim: int,
+        num_heads: int,
+        transformer_layers: int,
+        dropout_rate: float,
+        use_agent_id: bool,
+        ff_hidden_factor: int,
+        id_num_freqs: int,
+        conv_init_scale: float,
+        linear_init_scale: float,
+        central_processing_configs: List[Dict[str, Any]],
+        environment_shape_config: Dict[str, Any]
+    ):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_agents = num_agents
+        self.use_agent_id = use_agent_id
+        self.transformer_layers = transformer_layers
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # --- Agent Observation Encoder ---
+        self.agent_encoder = nn.Sequential(
+            nn.Linear(agent_obs_size, embed_dim), nn.LayerNorm(embed_dim), nn.GELU(),
+            nn.Linear(embed_dim, embed_dim), nn.LayerNorm(embed_dim), nn.GELU(),
+            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity()
+        )
+        self.agent_encoder.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
+
+        # --- Optional Agent ID Encoding ---
+        if use_agent_id:
+            self.agent_id_pos_enc = AgentIDPosEnc(num_freqs=id_num_freqs, id_embed_dim=embed_dim)
+            self.agent_id_sum_ln = nn.LayerNorm(embed_dim)
+        else:
+            self.agent_id_pos_enc = None
+            self.agent_id_sum_ln = None
+            
+        # --- Central State Embedders ---
+        self.central_embedders = nn.ModuleDict()
+        self.enabled_central_component_names: List[str] = []
+
+        # Parse shape info from the environment config first
+        central_comp_shapes_from_env_config: Dict[str, Dict[str, int]] = {}
+        if "state" in environment_shape_config and "central" in environment_shape_config["state"]:
+            for comp_def_env_shape in environment_shape_config["state"]["central"]:
+                if comp_def_env_shape.get("enabled", False):
+                    comp_name_from_env_shape = comp_def_env_shape.get("name")
+                    if comp_name_from_env_shape: 
+                        central_comp_shapes_from_env_config[comp_name_from_env_shape] = comp_def_env_shape.get("shape", {})
+
+        # Create embedder modules based on the processing config, using the shapes parsed above
+        for comp_cfg_proc in central_processing_configs: 
+            name = comp_cfg_proc["name"]
+            if not comp_cfg_proc.get("enabled", False): continue
+            if name not in central_comp_shapes_from_env_config: continue
+
+            self.enabled_central_component_names.append(name)
+            comp_type = comp_cfg_proc["type"]
+            env_shape_for_comp = central_comp_shapes_from_env_config[name]
+
+            if comp_type == "cnn":
+                # (CNN Embedder setup remains here)
+                pass # Placeholder for your CNN init code
+            elif comp_type == "linear_sequence": 
+                self.central_embedders[name] = LinearSequenceEmbedder(
+                    name=name,
+                    input_feature_dim=env_shape_for_comp.get("feature_dim", 0), 
+                    linear_stem_hidden_sizes=comp_cfg_proc.get("linear_stem_hidden_sizes", []),
+                    embed_dim=embed_dim,
+                    dropout_rate=dropout_rate,
+                    linear_init_scale=linear_init_scale,
+                    add_positional_encoding=comp_cfg_proc.get("add_positional_encoding", True),
+                    max_seq_len_for_pos_enc=env_shape_for_comp.get("max_length", 0)
+                )
+            else:
+                raise ValueError(f"Unsupported central component type: {comp_type} for component '{name}'")
+
+        # --- Transformer Blocks ---
+        self.cross_attention_blocks = nn.ModuleList() 
+        self.agent_self_attention_blocks = nn.ModuleList()
+        self.agent_feed_forward_blocks = nn.ModuleList()
+        ff_hidden_dim = embed_dim * ff_hidden_factor
+
+        for _ in range(transformer_layers):
+            layer_cross_attns = nn.ModuleDict()
+            for comp_name in self.enabled_central_component_names: 
+                layer_cross_attns[comp_name] = ResidualAttention(embed_dim, num_heads, dropout=dropout_rate, self_attention=False)
+            self.cross_attention_blocks.append(layer_cross_attns)
+            
+            self.agent_self_attention_blocks.append(ResidualAttention(embed_dim, num_heads, dropout=dropout_rate, self_attention=True))
+            self.agent_feed_forward_blocks.append(FeedForwardBlock(embed_dim, hidden_dim=ff_hidden_dim, dropout=dropout_rate))
+        
+        # --- Final Output Layers ---
+        self.final_norm = nn.LayerNorm(embed_dim)
+        self.output_mlp = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * ff_hidden_factor // 2), nn.GELU(),
+            nn.Linear(embed_dim * ff_hidden_factor // 2, embed_dim)
+        )
+        self.output_mlp.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
+
+    def forward(self, obs_dict: Dict[str, Any], 
+                central_component_padding_masks: Optional[Dict[str, torch.Tensor]] = None
+               ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        
+        agent_state = obs_dict.get("agent")
+        central_states_components = obs_dict.get("central", {})
+
+        # --- Determine Batch Shape ---
+        is_batched_sequence = agent_state.ndim == 4
+        if is_batched_sequence:
+            B_orig, S_orig, A_runtime, _ = agent_state.shape
+        else: 
+            B_orig, A_runtime, _ = agent_state.shape
+            S_orig = 1
+        effective_batch_for_embedders = B_orig * S_orig
+
+        # --- Encode Agent Observations ---
+        agent_input_flat = agent_state.reshape(effective_batch_for_embedders * A_runtime, -1)
+        agent_embed = self.agent_encoder(agent_input_flat)
+        if self.use_agent_id and self.agent_id_pos_enc:
+            agent_ids = torch.arange(A_runtime, device=agent_embed.device).repeat(effective_batch_for_embedders)
+            id_enc = self.agent_id_pos_enc(agent_ids)
+            agent_embed = self.agent_id_sum_ln(agent_embed + id_enc)
+        agent_embed = agent_embed.view(effective_batch_for_embedders, A_runtime, self.embed_dim)
+
+        # --- Encode Central State Components ---
+        processed_central_features: Dict[str, torch.Tensor] = {}
+        for comp_name, embedder_module in self.central_embedders.items():
+            if comp_name in central_states_components:
+                central_comp_tensor = central_states_components[comp_name]
+                content_shape = central_comp_tensor.shape[(2 if is_batched_sequence else 1):]
+                comp_data_for_embedder = central_comp_tensor.reshape(effective_batch_for_embedders, *content_shape)
+
+                # FIX: Retrieve this component's specific mask and pass it to the embedder
+                padding_mask_for_comp = None
+                if central_component_padding_masks and (comp_name + "_mask") in central_component_padding_masks:
+                    mask_tensor = central_component_padding_masks[comp_name + "_mask"]
+                    if mask_tensor is not None:
+                        padding_mask_for_comp = mask_tensor.reshape(effective_batch_for_embedders, -1)
+
+                if isinstance(embedder_module, LinearSequenceEmbedder):
+                     processed_central_features[comp_name] = embedder_module(comp_data_for_embedder, padding_mask=padding_mask_for_comp)
+                else: # For other embedders like CNNSpatialEmbedder that don't take a mask
+                     processed_central_features[comp_name] = embedder_module(comp_data_for_embedder)
+
+        # --- Transformer Layers ---
+        final_self_attn_weights = None
+        for i in range(self.transformer_layers):
+            # Cross-Attention: Agents attend to each central feature
+            for comp_name in self.enabled_central_component_names: 
+                if comp_name in processed_central_features:
+                    central_feature_sequence = processed_central_features[comp_name]
+                    
+                    # Retrieve the mask for this component to use as key_padding_mask
+                    key_padding_mask = None
+                    if central_component_padding_masks and (comp_name + "_mask") in central_component_padding_masks:
+                        mask_tensor = central_component_padding_masks[comp_name + "_mask"]
+                        if mask_tensor is not None:
+                            key_padding_mask = mask_tensor.reshape(effective_batch_for_embedders, -1).to(agent_embed.device)
+
+                    # Perform cross-attention
+                    agent_embed, _ = self.cross_attention_blocks[i][comp_name](
+                        x_q=agent_embed,
+                        x_k=central_feature_sequence,
+                        x_v=central_feature_sequence,
+                        key_padding_mask=key_padding_mask
+                    )
+            
+            # Self-Attention: Agents attend to each other
+            agent_embed, attn_weights = self.agent_self_attention_blocks[i](agent_embed)
+            if i == self.transformer_layers - 1:
+                final_self_attn_weights = attn_weights
+
+            # Feed-Forward Network
+            agent_embed = self.agent_feed_forward_blocks[i](agent_embed)
+
+        # --- Final Processing ---
+        agent_embed = self.final_norm(agent_embed)
+        agent_embed = self.output_mlp(agent_embed)
+
+        # Reshape back to original batch dimensions (if sequence)
+        if is_batched_sequence: 
+            agent_embed_final = agent_embed.view(B_orig, S_orig, A_runtime, self.embed_dim)
+            if final_self_attn_weights is not None:
+                 final_self_attn_weights = final_self_attn_weights.view(B_orig, S_orig, A_runtime, A_runtime)
+        else: 
+            agent_embed_final = agent_embed
+            
+        return agent_embed_final, final_self_attn_weights
+
+
+class MultiAgentEmbeddingNetwork(nn.Module):
+    def __init__(self, net_cfg: Dict[str, Any], environment_config_for_shapes: Dict[str, Any]):
+        """
+        Args:
+            net_cfg (Dict[str, Any]): Configuration specific to this network and its submodules,
+                                      typically from agent_config["networks"]["MultiAgentEmbeddingNetwork"].
+            environment_config_for_shapes (Dict[str, Any]): The top-level "environment" block from the main JSON config,
+                                                            used to pass global shape information.
+        """
+        super(MultiAgentEmbeddingNetwork, self).__init__()
+        
+        ca_config = net_cfg["cross_attention_feature_extractor"]
+        
+        # Correctly pass the "shape" dictionary from the "environment" config block
+        self.base_encoder = CrossAttentionFeatureExtractor(
+            **ca_config, 
+            environment_shape_config=environment_config_for_shapes.get("shape", {}) 
+        )
+        
+        emb_out_dim = ca_config["embed_dim"]
+        
+        obs_enc_cfg = net_cfg["obs_encoder"].copy() 
+        obs_enc_cfg["state_dim"] = emb_out_dim 
+        self.g = StatesEncoder(**obs_enc_cfg) 
+
+        obs_act_enc_cfg = net_cfg["obs_actions_encoder"].copy() 
+        obs_act_enc_cfg["state_dim"] = emb_out_dim 
+        
+        # Determine action_dim for obs_actions_encoder ('f') from the environment_config_for_shapes
+        # environment_config_for_shapes is cfg["environment"]
+        action_shape_root = environment_config_for_shapes.get("shape", {}).get("action", {})
+        action_spec_dict = action_shape_root.get("agent", action_shape_root.get("central", {})) # Prioritize agent
+
+        if "discrete" in action_spec_dict: 
+            obs_act_enc_cfg["action_dim"] = len(action_spec_dict["discrete"]) # Number of discrete branches
+        elif "continuous" in action_spec_dict: 
+            obs_act_enc_cfg["action_dim"] = len(action_spec_dict["continuous"]) # Number of continuous dimensions
+        else: 
+            print(f"Warning: MultiAgentEmbeddingNetwork could not determine action_dim for obs_actions_encoder ('f') from environment_config_for_shapes. Using value from net_cfg: {obs_act_enc_cfg.get('action_dim', 'not found, will default to 1 in StatesActionsEncoder if not set')}")
+            # StatesActionsEncoder might have its own default or require action_dim
+            if "action_dim" not in obs_act_enc_cfg:
+                 # This ensures StatesActionsEncoder doesn't fail if action_dim is missing entirely
+                 obs_act_enc_cfg["action_dim"] = obs_act_enc_cfg.get("action_dim", 1) 
+
+
+        self.f = StatesActionsEncoder(**obs_act_enc_cfg)
+
+    def get_base_embedding(self, obs_dict: Dict[str, Any], 
+                           central_component_padding_masks: Optional[Dict[str, torch.Tensor]] = None
+                          ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        return self.base_encoder(obs_dict, central_component_padding_masks=central_component_padding_masks)
+
+    def get_baseline_embeddings(self, common_emb: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        is_batched_sequence = common_emb.ndim == 4
+        if is_batched_sequence:
+            B_orig, S_orig, A, H_embed = common_emb.shape
+            effective_batch_size = B_orig * S_orig
+            common_emb_flat_for_gf = common_emb.reshape(effective_batch_size, A, H_embed)
+            
+            # Ensure actions are reshaped correctly based on their original dimensions
+            # common_emb is (B,S,A,H), actions from runner is (B,S,A,ActDim) or (B,S,A,Branches)
+            if actions.ndim == common_emb.ndim: # (B,S,A,ActDim/Branches)
+                 actions_flat_for_gf = actions.reshape(effective_batch_size, A, -1)
+            elif actions.ndim == 3 and common_emb.ndim == 4 and actions.shape[0] == effective_batch_size : # (B*S, A, ActDim/Branches)
+                 actions_flat_for_gf = actions # Already flattened along B*S
+            else:
+                raise ValueError(f"Action shape {actions.shape} incompatible with common_emb shape {common_emb.shape} for baseline.")
+
+        else: # common_emb.ndim == 3 (B_orig_eff, A, H_embed)
+            B_orig, A, H_embed = common_emb.shape
+            S_orig = 1 
+            effective_batch_size = B_orig
+            common_emb_flat_for_gf = common_emb
+            # actions should be (B_orig_eff, A, ActDim/Branches)
+            if actions.shape[0] != effective_batch_size or actions.ndim !=3:
+                raise ValueError(f"Action shape {actions.shape} incompatible with common_emb shape {common_emb.shape} for baseline (non-sequence).")
+            actions_flat_for_gf = actions
+
+        g_input = common_emb_flat_for_gf.reshape(effective_batch_size * A, H_embed)
+        agent_j_features_flat = self.g(g_input) 
+        H_baseline_feat = agent_j_features_flat.shape[-1]
+        agent_j_features = agent_j_features_flat.view(effective_batch_size, A, H_baseline_feat)
+
+        actions_reshaped_for_f = actions_flat_for_gf.reshape(effective_batch_size * A, -1)
+        groupmate_i_features_flat = self.f(g_input, actions_reshaped_for_f) 
+        groupmate_i_features = groupmate_i_features_flat.view(effective_batch_size, A, H_baseline_feat)
+        
+        baseline_input_sequences_list = []
+        for j_agent_idx in range(A): 
+            seq_for_j_list = []
+            seq_for_j_list.append(agent_j_features[:, j_agent_idx, :]) 
+            for i_groupmate_idx in range(A):
+                if i_groupmate_idx == j_agent_idx: continue
+                seq_for_j_list.append(groupmate_i_features[:, i_groupmate_idx, :]) 
+            
+            seq_for_j_tensor = torch.stack(seq_for_j_list, dim=1) 
+            baseline_input_sequences_list.append(seq_for_j_tensor)
+        
+        baseline_input_stacked_agents = torch.stack(baseline_input_sequences_list, dim=0)
+        baseline_input_final_flat = baseline_input_stacked_agents.permute(1, 0, 2, 3).contiguous()
+
+        if is_batched_sequence:
+            return baseline_input_final_flat.view(B_orig, S_orig, A, A, H_baseline_feat)
+        else: 
+            return baseline_input_final_flat.view(B_orig, A, A, H_baseline_feat)
+
+
+class AgentIDPosEnc(nn.Module): # Included for completeness
     """Sinusoidal positional encoder for integer agent IDs."""
     def __init__(self, num_freqs: int = 8, id_embed_dim: int = 32):
         super().__init__()
         self.num_freqs = num_freqs
         self.id_embed_dim = id_embed_dim
-        # Linear layer projects sinusoidal features to the target embedding dimension
         self.linear = nn.Linear(2 * num_freqs, id_embed_dim)
-        # Initialize linear layer weights and biases
-        init.kaiming_normal_(self.linear.weight, a=0.01) # Kaiming init often used with ReLU/Leaky ReLU
+        init.kaiming_normal_(self.linear.weight, a=0.01) 
         if self.linear.bias is not None: nn.init.constant_(self.linear.bias, 0.0)
 
     def sinusoidal_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Generates sinusoidal features for input tensor x."""
-        x_float = x.float().unsqueeze(-1) # Ensure float and add feature dim: (..., 1)
-        # Create frequency bands (powers of 2)
+        x_float = x.float().unsqueeze(-1) 
         freq_exponents = torch.arange(self.num_freqs, device=x.device, dtype=torch.float32)
-        scales = torch.pow(2.0, freq_exponents).unsqueeze(0) # Shape: (1, num_freqs)
-        # Apply frequencies: shape (..., num_freqs)
+        scales = torch.pow(2.0, freq_exponents).unsqueeze(0) 
         multiplied = x_float * scales
-        # Compute sine and cosine features
         sines = torch.sin(multiplied)
         cosines = torch.cos(multiplied)
-        # Concatenate sine and cosine features: shape (..., 2 * num_freqs)
         return torch.cat([sines, cosines], dim=-1)
 
     def forward(self, agent_ids: torch.Tensor) -> torch.Tensor:
-        """Encodes agent IDs into embeddings."""
         shape_in = agent_ids.shape
-        # Generate sinusoidal features for flattened IDs
-        feats = self.sinusoidal_features(agent_ids.reshape(-1)) # Shape: (Batch*..., 2*num_freqs)
-        # Project features to target dimension
-        out_lin = self.linear(feats) # Shape: (Batch*..., id_embed_dim)
-        # Reshape back to original shape + embedding dimension
+        feats = self.sinusoidal_features(agent_ids.reshape(-1)) 
+        out_lin = self.linear(feats) 
         return out_lin.view(*shape_in, self.id_embed_dim)
+    
 
-
-class MultiAgentEmbeddingNetwork(nn.Module):
-    """
-    Top-level network combining the CrossAttentionFeatureExtractor
-    with specific encoders for state-only and state-action embeddings,
-    primarily used for baseline calculation.
-    """
-    def __init__(self, net_cfg: Dict[str, Any]):
-        super(MultiAgentEmbeddingNetwork, self).__init__()
-        # Initialize sub-modules using configurations passed via spread operator
-        # base_encoder handles the main processing of agent and central states
-        self.base_encoder = CrossAttentionFeatureExtractor(**net_cfg["cross_attention_feature_extractor"])
-        # f encodes state-action pairs (used for groupmates in baseline)
-        self.f = StatesActionsEncoder(**net_cfg["obs_actions_encoder"])
-        # g encodes state-only (used for the agent itself in baseline)
-        self.g = StatesEncoder(**net_cfg["obs_encoder"])
-
-    def get_base_embedding(self, obs_dict: Dict[str, torch.Tensor]):
+class ForwardDynamicsModel(nn.Module):
+    """A simple MLP to predict the next state's feature embedding."""
+    def __init__(self, embed_dim: int, action_dim: int, hidden_size: int = 256, dropout_rate=0.1):
         """
-        Computes the primary agent embeddings using the base_encoder.
-        These embeddings are used for the policy and state value calculation.
-        """
-        return self.base_encoder(obs_dict)
-
-    def get_baseline_embeddings(self, common_emb: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
-        """
-        Constructs the specific input required for the counterfactual baseline network.
-        For each agent 'j', it combines its state embedding (from self.g) with the
-        state-action embeddings of all other agents (from self.f).
+        Initializes the forward dynamics model.
 
         Args:
-            common_emb: Base agent embeddings (output of get_base_embedding),
-                        shape (..., A, H).
-            actions: Actions taken by agents, shape (..., A, ActionDim).
-
-        Returns:
-            Tensor: Structured embeddings for baseline input,
-                    shape (..., A, SeqLen, H), where SeqLen is typically A.
+            embed_dim (int): The dimension of the input state and output predicted state embeddings.
+            action_dim (int): The dimension of the action vector.
+            hidden_size (int): The size of the hidden layers in the MLP.
         """
-        input_shape = common_emb.shape
-        H = input_shape[-1]; A = input_shape[-2]; leading_dims = input_shape[:-2]
-        B = int(np.prod(leading_dims))
-
-        # Handle action shape and dimension determination
-        act_dim = actions.shape[-1] if actions.dim() > len(leading_dims) + 1 else 1
-        # Add trailing dimension if actions tensor is missing it (e.g., discrete actions)
-        if actions.dim() == len(leading_dims) + 1: actions = actions.unsqueeze(-1)
-
-        # Reshape for batch processing by encoders f and g
-        common_emb_flat = common_emb.reshape(B * A, H)
-        actions_flat = actions.reshape(B * A, act_dim)
-
-        # Encode all agent observations (state-only) using encoder g
-        all_agent_obs_emb_flat = self.g(common_emb_flat)
-        # Encode all agent state-action pairs using encoder f
-        all_agent_obs_act_emb_flat = self.f(common_emb_flat, actions_flat)
-
-        OutputH = all_agent_obs_emb_flat.shape[-1] # Assume g and f output same dim H
-
-        # Reshape back to (B, A, H)
-        all_agent_obs_emb = all_agent_obs_emb_flat.view(B, A, OutputH)
-        all_agent_obs_act_emb = all_agent_obs_act_emb_flat.view(B, A, OutputH)
-
-        # Construct the input sequence for each agent j's baseline calculation
-        baseline_input_list = []
-        for j in range(A):
-            # Agent j's own state embedding (shape: B, 1, H)
-            agent_j_obs_emb = all_agent_obs_emb[:, j:j+1, :]
-
-            # Groupmates' state-action embeddings (shape: B, A-1, H or B, 0, H)
-            groupmates_obs_act_emb = torch.cat([
-                all_agent_obs_act_emb[:, i:i+1, :] for i in range(A) if i != j
-            ], dim=1) if A > 1 else torch.empty(B, 0, OutputH, device=common_emb.device)
-
-            # Create the sequence: [agent_j_obs, gm_1_obs_act, ..., gm_A-1_obs_act]
-            # Shape: (B, A, H) if A > 1, or (B, 1, H) if A = 1
-            baseline_j_input = torch.cat([agent_j_obs_emb, groupmates_obs_act_emb], dim=1)
-
-            # Add an agent dimension (dim=1) for later concatenation
-            baseline_input_list.append(baseline_j_input.unsqueeze(1)) # -> (B, 1, SeqLen, H)
-
-        # Concatenate along the agent dimension (dim=1)
-        final_baseline_input = torch.cat(baseline_input_list, dim=1) # -> (B, A, SeqLen, H)
-
-        # Reshape back to original leading dimensions
-        output_shape = leading_dims + final_baseline_input.shape[1:]
-        return final_baseline_input.view(output_shape).contiguous()
-
-    def get_state_embeddings(self, common_emb: torch.Tensor) -> torch.Tensor:
-        """Helper to get state-only embeddings using encoder g."""
-        input_shape = common_emb.shape
-        H = input_shape[-1]; A = input_shape[-2]; leading_dims = input_shape[:-2]
-        B = int(np.prod(leading_dims))
-        emb_flat = self.g(common_emb.reshape(B*A, H))
-        OutputH = emb_flat.shape[-1]
-        return emb_flat.view(*leading_dims, A, OutputH)
-
-    def get_state_action_embeddings(self, common_emb: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
-        """Helper to get state-action embeddings using encoder f."""
-        emb_shape = common_emb.shape; act_shape = actions.shape
-        H = emb_shape[-1]; A = emb_shape[-2]; leading_dims = emb_shape[:-2]
-        act_dim = actions.shape[-1] if actions.dim() > len(leading_dims) + 1 else 1
-        if actions.dim() == len(leading_dims) + 1: actions = actions.unsqueeze(-1)
-
-        B = int(np.prod(leading_dims))
-        common_emb_flat = common_emb.reshape(B*A, H)
-        actions_flat = actions.reshape(B*A, act_dim)
-        encoded_flat = self.f(common_emb_flat, actions_flat)
-        OutputH = encoded_flat.shape[-1]
-        output_shape = leading_dims + (A, OutputH,)
-        return encoded_flat.view(output_shape)
-
-    def _split_agent_and_groupmates(self, obs_4d: torch.Tensor, actions: torch.Tensor):
-        # This method seems unused and can likely be removed or implemented if needed later.
-        pass
-
-
-class CrossAttentionFeatureExtractor(nn.Module):
-    """
-    Processes central state (CNN) and agent states (MLP), then integrates them
-    using multi-scale cross-attention followed by agent self-attention.
-    """
-    def __init__(
-        self,
-        agent_obs_size: int,
-        num_agents: int, # Max agents for ID embedding
-        in_channels: int, # Central state channels (e.g., height, delta, R, G, B)
-        h: int,           # Central state height
-        w: int,           # Central state width
-        embed_dim: int,   # Dimension for embeddings and attention
-        num_heads: int,   # Number of attention heads
-        cnn_channels: list, # List of output channels for each CNN block
-        cnn_kernel_sizes: list, # List of kernel sizes for each CNN block
-        cnn_strides: list,      # List of strides for each CNN block
-        group_norms: list,      # List of group numbers for GroupNorm in each CNN block
-        block_scales: list,     # Target spatial dimensions (H/W) after pooling for each CNN block's output
-        transformer_layers: int,# Number of transformer layers (CrossAttn + SelfAttn)
-        dropout_rate: float,    # Dropout rate for attention and FFN blocks
-        use_agent_id: bool,     # Whether to use agent ID embeddings
-        ff_hidden_factor: int,  # Factor to scale embed_dim for FFN hidden size
-        id_num_freqs: int,      # Number of frequencies for sinusoidal agent ID encoding
-        conv_init_scale: float, # Initialization scale for CNN layers
-        linear_init_scale: float # Initialization scale for Linear layers
-    ):
         super().__init__()
-        # Store configuration parameters
-        self.in_channels = in_channels; self.h = h; self.w = w; self.embed_dim = embed_dim
-        self.num_heads = num_heads; self.transformer_layers = transformer_layers
-        self.ff_hidden_factor = ff_hidden_factor; self.use_agent_id = use_agent_id
-        self.block_scales = block_scales; self.num_scales = len(block_scales)
-
-        # Validate CNN configuration list lengths
-        if not (len(cnn_channels) == self.num_scales == len(cnn_kernel_sizes) == len(cnn_strides) == len(group_norms)):
-             raise ValueError("CNN config lists (channels, kernels, strides, group_norms) must have the same length as block_scales.")
-
-        # --- Sub-module Definitions ---
-
-        # A) Agent MLP Encoder: Encodes individual agent observations
-        self.agent_encoder = nn.Sequential(
-            nn.Linear(agent_obs_size, embed_dim), nn.GELU(),
-            nn.Linear(embed_dim, embed_dim), nn.GELU()
+        # The network takes a concatenated state embedding and action vector as input.
+        self.net = nn.Sequential(
+            nn.Linear(embed_dim + action_dim, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size, embed_dim) # Predicts an embedding of the same dimension as the input state.
         )
+        # Apply a standard weight initialization.
+        self.apply(lambda m: init_weights_leaky_relu(m) if isinstance(m, nn.Linear) else None)
 
-        # B) Optional Agent ID Embedding: Adds unique ID info if enabled
-        if use_agent_id:
-            self.agent_id_embedding = nn.Embedding(num_agents, embed_dim)
-            nn.init.normal_(self.agent_id_embedding.weight, mean=0.0, std=0.01) # Small random init
-            self.agent_id_pos_enc = AgentIDPosEnc(num_freqs=id_num_freqs, id_embed_dim=embed_dim)
-            self.agent_id_sum_ln = nn.LayerNorm(embed_dim) # Normalize after adding ID embeddings
-        else:
-            self.agent_id_embedding = None; self.agent_id_pos_enc = None
-
-        # C) CNN Backbone: Extracts features from the central state (image-like)
-        total_in_c = self.in_channels + 2 # Add 2 channels for spatial coordinates
-        self.cnn_blocks = nn.ModuleList()
-        prev_c = total_in_c
-        for i, out_c in enumerate(cnn_channels):
-             # Ensure GroupNorm groups divide channels
-             if out_c % group_norms[i] != 0: raise ValueError(f"group_norms[{i}] must divide cnn_channels[{i}]")
-             # Define a CNN block: Conv -> GroupNorm -> GELU -> Conv -> GroupNorm -> GELU
-             block = nn.Sequential(
-                 nn.Conv2d(prev_c, out_c, kernel_size=cnn_kernel_sizes[i], stride=cnn_strides[i], padding=cnn_kernel_sizes[i]//2),
-                 nn.GroupNorm(group_norms[i], out_c), nn.GELU(),
-                 nn.Conv2d(out_c, out_c, kernel_size=3, stride=1, padding=1), # Additional conv layer
-                 nn.GroupNorm(group_norms[i], out_c), nn.GELU()
-             )
-             self.cnn_blocks.append(block); prev_c = out_c # Update input channels for next block
-
-        # D) CNN Output Embeddings & LayerNorms: Project CNN features to embed_dim for each scale
-        self.block_embeds = nn.ModuleList([nn.Conv2d(c, embed_dim, kernel_size=1) for c in cnn_channels])
-        self.block_lns = nn.ModuleList([nn.LayerNorm(embed_dim) for _ in cnn_channels]) # LN applied on feature dim
-
-        # E) Positional Embeddings: Precomputed 2D sinusoidal embeddings for patch positions
-        self.positional_embeddings = nn.ParameterList(
-            [nn.Parameter(create_2d_sin_cos_pos_emb(s, s, embed_dim, torch.device("cpu")), requires_grad=False) for s in block_scales]
-        )
-
-        # F) Transformer Layers: Stacked layers of cross-attention and self-attention
-        self.cross_attn_blocks = nn.ModuleList() # Holds cross-attention modules for each layer/scale
-        self.agent_self_attn = nn.ModuleList()   # Holds self-attention modules for each layer
-        self.agent_self_ffn  = nn.ModuleList()   # Holds FFN modules for self-attention path
-        ff_hidden_dim = embed_dim * ff_hidden_factor # Calculate hidden dim for FFNs
-        for _ in range(transformer_layers):
-            # Create cross-attention blocks for each scale within this transformer layer
-            blocks_per_scale = nn.ModuleList()
-            for _ in range(self.num_scales):
-                 blocks_per_scale.append(nn.ModuleDict({
-                     "attn": ResidualAttention(embed_dim, num_heads, dropout=dropout_rate, self_attention=False),
-                     "ffn": FeedForwardBlock(embed_dim, hidden_dim=ff_hidden_dim, dropout=dropout_rate)
-                 }))
-            self.cross_attn_blocks.append(blocks_per_scale)
-            # Create self-attention block for agents within this transformer layer
-            self.agent_self_attn.append(ResidualAttention(embed_dim, num_heads, dropout=dropout_rate, self_attention=True))
-            self.agent_self_ffn.append(FeedForwardBlock(embed_dim, hidden_dim=ff_hidden_dim, dropout=dropout_rate))
-
-        # G) Final Layers: Apply LayerNorm and an MLP after the transformer stack
-        self.final_agent_ln = nn.LayerNorm(embed_dim)
-        self.post_cross_mlp = nn.Sequential(
-            nn.LayerNorm(embed_dim), # Extra LN before final MLP
-            nn.Linear(embed_dim, embed_dim), nn.GELU(),
-            nn.Linear(embed_dim, embed_dim) # Final projection
-        )
-
-        # H) Initialization: Apply specific initializations to CNN and Linear layers
-        self.cnn_blocks.apply(lambda m: init_weights_gelu_conv(m, scale=conv_init_scale))
-        self.block_embeds.apply(lambda m: init_weights_gelu_conv(m, scale=conv_init_scale))
-        # Initialize Linear layers, skipping Norm layers
-        self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale)
-                   if isinstance(m, nn.Linear) and not isinstance(m, (nn.LayerNorm, nn.GroupNorm))
-                   else None)
-
-
-    def forward(self, state_dict: Dict[str, torch.Tensor]):
+    def forward(self, state_embed: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass through the embedding network.
+        Predicts the embedding of the next state.
 
         Args:
-            state_dict (Dict[str, torch.Tensor]): Dictionary containing:
-                'agent': Agent observations (..., A, agent_obs_size).
-                'central': Central state observations (..., flat_central_dim).
+            state_embed (torch.Tensor): The feature embedding of the current state.
+            action (torch.Tensor): The action taken in the current state.
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]:
-                - agent_embed: Final agent embeddings (..., A, embed_dim).
-                - attn_weights_final: Attention weights from the last self-attention layer (..., A, A).
+            torch.Tensor: The predicted feature embedding of the next state.
         """
-        agent_state = state_dict["agent"]
-        central_data = state_dict["central"]
-        device = agent_state.device
-
-        # Ensure positional embeddings are on the correct device
-        if self.positional_embeddings[0].device != device:
-            for i in range(len(self.positional_embeddings)):
-                self.positional_embeddings[i] = nn.Parameter(self.positional_embeddings[i].to(device), requires_grad=False)
-
-        # --- Shape Determination ---
-        agent_shape = agent_state.shape
-        leading_dims = agent_shape[:-2]; A = agent_shape[-2]; obs_dim = agent_shape[-1]
-        B = int(np.prod(leading_dims)) # Flatten batch dimensions
-
-        # --- 1. Agent Encoding ---
-        flat_agents = agent_state.view(B * A, obs_dim)
-        agent_embed = self.agent_encoder(flat_agents)
-        agent_embed = agent_embed.view(B, A, self.embed_dim) # Reshape back: (B, A, H)
-
-        # --- 2. Add Agent ID Embeddings (Optional) ---
-        if self.use_agent_id:
-            # Create agent IDs [0, 1, ..., A-1] for each batch element
-            agent_ids = torch.arange(A, device=device).view(1, A).expand(B, A)
-            agent_embed = agent_embed + self.agent_id_embedding(agent_ids) + self.agent_id_pos_enc(agent_ids)
-            agent_embed = self.agent_id_sum_ln(agent_embed) # Normalize sum
-
-        # --- 3. Central State Preparation ---
-        expected_central_flat_dim = self.in_channels * self.h * self.w
-        central_data = central_data.view(B, expected_central_flat_dim) # Flatten batch dims
-        central_data = central_data.view(B, self.in_channels, self.h, self.w) # Reshape to CxHxW
-        # Create and concatenate coordinate channels
-        row_coords = torch.linspace(-1, 1, steps=self.h, device=device).view(1, 1, self.h, 1).expand(B, 1, self.h, self.w)
-        col_coords = torch.linspace(-1, 1, steps=self.w, device=device).view(1, 1, 1, self.w).expand(B, 1, self.h, self.w)
-        cnn_input = torch.cat([central_data, row_coords, col_coords], dim=1) # Shape: (B, C+2, H, W)
-
-        # --- 4. CNN Feature Extraction ---
-        cnn_feature_maps = []; current_map = cnn_input
-        for block in self.cnn_blocks:
-            current_map = block(current_map)
-            cnn_feature_maps.append(current_map) # Store output of each block
-
-        # --- 5. Multi-Scale Patch Processing ---
-        patch_sequences = []
-        for i, feature_map in enumerate(cnn_feature_maps):
-            target_h, target_w = self.block_scales[i], self.block_scales[i]
-            # Pool features to target scale
-            pooled_map = F.adaptive_avg_pool2d(feature_map, (target_h, target_w)) # (B, C_out, target_h, target_w)
-            # Project features to embedding dimension
-            embedded_map = self.block_embeds[i](pooled_map) # (B, embed_dim, target_h, target_w)
-            # Flatten spatial dims and transpose: (B, N_patches, embed_dim)
-            B_, D_, H_, W_ = embedded_map.shape
-            patches = embedded_map.view(B_, D_, H_*W_).transpose(1, 2).contiguous()
-            # Apply LayerNorm
-            patches = self.block_lns[i](patches)
-            # Add positional embeddings
-            pos_embedding = self.positional_embeddings[i].unsqueeze(0) # (1, N_patches, embed_dim)
-            patches = patches + pos_embedding
-            patch_sequences.append(patches)
-
-        # --- 6. Transformer Layers ---
-        attn_weights_final = None
-        for layer_idx in range(self.transformer_layers):
-            # Cross-Attention: Agents attend to each scale's patches
-            scale_attn_blocks = self.cross_attn_blocks[layer_idx]
-            for scale_idx, block_module_dict in enumerate(scale_attn_blocks):
-                agent_embed, _ = block_module_dict["attn"](agent_embed, patch_sequences[scale_idx], patch_sequences[scale_idx])
-                agent_embed = block_module_dict["ffn"](agent_embed)
-
-            # Self-Attention: Agents attend to each other
-            agent_embed, attn_weights = self.agent_self_attn[layer_idx](agent_embed)
-            # Store attention weights from the last layer
-            if layer_idx == self.transformer_layers - 1:
-                attn_weights_final = attn_weights # Shape: (B, A, A)
-            # Apply FFN after self-attention
-            agent_embed = self.agent_self_ffn[layer_idx](agent_embed)
-
-        # --- 7. Final Processing ---
-        agent_embed = self.final_agent_ln(agent_embed) # Final LayerNorm
-        residual = agent_embed
-        agent_embed = self.post_cross_mlp(agent_embed) # Final MLP
-        agent_embed = agent_embed + residual # Final residual connection
-
-        # --- Reshape Output ---
-        # Reshape agent embeddings back to original leading dimensions
-        output_shape = leading_dims + (A, self.embed_dim)
-        agent_embed = agent_embed.view(output_shape)
-        # Reshape attention weights if available
-        if attn_weights_final is not None:
-             attn_output_shape = leading_dims + (A, A)
-             attn_weights_final = attn_weights_final.view(attn_output_shape)
-
-        return agent_embed, attn_weights_final
+        # Concatenate the state embedding and action to form the input.
+        x = torch.cat([state_embed, action], dim=-1)
+        return self.net(x)
