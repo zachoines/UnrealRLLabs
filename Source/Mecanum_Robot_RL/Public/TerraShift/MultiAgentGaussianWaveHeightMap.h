@@ -50,6 +50,7 @@ struct FGaussianWaveAgent
  * Multi-agent wave class that sums multiple 2D Gaussian wave packets into NxN.
  * Agents can interpret actions as either "absolute" or "delta" based on config.
  * The final wave is clamped in [min_height, max_height].
+ * Supports optional edge wrapping for agent positions and wave influence.
  */
 UCLASS(BlueprintType)
 class UNREALRLLABS_API UMultiAgentGaussianWaveHeightMap : public UObject
@@ -57,6 +58,8 @@ class UNREALRLLABS_API UMultiAgentGaussianWaveHeightMap : public UObject
 	GENERATED_BODY()
 
 public:
+	UMultiAgentGaussianWaveHeightMap(); // Added constructor for default initialization
+
 	/**
 	 * Initialize from environment/params/MultiAgentGaussianWaveHeightMap config block.
 	 */
@@ -148,6 +151,10 @@ private:
 
 	UPROPERTY()
 	float AccumulatedWaveFadeGamma;
+
+	/** If true, agent positions and wave influence wrap around grid edges (toroidal). */
+	UPROPERTY()
+	bool bWrapAroundEdges;
 
 	/** Scales for each delta if bUseActionDelta is true. */
 	UPROPERTY()

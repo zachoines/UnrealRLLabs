@@ -4,7 +4,6 @@ from Source.Environment import SharedMemoryInterface
 from Source.Runner import RLRunner
 from Source.Agent import Agent
 from Agents.MAPOCAAgent import MAPOCAAgent
-# New import:
 from Agents.RandomAgent import RandomAgent
 
 class AgentEnvFactory:
@@ -19,7 +18,7 @@ class AgentEnvFactory:
 
         if agent_type == 'MA_POCA':
             agent = MAPOCAAgent(self.config, self.device)
-        elif agent_type == 'RND':  # <-- new condition
+        elif agent_type == 'RND':
             agent = RandomAgent(self.config, self.device)
         else:
             raise ValueError(f"Unknown agent type: {agent_type}")
@@ -30,6 +29,6 @@ class AgentEnvFactory:
         runner = RLRunner(
             agent=agent, 
             agentComm=agentComm, 
-            config=self.config
+            cfg=self.config
         )
         return runner
