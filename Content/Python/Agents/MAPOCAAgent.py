@@ -189,6 +189,9 @@ class MAPOCAAgent(Agent):
             feats_for_policy = feats_flat_from_gru.reshape(B_env, NA_runtime, -1)
             h_next_gru_shaped = h_next_gru_flat.permute(1,0,2).reshape(B_env, NA_runtime, self.memory_layers, self.memory_hidden)
             if dones is not None and truncs is not None:
+                # RLRunner zeros the hidden state before calling this method
+                # when a new episode begins. We additionally mask the *next*
+                # hidden state so that subsequent timesteps also start fresh.
                 reset_mask = (dones.squeeze(0) > 0.5) | (truncs.squeeze(0) > 0.5)
                 h_next_gru_shaped = h_next_gru_shaped * (1.0 - reset_mask.view(B_env, 1, 1, 1).float())
 

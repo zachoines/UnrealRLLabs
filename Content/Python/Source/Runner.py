@@ -297,7 +297,9 @@ class RLRunner:
         if self.enable_memory and self.current_memory_hidden_states is not None:
             for e in range(self.num_envs):
                 if (dones[e] > 0.5) or (truncs[e] > 0.5):
-                    # reset memory for new episode but postpone segment finalization
+                    # UE marks the first step of a new episode with done/trunc.
+                    # Zero hidden state BEFORE calling the agent so the action
+                    # for this new step does not depend on the previous episode.
                     self.current_memory_hidden_states[e].zero_()
         
         states_for_agent_action = current_states_dict
