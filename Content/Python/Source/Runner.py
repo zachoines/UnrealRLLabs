@@ -225,7 +225,7 @@ class RLRunner:
 
         with torch.no_grad():
             returns = self.agent.compute_bootstrapped_returns(
-                r_t, v_t, d_t, tr_t, bootstrap_value.view(1, -1)
+                r_t, v_t, d_t, tr_t, bootstrap_value.view(1, 1)
             )
         returns_ep = returns.squeeze(0)
 
@@ -297,9 +297,7 @@ class RLRunner:
         if self.enable_memory and self.current_memory_hidden_states is not None:
             for e in range(self.num_envs):
                 if (dones[e] > 0.5) or (truncs[e] > 0.5):
-                    # UE marks the first step of a new episode with done/trunc.
-                    # Zero hidden state BEFORE calling the agent so the action
-                    # for this new step does not depend on the previous episode.
+                    # reset memory for new episode but postpone segment finalization
                     self.current_memory_hidden_states[e].zero_()
         
         states_for_agent_action = current_states_dict
@@ -462,12 +460,12 @@ class RLRunner:
 
         bootstrap_states_batched: Dict[str, Any] = {}
         if "central" in bootstrap_states:
-            bootstrap_states_batched["central"] = bootstrap_states["central"]
+            bootstrap_states_batched["central"] = {k: v.unsqueeze(0) for k, v in bootstrap_states["central"].items()}
         if "agent" in bootstrap_states:
-            bootstrap_states_batched["agent"] = bootstrap_states["agent"]
+            bootstrap_states_batched["agent"] = bootstrap_states["agent"].unsqueeze(0)
 
-        bootstrap_dones = dones_tensor[B_ue - 1]
-        bootstrap_truncs = truncs_tensor[B_ue - 1]
+        bootstrap_dones = dones_tensor[B_ue - 1].unsqueeze(0)
+        bootstrap_truncs = truncs_tensor[B_ue - 1].unsqueeze(0)
 
         with torch.no_grad():
             if bootstrap_states_batched:
