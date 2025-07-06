@@ -478,7 +478,6 @@ class RLRunner:
                     for env_i, do_reset in enumerate(reset_mask):
                         if do_reset.item():
                             self.current_memory_hidden_states[env_i].zero_()
-
                 _, (_, _, bootstrap_values, _), _ = self.agent.get_actions(
                     bootstrap_states_batched,
                     dones=bootstrap_dones,
