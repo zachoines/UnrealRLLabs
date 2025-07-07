@@ -262,8 +262,13 @@ class RLRunner:
     def _handle_get_actions(self):
         states_from_comm, dones_from_comm, truncs_from_comm = self.agentComm.get_states()
         
-        if not states_from_comm and not ("central" in states_from_comm and states_from_comm["central"]) and \
-           not ("agent" in states_from_comm and states_from_comm["agent"]):
+        if (
+            not states_from_comm
+            or "central" not in states_from_comm
+            or not states_from_comm.get("central")
+            or "agent" not in states_from_comm
+            or states_from_comm.get("agent") is None
+        ):
             # This can happen if initial shared memory read is empty or parsing fails in agentComm
             print("RLRunner: Received empty or invalid states_from_comm in _handle_get_actions. Skipping.")
             # Still need to signal UE to avoid deadlock if it's waiting for actions
@@ -494,6 +499,15 @@ class RLRunner:
                     continue
                 obs_step = step_info["obs"]
                 next_obs_step = step_info.get("next_obs", {})
+                if not next_obs_step:
+                    next_obs_step = {}
+                    if next_states_tensor.get("central"):
+                        next_obs_step["central"] = {
+                            k: v[t, e].clone()
+                            for k, v in next_states_tensor["central"].items()
+                        }
+                    if next_states_tensor.get("agent") is not None:
+                        next_obs_step["agent"] = next_states_tensor["agent"][t, e].clone()
                 done_step = step_info.get("done", dones_tensor_p[e, t])
                 trunc_step = step_info.get("trunc", truncs_tensor_p[e, t])
                 action_step = step_info["action"]
