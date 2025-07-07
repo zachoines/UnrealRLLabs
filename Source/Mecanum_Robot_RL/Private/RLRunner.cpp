@@ -211,6 +211,8 @@ void ARLRunner::DecideActions()
     EnvDones.SetNum(Environments.Num());
     TArray<float> EnvTruncs;
     EnvTruncs.SetNum(Environments.Num());
+    TArray<float> NeedsAction;
+    NeedsAction.SetNum(Environments.Num());
 
     for (int32 i = 0; i < Environments.Num(); i++)
     {
@@ -224,9 +226,10 @@ void ARLRunner::DecideActions()
         bool bCurrentTrunc = Environments[i]->Trunc();
         EnvDones[i] = bCurrentDone ? 1.f : 0.f;
         EnvTruncs[i] = bCurrentTrunc ? 1.f : 0.f;
+        NeedsAction[i] = (Pending[i].RepeatCounter == 0) ? 1.f : 0.f;
     }
 
-    TArray<FAction> newActions = GetActionsFromPython(EnvStates, EnvDones, EnvTruncs);
+    TArray<FAction> newActions = GetActionsFromPython(EnvStates, EnvDones, EnvTruncs, NeedsAction);
 
     for (int32 i = 0; i < Environments.Num(); i++)
     {
@@ -400,7 +403,8 @@ FState ARLRunner::GetEnvState(ABaseEnvironment* Env)
 TArray<FAction> ARLRunner::GetActionsFromPython(
     const TArray<FState>& EnvStates,
     const TArray<float>& EnvDones,
-    const TArray<float>& EnvTruncs
+    const TArray<float>& EnvTruncs,
+    const TArray<float>& NeedsAction
 )
 {
     if (!AgentComm)
@@ -408,7 +412,7 @@ TArray<FAction> ARLRunner::GetActionsFromPython(
         UE_LOG(LogTemp, Warning, TEXT("AgentComm is null in GetActionsFromPython, sampling random actions."));
         return SampleAllEnvActions();
     }
-    return AgentComm->GetActions(EnvStates, EnvDones, EnvTruncs, CurrentAgents);
+    return AgentComm->GetActions(EnvStates, EnvDones, EnvTruncs, NeedsAction, CurrentAgents);
 }
 
 TArray<FAction> ARLRunner::SampleAllEnvActions()
