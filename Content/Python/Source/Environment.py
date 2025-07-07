@@ -23,7 +23,7 @@ class EnvCommunicationInterface:
     def __init__(self) -> None:
         pass
 
-    def get_states(self) -> Tuple[Dict[str, Any], torch.Tensor, torch.Tensor]: # Return Dict[str, Any]
+    def get_states(self) -> Tuple[Dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor]:  # Return Dict[str, Any]
         pass
 
     def send_actions(self, actions: torch.Tensor) -> None:
@@ -198,7 +198,7 @@ class SharedMemoryInterface(EnvCommunicationInterface):
         
         return central_components_dict
 
-    def get_states(self) -> Tuple[Dict[str, Any], torch.Tensor, torch.Tensor]:
+    def get_states(self) -> Tuple[Dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor]:
         win32event.WaitForSingleObject(self.states_mutex, win32event.INFINITE)
         try:
             byte_array = np.frombuffer(self.states_shared_memory.buf, dtype=np.float32)
@@ -208,8 +208,8 @@ class SharedMemoryInterface(EnvCommunicationInterface):
                 print("Error: Shared memory for states is smaller than info block size.")
                 # Return empty/default values to avoid crashing, signal UE might be stuck
                 empty_states_dict: Dict[str, Any] = {"central": {}, "agent": torch.empty(0, device=self.device)}
-                d_empty = torch.empty((1,0,1), device=self.device) # (S,E,1) with E=0
-                return (empty_states_dict, d_empty, d_empty)
+                d_empty = torch.empty((1,0,1), device=self.device)  # (S,E,1) with E=0
+                return (empty_states_dict, d_empty, d_empty, d_empty)
 
             self.info = byte_array[:info_offset].astype(int)
             _, _, NumEnvironments, CurrentAgents, SingleEnvStateSize_from_ue, _ = self.info
@@ -218,7 +218,7 @@ class SharedMemoryInterface(EnvCommunicationInterface):
                 win32event.ReleaseMutex(self.states_mutex) # Release mutex before returning
                 empty_states_dict_ne0: Dict[str, Any] = {"central": {}, "agent": torch.empty(0, device=self.device)}
                 d_empty_ne0 = torch.empty((1,0,1), device=self.device)
-                return (empty_states_dict_ne0, d_empty_ne0, d_empty_ne0)
+                return (empty_states_dict_ne0, d_empty_ne0, d_empty_ne0, d_empty_ne0)
 
             expected_agent_size_this_call = self.agentObsSize * CurrentAgents if self.hasAgent else 0
             calculated_total_state_size_this_call = self.parsed_central_obs_size + expected_agent_size_this_call
@@ -236,19 +236,22 @@ class SharedMemoryInterface(EnvCommunicationInterface):
             dones_offset  = states_end
             dones_end     = dones_offset + NumEnvironments
             truncs_offset = dones_end
-            truncs_end    = truncs_offset + NumEnvironments # *** THIS LINE IS NOW UNCOMMENTED AND CORRECT ***
-            
-            expected_min_len_for_buf = truncs_end
+            truncs_end    = truncs_offset + NumEnvironments
+            needs_offset  = truncs_end
+            needs_end     = needs_offset + NumEnvironments
+
+            expected_min_len_for_buf = needs_end
             if len(byte_array) < expected_min_len_for_buf:
                  print(f"Error: Shared memory for states is too small. Expected at least {expected_min_len_for_buf} floats, got {len(byte_array)}.")
                  empty_states_dict_len: Dict[str, Any] = {"central": {}, "agent": torch.empty(0, device=self.device)}
                  d_empty_len = torch.empty((1,0,1), device=self.device)
-                 return (empty_states_dict_len, d_empty_len, d_empty_len)
+                 return (empty_states_dict_len, d_empty_len, d_empty_len, d_empty_len)
 
 
             state_data_flat_all_envs = byte_array[states_offset:states_end] if actual_total_state_data_size > 0 else np.array([], dtype=np.float32)
             dones_data = byte_array[dones_offset:dones_end]
-            truncs_data = byte_array[truncs_offset:truncs_end] # Uses the now-defined truncs_end
+            truncs_data = byte_array[truncs_offset:truncs_end]
+            needs_data  = byte_array[needs_offset:needs_end]
 
             full_state_np_all_envs = state_data_flat_all_envs.reshape(NumEnvironments, SingleEnvStateSize_from_ue) if actual_total_state_data_size > 0 else np.empty((NumEnvironments, 0), dtype=np.float32)
 
@@ -282,8 +285,9 @@ class SharedMemoryInterface(EnvCommunicationInterface):
 
             dones_t  = torch.from_numpy(dones_data.copy().reshape(1, NumEnvironments, 1)).float().contiguous().to(self.device)
             truncs_t = torch.from_numpy(truncs_data.copy().reshape(1, NumEnvironments, 1)).float().contiguous().to(self.device)
+            needs_t  = torch.from_numpy(needs_data.copy().reshape(1, NumEnvironments, 1)).float().contiguous().to(self.device)
 
-            return (states_dict, dones_t, truncs_t)
+            return (states_dict, dones_t, truncs_t, needs_t)
         finally:
             win32event.ReleaseMutex(self.states_mutex)
 

@@ -44,7 +44,7 @@ public:
      *   - Reads actions back from shared memory
      */
     UFUNCTION(BlueprintCallable, Category = "SharedMemory")
-    TArray<FAction> GetActions(TArray<FState> States, TArray<float> Dones, TArray<float> Truncs, int NumAgents);
+    TArray<FAction> GetActions(TArray<FState> States, TArray<float> Dones, TArray<float> Truncs, TArray<float> NeedsAction, int NumAgents);
 
     /**
      * Send a batch of experiences for training updates:
