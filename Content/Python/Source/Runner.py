@@ -260,7 +260,7 @@ class RLRunner:
 
 
     def _handle_get_actions(self):
-        states_from_comm, dones_from_comm, truncs_from_comm = self.agentComm.get_states()
+        states_from_comm, dones_from_comm, truncs_from_comm, needs_action = self.agentComm.get_states()
         
         if not states_from_comm and not ("central" in states_from_comm and states_from_comm["central"]) and \
            not ("agent" in states_from_comm and states_from_comm["agent"]):
@@ -291,12 +291,13 @@ class RLRunner:
         if has_agent_state:
             current_states_dict["agent"] = states_from_comm["agent"].squeeze(0)
 
-        dones = dones_from_comm.squeeze(0).squeeze(-1) 
+        dones = dones_from_comm.squeeze(0).squeeze(-1)
         truncs = truncs_from_comm.squeeze(0).squeeze(-1)
+        needs_mask = needs_action.squeeze(0).squeeze(-1)
 
         if self.enable_memory and self.current_memory_hidden_states is not None:
             for e in range(self.num_envs):
-                if (dones[e] > 0.5) or (truncs[e] > 0.5):
+                if needs_mask[e] > 0.5 and ((dones[e] > 0.5) or (truncs[e] > 0.5)):
                     # reset memory for new episode but postpone segment finalization
                     self.current_memory_hidden_states[e].zero_()
         
@@ -372,9 +373,11 @@ class RLRunner:
 
         self.agentComm.send_actions(actions_ue_flat)
 
-        # store per‑environment step info and assign next_obs for the previous step
+        needs_mask = needs_action.squeeze(0).squeeze(-1)
         actions_shaped = actions_ue_flat.view(self.num_envs, self.num_agents_cfg, -1)
         for e in range(self.num_envs):
+            if needs_mask[e] < 0.5:
+                continue
             obs_e: Dict[str, Any] = {}
             if "central" in current_states_dict:
                 obs_e["central"] = {k: v[e].clone() for k, v in current_states_dict["central"].items()}
