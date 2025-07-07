@@ -109,9 +109,9 @@ void USharedMemoryAgentCommunicator::Init(UEnvironmentConfig* EnvConfig)
     // 3) Derive memory sizes (in bytes)
     ActionMAXSize = NumEnvironments * (TotalActionCount * sizeof(float));
 
-    // StatesMAXSize: Includes overhead for info floats (6) + done/trunc per environment (2)
+    // StatesMAXSize: Includes overhead for info floats (6) + done/trunc/needs_action per environment (3)
     int32 InfoFloatsSize = 6 * sizeof(float);
-    int32 TerminalsPerEnvSize = 2 * sizeof(float); // done + trunc
+    int32 TerminalsPerEnvSize = 3 * sizeof(float); // done + trunc + needs_action
     StatesMAXSize = (NumEnvironments * (SingleEnvStateSize * sizeof(float))) + InfoFloatsSize + (NumEnvironments * TerminalsPerEnvSize);
 
     // UpdateMAXSize: Based on (state + nextState + action + reward + trunc + done) per transition
@@ -180,6 +180,7 @@ TArray<FAction> USharedMemoryAgentCommunicator::GetActions(
     TArray<FState> States,
     TArray<float> Dones,
     TArray<float> Truncs,
+    TArray<float> NeedsAction,
     int CurrentNumAgents // Renamed from NumAgents to avoid conflict with member
 )
 {
@@ -233,7 +234,10 @@ TArray<FAction> USharedMemoryAgentCommunicator::GetActions(
 
     // Write Truncs
     FMemory::Memcpy(p, Truncs.GetData(), Truncs.Num() * sizeof(float));
-    // p += Truncs.Num(); // Not needed as it's the last write to this section
+    p += Truncs.Num();
+
+    // Write NeedsAction mask
+    FMemory::Memcpy(p, NeedsAction.GetData(), NeedsAction.Num() * sizeof(float));
 
     ReleaseMutex(StatesMutexHandle);
     SetEvent(ActionReadyEventHandle);

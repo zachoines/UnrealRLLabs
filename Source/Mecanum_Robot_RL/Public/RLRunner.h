@@ -12,7 +12,7 @@
 #include "RLRunner.generated.h"
 
 /**
- * Holds ìpendingî data for each environment with action-repeat:
+ * Holds ‚Äúpending‚Äù data for each environment with action-repeat:
  *   - The last state from the beginning of the repeated-block
  *   - The chosen action
  *   - Accumulated reward
@@ -145,6 +145,6 @@ private:
     void MaybeTrainUpdate();
 
     /** Gather actions from Python or fallback random. */
-    TArray<FAction> GetActionsFromPython(const TArray<FState>& EnvStates, const TArray<float>& EnvDones, const TArray<float>& EnvTruncs);
+    TArray<FAction> GetActionsFromPython(const TArray<FState>& EnvStates, const TArray<float>& EnvDones, const TArray<float>& EnvTruncs, const TArray<float>& NeedsAction);
     TArray<FAction> SampleAllEnvActions();
 };
