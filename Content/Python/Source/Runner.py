@@ -224,10 +224,15 @@ class RLRunner:
         tr_t = torch.stack(truncs, dim=0).unsqueeze(0)
 
         with torch.no_grad():
-            if self.num_agents_cfg == 1:
-                b_value = bootstrap_value.unsqueeze(0)
-            else:
-                b_value = bootstrap_value.view(1, self.num_agents_cfg)
+            # MAPOCAAgent.get_actions returns values with shape ``(B, 1)`` for
+            # both single and multi-agent setups. During bootstrapping we must
+            # ensure the value tensor fed into ``compute_bootstrapped_returns``
+            # matches the shape of ``values`` which is ``(1, T, 1)`` here.
+            b_value = (
+                bootstrap_value.unsqueeze(0)
+                if bootstrap_value.numel() == 1
+                else bootstrap_value.view(1, self.num_agents_cfg)
+            )
             returns = self.agent.compute_bootstrapped_returns(
                 r_t, v_t, d_t, tr_t, b_value
             )
