@@ -224,8 +224,12 @@ class RLRunner:
         tr_t = torch.stack(truncs, dim=0).unsqueeze(0)
 
         with torch.no_grad():
+            if self.num_agents_cfg == 1:
+                b_value = bootstrap_value.unsqueeze(0)
+            else:
+                b_value = bootstrap_value.view(1, self.num_agents_cfg)
             returns = self.agent.compute_bootstrapped_returns(
-                r_t, v_t, d_t, tr_t, bootstrap_value.view(1, 1)
+                r_t, v_t, d_t, tr_t, b_value
             )
         returns_ep = returns.squeeze(0)
 
