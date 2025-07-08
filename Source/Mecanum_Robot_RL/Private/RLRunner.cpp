@@ -224,8 +224,16 @@ void ARLRunner::DecideActions()
         // If an environment just reset, Done/Trunc will be false.
         bool bCurrentDone = Environments[i]->Done();
         bool bCurrentTrunc = Environments[i]->Trunc();
-        EnvDones[i] = bCurrentDone ? 1.f : 0.f;
-        EnvTruncs[i] = bCurrentTrunc ? 1.f : 0.f;
+        if (Pending[i].bDoneOrTrunc && Pending[i].RepeatCounter == 0)
+        {
+            EnvDones[i] = 1.f;
+            EnvTruncs[i] = 1.f;
+        }
+        else
+        {
+            EnvDones[i] = bCurrentDone ? 1.f : 0.f;
+            EnvTruncs[i] = bCurrentTrunc ? 1.f : 0.f;
+        }
         NeedsAction[i] = (Pending[i].RepeatCounter == 0) ? 1.f : 0.f;
     }
 
@@ -236,6 +244,7 @@ void ARLRunner::DecideActions()
         if (Pending[i].RepeatCounter == 0) // Only update action if it's the start of a new block
         {
             Pending[i].Action = newActions[i];
+            Pending[i].bDoneOrTrunc = false;
         }
     }
 }
@@ -282,6 +291,8 @@ void ARLRunner::FinalizeTransition(int EnvIndex, const FState& NextState, bool b
         ExperienceBufferInstance->AddExperience(EnvIndex, Exp);
     }
 
+    Pending[EnvIndex].bDoneOrTrunc = bDone || bTrunc;
+
     // Note: StartNewBlock is now called by CollectTransitions after this function returns.
     MaybeTrainUpdate();
 }
@@ -294,7 +305,6 @@ void ARLRunner::StartNewBlock(int EnvIndex, const FState& State)
     // p.Action = FAction(); // No need to clear here, DecideActions overwrites if necessary
     p.AccumulatedReward = 0.f;
     p.RepeatCounter = 0; // Reset for the new block
-    p.bDoneOrTrunc = false; // Reset this flag
 }
 
 void ARLRunner::ResetEnvironment(int EnvIndex)
