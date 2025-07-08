@@ -478,9 +478,11 @@ class RLRunner:
         with torch.no_grad():
             if bootstrap_states_batched:
                 if self.enable_memory and self.current_memory_hidden_states is not None:
-                    reset_mask = (bootstrap_dones.squeeze(-1) > 0.5) | (
-                        bootstrap_truncs.squeeze(-1) > 0.5
-                    )
+                    reset_mask = (
+                        (bootstrap_dones.squeeze(-1) > 0.5)
+                        |
+                        (bootstrap_truncs.squeeze(-1) > 0.5)
+                    ).squeeze(0)
                     for env_i, do_reset in enumerate(reset_mask):
                         if do_reset.item():
                             self.current_memory_hidden_states[env_i].zero_()
