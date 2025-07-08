@@ -562,7 +562,15 @@ class MAPOCAAgent(Agent):
 
         return advantages
     
-    def _compute_gae_with_padding(self, r: torch.Tensor, v: torch.Tensor, v_next: torch.Tensor, d: torch.Tensor, tr: torch.Tensor, mask_bt: torch.Tensor) -> torch.Tensor:
+    def _compute_gae_with_padding(
+        self,
+        r: torch.Tensor,
+        v: torch.Tensor,
+        v_next: torch.Tensor,
+        d: torch.Tensor,
+        tr: torch.Tensor,
+        mask_bt: torch.Tensor,
+    ) -> torch.Tensor:
         """
         Computes Generalized Advantage Estimation (GAE) for sequences with padding.
         The `mask_bt` ensures that padded steps do not contribute to the GAE calculation.
@@ -573,31 +581,25 @@ class MAPOCAAgent(Agent):
         mask_bt1 = mask_bt.unsqueeze(-1)
 
         for t in reversed(range(T)):
-            # Get masks for the current and next steps. Next step is invalid if current is the last.
             valid_mask_step = mask_bt1[:, t]
             if t == T - 1:
                 valid_mask_next_step = torch.ones_like(valid_mask_step)
             else:
                 valid_mask_next_step = mask_bt1[:, t + 1]
 
-            # Bootstrapping is valid if the current step is not a 'done' terminal state
-            # and the next step is a valid, non-padded part of the sequence.
-            bootstrap_mask = (1.0 - d[:, t]) * valid_mask_next_step
+            not_done = 1.0 - d[:, t]
+            not_trunc = 1.0 - tr[:, t]
+            bootstrap_mask = not_done * not_trunc * valid_mask_next_step
 
-            # TD-Error: delta = r_t + gamma * V(s_{t+1}) - V(s_t)
             delta = r[:, t] + self.gamma * v_next[:, t] * bootstrap_mask - v[:, t]
-            
-            # GAE: A_t = delta_t + gamma * lambda * A_{t+1}
+
             gae = delta + self.gamma * self.lmbda * bootstrap_mask * gae
 
-            # The return for the current step is GAE + V(s_t)
             current_return = gae + v[:, t]
 
-            # Store returns only for valid steps; padded steps will remain zero.
             returns[:, t] = current_return * valid_mask_step
-            
-            # Reset GAE for the next iteration if the current step was padding.
-            gae = gae * valid_mask_step
+
+            gae = gae * valid_mask_step * not_trunc
             
         return returns
 
@@ -616,6 +618,8 @@ class MAPOCAAgent(Agent):
 
         v_next = torch.zeros_like(v_denorm)
         v_next[:, :-1] = v_denorm[:, 1:]
+        if truncs.numel() > 1:
+            v_next[:, :-1] = v_next[:, :-1] * (1.0 - truncs[:, 1:])
 
         mask_bt = torch.ones(rewards.shape[0], rewards.shape[1], device=self.device)
         return self._compute_gae_with_padding(rewards, v_denorm, v_next, dones, truncs, mask_bt)
@@ -639,7 +643,10 @@ class MAPOCAAgent(Agent):
         v_next[:, -1] = bootstrap_value
 
         mask_bt = torch.ones(rewards.shape[0], rewards.shape[1], device=self.device)
-        return self._compute_gae_with_padding(rewards, v_denorm, v_next, dones, truncs, mask_bt)
+        # For bootstrapped rollouts we propagate across truncation boundaries,
+        # so provide a zero tensor for ``tr``.
+        zeros_tr = torch.zeros_like(truncs)
+        return self._compute_gae_with_padding(rewards, v_denorm, v_next, dones, zeros_tr, mask_bt)
 
     def _ppo_clip_loss(self, new_lp, old_lp, adv, clip_range, mask):
         """Calculates the PPO clipped surrogate objective loss."""
