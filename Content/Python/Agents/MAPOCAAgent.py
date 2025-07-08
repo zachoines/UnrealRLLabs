@@ -571,9 +571,23 @@ class MAPOCAAgent(Agent):
         tr: torch.Tensor,
         mask_bt: torch.Tensor,
     ) -> torch.Tensor:
-        """
-        Computes Generalized Advantage Estimation (GAE) for sequences with padding.
-        The `mask_bt` ensures that padded steps do not contribute to the GAE calculation.
+        """Compute Generalized Advantage Estimation (GAE).
+
+        Parameters
+        ----------
+        r : torch.Tensor
+            Reward tensor with padding.
+        v : torch.Tensor
+            Current value estimates.
+        v_next : torch.Tensor
+            Next-step value estimates.
+        d : torch.Tensor
+            Done flags for episode termination.
+        tr : torch.Tensor
+            Truncation flags. When ``tr`` is ``1`` the GAE is reset and
+            bootstrapping does not cross this boundary.
+        mask_bt : torch.Tensor
+            Mask indicating valid (non-padded) steps.
         """
         B, T, _ = r.shape
         returns = torch.zeros_like(r)
