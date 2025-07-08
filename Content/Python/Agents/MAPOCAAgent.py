@@ -575,7 +575,7 @@ class MAPOCAAgent(Agent):
         for t in reversed(range(T)):
             # Get masks for the current and next steps. Next step is invalid if current is the last.
             valid_mask_step = mask_bt1[:, t]
-            valid_mask_next_step = mask_bt1[:, t + 1] if t < T - 1 else torch.zeros_like(valid_mask_step)
+            valid_mask_next_step = mask_bt1[:, t + 1] if t < T - 1 else torch.ones_like(valid_mask_step)
 
             # Bootstrapping is valid if the current step is not a 'done' terminal state
             # and the next step is a valid, non-padded part of the sequence.
