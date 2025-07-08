@@ -12,7 +12,7 @@
             ],
             "ObjectMass": 0.1,
             "GridSize": 15,
-            "MaxSteps": 128,
+            "MaxSteps": 512,
             "MaxAgents": 4,
             "TerraShiftEnvironment": {
                 "bUseVelAlignment": false,
@@ -20,7 +20,7 @@
                 "bUseZAccelerationPenalty": false,
                 "bUsePotentialShaping": true,
                 "PotentialShaping_Gamma": 0.99,
-                "PotentialShaping_Scale": 10.0,
+                "PotentialShaping_Scale": 1.0,
                 "VelAlign_Scale": 0.01,
                 "VelAlign_Min": 0.0,
                 "VelAlign_Max": 100.0,
@@ -30,10 +30,9 @@
                 "ZAccel_Scale": 0.0001,
                 "ZAccel_Min": 0.1,
                 "ZAccel_Max": 2000.0,
-
-                "EventReward_GoalReached": 0.0,
-                "EventReward_OutOfBounds": 0.0,
-                "TimeStepPenalty": -0.001
+                "EventReward_GoalReached": 1.0,
+                "EventReward_OutOfBounds": -1.0,
+                "TimeStepPenalty": -0.0001
             },
             "GoalManager": {
                 "DefaultRadius": 1.0
@@ -70,7 +69,7 @@
                 "DeltaSigmaScale": 0.5
             },
             "StateManager": {
-                "MaxGridObjects": 3,
+                "MaxGridObjects": 1,
                 "MarginXY": 1.5,
                 "MinZ": -4.0,
                 "MaxZ": 50.0,
@@ -83,12 +82,10 @@
                 "OverheadCameraResX_disabled": 25,
                 "OverheadCameraResY_disabled": 25,
                 "bUseRandomGoals": true,
-
-                "bRespawnOnGoal": true,
-                "bRespawnOnOOB": true,
-                "bTerminateOnAllGoalsReached": false,
-                "bTerminateOnMaxSteps": true,
-
+                "bRespawnOnGoal": false,
+                "bRespawnOnOOB": false,
+                "bTerminateOnAllGoalsReached": true,
+                "bTerminateOnMaxSteps": false,
                 "GoalRadius": 7.0,
                 "ObjectRadius": 7.0,
                 "GoalCollectRadius": 10.0,
@@ -97,16 +94,6 @@
                         1.0,
                         1.0,
                         0.0
-                    ],
-                    [
-                        0.0,
-                        1.0,
-                        0.0
-                    ],
-                    [
-                        0.0,
-                        1.0,
-                        1.0
                     ]
                 ],
                 "GridObjectColors": [
@@ -114,16 +101,6 @@
                         1.0,
                         1.0,
                         0.0
-                    ],
-                    [
-                        0.0,
-                        1.0,
-                        0.0
-                    ],
-                    [
-                        0.0,
-                        1.0,
-                        1.0
                     ]
                 ],
                 "bIncludeHeightMapInState": true,
@@ -133,7 +110,7 @@
                 "StateOverheadImageResX": 60,
                 "StateOverheadImageResY": 60,
                 "bIncludeGridObjectSequenceInState": true,
-                "MaxGridObjectsForState": 3,
+                "MaxGridObjectsForState": 1,
                 "GridObjectFeatureSize": 9
             }
         },
@@ -165,7 +142,7 @@
                         "enabled": true,
                         "type": "sequence",
                         "shape": {
-                            "max_length": 3,
+                            "max_length": 1,
                             "feature_dim": 9
                         }
                     }
@@ -208,17 +185,17 @@
             }
         }
     },
-    "StateRecorder": {
-        "enabled": false,
+    "StateRecorder_disabled": {
+        "enabled": true,
         "video_settings": {
             "output_path": "recordings/TerraShift.mp4",
-            "fps": 30,
+            "fps": 15,
             "dpi": 150
         },
         "auto_save_every": 128,
         "components_to_record": [
             {
-                "enabled": false,
+                "enabled": true,
                 "source_key": "central",
                 "component_name": "height_map",
                 "visualization_type": "3d_surface",
@@ -229,8 +206,8 @@
                     "c": 1
                 },
                 "z_lim_3d": [
-                    -1.5,
-                    1.5
+                    -1,
+                    10
                 ],
                 "cmap_3d": "terrain"
             }
@@ -250,16 +227,16 @@
             },
             "enable_iqn_distillation": false,
             "disagreement_rewards_disabled": {
-                "enabled": false,
-                "reward_coeff": 0.01,
-                "loss_coeff": 0.1,
-                "normalize_reward": false,
-                "ensemble_size": 10,
+                "enabled": true,
+                "reward_coeff": 0.001,
+                "loss_coeff": 0.5,
+                "normalize_reward": true,
+                "ensemble_size": 16,
                 "network": {
                     "hidden_size": 128
                 }
             },
-            "rnd_rewards_disabled": {
+            "rnd_reward_disabled": {
                 "enabled": false,
                 "reward_coeff": 0.01,
                 "loss_coeff": 1.0,
@@ -299,67 +276,67 @@
             "max_grad_norm": 0.5,
             "ppo_clip_range": 0.2,
             "value_clip_range": 0.01,
-            "entropy_coeff": 0.1,
+            "entropy_coeff": 0.01,
             "schedulers": {
                 "lr_trunk": {
                     "start_factor": 1.0,
                     "end_factor": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 50000
                 },
                 "lr_policy": {
                     "start_factor": 1.0,
                     "end_factor": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 50000
                 },
                 "lr_value_path": {
                     "start_factor": 1.0,
                     "end_factor": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 50000
                 },
                 "lr_baseline_path": {
                     "start_factor": 1.0,
                     "end_factor": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 50000
                 },
                 "lr_value_iqn": {
                     "start_factor": 1.0,
                     "end_factor": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 50000
                 },
                 "lr_baseline_iqn": {
                     "start_factor": 1.0,
                     "end_factor": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 50000
                 },
                 "lr_rnd_predictor": {
                     "start_factor": 1.0,
                     "end_factor": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 50000
                 },
                 "lr_disagreement": {
                     "start_factor": 1.0,
                     "end_factor": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 50000
                 },
                 "entropy_coeff": {
-                    "start_value": 0.05,
-                    "end_value": 0.005,
-                    "total_iters": 10000
+                    "start_value": 0.01,
+                    "end_value": 0.001,
+                    "total_iters": 50000
                 },
                 "policy_clip": {
-                    "start_value": 0.2,
+                    "start_value": 0.3,
                     "end_value": 0.1,
-                    "total_iters": 10000
+                    "total_iters": 50000
                 },
                 "value_clip": {
                     "start_value": 0.01,
                     "end_value": 0.001,
-                    "total_iters": 10000
+                    "total_iters": 50000
                 },
                 "max_grad_norm": {
                     "start_value": 0.5,
                     "end_value": 0.5,
-                    "total_iters": 10000
+                    "total_iters": 50000
                 }
             },
             "networks": {
@@ -369,7 +346,7 @@
                         "num_agents": 4,
                         "embed_dim": 64,
                         "num_heads": 4,
-                        "transformer_layers": 2,
+                        "transformer_layers": 1,
                         "dropout_rate": 0.1,
                         "use_agent_id": true,
                         "ff_hidden_factor": 2,
@@ -436,7 +413,7 @@
                 "policy_network": {
                     "type": "beta",
                     "in_features": 64,
-                    "hidden_size": 64,
+                    "hidden_size": 128,
                     "param_init_bias": 0.0,
                     "min_concentration": 1.001,
                     "linear_init_scale": 0.1,
@@ -446,14 +423,14 @@
                     "feature_dim_for_iqn": 64,
                     "value_head": {
                         "in_features": 64,
-                        "hidden_size": 64,
-                        "dropout_rate": 0.1,
+                        "hidden_size": 128,
+                        "dropout_rate": 0.0,
                         "output_layer_init_gain": 0.1
                     },
                     "baseline_head": {
                         "in_features": 64,
-                        "hidden_size": 64,
-                        "dropout_rate": 0.1,
+                        "hidden_size": 128,
+                        "dropout_rate": 0.0,
                         "output_layer_init_gain": 0.1
                     },
                     "value_attention": {
@@ -505,12 +482,12 @@
         "pad_trajectories": true,
         "batch_size": 512,
         "buffer_size": 512,
-        "num_environments": 8,
-        "epochs": 2,
+        "num_environments": 16,
+        "epochs": 3,
         "mini_batch_size": 64,
-        "ActionRepeat": 1,
+        "ActionRepeat": 2,
         "saveFrequency": 50,
-        "states_normalizer": {
+        "states_normalizer_disabled": {
             "epsilon": 1e-08,
             "warmup_steps": 0
         }
