@@ -12,15 +12,15 @@
             ],
             "ObjectMass": 0.1,
             "GridSize": 15,
-            "MaxSteps": 512,
-            "MaxAgents": 4,
+            "MaxSteps": 256,
+            "MaxAgents": 8,
             "TerraShiftEnvironment": {
                 "bUseVelAlignment": false,
                 "bUseXYDistanceImprovement": false,
                 "bUseZAccelerationPenalty": false,
                 "bUsePotentialShaping": true,
                 "PotentialShaping_Gamma": 0.99,
-                "PotentialShaping_Scale": 1.0,
+                "PotentialShaping_Scale": 0.10,
                 "VelAlign_Scale": 0.01,
                 "VelAlign_Min": 0.0,
                 "VelAlign_Max": 100.0,
@@ -31,14 +31,14 @@
                 "ZAccel_Min": 0.1,
                 "ZAccel_Max": 2000.0,
                 "EventReward_GoalReached": 1.0,
-                "EventReward_OutOfBounds": -1.0,
+                "EventReward_OutOfBounds": -0.10,
                 "TimeStepPenalty": -0.0001
             },
             "GoalManager": {
                 "DefaultRadius": 1.0
             },
             "MultiAgentGaussianWaveHeightMap": {
-                "NumAgents": 4,
+                "NumAgents": 8,
                 "GridSize": 15,
                 "MinHeight": -6.0,
                 "MaxHeight": 6.0,
@@ -69,10 +69,10 @@
                 "DeltaSigmaScale": 0.5
             },
             "StateManager": {
-                "MaxGridObjects": 1,
+                "MaxGridObjects": 3,
                 "MarginXY": 1.5,
-                "MinZ": -4.0,
-                "MaxZ": 50.0,
+                "MinZ": 0.0,
+                "MaxZ": 40.0,
                 "ObjectScale": 0.15,
                 "ObjectMass": 0.1,
                 "MaxColumnHeight": 6.0,
@@ -85,7 +85,7 @@
                 "bRespawnOnGoal": false,
                 "bRespawnOnOOB": false,
                 "bTerminateOnAllGoalsReached": true,
-                "bTerminateOnMaxSteps": false,
+                "bTerminateOnMaxSteps": true,
                 "GoalRadius": 7.0,
                 "ObjectRadius": 7.0,
                 "GoalCollectRadius": 10.0,
@@ -94,6 +94,16 @@
                         1.0,
                         1.0,
                         0.0
+                    ],
+                    [
+                        1.0,
+                        0.0,
+                        1.0
+                    ],
+                    [
+                        0.0,
+                        1.0,
+                        1.0
                     ]
                 ],
                 "GridObjectColors": [
@@ -101,6 +111,16 @@
                         1.0,
                         1.0,
                         0.0
+                    ],
+                    [
+                        1.0,
+                        0.0,
+                        1.0
+                    ],
+                    [
+                        0.0,
+                        1.0,
+                        1.0
                     ]
                 ],
                 "bIncludeHeightMapInState": true,
@@ -110,7 +130,7 @@
                 "StateOverheadImageResX": 60,
                 "StateOverheadImageResY": 60,
                 "bIncludeGridObjectSequenceInState": true,
-                "MaxGridObjectsForState": 1,
+                "MaxGridObjectsForState": 3,
                 "GridObjectFeatureSize": 9
             }
         },
@@ -142,15 +162,15 @@
                         "enabled": true,
                         "type": "sequence",
                         "shape": {
-                            "max_length": 1,
+                            "max_length": 3,
                             "feature_dim": 9
                         }
                     }
                 ],
                 "agent": {
                     "obs_size": 9,
-                    "min": 4,
-                    "max": 4
+                    "min": 8,
+                    "max": 8
                 }
             },
             "action": {
@@ -186,7 +206,7 @@
         }
     },
     "StateRecorder_disabled": {
-        "enabled": true,
+        "enabled": false,
         "video_settings": {
             "output_path": "recordings/TerraShift.mp4",
             "fps": 15,
@@ -205,10 +225,7 @@
                     "w": 60,
                     "c": 1
                 },
-                "z_lim_3d": [
-                    -1,
-                    10
-                ],
+                "z_lim_3d": [-1, 1],
                 "cmap_3d": "terrain"
             }
         ]
@@ -231,7 +248,7 @@
                 "reward_coeff": 0.001,
                 "loss_coeff": 0.5,
                 "normalize_reward": true,
-                "ensemble_size": 16,
+                "ensemble_size": 8,
                 "network": {
                     "hidden_size": 128
                 }
@@ -247,8 +264,8 @@
                     "hidden_size": 256
                 }
             },
-            "enable_popart": false,
-            "popart_beta": 0.999,
+            "enable_popart": true,
+            "popart_beta": 0.995,
             "popart_epsilon": 1e-04,
             "learning_rate": 1e-04,
             "lr_policy": 2e-04,
@@ -275,7 +292,7 @@
             "normalize_advantages": true,
             "max_grad_norm": 0.5,
             "ppo_clip_range": 0.2,
-            "value_clip_range": 0.01,
+            "value_clip_range": 0.1,
             "entropy_coeff": 0.01,
             "schedulers": {
                 "lr_trunk": {
@@ -329,8 +346,8 @@
                     "total_iters": 50000
                 },
                 "value_clip": {
-                    "start_value": 0.01,
-                    "end_value": 0.001,
+                    "start_value": 0.2,
+                    "end_value": 0.05,
                     "total_iters": 50000
                 },
                 "max_grad_norm": {
@@ -343,10 +360,10 @@
                 "MultiAgentEmbeddingNetwork": {
                     "cross_attention_feature_extractor": {
                         "agent_obs_size": 9,
-                        "num_agents": 4,
+                        "num_agents": 8,
                         "embed_dim": 64,
                         "num_heads": 4,
-                        "transformer_layers": 1,
+                        "transformer_layers": 2,
                         "dropout_rate": 0.1,
                         "use_agent_id": true,
                         "ff_hidden_factor": 2,
@@ -375,8 +392,8 @@
                                 ],
                                 "cnn_stem_group_norms": [
                                     8,
-                                    16,
-                                    16
+                                    8,
+                                    8
                                 ],
                                 "add_spatial_coords_to_cnn_input": true
                             },
@@ -478,16 +495,16 @@
         }
     },
     "train": {
-        "sequence_length": 16,
+        "sequence_length": 32,
         "pad_trajectories": true,
         "batch_size": 512,
         "buffer_size": 512,
-        "num_environments": 16,
+        "num_environments": 8,
         "epochs": 3,
-        "mini_batch_size": 64,
-        "ActionRepeat": 2,
+        "mini_batch_size": 32,
+        "ActionRepeat": 1,
         "saveFrequency": 50,
-        "states_normalizer_disabled": {
+        "states_normalizer": {
             "epsilon": 1e-08,
             "warmup_steps": 0
         }

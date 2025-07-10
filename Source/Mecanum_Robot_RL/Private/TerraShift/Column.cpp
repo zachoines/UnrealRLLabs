@@ -25,7 +25,7 @@ AColumn::AColumn() {
 
 void AColumn::InitColumn(FVector Scale, FVector Location) {
     // Load the cube mesh asset
-    UStaticMesh* ColumnMeshAsset = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+    UStaticMesh* ColumnMeshAsset = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
     if (ColumnMeshAsset) {
         ColumnMesh->SetStaticMesh(ColumnMeshAsset);
         ColumnMesh->SetWorldScale3D(Scale);
