@@ -467,10 +467,10 @@ void UStateManager::BuildCentralState()
     FMatrix2D HeightTmp(CurrentStateMapH, CurrentStateMapW, 0.f);
     if (bIncludeHeightMapInState) {
         FTransform GridTransform = Grid->GetActorTransform();
-        float visMinZ = -MaxColumnHeight;
-        float visMaxZ = MaxColumnHeight;
-        float traceDistUp = FMath::Abs(MaxZ) + 100.0f;
-        float traceDistDown = FMath::Abs(visMinZ) + 100.0f;
+        float visMinZ = MinZ;
+        float visMaxZ = MaxZ;
+        float traceDistUp = FMath::Abs(visMaxZ);
+        float traceDistDown = FMath::Abs(visMinZ);
 
         for (int32 r_state = 0; r_state < CurrentStateMapH; ++r_state) {
             for (int32 c_state = 0; c_state < CurrentStateMapW; ++c_state) {
