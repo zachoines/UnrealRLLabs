@@ -650,7 +650,7 @@ FVector UStateManager::GetColumnTopWorldLocation(int32 GridX, int32 GridY) const
         {
             FVector colRootLocation = col->GetActorLocation();
             float scaledHalfMeshHeight = col->ColumnMesh->Bounds.BoxExtent.Z * col->ColumnMesh->GetComponentScale().Z;
-            return FVector(colRootLocation.X, colRootLocation.Y, colRootLocation.Z + scaledHalfMeshHeight);
+            return FVector(colRootLocation.X, colRootLocation.Y, colRootLocation.Z + (scaledHalfMeshHeight * 2.0));
         }
     }
     return PlatformCenter + FVector(0, 0, 100.f);

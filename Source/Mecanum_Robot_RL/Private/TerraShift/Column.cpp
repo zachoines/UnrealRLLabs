@@ -25,7 +25,7 @@ AColumn::AColumn() {
 
 void AColumn::InitColumn(FVector Scale, FVector Location) {
     // Load the cube mesh asset
-    UStaticMesh* ColumnMeshAsset = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+    UStaticMesh* ColumnMeshAsset = LoadObject<UStaticMesh>(nullptr, TEXT("/Script/Engine.StaticMesh'/Game/Shapes/Column.Column'"));
     if (ColumnMeshAsset) {
         ColumnMesh->SetStaticMesh(ColumnMeshAsset);
         ColumnMesh->SetWorldScale3D(Scale);
@@ -36,7 +36,7 @@ void AColumn::InitColumn(FVector Scale, FVector Location) {
         StartingPosition = Location;
 
         // Load and set the dynamic material
-        UMaterial* BaseMaterial = LoadObject<UMaterial>(nullptr, TEXT("/Game/StarterContent/Materials/M_Basic_Floor.M_Basic_Floor"));
+        UMaterial* BaseMaterial = LoadObject<UMaterial>(nullptr, TEXT("/Script/Engine.Material'/Game/Material/Column_Material.Column_Material'"));
         if (BaseMaterial) {
             DynMaterial = UMaterialInstanceDynamic::Create(BaseMaterial, this);
             ColumnMesh->SetMaterial(0, DynMaterial);

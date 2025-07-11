@@ -73,7 +73,7 @@ void AGridObjectManager::SpawnGridObjectAtIndex(int32 Index, FVector InWorldLoca
         GridObject->ResetGridObject();
 
         // Get offset before set location
-        float sphereRadius = GridObject->MeshComponent->Bounds.BoxExtent.Z + 1.0; // Avoiding collision with grid 
+        float sphereRadius = GridObject->MeshComponent->Bounds.BoxExtent.Z * 2; // Avoiding collision with grid 
 
         Location.Z += sphereRadius;
 
