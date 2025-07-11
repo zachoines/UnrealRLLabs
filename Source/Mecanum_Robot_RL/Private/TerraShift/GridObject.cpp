@@ -38,7 +38,7 @@ void AGridObject::InitializeGridObject(FVector InObjectSize, float InObjectMass)
         MeshComponent->SetRelativeLocation(FVector::ZeroVector);
 
         // Load and set the dynamic material
-        UMaterial* BaseMaterial = LoadObject<UMaterial>(nullptr, TEXT("/Game/StarterContent/Materials/M_Basic_Floor.M_Basic_Floor"));
+        UMaterial* BaseMaterial = LoadObject<UMaterial>(nullptr, TEXT("/Script/Engine.Material'/Game/Material/GridObject_Material.GridObject_Material'"));
         if (BaseMaterial) {
             DynMaterial = UMaterialInstanceDynamic::Create(BaseMaterial, this);
             MeshComponent->SetMaterial(0, DynMaterial);
