@@ -357,7 +357,7 @@ float ATerraShiftEnvironment::Reward()
                         FVector dirToObjectToGoal = (goalPosLocal - objPosLocal).GetSafeNormal();
                         FVector velLocalNormalized = velLocal.GetSafeNormal();
                         float dotProduct = FVector::DotProduct(velLocalNormalized, dirToObjectToGoal);
-                        float alignReward = dotProduct * velLocal.Size();
+                        float alignReward = dotProduct; // * velLocal.Size();
                         ShapingSubReward += VelAlign_Scale * ThresholdAndClamp(alignReward, VelAlign_Min, VelAlign_Max);
                     }
                 }
