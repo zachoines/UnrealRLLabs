@@ -235,9 +235,9 @@ void UStateManager::Reset(int32 NumObjects, int32 CurrentAgents)
             AColumn* col = Grid->Columns[colIndex];
             if (!col || !col->ColumnMesh) continue;
 
-            float halfZ = col->ColumnMesh->Bounds.BoxExtent.Z;
+            float full = col->ColumnMesh->Bounds.BoxExtent.Z * 2.0;
             float objWorldRadius = ObjectUnscaledSize * ObjectScale;
-            FVector offset(0.f, 0.f, halfZ + objWorldRadius);
+            FVector offset(0.f, 0.f, full + objWorldRadius);
 
             newGoalActors.Add(col);
             newGoalOffsets.Add(offset);
