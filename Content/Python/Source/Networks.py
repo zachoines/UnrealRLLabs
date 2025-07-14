@@ -1344,6 +1344,9 @@ class CNNSpatialEmbedder(nn.Module):
 
 
 class CrossAttentionFeatureExtractor(nn.Module):
+    """Embeds agent observations and a set of central inputs for transformer
+    processing. Image-like components are converted into patch sequences via
+    :class:`CNNSpatialEmbedder` so they can participate in cross-attention."""
     def __init__(
         self,
         agent_obs_size: int,
@@ -1407,8 +1410,25 @@ class CrossAttentionFeatureExtractor(nn.Module):
             env_shape_for_comp = central_comp_shapes_from_env_config[name]
 
             if comp_type == "cnn":
-                # (CNN Embedder setup remains here)
-                pass # Placeholder for your CNN init code
+                h = env_shape_for_comp.get("h")
+                w = env_shape_for_comp.get("w")
+                c = env_shape_for_comp.get("c")
+
+                self.central_embedders[name] = CNNSpatialEmbedder(
+                    name=name,
+                    input_channels_data=c,
+                    initial_h=h,
+                    initial_w=w,
+                    cnn_stem_channels=comp_cfg_proc.get("cnn_stem_channels", []),
+                    cnn_stem_kernels=comp_cfg_proc.get("cnn_stem_kernels", []),
+                    cnn_stem_strides=comp_cfg_proc.get("cnn_stem_strides", []),
+                    cnn_stem_group_norms=comp_cfg_proc.get("cnn_stem_group_norms", []),
+                    target_pool_scale=comp_cfg_proc.get("target_pool_scale", 1),
+                    embed_dim=embed_dim,
+                    dropout_rate=dropout_rate,
+                    conv_init_scale=conv_init_scale,
+                    add_spatial_coords=comp_cfg_proc.get("add_spatial_coords_to_cnn_input", True),
+                )
             elif comp_type == "linear_sequence": 
                 self.central_embedders[name] = LinearSequenceEmbedder(
                     name=name,
@@ -1479,7 +1499,6 @@ class CrossAttentionFeatureExtractor(nn.Module):
                 content_shape = central_comp_tensor.shape[(2 if is_batched_sequence else 1):]
                 comp_data_for_embedder = central_comp_tensor.reshape(effective_batch_for_embedders, *content_shape)
 
-                # FIX: Retrieve this component's specific mask and pass it to the embedder
                 padding_mask_for_comp = None
                 if central_component_padding_masks and (comp_name + "_mask") in central_component_padding_masks:
                     mask_tensor = central_component_padding_masks[comp_name + "_mask"]
@@ -1487,9 +1506,9 @@ class CrossAttentionFeatureExtractor(nn.Module):
                         padding_mask_for_comp = mask_tensor.reshape(effective_batch_for_embedders, -1)
 
                 if isinstance(embedder_module, LinearSequenceEmbedder):
-                     processed_central_features[comp_name] = embedder_module(comp_data_for_embedder, padding_mask=padding_mask_for_comp)
-                else: # For other embedders like CNNSpatialEmbedder that don't take a mask
-                     processed_central_features[comp_name] = embedder_module(comp_data_for_embedder)
+                    processed_central_features[comp_name] = embedder_module(comp_data_for_embedder, padding_mask=padding_mask_for_comp)
+                else:  # CNNSpatialEmbedder or other types without masks
+                    processed_central_features[comp_name] = embedder_module(comp_data_for_embedder)
 
         # --- Transformer Layers ---
         final_self_attn_weights = None
