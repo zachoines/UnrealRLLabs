@@ -230,6 +230,7 @@
                 "cnn_stem_kernels": [8, 4, 3],
                 "cnn_stem_strides": [4, 2, 1],
                 "cnn_stem_group_norms": [8, 8, 8],
+                "target_pool_scale": 8,
                 "add_spatial_coords_to_cnn_input": true
               },
               {

@@ -400,6 +400,7 @@
                                     16,
                                     16
                                 ],
+                                "target_pool_scale": 8,
                                 "add_spatial_coords_to_cnn_input": true
                             },
                             {
