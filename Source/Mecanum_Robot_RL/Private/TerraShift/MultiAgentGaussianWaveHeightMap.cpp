@@ -215,8 +215,13 @@ void UMultiAgentGaussianWaveHeightMap::Step(const TArray<float>& Actions, float 
 	for (FGaussianWaveAgent& AgentState : Agents)
 	{
 		AgentState.Position += AgentState.Velocity * DeltaTime;
-		AgentState.Orientation += AgentState.AngularVelocity * DeltaTime;
-		// Optional: Keep orientation wrapped, e.g., FMath::Fmod(AgentState.Orientation, 2.f * PI); if(AgentState.Orientation < 0) AgentState.Orientation += 2.f * PI;
+                AgentState.Orientation += AgentState.AngularVelocity * DeltaTime;
+                // Keep orientation within [0, 2π) to avoid drift of large values
+                AgentState.Orientation = FMath::Fmod(AgentState.Orientation, 2.f * PI);
+                if (AgentState.Orientation < 0.f)
+                {
+                        AgentState.Orientation += 2.f * PI;
+                }
 
 		const float GridSizeF = static_cast<float>(GridSize);
 		if (GridSizeF <= 0.f) continue; // Should not happen if GridSize check passed above
