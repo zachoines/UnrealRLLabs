@@ -231,7 +231,11 @@
                 "cnn_stem_strides": [4, 2, 1],
                 "cnn_stem_group_norms": [8, 8, 8],
                 "target_pool_scale": 8,
-                "add_spatial_coords_to_cnn_input": true
+                "add_spatial_coords_to_cnn_input": true,
+                "swin_stages": [
+                  {"window_size": 4, "merge": true}
+                ],
+                "final_patch_tokens": 16
               },
               {
                 "name": "gridobject_sequence",
