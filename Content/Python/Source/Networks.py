@@ -1240,26 +1240,127 @@ class LinearVectorEmbedder(nn.Module):
         return embedded_vector.unsqueeze(1) # (B_eff, 1, embed_dim) - treat as sequence of length 1
 
 
+
+class WindowAttention(nn.Module):
+    """Self-attention over non-overlapping windows."""
+    def __init__(self, embed_dim: int, num_heads: int, window_size: int, dropout: float = 0.0):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.window_size = window_size
+        self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True, dropout=dropout)
+        self.norm_q = nn.LayerNorm(embed_dim)
+        self.norm_k = nn.LayerNorm(embed_dim)
+        self.norm_v = nn.LayerNorm(embed_dim)
+        self.norm_out = nn.LayerNorm(embed_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, H, W, C = x.shape
+        ws = self.window_size
+        if H % ws != 0 or W % ws != 0:
+            raise ValueError(f"WindowAttention requires H and W divisible by window_size {ws}")
+        x = x.view(B, H // ws, ws, W // ws, ws, C).permute(0,1,3,2,4,5).contiguous()
+        windows = x.view(-1, ws * ws, C)
+        q = self.norm_q(windows)
+        k = self.norm_k(windows)
+        v = self.norm_v(windows)
+        attn_out, _ = self.attn(q, k, v)
+        attn_out = windows + attn_out
+        attn_out = self.norm_out(attn_out)
+        attn_out = attn_out.view(B, H // ws, W // ws, ws, ws, C).permute(0,1,3,2,4,5).contiguous()
+        return attn_out.view(B, H, W, C)
+
+
+class PatchMerging(nn.Module):
+    """Merge 2x2 neighboring patches."""
+    def __init__(self, embed_dim: int, out_dim: Optional[int] = None):
+        super().__init__()
+        out_dim = out_dim if out_dim is not None else embed_dim
+        self.norm = nn.LayerNorm(4 * embed_dim)
+        self.reduction = nn.Linear(4 * embed_dim, out_dim)
+        self.out_dim = out_dim
+
+    def forward(self, x: torch.Tensor, H: int, W: int) -> Tuple[torch.Tensor, int, int]:
+        B, N, C = x.shape
+        assert N == H * W
+        if H % 2 != 0 or W % 2 != 0:
+            raise ValueError("PatchMerging requires even H and W")
+        x = x.view(B, H, W, C)
+        x0 = x[:, 0::2, 0::2, :]
+        x1 = x[:, 1::2, 0::2, :]
+        x2 = x[:, 0::2, 1::2, :]
+        x3 = x[:, 1::2, 1::2, :]
+        x = torch.cat([x0, x1, x2, x3], dim=-1)
+        H_new, W_new = H // 2, W // 2
+        x = x.view(B, H_new * W_new, 4 * C)
+        x = self.norm(x)
+        x = self.reduction(x)
+        return x, H_new, W_new
+
+
+class SwinBlock(nn.Module):
+    """Basic Swin block with optional patch merging."""
+    def __init__(self, embed_dim: int, num_heads: int, window_size: int, ff_hidden_dim: int, dropout: float = 0.0, merge: bool = False):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.attn = WindowAttention(embed_dim, num_heads, window_size, dropout)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, ff_hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(ff_hidden_dim, embed_dim),
+            nn.Dropout(dropout),
+        )
+        self.merge = PatchMerging(embed_dim) if merge else None
+
+    def forward(self, x: torch.Tensor, H: int, W: int) -> Tuple[torch.Tensor, int, int]:
+        B, N, C = x.shape
+        assert N == H * W
+        x_hw = x.view(B, H, W, C)
+        attn_out = self.attn(self.norm1(x_hw))
+        x_hw = x_hw + attn_out
+        x_flat = x_hw.view(B, H * W, C)
+        ffn_out = self.ffn(self.norm2(x_flat))
+        x_flat = x_flat + ffn_out
+        if self.merge is not None:
+            x_flat, H, W = self.merge(x_flat, H, W)
+        return x_flat, H, W
+
 class CNNSpatialEmbedder(nn.Module):
     """
     Processes a single image-like central input (e.g., height map, grayscale image)
     through a CNN stem, flattens it into a patch sequence, adds positional embeddings,
     and projects to the main embedding dimension.
     """
-    def __init__(self, name: str, 
-                 input_channels_data: int, # Number of channels in the input data tensor (e.g., 1 for grayscale, 3 for RGB)
-                 initial_h: int, initial_w: int, # For reference/validation
+    def __init__(self, name: str,
+                 input_channels_data: int,
+                 initial_h: int, initial_w: int,
                  cnn_stem_channels: List[int], cnn_stem_kernels: List[int],
                  cnn_stem_strides: List[int], cnn_stem_group_norms: List[int],
-                 target_pool_scale: int, 
+                 target_pool_scale: int,
                  embed_dim: int, dropout_rate: float, conv_init_scale: float,
-                 add_spatial_coords: bool = True):
+                 add_spatial_coords: bool = True,
+                 swin_stages: Optional[List[Dict[str, Any]]] = None):
         super().__init__()
         self.name = name
         self.target_pool_scale = target_pool_scale
         self.embed_dim = embed_dim
         self.add_spatial_coords = add_spatial_coords
-        self.data_input_channels = input_channels_data 
+        self.data_input_channels = input_channels_data
+
+        self.swin_stages_cfg = swin_stages or []
+        self.swin_blocks = nn.ModuleList()
+        for stg in self.swin_stages_cfg:
+            self.swin_blocks.append(
+                SwinBlock(
+                    embed_dim=embed_dim,
+                    num_heads=stg.get("num_heads", 4),
+                    window_size=stg.get("window_size", 2),
+                    ff_hidden_dim=embed_dim * 4,
+                    dropout=dropout_rate,
+                    merge=stg.get("merge", False),
+                )
+            )
 
         self.effective_cnn_input_channels = self.data_input_channels + 2 if self.add_spatial_coords else self.data_input_channels
         
@@ -1336,11 +1437,18 @@ class CNNSpatialEmbedder(nn.Module):
         
         patches = projected.view(B_eff, self.embed_dim, -1).transpose(1, 2).contiguous()
         patches = self.layer_norm(patches)
-        
-        current_pos_emb = self.pos_emb.to(patches.device) # Ensure device match
-        patches = patches + current_pos_emb.unsqueeze(0) 
-        
-        return patches
+
+        current_pos_emb = self.pos_emb.to(patches.device)
+        patches = patches + current_pos_emb.unsqueeze(0)
+
+        H_curr = self.target_pool_scale
+        W_curr = self.target_pool_scale
+        x_hw = patches.view(B_eff, H_curr, W_curr, self.embed_dim)
+        x_seq = x_hw.view(B_eff, -1, self.embed_dim)
+        for blk in self.swin_blocks:
+            x_seq, H_curr, W_curr = blk(x_seq, H_curr, W_curr)
+
+        return x_seq
 
 
 class CrossAttentionFeatureExtractor(nn.Module):
@@ -1428,6 +1536,7 @@ class CrossAttentionFeatureExtractor(nn.Module):
                     dropout_rate=dropout_rate,
                     conv_init_scale=conv_init_scale,
                     add_spatial_coords=comp_cfg_proc.get("add_spatial_coords_to_cnn_input", True),
+                    swin_stages=comp_cfg_proc.get("swin_stages", []),
                 )
             elif comp_type == "linear_sequence": 
                 self.central_embedders[name] = LinearSequenceEmbedder(
