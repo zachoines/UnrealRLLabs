@@ -202,7 +202,7 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
 void ATerraShiftEnvironment::Act(FAction Action)
 {
     if (!Initialized || !WaveSimulator || !Grid) return;
-    WaveSimulator->Step(Action.Values, GetWorld()->GetDeltaSeconds());
+    WaveSimulator->Step(Action.Values, 0.1);
     const FMatrix2D& wave = WaveSimulator->GetHeightMap();
     Grid->UpdateColumnHeights(wave);
 }
