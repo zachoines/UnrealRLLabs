@@ -1240,7 +1240,6 @@ class LinearVectorEmbedder(nn.Module):
         return embedded_vector.unsqueeze(1) # (B_eff, 1, embed_dim) - treat as sequence of length 1
 
 
-
 class WindowAttention(nn.Module):
     """Self-attention over non-overlapping windows."""
     def __init__(self, embed_dim: int, num_heads: int, window_size: int, dropout: float = 0.0):
