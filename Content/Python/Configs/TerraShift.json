@@ -8,7 +8,7 @@
       "ObjectSize": [0.15, 0.15, 0.15],
       "ObjectMass": 0.1,
       "GridSize": 20,
-      "MaxSteps": 256,
+      "MaxSteps": 128,
       "MaxAgents": 8,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
@@ -26,8 +26,8 @@
         "ZAccel_Scale": 0.0001,
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
-        "EventReward_GoalReached": 10.0,
-        "EventReward_OutOfBounds": -10.0,
+        "EventReward_GoalReached": 1.0,
+        "EventReward_OutOfBounds": -1.0,
         "TimeStepPenalty": 0.0
       },
       "GoalManager": {"DefaultRadius": 1.0},
@@ -45,10 +45,10 @@
         "AngVelRange": [-3.14, 3.14],
         "AmpMinMax": [-6.0, 6.0],
         "SigMinMax": [0.5, 4.0],
-        "DeltaVelScale": 4.0,
-        "DeltaAngVelScale": 1.57,
-        "DeltaAmpScale": 3.0,
-        "DeltaSigmaScale": 1.0
+        "DeltaVelScale": 1.0,
+        "DeltaAngVelScale": 0.3925,
+        "DeltaAmpScale": 0.75,
+        "DeltaSigmaScale": 0.28125
       },
       "StateManager": {
         "MaxGridObjects": 3,
@@ -64,10 +64,10 @@
         "OverheadCameraResX_disabled": 25,
         "OverheadCameraResY_disabled": 25,
         "bUseRandomGoals": true,
-        "bRespawnOnGoal": true,
-        "bRespawnOnOOB": true,
-        "bTerminateOnAllGoalsReached": false,
-        "bTerminateOnMaxSteps": true,
+        "bRespawnOnGoal": false,
+        "bRespawnOnOOB": false,
+        "bTerminateOnAllGoalsReached": true,
+        "bTerminateOnMaxSteps": false,
         "GoalRadius": 7.0,
         "ObjectRadius": 7.0,
         "GoalCollectRadius": 10.0,
@@ -203,8 +203,8 @@
         "lr_rnd_predictor": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 50000},
         "lr_disagreement": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 50000},
         "entropy_coeff": {"start_value": 0.005, "end_value": 0.001, "total_iters": 50000},
-        "policy_clip": {"start_value": 0.3, "end_value": 0.1, "total_iters": 50000},
-        "value_clip": {"start_value": 0.1, "end_value": 0.1, "total_iters": 50000},
+        "policy_clip": {"start_value": 0.2, "end_value": 0.1, "total_iters": 50000},
+        "value_clip": {"start_value": 0.01, "end_value": 0.001, "total_iters": 50000},
         "max_grad_norm": {"start_value": 0.5, "end_value": 0.5, "total_iters": 50000}
       },
       "networks": {
@@ -279,13 +279,13 @@
             "in_features": 128,
             "hidden_size": 128,
             "dropout_rate": 0.0,
-            "output_layer_init_gain": 0.1
+            "output_layer_init_gain": -3.5
           },
           "baseline_head": {
             "in_features": 128,
             "hidden_size": 128,
             "dropout_rate": 0.0,
-            "output_layer_init_gain": 0.1
+            "output_layer_init_gain": -3.5
           },
           "value_attention": {
             "embed_dim": 128,
@@ -332,10 +332,10 @@
     }
   },
   "train": {
-    "sequence_length": 16,
+    "sequence_length": 8,
     "pad_trajectories": true,
-    "batch_size": 512,
-    "buffer_size": 512,
+    "batch_size": 256,
+    "buffer_size": 256,
     "num_environments": 8,
     "epochs": 4,
     "mini_batch_size": 32,
