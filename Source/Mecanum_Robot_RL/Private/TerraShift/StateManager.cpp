@@ -192,11 +192,7 @@ void UStateManager::Reset(int32 NumObjects, int32 CurrentAgents)
         CurrPos[i] = FVector::ZeroVector;
 
         RespawnTimer[i] = 0.f;
-        RespawnDelays[i] = 0.0f;
-        if (BaseRespawnDelay > 0.0f)
-        {
-            RespawnDelays[i] = BaseRespawnDelay * static_cast<float>(i);
-        }
+        RespawnDelays[i] = BaseRespawnDelay;
     }
 
     // 3) Reset NxN height arrays & step counter
@@ -415,7 +411,6 @@ void UStateManager::RespawnGridObjects()
 
             ObjectSlotStates[i] = EObjectSlotState::Active;
             bShouldResp[i] = false;
-            bShouldCollect[i] = false;
             RespawnTimer[i] = 0.f;
 
             PrevVel[i] = FVector::ZeroVector;
