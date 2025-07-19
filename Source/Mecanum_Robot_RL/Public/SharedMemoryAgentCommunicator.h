@@ -79,6 +79,8 @@ private:
     void* ActionReceivedEventHandle;
     void* UpdateReadyEventHandle;
     void* UpdateReceivedEventHandle;
+    void* BeginTestEventHandle;
+    void* EndTestEventHandle;
 
     // ------------------- CONFIG / SIZING -------------------------
     UPROPERTY()
@@ -116,4 +118,8 @@ private:
 
     // Helper: read discrete + continuous action arrays from config, sum them up
     int32 ComputeSingleEnvActionSize(int32 NumAgents) const;
+
+public:
+    void* GetBeginTestEventHandle() const { return BeginTestEventHandle; }
+    void* GetEndTestEventHandle() const { return EndTestEventHandle; }
 };
