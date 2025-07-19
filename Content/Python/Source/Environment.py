@@ -122,6 +122,8 @@ class SharedMemoryInterface(EnvCommunicationInterface):
         self.action_received_event = self._wait_for_resource(win32event.OpenEvent, win32event.EVENT_ALL_ACCESS, False, "ActionReceivedEvent")
         self.update_ready_event = self._wait_for_resource(win32event.OpenEvent, win32event.EVENT_ALL_ACCESS, False, "UpdateReadyEvent")
         self.update_received_event = self._wait_for_resource(win32event.OpenEvent, win32event.EVENT_ALL_ACCESS, False, "UpdateReceivedEvent")
+        self.begin_test_event = self._wait_for_resource(win32event.OpenEvent, win32event.EVENT_ALL_ACCESS, False, "BeginTestEvent")
+        self.end_test_event = self._wait_for_resource(win32event.OpenEvent, win32event.EVENT_ALL_ACCESS, False, "EndTestEvent")
         self.actions_mutex = self._wait_for_resource(win32event.OpenMutex, MUTEX_ALL_ACCESS, False, "ActionsDataMutex")
         self.states_mutex = self._wait_for_resource(win32event.OpenMutex, MUTEX_ALL_ACCESS, False, "StatesDataMutex")
         self.update_mutex = self._wait_for_resource(win32event.OpenMutex, MUTEX_ALL_ACCESS, False, "UpdateDataMutex")
@@ -416,7 +418,8 @@ class SharedMemoryInterface(EnvCommunicationInterface):
         
         handles_names = [
             "action_ready_event", "action_received_event", "update_ready_event",
-            "update_received_event", "actions_mutex", "states_mutex", "update_mutex"
+            "update_received_event", "begin_test_event", "end_test_event",
+            "actions_mutex", "states_mutex", "update_mutex"
         ]
         for name in handles_names:
             handle = getattr(self, name, None)
