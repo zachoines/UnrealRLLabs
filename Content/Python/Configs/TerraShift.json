@@ -345,6 +345,7 @@
   },
   "test": {
     "enabled": true,
-    "frequency": 1
+    "frequency": 1,
+    "steps": 256
   }
 }

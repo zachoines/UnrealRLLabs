@@ -168,7 +168,10 @@ class RLRunner:
         test_cfg = cfg.get("test", {})
         self.test_enabled = test_cfg.get("enabled", False)
         self.test_frequency = max(1, int(test_cfg.get("frequency", 1)))
+        self.test_steps = max(1, int(test_cfg.get("steps", 1))) if self.test_enabled else 0
         self.test_mode_active = False
+        self.test_steps_remaining = 0
+        self.test_segments: List[TrajectorySegment] = []
         print(f"RLRunner initialised (envs: {self.num_envs}, device: {self.device})")
 
     def _finalize_episode(self, env_index: int):
@@ -581,12 +584,17 @@ class RLRunner:
             env_segments.clear()
 
         if is_test_update:
-            avg_r, avg_ret = self._compute_test_metrics(all_completed_segments)
-            self.writer.add_scalar("test/avg_reward", avg_r, self.update_idx)
-            self.writer.add_scalar("test/avg_return", avg_ret, self.update_idx)
-            self.test_mode_active = False
-            if hasattr(self.agentComm, 'end_test_event') and self.agentComm.end_test_event:
-                win32event.SetEvent(self.agentComm.end_test_event)
+            self.test_segments.extend(all_completed_segments)
+            self.test_steps_remaining -= B_ue
+            if self.test_steps_remaining <= 0:
+                avg_r, avg_ret = self._compute_test_metrics(self.test_segments)
+                self.writer.add_scalar("test/avg_reward", avg_r, self.update_idx)
+                self.writer.add_scalar("test/avg_return", avg_ret, self.update_idx)
+                self.test_mode_active = False
+                self.test_segments.clear()
+                self._reset_tracking_state()
+                if hasattr(self.agentComm, 'end_test_event') and self.agentComm.end_test_event:
+                    win32event.SetEvent(self.agentComm.end_test_event)
             if hasattr(self.agentComm, 'update_received_event') and self.agentComm.update_received_event:
                 win32event.SetEvent(self.agentComm.update_received_event)
             return
@@ -683,9 +691,7 @@ class RLRunner:
             print("RLRunner Warning: agentComm.update_received_event not found or is None in _handle_update.")
 
         if (not is_test_update) and self.test_enabled and (self.update_idx % self.test_frequency == 0):
-            self.test_mode_active = True
-            if hasattr(self.agentComm, 'begin_test_event') and self.agentComm.begin_test_event:
-                win32event.SetEvent(self.agentComm.begin_test_event)
+            self._start_test_mode()
 
     def _collate_and_pad_sequences(self, segments: List[TrajectorySegment]) -> Tuple[
         Dict[str, Any], torch.Tensor, torch.Tensor, Dict[str, Any],
@@ -877,6 +883,26 @@ class RLRunner:
         avg_r = float(np.mean(rewards)) if rewards else 0.0
         avg_ret = float(np.mean(returns)) if returns else 0.0
         return avg_r, avg_ret
+
+    def _reset_tracking_state(self):
+        self.current_segments = [
+            TrajectorySegment(self.num_agents_cfg, self.device, self.pad_trajectories, self.sequence_length)
+            for _ in range(self.num_envs)
+        ]
+        if self.enable_memory and self.current_memory_hidden_states is not None:
+            for e in range(self.num_envs):
+                self.current_segments[e].initial_hidden_state = self.current_memory_hidden_states[e].clone()
+        self.current_episode_segments = [[] for _ in range(self.num_envs)]
+        self.completed_segments = [[] for _ in range(self.num_envs)]
+        self.pending_steps = [[] for _ in range(self.num_envs)]
+
+    def _start_test_mode(self):
+        self.test_mode_active = True
+        self.test_steps_remaining = self.test_steps
+        self.test_segments.clear()
+        self._reset_tracking_state()
+        if hasattr(self.agentComm, 'begin_test_event') and self.agentComm.begin_test_event:
+            win32event.SetEvent(self.agentComm.begin_test_event)
 
     def _log_step(self, logs: Dict[str, Any]):
         for k, v_val in logs.items():
