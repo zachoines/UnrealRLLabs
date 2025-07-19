@@ -5,6 +5,9 @@
 #include "RLRunner.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/Paths.h"
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include "Windows.h"
+#include "Windows/HideWindowsPlatformTypes.h"
 
 ARLRunner::ARLRunner()
 {
@@ -20,6 +23,7 @@ ARLRunner::ARLRunner()
 
     CurrentStep = 0;
     CurrentUpdate = 0;
+    bTestingMode = false;
     PrimaryActorTick.TickGroup = ETickingGroup::TG_PostUpdateWork;
 }
 
@@ -123,6 +127,20 @@ void ARLRunner::InitRunner(
 void ARLRunner::Tick(float DeltaTime)
 {
     Super::Tick(DeltaTime);
+
+    if (AgentComm)
+    {
+        void* beginHandle = AgentComm->GetBeginTestEventHandle();
+        if (beginHandle && WaitForSingleObject((HANDLE)beginHandle, 0) == WAIT_OBJECT_0)
+        {
+            BeginTestMode();
+        }
+        void* endHandle = AgentComm->GetEndTestEventHandle();
+        if (endHandle && WaitForSingleObject((HANDLE)endHandle, 0) == WAIT_OBJECT_0)
+        {
+            EndTestMode();
+        }
+    }
 
     if (CurrentStep > 0)
     {
@@ -434,4 +452,36 @@ TArray<FAction> ARLRunner::SampleAllEnvActions()
         out.Add(EnvSample(i));
     }
     return out;
+}
+
+void ARLRunner::BeginTestMode()
+{
+    if (bTestingMode) return;
+    bTestingMode = true;
+    if (ExperienceBufferInstance)
+    {
+        ExperienceBufferInstance->Clear();
+    }
+    for (int32 i = 0; i < Environments.Num(); ++i)
+    {
+        ResetEnvironment(i);
+        FState st = GetEnvState(Environments[i]);
+        StartNewBlock(i, st);
+    }
+}
+
+void ARLRunner::EndTestMode()
+{
+    if (!bTestingMode) return;
+    bTestingMode = false;
+    if (ExperienceBufferInstance)
+    {
+        ExperienceBufferInstance->Clear();
+    }
+    for (int32 i = 0; i < Environments.Num(); ++i)
+    {
+        ResetEnvironment(i);
+        FState st = GetEnvState(Environments[i]);
+        StartNewBlock(i, st);
+    }
 }

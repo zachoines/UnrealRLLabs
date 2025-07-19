@@ -92,6 +92,10 @@ public:
     UFUNCTION(BlueprintCallable)
     TArray<FExperienceBatch> SampleEnvironmentTrajectories(int32 batchSize);
 
+    /** Clear all stored experiences from every environment. */
+    UFUNCTION(BlueprintCallable)
+    void Clear();
+
 private:
     UPROPERTY()
     int32 NumEnvironments;

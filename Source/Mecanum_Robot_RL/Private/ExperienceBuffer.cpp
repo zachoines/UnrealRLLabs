@@ -102,3 +102,11 @@ TArray<FExperienceBatch> UExperienceBuffer::SampleEnvironmentTrajectories(int32 
 
     return out;
 }
+
+void UExperienceBuffer::Clear()
+{
+    for (auto& dq : EnvDeques)
+    {
+        dq.Reset();
+    }
+}
