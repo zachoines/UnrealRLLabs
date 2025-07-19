@@ -886,12 +886,20 @@ class RLRunner:
 
     def _reset_tracking_state(self):
         self.current_segments = [
-            TrajectorySegment(self.num_agents_cfg, self.device, self.pad_trajectories, self.sequence_length)
+            TrajectorySegment(
+                self.num_agents_cfg,
+                self.device,
+                self.pad_trajectories,
+                self.sequence_length,
+            )
             for _ in range(self.num_envs)
         ]
         if self.enable_memory and self.current_memory_hidden_states is not None:
+            self.current_memory_hidden_states.zero_()
             for e in range(self.num_envs):
-                self.current_segments[e].initial_hidden_state = self.current_memory_hidden_states[e].clone()
+                self.current_segments[e].initial_hidden_state = (
+                    self.current_memory_hidden_states[e].clone()
+                )
         self.current_episode_segments = [[] for _ in range(self.num_envs)]
         self.completed_segments = [[] for _ in range(self.num_envs)]
         self.pending_steps = [[] for _ in range(self.num_envs)]
