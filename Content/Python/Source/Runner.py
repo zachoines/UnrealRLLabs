@@ -164,6 +164,11 @@ class RLRunner:
 
         self.writer = SummaryWriter()
         self.update_idx = 0
+
+        test_cfg = cfg.get("test", {})
+        self.test_enabled = test_cfg.get("enabled", False)
+        self.test_frequency = max(1, int(test_cfg.get("frequency", 1)))
+        self.test_mode_active = False
         print(f"RLRunner initialised (envs: {self.num_envs}, device: {self.device})")
 
     def _finalize_episode(self, env_index: int):
@@ -379,6 +384,7 @@ class RLRunner:
             states_for_agent_action_batched,
             dones=dones_from_comm,
             truncs=truncs_from_comm,
+            eval=self.test_mode_active,
             h_prev_batch=self.current_memory_hidden_states if self.enable_memory else None,
         )
 
@@ -436,6 +442,7 @@ class RLRunner:
     def _handle_update(self):
         self.update_idx += 1
         print(f"RLRunner update {self.update_idx}")
+        is_test_update = self.test_mode_active
 
         # retrieve experiences (states are ignored except for bootstrapping)
         states_tensor, next_states_tensor, _, rewards_tensor, dones_tensor, truncs_tensor = self.agentComm.get_experiences()
@@ -570,8 +577,19 @@ class RLRunner:
             self._finalize_rollout(e, bootstrap_values[e])
         
         all_completed_segments = [seg for env_segments in self.completed_segments for seg in env_segments]
-        for env_segments in self.completed_segments: 
+        for env_segments in self.completed_segments:
             env_segments.clear()
+
+        if is_test_update:
+            avg_r, avg_ret = self._compute_test_metrics(all_completed_segments)
+            self.writer.add_scalar("test/avg_reward", avg_r, self.update_idx)
+            self.writer.add_scalar("test/avg_return", avg_ret, self.update_idx)
+            self.test_mode_active = False
+            if hasattr(self.agentComm, 'end_test_event') and self.agentComm.end_test_event:
+                win32event.SetEvent(self.agentComm.end_test_event)
+            if hasattr(self.agentComm, 'update_received_event') and self.agentComm.update_received_event:
+                win32event.SetEvent(self.agentComm.update_received_event)
+            return
 
         if not all_completed_segments:
             print("RLRunner: no completed segments to update with – skipping agent update.")
@@ -663,6 +681,11 @@ class RLRunner:
             win32event.SetEvent(self.agentComm.update_received_event)
         else:
             print("RLRunner Warning: agentComm.update_received_event not found or is None in _handle_update.")
+
+        if (not is_test_update) and self.test_enabled and (self.update_idx % self.test_frequency == 0):
+            self.test_mode_active = True
+            if hasattr(self.agentComm, 'begin_test_event') and self.agentComm.begin_test_event:
+                win32event.SetEvent(self.agentComm.begin_test_event)
 
     def _collate_and_pad_sequences(self, segments: List[TrajectorySegment]) -> Tuple[
         Dict[str, Any], torch.Tensor, torch.Tensor, Dict[str, Any],
@@ -837,10 +860,28 @@ class RLRunner:
             attention_mask,
         )
 
+    def _compute_test_metrics(self, segments: List[TrajectorySegment]) -> Tuple[float, float]:
+        if not segments:
+            return 0.0, 0.0
+
+        rewards = []
+        returns = []
+        for seg in segments:
+            if seg.rewards:
+                r = torch.stack(seg.rewards, dim=0).sum(dim=0)
+                rewards.append(r.mean().item())
+            if seg.returns:
+                ret = torch.stack(seg.returns, dim=0)[0]
+                returns.append(ret.mean().item())
+
+        avg_r = float(np.mean(rewards)) if rewards else 0.0
+        avg_ret = float(np.mean(returns)) if returns else 0.0
+        return avg_r, avg_ret
+
     def _log_step(self, logs: Dict[str, Any]):
         for k, v_val in logs.items():
             if isinstance(v_val, torch.Tensor):
-                scalar_v = v_val.item() if v_val.numel() == 1 else v_val.mean().item() 
+                scalar_v = v_val.item() if v_val.numel() == 1 else v_val.mean().item()
             elif isinstance(v_val, (list, np.ndarray)):
                  scalar_v = np.mean(v_val).item() if len(v_val) > 0 else 0.0 
             elif isinstance(v_val, (int, float)):

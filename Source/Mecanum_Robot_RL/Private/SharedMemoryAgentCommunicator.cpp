@@ -21,6 +21,8 @@ USharedMemoryAgentCommunicator::USharedMemoryAgentCommunicator()
     , ActionReceivedEventHandle(nullptr)
     , UpdateReadyEventHandle(nullptr)
     , UpdateReceivedEventHandle(nullptr)
+    , BeginTestEventHandle(nullptr)
+    , EndTestEventHandle(nullptr)
     , LocalEnvConfig(nullptr)
     , NumEnvironments(1)
     , BufferSize(256)
@@ -68,6 +70,10 @@ USharedMemoryAgentCommunicator::~USharedMemoryAgentCommunicator()
         CloseHandle(UpdateReadyEventHandle);
     if (UpdateReceivedEventHandle)
         CloseHandle(UpdateReceivedEventHandle);
+    if (BeginTestEventHandle)
+        CloseHandle(BeginTestEventHandle);
+    if (EndTestEventHandle)
+        CloseHandle(EndTestEventHandle);
 }
 
 void USharedMemoryAgentCommunicator::Init(UEnvironmentConfig* EnvConfig)
@@ -145,7 +151,12 @@ void USharedMemoryAgentCommunicator::Init(UEnvironmentConfig* EnvConfig)
     ActionReceivedEventHandle = CreateEvent(NULL, false, false, TEXT("ActionReceivedEvent"));
     UpdateReadyEventHandle = CreateEvent(NULL, false, false, TEXT("UpdateReadyEvent"));
     UpdateReceivedEventHandle = CreateEvent(NULL, false, false, TEXT("UpdateReceivedEvent"));
-    if (!ActionReadyEventHandle || !ActionReceivedEventHandle || !UpdateReadyEventHandle || !UpdateReceivedEventHandle) { UE_LOG(LogTemp, Error, TEXT("Failed to create one or more events. Error: %d"), GetLastError()); }
+    BeginTestEventHandle = CreateEvent(NULL, false, false, TEXT("BeginTestEvent"));
+    EndTestEventHandle = CreateEvent(NULL, false, false, TEXT("EndTestEvent"));
+    if (!ActionReadyEventHandle || !ActionReceivedEventHandle || !UpdateReadyEventHandle || !UpdateReceivedEventHandle ||
+        !BeginTestEventHandle || !EndTestEventHandle) {
+        UE_LOG(LogTemp, Error, TEXT("Failed to create one or more events. Error: %d"), GetLastError());
+    }
 
     // 7) Map the memory
     if (ActionsSharedMemoryHandle && ActionMAXSize > 0) {

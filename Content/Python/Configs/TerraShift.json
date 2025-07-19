@@ -342,5 +342,9 @@
     "ActionRepeat": 1,
     "saveFrequency": 50,
     "states_normalizer_disabled": {"epsilon": 1e-08, "warmup_steps": 0}
+  },
+  "test": {
+    "enabled": true,
+    "frequency": 1
   }
 }

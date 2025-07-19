@@ -122,6 +122,11 @@ private:
     uint64 CurrentStep;
     uint64 CurrentUpdate;
 
+    bool bTestingMode;
+
+    void BeginTestMode();
+    void EndTestMode();
+
 private:
     // --------------------------
     //   Internal Helpers
