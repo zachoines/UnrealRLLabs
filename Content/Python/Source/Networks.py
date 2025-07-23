@@ -1342,6 +1342,7 @@ class CNNSpatialEmbedder(nn.Module):
                  swin_stages: Optional[List[Dict[str, Any]]] = None):
         super().__init__()
         self.name = name
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.target_pool_scale = target_pool_scale
         self.embed_dim = embed_dim
         self.add_spatial_coords = add_spatial_coords
@@ -1385,7 +1386,7 @@ class CNNSpatialEmbedder(nn.Module):
         self.layer_norm = nn.LayerNorm(embed_dim)
         
         self.pos_emb = nn.Parameter(
-            create_2d_sin_cos_pos_emb(target_pool_scale, target_pool_scale, embed_dim, torch.device("cpu")),
+            create_2d_sin_cos_pos_emb(target_pool_scale, target_pool_scale, embed_dim, self.device),
             requires_grad=False
         )
 
@@ -1437,8 +1438,7 @@ class CNNSpatialEmbedder(nn.Module):
         patches = projected.view(B_eff, self.embed_dim, -1).transpose(1, 2).contiguous()
         patches = self.layer_norm(patches)
 
-        current_pos_emb = self.pos_emb.to(patches.device)
-        patches = patches + current_pos_emb.unsqueeze(0)
+        patches = patches + self.pos_emb.unsqueeze(0)
 
         H_curr = self.target_pool_scale
         W_curr = self.target_pool_scale
