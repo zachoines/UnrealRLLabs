@@ -1771,21 +1771,29 @@ class MultiAgentEmbeddingNetwork(nn.Module):
             return baseline_input_final_flat.view(B_orig, A, A, H_baseline_feat)
 
 
-class AgentIDPosEnc(nn.Module): # Included for completeness
+class AgentIDPosEnc(nn.Module):  # Included for completeness
     """Sinusoidal positional encoder for integer agent IDs."""
+
     def __init__(self, num_freqs: int = 8, id_embed_dim: int = 32):
         super().__init__()
         self.num_freqs = num_freqs
         self.id_embed_dim = id_embed_dim
         self.linear = nn.Linear(2 * num_freqs, id_embed_dim)
-        init.kaiming_normal_(self.linear.weight, a=0.01) 
-        if self.linear.bias is not None: nn.init.constant_(self.linear.bias, 0.0)
+        init.kaiming_normal_(self.linear.weight, a=0.01)
+        if self.linear.bias is not None:
+            nn.init.constant_(self.linear.bias, 0.0)
+
+        # Precompute frequency scales and register as a buffer so it moves with
+        # the module when ``to(device)`` is called.
+        freq_indices = torch.arange(num_freqs, dtype=torch.float32)
+        self.register_buffer("freq_scales", torch.pow(2.0, freq_indices))
 
     def sinusoidal_features(self, x: torch.Tensor) -> torch.Tensor:
-        x_float = x.float().unsqueeze(-1) 
-        freq_exponents = torch.arange(self.num_freqs, device=x.device, dtype=torch.float32)
-        scales = torch.pow(2.0, freq_exponents).unsqueeze(0) 
-        multiplied = x_float * scales
+        x_float = x.float().unsqueeze(-1)
+        scales = self.freq_scales
+        if scales.device != x.device:
+            scales = scales.to(x.device)
+        multiplied = x_float * scales.unsqueeze(0)
         sines = torch.sin(multiplied)
         cosines = torch.cos(multiplied)
         return torch.cat([sines, cosines], dim=-1)
