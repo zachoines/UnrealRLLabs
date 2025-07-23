@@ -108,8 +108,13 @@ class MAPOCAAgent(Agent):
 
         # --- Core Network Definitions ---
         emb_main_cfg = net_cfg["MultiAgentEmbeddingNetwork"]
-        self.embedding_net = MultiAgentEmbeddingNetwork(emb_main_cfg, environment_config_for_shapes=env_cfg).to(device)
-        emb_out_dim = emb_main_cfg["cross_attention_feature_extractor"]["embed_dim"]
+        self.embedding_net = MultiAgentEmbeddingNetwork(
+            emb_main_cfg, environment_config_for_shapes=env_cfg
+        ).to(device)
+        emb_out_dim = emb_main_cfg["cross_attention_feature_extractor"][
+            "embed_dim"
+        ]
+        self.emb_out_dim = emb_out_dim
 
         self.enable_memory = a_cfg.get("enable_memory", False)
         if self.enable_memory:
@@ -119,9 +124,14 @@ class MAPOCAAgent(Agent):
             self.memory_hidden = mem_specific_cfg.get("hidden_size", 128)
             self.memory_layers = mem_specific_cfg.get("num_layers", 1)
             self.memory_module: Optional[RecurrentMemoryNetwork] = GRUSequenceMemory(**mem_specific_cfg).to(device)
+            if self.memory_hidden != emb_out_dim:
+                self.memory_to_embed_proj = nn.Linear(self.memory_hidden, emb_out_dim).to(device)
+            else:
+                self.memory_to_embed_proj = None
             trunk_dim = self.memory_hidden
         else:
             self.memory_module = None
+            self.memory_to_embed_proj = None
             trunk_dim = emb_out_dim
 
         pol_cfg = net_cfg["policy_network"].copy()
@@ -1034,7 +1044,13 @@ class MAPOCAAgent(Agent):
         s_val_feats_agg = s_val_attn_out.mean(dim=1)  # Shape: (B*T, H_embed)
 
         # --- Baseline Path ---
-        base_input_comb = self.embedding_net.get_baseline_embeddings(feats_seq, actions_seq)
+        baseline_feats = feats_seq
+        if baseline_feats.shape[-1] != self.emb_out_dim:
+            if self.memory_to_embed_proj is not None:
+                baseline_feats = self.memory_to_embed_proj(baseline_feats)
+            else:
+                baseline_feats = baseline_feats[..., : self.emb_out_dim]
+        base_input_comb = self.embedding_net.get_baseline_embeddings(baseline_feats, actions_seq)
         base_input_flat = base_input_comb.reshape(B_T_NA_flat, NA, -1)
         s_base_attn_out, _ = self.shared_critic.baseline_attention(base_input_flat)
         s_base_feats_agg = s_base_attn_out.mean(dim=1) # Shape: (B*T*NA, H_embed)
