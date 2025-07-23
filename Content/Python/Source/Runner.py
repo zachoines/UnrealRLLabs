@@ -277,7 +277,15 @@ class RLRunner:
 
 
     def _handle_get_actions(self):
-        states_from_comm, dones_from_comm, truncs_from_comm, needs_action = self.agentComm.get_states()
+        """Respond to a GET_ACTIONS request from Unreal Engine."""
+        try:
+            states_from_comm, dones_from_comm, truncs_from_comm, needs_action = self.agentComm.get_states()
+        except ValueError as e:
+            print(f"RLRunner: Error getting states - {e}")
+            if hasattr(self.agentComm, "action_received_event") and self.agentComm.action_received_event:
+                win32event.SetEvent(self.agentComm.action_received_event)
+            self.end()
+            raise SystemExit
 
         has_central_state = (
             states_from_comm
@@ -443,12 +451,20 @@ class RLRunner:
 
 
     def _handle_update(self):
+        """Process a batch of experience data from UE."""
         self.update_idx += 1
         print(f"RLRunner update {self.update_idx}")
         is_test_update = self.test_mode_active
 
         # retrieve experiences (states are ignored except for bootstrapping)
-        states_tensor, next_states_tensor, _, rewards_tensor, dones_tensor, truncs_tensor = self.agentComm.get_experiences()
+        try:
+            states_tensor, next_states_tensor, _, rewards_tensor, dones_tensor, truncs_tensor = self.agentComm.get_experiences()
+        except ValueError as e:
+            print(f"RLRunner: Error getting experiences - {e}")
+            if hasattr(self.agentComm, "update_received_event") and self.agentComm.update_received_event:
+                win32event.SetEvent(self.agentComm.update_received_event)
+            self.end()
+            raise SystemExit
         
         if not rewards_tensor.numel(): # No experiences received
             print("RLRunner: no experiences received in update. Skipping.")
