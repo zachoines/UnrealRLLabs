@@ -410,6 +410,7 @@ class MAPOCAAgent(Agent):
         if self.enable_iqn_distillation:
             logs_acc.update({
                 "loss/value_iqn": [], "loss/baseline_iqn": [],
+                "loss/value_distill_iqn": [], "loss/baseline_distill_iqn": [],
                 "mean/value_quantiles": [], "std/value_quantiles": [],
                 "mean/baseline_quantiles": [], "std/baseline_quantiles": [],
                 "mean/distilled_value": [], "std/distilled_value": [],
@@ -449,6 +450,9 @@ class MAPOCAAgent(Agent):
 
         self.value_iqn_loss_coeff = iqn_params.get("value_iqn_loss_coeff", 0.25)
         self.baseline_iqn_loss_coeff = iqn_params.get("baseline_iqn_loss_coeff", 0.25)
+        self.train_distill_with_quantile_loss = iqn_params.get("train_distill_with_quantile_loss", False)
+        self.value_distill_iqn_loss_coeff = iqn_params.get("value_distill_iqn_loss_coeff", 0.25)
+        self.baseline_distill_iqn_loss_coeff = iqn_params.get("baseline_distill_iqn_loss_coeff", 0.25)
         self.iqn_target_update_freq = iqn_params.get("iqn_target_update_freq", 10)
         self.iqn_batch_size = iqn_params.get("iqn_batch_size", self.mini_batch_size)
         
@@ -792,9 +796,11 @@ class MAPOCAAgent(Agent):
         
         # --- FIX: Move accumulators inside, as this is one self-contained training step ---
         val_iqn_losses, base_iqn_losses = [], []
+        val_distill_losses, base_distill_losses = [], []
         val_q_means, val_q_stds = [], []
         base_q_means, base_q_stds = [], []
         val_iqn_grads, base_iqn_grads = [], []
+        val_distill_grads, base_distill_grads = [], []
 
         for _epoch_iqn in range(self.iqn_epochs):
             sample = self.iqn_replay_buffer.sample(self.iqn_batch_size)
@@ -846,32 +852,66 @@ class MAPOCAAgent(Agent):
 
                 baseline_bellman_targets = r_base_valid + self.gamma * (1.0 - d_base_valid) * next_baseline_quantiles
                 baseline_iqn_loss = self._compute_huber_quantile_loss(current_baseline_quantiles, baseline_bellman_targets.detach(), taus_current_base)
-                
+
                 base_iqn_losses.append(baseline_iqn_loss.item())
                 base_q_means.append(current_baseline_quantiles.mean().item())
                 base_q_stds.append(current_baseline_quantiles.std().item())
 
+            if self.train_distill_with_quantile_loss and s_val_valid.shape[0] > 0:
+                v_ppo_cur = self.shared_critic.value_head_ppo(s_val_valid)
+                distilled_val = self.shared_critic.value_distill_net(v_ppo_cur, current_value_quantiles)
+                distill_val_exp = distilled_val.expand_as(current_value_quantiles)
+                value_distill_loss = self._compute_huber_quantile_loss(distill_val_exp, bellman_targets.detach(), taus_current_val)
+                val_distill_losses.append(value_distill_loss.item())
+
+            if self.train_distill_with_quantile_loss and s_base_valid.shape[0] > 0:
+                b_ppo_cur = self.shared_critic.baseline_head_ppo(s_base_valid)
+                distilled_base = self.shared_critic.baseline_distill_net(b_ppo_cur, current_baseline_quantiles)
+                distill_base_exp = distilled_base.expand_as(current_baseline_quantiles)
+                baseline_distill_loss = self._compute_huber_quantile_loss(distill_base_exp, baseline_bellman_targets.detach(), taus_current_base)
+                base_distill_losses.append(baseline_distill_loss.item())
+
             # --- Optimization Step ---
             if 'value_iqn_loss' in locals() and 'baseline_iqn_loss' in locals():
                 total_iqn_loss = (self.value_iqn_loss_coeff * value_iqn_loss) + (self.baseline_iqn_loss_coeff * baseline_iqn_loss)
-                
+
+                if self.train_distill_with_quantile_loss and 'value_distill_loss' in locals() and 'baseline_distill_loss' in locals():
+                    total_iqn_loss = total_iqn_loss + (
+                        self.value_distill_iqn_loss_coeff * value_distill_loss
+                    ) + (
+                        self.baseline_distill_iqn_loss_coeff * baseline_distill_loss
+                    )
+
                 self.optimizers["value_iqn"].zero_grad()
                 self.optimizers["baseline_iqn"].zero_grad()
+                if self.train_distill_with_quantile_loss:
+                    self.optimizers["value_path"].zero_grad()
+                    self.optimizers["baseline_path"].zero_grad()
+
                 if total_iqn_loss > 0:
                     total_iqn_loss.backward()
 
-                    # Combine parameters from both IQN optimizers for a single clipping operation
                     iqn_params = list(self.shared_critic.value_iqn_net.parameters()) + \
                                  list(self.shared_critic.baseline_iqn_net.parameters())
-                    
-                    # Clip the gradients of the IQN networks
+                    if self.train_distill_with_quantile_loss:
+                        iqn_params += list(self.shared_critic.value_distill_net.parameters()) + \
+                                      list(self.shared_critic.baseline_distill_net.parameters()) + \
+                                      list(self.shared_critic.value_head_ppo.parameters()) + \
+                                      list(self.shared_critic.baseline_head_ppo.parameters())
+
                     clip_grad_norm_(iqn_params, self.iqn_max_grad_norm)
 
                     val_iqn_grads.append(_get_avg_grad_mag(self.shared_critic.value_iqn_net.parameters()))
                     base_iqn_grads.append(_get_avg_grad_mag(self.shared_critic.baseline_iqn_net.parameters()))
-                    
+                    if self.train_distill_with_quantile_loss:
+                        val_distill_grads.append(_get_avg_grad_mag(self.shared_critic.value_distill_net.parameters()))
+                        base_distill_grads.append(_get_avg_grad_mag(self.shared_critic.baseline_distill_net.parameters()))
+
                     self.optimizers["value_iqn"].step()
                     self.optimizers["baseline_iqn"].step()
+                    if self.train_distill_with_quantile_loss:
+                        self.optimizers["value_path"].step()
+                        self.optimizers["baseline_path"].step()
 
         # --- Append logs for the entire IQN training phase ---
         if val_iqn_losses: logs_acc["loss/value_iqn"].append(np.mean(val_iqn_losses))
@@ -882,6 +922,11 @@ class MAPOCAAgent(Agent):
         if base_q_stds: logs_acc["std/baseline_quantiles"].append(np.mean(base_q_stds))
         if val_iqn_grads: logs_acc["grad_norm/value_iqn"].append(np.mean(val_iqn_grads))
         if base_iqn_grads: logs_acc["grad_norm/baseline_iqn"].append(np.mean(base_iqn_grads))
+        if self.train_distill_with_quantile_loss:
+            if val_distill_losses: logs_acc["loss/value_distill_iqn"].append(np.mean(val_distill_losses))
+            if base_distill_losses: logs_acc["loss/baseline_distill_iqn"].append(np.mean(base_distill_losses))
+            if val_distill_grads: logs_acc["grad_norm/distill_value"].append(np.mean(val_distill_grads))
+            if base_distill_grads: logs_acc["grad_norm/distill_baseline"].append(np.mean(base_distill_grads))
 
         # --- Target Network Update ---
         if self._iqn_total_updates_counter % self.iqn_target_update_freq == 0:
