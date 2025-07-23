@@ -226,10 +226,14 @@ class SharedMemoryInterface(EnvCommunicationInterface):
             calculated_total_state_size_this_call = self.parsed_central_obs_size + expected_agent_size_this_call
 
             if SingleEnvStateSize_from_ue != calculated_total_state_size_this_call:
-                print(f"CRITICAL WARNING in get_states: SingleEnvStateSize from UE ({SingleEnvStateSize_from_ue}) "
-                    f"does not match Python's calculated size ({calculated_total_state_size_this_call}). "
-                    f"Python Central: {self.parsed_central_obs_size}, Python Agent: {expected_agent_size_this_call}. "
-                    "Check JSON consistency between UE (StateManager params) and Python (environment.shape.state).")
+                raise ValueError(
+                    "Shared memory state size mismatch: UE reports {} but Python expects {} (central {}, agent {}).".format(
+                        SingleEnvStateSize_from_ue,
+                        calculated_total_state_size_this_call,
+                        self.parsed_central_obs_size,
+                        expected_agent_size_this_call,
+                    )
+                )
             
             actual_total_state_data_size = NumEnvironments * SingleEnvStateSize_from_ue
             

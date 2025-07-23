@@ -278,14 +278,19 @@ class RLRunner:
 
     def _handle_get_actions(self):
         states_from_comm, dones_from_comm, truncs_from_comm, needs_action = self.agentComm.get_states()
-        
-        if (
-            not states_from_comm
-            or "central" not in states_from_comm
-            or not states_from_comm.get("central")
-            or "agent" not in states_from_comm
-            or states_from_comm.get("agent") is None
-        ):
+
+        has_central_state = (
+            states_from_comm
+            and "central" in states_from_comm
+            and states_from_comm.get("central")
+        )
+        has_agent_state = (
+            states_from_comm
+            and "agent" in states_from_comm
+            and states_from_comm.get("agent") is not None
+        )
+
+        if not (has_central_state or has_agent_state):
             # This can happen if initial shared memory read is empty or parsing fails in agentComm
             print("RLRunner: Received empty or invalid states_from_comm in _handle_get_actions. Skipping.")
             # Still need to signal UE to avoid deadlock if it's waiting for actions
@@ -300,11 +305,6 @@ class RLRunner:
             return
 
         current_states_dict: Dict[str, Any] = {}
-        has_central_state = "central" in states_from_comm and states_from_comm["central"]
-        has_agent_state = "agent" in states_from_comm and states_from_comm["agent"] is not None
-
-        if not has_central_state and not has_agent_state:
-            raise ValueError("RLRunner: states_from_comm must contain at least 'central' or 'agent' key with data.")
 
         if has_central_state:
             current_states_dict["central"] = {
