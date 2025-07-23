@@ -9,6 +9,8 @@ Key Features:
 
 Whether you're a seasoned researcher looking to conduct high-end RL experiments or a developer aiming to implement cutting-edge AI in gaming or simulation scenarios, `UnrealRLLabs` provides the tools and flexibility needed to push the boundaries of what's possible.
 
+The RL runner gracefully handles shared-memory mismatches. If the environment communication interface raises a ``ValueError`` while reading states or experiences, the error is logged, Unreal Engine is unblocked by signalling the appropriate event, and the runner exits cleanly.
+
 ## AI Disclosure
 Portions of this codebase were drafted with assistance from AI tools (OpenAI ChatGPT; Google Gemini; Microsoft Copilot).
 
