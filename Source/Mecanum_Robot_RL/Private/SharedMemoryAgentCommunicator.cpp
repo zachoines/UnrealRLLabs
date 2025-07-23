@@ -433,6 +433,7 @@ int32 USharedMemoryAgentCommunicator::ComputeSingleEnvStateSize(int32 NumAgentsT
                     {
                         int32 h = 0;
                         int32 w = 0;
+                        int32 c = ShapeConfig->GetOrDefaultInt(TEXT("c"), 1); // channel count defaults to 1
 
                         // *** KEY FIX STARTS HERE ***
                         // For the height map, use the specific resolution from the StateManager config to ensure consistency.
@@ -456,7 +457,7 @@ int32 USharedMemoryAgentCommunicator::ComputeSingleEnvStateSize(int32 NumAgentsT
                             w = ShapeConfig->GetOrDefaultInt(TEXT("w"), 0);
                         }
                         // *** KEY FIX ENDS HERE ***
-                        TotalSize += (h * w);
+                        TotalSize += (h * w * c);
                     }
                     else if (CompType.Equals(TEXT("sequence"), ESearchCase::IgnoreCase))
                     {
