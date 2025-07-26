@@ -1105,7 +1105,8 @@ class ResidualAttention(nn.Module):
         # Final Layer Normalization after residual connection
         self.norm_out = nn.LayerNorm(embed_dim)
 
-    def forward(self, x_q, x_k=None, x_v=None, key_padding_mask: Optional[torch.Tensor] = None):
+    def forward(self, x_q, x_k=None, x_v=None, key_padding_mask: Optional[torch.Tensor] = None,
+                return_attention_only: bool = False):
         """
         Forward pass for the attention block.
         Accepts an optional key_padding_mask to ignore padded elements in the key/value sequences.
@@ -1142,10 +1143,11 @@ class ResidualAttention(nn.Module):
         # This means "attending to nothing" results in a zero-vector output.
         attn_out = torch.nan_to_num(attn_out, nan=0.0)
 
-        # --- Add & Norm: Apply residual connection and final normalization ---
+        if return_attention_only:
+            return attn_out, attn_weights
+
         out = x_q + attn_out
         out = self.norm_out(out)
-
         return out, attn_weights
 
 
@@ -1325,6 +1327,109 @@ class SwinBlock(nn.Module):
             x_flat, H, W = self.merge(x_flat, H, W)
         return x_flat, H, W
 
+
+class AdaptiveSpatialTokenizer(nn.Module):
+    """Selects a subset of spatial tokens based on learned importance."""
+
+    def __init__(
+        self,
+        embed_dim: int,
+        base_tokens: int = 16,
+        min_tokens: int = 8,
+        max_tokens: int = 24,
+        importance_hidden: int = 64,
+    ) -> None:
+        super().__init__()
+        self.importance_net = nn.Sequential(
+            nn.Linear(embed_dim, importance_hidden),
+            nn.GELU(),
+            nn.Linear(importance_hidden, 1)
+        )
+        self.base_tokens = base_tokens
+        self.min_tokens = min_tokens
+        self.max_tokens = max_tokens
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return selected tokens and their indices.
+
+        Args:
+            x: Tensor of shape (B, N, C) representing N spatial tokens.
+
+        Returns:
+            (selected_tokens, indices) where ``selected_tokens`` has shape
+            (B, K, C) and ``indices`` has shape (B, K).
+        """
+        B, N, C = x.shape
+        k = min(max(self.min_tokens, self.base_tokens), min(self.max_tokens, N))
+        scores = self.importance_net(x).squeeze(-1)  # (B, N)
+        topk_val, topk_idx = torch.topk(scores, k=k, dim=1)
+        gather_idx = topk_idx.unsqueeze(-1).expand(-1, -1, C)
+        selected = torch.gather(x, 1, gather_idx)
+        return selected, topk_idx
+
+
+class ParallelCrossAttention(nn.Module):
+    """Apply cross-attention to multiple components in parallel."""
+
+    def __init__(self, embed_dim: int, num_heads: int, component_names: List[str], dropout: float = 0.0):
+        super().__init__()
+        self.cross_attns = nn.ModuleDict({
+            name: ResidualAttention(embed_dim, num_heads, dropout=dropout, self_attention=False)
+            for name in component_names
+        })
+        self.norm = nn.LayerNorm(embed_dim)
+
+    def forward(self, agent_embed: torch.Tensor, components: Dict[str, torch.Tensor],
+                key_padding_masks: Optional[Dict[str, torch.Tensor]] = None) -> torch.Tensor:
+        outputs = []
+        for name, feats in components.items():
+            if name not in self.cross_attns:
+                continue
+            mask = None
+            if key_padding_masks and name in key_padding_masks:
+                mask = key_padding_masks[name]
+            attn_out, _ = self.cross_attns[name](agent_embed, feats, feats, key_padding_mask=mask,
+                                                return_attention_only=True)
+            outputs.append(attn_out)
+
+        if not outputs:
+            return agent_embed
+
+        combined = torch.stack(outputs, dim=0).mean(dim=0)
+        out = agent_embed + combined
+        return self.norm(out)
+
+
+class HierarchicalCrossAttention(nn.Module):
+    """Two-stage attention over spatial and object tokens."""
+
+    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0):
+        super().__init__()
+        half_heads = max(1, num_heads // 2)
+        self.spatial_attention = ResidualAttention(embed_dim, half_heads, dropout=dropout, self_attention=False)
+        self.object_attention = ResidualAttention(embed_dim, half_heads, dropout=dropout, self_attention=False)
+        self.fusion_attention = ResidualAttention(embed_dim, num_heads, dropout=dropout, self_attention=False)
+
+    def forward(self, agent_embed: torch.Tensor, height_tokens: Optional[torch.Tensor],
+                object_tokens: Optional[torch.Tensor], height_mask: Optional[torch.Tensor] = None,
+                object_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        attn_inputs = []
+        if height_tokens is not None:
+            spatial_info, _ = self.spatial_attention(agent_embed, height_tokens, height_tokens,
+                                                     key_padding_mask=height_mask, return_attention_only=True)
+            attn_inputs.append(spatial_info)
+        if object_tokens is not None:
+            object_info, _ = self.object_attention(agent_embed, object_tokens, object_tokens,
+                                                   key_padding_mask=object_mask, return_attention_only=True)
+            attn_inputs.append(object_info)
+
+        if not attn_inputs:
+            return agent_embed
+
+        combined = torch.stack(attn_inputs, dim=1).mean(dim=1)
+        out, _ = self.fusion_attention(agent_embed, combined, combined)
+        return out
+
 class CNNSpatialEmbedder(nn.Module):
     """
     Processes a single image-like central input (e.g., height map, grayscale image)
@@ -1339,7 +1444,8 @@ class CNNSpatialEmbedder(nn.Module):
                  target_pool_scale: int,
                  embed_dim: int, dropout_rate: float, conv_init_scale: float,
                  add_spatial_coords: bool = True,
-                 swin_stages: Optional[List[Dict[str, Any]]] = None):
+                 swin_stages: Optional[List[Dict[str, Any]]] = None,
+                 adaptive_tokenizer_cfg: Optional[Dict[str, Any]] = None):
         super().__init__()
         self.name = name
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1389,6 +1495,17 @@ class CNNSpatialEmbedder(nn.Module):
             create_2d_sin_cos_pos_emb(target_pool_scale, target_pool_scale, embed_dim, self.device),
             requires_grad=False
         )
+
+        if adaptive_tokenizer_cfg is not None:
+            self.tokenizer = AdaptiveSpatialTokenizer(
+                embed_dim=embed_dim,
+                base_tokens=adaptive_tokenizer_cfg.get("base_tokens", 16),
+                min_tokens=adaptive_tokenizer_cfg.get("min_tokens", 8),
+                max_tokens=adaptive_tokenizer_cfg.get("max_tokens", 24),
+                importance_hidden=adaptive_tokenizer_cfg.get("importance_hidden", 64),
+            )
+        else:
+            self.tokenizer = None
 
         self.cnn_stem.apply(lambda m: init_weights_gelu_conv(m, scale=conv_init_scale) if isinstance(m, nn.Conv2d) else None)
         init_weights_gelu_conv(self.projection, scale=conv_init_scale)
@@ -1447,6 +1564,9 @@ class CNNSpatialEmbedder(nn.Module):
         for blk in self.swin_blocks:
             x_seq, H_curr, W_curr = blk(x_seq, H_curr, W_curr)
 
+        if self.tokenizer is not None:
+            x_seq, _ = self.tokenizer(x_seq)
+
         return x_seq
 
 
@@ -1468,7 +1588,8 @@ class CrossAttentionFeatureExtractor(nn.Module):
         conv_init_scale: float,
         linear_init_scale: float,
         central_processing_configs: List[Dict[str, Any]],
-        environment_shape_config: Dict[str, Any]
+        environment_shape_config: Dict[str, Any],
+        fusion_type: str = "sequential"
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -1476,6 +1597,7 @@ class CrossAttentionFeatureExtractor(nn.Module):
         self.use_agent_id = use_agent_id
         self.transformer_layers = transformer_layers
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.fusion_type = fusion_type
 
         # --- Agent Observation Encoder ---
         self.agent_encoder = nn.Sequential(
@@ -1536,6 +1658,7 @@ class CrossAttentionFeatureExtractor(nn.Module):
                     conv_init_scale=conv_init_scale,
                     add_spatial_coords=comp_cfg_proc.get("add_spatial_coords_to_cnn_input", True),
                     swin_stages=comp_cfg_proc.get("swin_stages", []),
+                    adaptive_tokenizer_cfg=comp_cfg_proc.get("adaptive_tokenizer"),
                 )
             elif comp_type == "linear_sequence": 
                 self.central_embedders[name] = LinearSequenceEmbedder(
@@ -1558,10 +1681,19 @@ class CrossAttentionFeatureExtractor(nn.Module):
         ff_hidden_dim = embed_dim * ff_hidden_factor
 
         for _ in range(transformer_layers):
-            layer_cross_attns = nn.ModuleDict()
-            for comp_name in self.enabled_central_component_names: 
-                layer_cross_attns[comp_name] = ResidualAttention(embed_dim, num_heads, dropout=dropout_rate, self_attention=False)
-            self.cross_attention_blocks.append(layer_cross_attns)
+            if self.fusion_type == "parallel":
+                self.cross_attention_blocks.append(
+                    ParallelCrossAttention(embed_dim, num_heads, self.enabled_central_component_names, dropout=dropout_rate)
+                )
+            elif self.fusion_type == "hierarchical":
+                self.cross_attention_blocks.append(
+                    HierarchicalCrossAttention(embed_dim, num_heads, dropout=dropout_rate)
+                )
+            else:
+                layer_cross_attns = nn.ModuleDict()
+                for comp_name in self.enabled_central_component_names:
+                    layer_cross_attns[comp_name] = ResidualAttention(embed_dim, num_heads, dropout=dropout_rate, self_attention=False)
+                self.cross_attention_blocks.append(layer_cross_attns)
             
             self.agent_self_attention_blocks.append(ResidualAttention(embed_dim, num_heads, dropout=dropout_rate, self_attention=True))
             self.agent_feed_forward_blocks.append(FeedForwardBlock(embed_dim, hidden_dim=ff_hidden_dim, dropout=dropout_rate))
@@ -1621,25 +1753,46 @@ class CrossAttentionFeatureExtractor(nn.Module):
         # --- Transformer Layers ---
         final_self_attn_weights = None
         for i in range(self.transformer_layers):
-            # Cross-Attention: Agents attend to each central feature
-            for comp_name in self.enabled_central_component_names: 
-                if comp_name in processed_central_features:
-                    central_feature_sequence = processed_central_features[comp_name]
-                    
-                    # Retrieve the mask for this component to use as key_padding_mask
-                    key_padding_mask = None
-                    if central_component_padding_masks and (comp_name + "_mask") in central_component_padding_masks:
-                        mask_tensor = central_component_padding_masks[comp_name + "_mask"]
-                        if mask_tensor is not None:
-                            key_padding_mask = mask_tensor.reshape(effective_batch_for_embedders, -1).to(agent_embed.device)
+            if self.fusion_type == "parallel":
+                mask_dict = {}
+                if central_component_padding_masks:
+                    for comp_name in self.enabled_central_component_names:
+                        mask = central_component_padding_masks.get(comp_name + "_mask")
+                        if mask is not None:
+                            mask_dict[comp_name] = mask.reshape(effective_batch_for_embedders, -1).to(agent_embed.device)
+                agent_embed = self.cross_attention_blocks[i](agent_embed, processed_central_features, mask_dict)
+            elif self.fusion_type == "hierarchical":
+                h_tokens = processed_central_features.get("height_map")
+                obj_tokens = processed_central_features.get("gridobject_sequence")
+                h_mask = None
+                obj_mask = None
+                if central_component_padding_masks:
+                    if "height_map_mask" in central_component_padding_masks:
+                        m = central_component_padding_masks["height_map_mask"]
+                        if m is not None:
+                            h_mask = m.reshape(effective_batch_for_embedders, -1).to(agent_embed.device)
+                    if "gridobject_sequence_mask" in central_component_padding_masks:
+                        m = central_component_padding_masks["gridobject_sequence_mask"]
+                        if m is not None:
+                            obj_mask = m.reshape(effective_batch_for_embedders, -1).to(agent_embed.device)
+                agent_embed = self.cross_attention_blocks[i](agent_embed, h_tokens, obj_tokens, height_mask=h_mask, object_mask=obj_mask)
+            else:
+                for comp_name in self.enabled_central_component_names:
+                    if comp_name in processed_central_features:
+                        central_feature_sequence = processed_central_features[comp_name]
 
-                    # Perform cross-attention
-                    agent_embed, _ = self.cross_attention_blocks[i][comp_name](
-                        x_q=agent_embed,
-                        x_k=central_feature_sequence,
-                        x_v=central_feature_sequence,
-                        key_padding_mask=key_padding_mask
-                    )
+                        key_padding_mask = None
+                        if central_component_padding_masks and (comp_name + "_mask") in central_component_padding_masks:
+                            mask_tensor = central_component_padding_masks[comp_name + "_mask"]
+                            if mask_tensor is not None:
+                                key_padding_mask = mask_tensor.reshape(effective_batch_for_embedders, -1).to(agent_embed.device)
+
+                        agent_embed, _ = self.cross_attention_blocks[i][comp_name](
+                            x_q=agent_embed,
+                            x_k=central_feature_sequence,
+                            x_v=central_feature_sequence,
+                            key_padding_mask=key_padding_mask
+                        )
             
             # Self-Attention: Agents attend to each other
             agent_embed, attn_weights = self.agent_self_attention_blocks[i](agent_embed)

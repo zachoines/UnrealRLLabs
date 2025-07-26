@@ -221,6 +221,7 @@
             "id_num_freqs": 8,
             "conv_init_scale": 1.0,
             "linear_init_scale": 1.0,
+            "fusion_type": "parallel",
             "central_processing_configs": [
               {
                 "name": "height_map",
@@ -235,7 +236,13 @@
                 "swin_stages": [
                   {"window_size": 4, "merge": true}
                 ],
-                "final_patch_tokens": 16
+                "final_patch_tokens": 16,
+                "adaptive_tokenizer": {
+                  "base_tokens": 16,
+                  "min_tokens": 8,
+                  "max_tokens": 24,
+                  "importance_hidden": 64
+                }
               },
               {
                 "name": "gridobject_sequence",
