@@ -698,7 +698,10 @@ class RLRunner:
         self._log_step(logs)
 
         if self.update_idx % self.save_freq == 0:
-            self.agent.save(f"model_update_{self.update_idx}.pth") 
+            self.agent.save(
+                f"model_update_{self.update_idx}.pth",
+                include_optimizers=True,
+            )
             print("Model checkpoint saved.")
         
         if hasattr(self.agentComm, 'update_received_event') and self.agentComm.update_received_event:
