@@ -1430,6 +1430,7 @@ class HierarchicalCrossAttention(nn.Module):
         out, _ = self.fusion_attention(agent_embed, combined, combined)
         return out
 
+
 class CNNSpatialEmbedder(nn.Module):
     """
     Processes a single image-like central input (e.g., height map, grayscale image)
