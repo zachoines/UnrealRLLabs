@@ -9,12 +9,28 @@ class Agent(nn.Module):
         self.device = device
         self.optimizers = {}
 
-    def save(self, location: str) -> None:
-        torch.save(self.state_dict(), location)
+    def save(self, location: str, include_optimizers: bool = False) -> None:
+        """Save model parameters and optionally optimizer states."""
+        if include_optimizers:
+            checkpoint = {
+                "model": self.state_dict(),
+                "optimizers": {name: opt.state_dict() for name, opt in self.optimizers.items()},
+            }
+            torch.save(checkpoint, location)
+        else:
+            torch.save(self.state_dict(), location)
 
-    def load(self, location: str) -> None:
+    def load(self, location: str, load_optimizers: bool = False) -> None:
+        """Load model parameters and optionally optimizer states."""
         state = torch.load(location, map_location=self.device)
-        self.load_state_dict(state)
+        if isinstance(state, dict) and "model" in state:
+            self.load_state_dict(state["model"])
+            if load_optimizers and "optimizers" in state:
+                for name, opt_state in state["optimizers"].items():
+                    if name in self.optimizers:
+                        self.optimizers[name].load_state_dict(opt_state)
+        else:
+            self.load_state_dict(state)
 
     def get_actions(self, states: torch.Tensor, dones=None, truncs=None, eval: bool = False, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError
