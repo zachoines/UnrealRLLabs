@@ -20,14 +20,14 @@
         "VelAlign_Scale": 0.01,
         "VelAlign_Min": 0.0,
         "VelAlign_Max": 100.0,
-        "DistImprove_Scale": 20.0,
+        "DistImprove_Scale": 100.0,
         "DistImprove_Min": 0.0,
         "DistImprove_Max": 1.0,
         "ZAccel_Scale": 0.0001,
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
-        "EventReward_GoalReached": 1.0,
-        "EventReward_OutOfBounds": -1.0,
+        "EventReward_GoalReached": 10.0,
+        "EventReward_OutOfBounds": -5.0,
         "TimeStepPenalty": -0.0001
       },
       "GoalManager": {"DefaultRadius": 1.0},
@@ -203,9 +203,9 @@
         "lr_rnd_predictor": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
         "lr_disagreement": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
         "entropy_coeff": {"start_value": 0.005, "end_value": 0.001, "total_iters": 10000},
-        "policy_clip": {"start_value": 0.2, "end_value": 0.1, "total_iters": 10000},
-        "value_clip": {"start_value": 0.1, "end_value": 0.001, "total_iters": 10000},
-        "max_grad_norm": {"start_value": 1.0, "end_value": 0.1, "total_iters": 10000}
+        "policy_clip": {"start_value": 0.3, "end_value": 0.1, "total_iters": 10000},
+        "value_clip": {"start_value": 0.1, "end_value": 0.01, "total_iters": 10000},
+        "max_grad_norm": {"start_value": 1.0, "end_value": 0.5, "total_iters": 10000}
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
@@ -349,7 +349,7 @@
     "epochs": 4,
     "mini_batch_size": 16,
     "ActionRepeat": 1,
-    "saveFrequency": 50,
+    "saveFrequency": 3,
     "states_normalizer_disabled": {"epsilon": 1e-08, "warmup_steps": 0}
   },
   "test": {

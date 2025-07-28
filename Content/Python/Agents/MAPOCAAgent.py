@@ -1257,11 +1257,10 @@ class MAPOCAAgent(Agent):
         
     # --- Save/Load ---
 
-    def save(self, location: str) -> None:
-        """Saves the agent's state_dict."""
-        torch.save(self.state_dict(), location)
+    def save(self, location: str, include_optimizers: bool = False) -> None:
+        """Save model parameters and optionally optimizer states."""
+        super().save(location, include_optimizers=include_optimizers)
 
-    def load(self, location: str) -> None:
-        """Loads the agent's state_dict."""
-        state = torch.load(location, map_location=self.device)
-        self.load_state_dict(state)
+    def load(self, location: str, load_optimizers: bool = False) -> None:
+        """Load model parameters and optionally optimizer states."""
+        super().load(location, load_optimizers=load_optimizers)

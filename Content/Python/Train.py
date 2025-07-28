@@ -22,7 +22,7 @@ def main():
     if args.resume_from_checkpoint:
         if os.path.exists(args.resume_from_checkpoint):
             print(f"Resuming training from checkpoint: {args.resume_from_checkpoint}")
-            agent.load(args.resume_from_checkpoint)
+            agent.load(args.resume_from_checkpoint, load_optimizers=True)
         else:
             print(f"Warning: Checkpoint file not found at {args.resume_from_checkpoint}. Starting from scratch.")
 
