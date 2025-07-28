@@ -1369,7 +1369,7 @@ class AdaptiveSpatialTokenizer(nn.Module):
 
 
 class ParallelCrossAttention(nn.Module):
-    """Apply cross-attention to multiple components in parallel."""
+    """Apply cross-attention to multiple components in parallel with learnable fusion."""
 
     def __init__(self, embed_dim: int, num_heads: int, component_names: List[str], dropout: float = 0.0):
         super().__init__()
@@ -1377,25 +1377,50 @@ class ParallelCrossAttention(nn.Module):
             name: ResidualAttention(embed_dim, num_heads, dropout=dropout, self_attention=False)
             for name in component_names
         })
+        # Gating networks produce a single scalar per component, per batch and agent
+        self.gating_nets = nn.ModuleDict({
+            name: nn.Sequential(
+                nn.Linear(embed_dim, embed_dim),
+                nn.GELU(),
+                nn.Linear(embed_dim, 1)
+            )
+            for name in component_names
+        })
         self.norm = nn.LayerNorm(embed_dim)
 
-    def forward(self, agent_embed: torch.Tensor, components: Dict[str, torch.Tensor],
-                key_padding_masks: Optional[Dict[str, torch.Tensor]] = None) -> torch.Tensor:
-        outputs = []
+    def forward(
+        self,
+        agent_embed: torch.Tensor,
+        components: Dict[str, torch.Tensor],
+        key_padding_masks: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> torch.Tensor:
+        attn_outputs = []
+        gate_scores = []
         for name, feats in components.items():
             if name not in self.cross_attns:
                 continue
             mask = None
             if key_padding_masks and name in key_padding_masks:
                 mask = key_padding_masks[name]
-            attn_out, _ = self.cross_attns[name](agent_embed, feats, feats, key_padding_mask=mask,
-                                                return_attention_only=True)
-            outputs.append(attn_out)
+            attn_out, _ = self.cross_attns[name](
+                agent_embed,
+                feats,
+                feats,
+                key_padding_mask=mask,
+                return_attention_only=True,
+            )
+            attn_outputs.append(attn_out)
+            # Use the attended representation to compute gating so weights depend
+            # on both the agent embedding and the corresponding component
+            gate_scores.append(self.gating_nets[name](attn_out).squeeze(-1))
 
-        if not outputs:
+        if not attn_outputs:
             return agent_embed
 
-        combined = torch.stack(outputs, dim=0).mean(dim=0)
+        gates_stack = torch.stack(gate_scores, dim=0)  # (num_comp, B, A)
+        gate_weights = F.softmax(gates_stack, dim=0).unsqueeze(-1)  # (num_comp, B, A, 1)
+        attn_stack = torch.stack(attn_outputs, dim=0)  # (num_comp, B, A, H)
+        combined = (attn_stack * gate_weights).sum(dim=0)
         out = agent_embed + combined
         return self.norm(out)
 
