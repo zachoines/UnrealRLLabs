@@ -689,15 +689,24 @@ class MAPOCAAgent(Agent):
     def _clipped_value_loss(self, old_v, new_v, target_v, clip_range, mask):
         """Calculates the clipped value function loss."""
         v_clipped = old_v + (new_v - old_v).clamp(-clip_range, clip_range)
-        vf_loss1 = (new_v - target_v).pow(2)
-        vf_loss2 = (v_clipped - target_v).pow(2)
+        # vf_loss1 = (new_v - target_v).pow(2)
+        # vf_loss2 = (v_clipped - target_v).pow(2)
+        vf_loss1 = F.smooth_l1_loss(new_v, target_v)
+        vf_loss2 = F.smooth_l1_loss(v_clipped, target_v)
         loss_unreduced = torch.max(vf_loss1, vf_loss2)
         # Apply mask and compute mean only over valid elements
         masked_loss = loss_unreduced * mask
         return masked_loss.sum() / mask.sum().clamp(min=1e-8)
 
     # --- Auxiliary Module Helper Methods ---
-    
+    def _huber_loss(self, pred, target, delta=1.0):
+        diff = pred - target
+        return torch.where(
+            diff.abs() <= delta,
+            0.5 * diff.pow(2),
+            delta * (diff.abs() - 0.5 * delta)
+        )
+
     def _compute_rnd_loss(self, feats_seq, mask_btna) -> torch.Tensor:
         """Computes the loss for the RND predictor network."""
         if not self.rnd_cfg: return torch.tensor(0.0, device=self.device)

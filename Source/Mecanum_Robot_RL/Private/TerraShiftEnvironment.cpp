@@ -280,6 +280,9 @@ float ATerraShiftEnvironment::Reward()
 
     // --- Reward Calculation ---
 
+    float activeObjectCount = 0;
+    float totalAlignmentReward = 0;
+
     // Start with the global, constant penalty applied at each time step.
     float AccumulatedReward = TimeStepPenalty;
 
@@ -306,6 +309,7 @@ float ATerraShiftEnvironment::Reward()
         if (SlotState == EObjectSlotState::Active)
         {
             float ShapingSubReward = 0.f;
+            activeObjectCount += 1.0;
 
             // 1. Potential-based shaping to encourage progress towards the goal.
             if (bUsePotentialShaping)
@@ -357,8 +361,12 @@ float ATerraShiftEnvironment::Reward()
                         FVector dirToObjectToGoal = (goalPosLocal - objPosLocal).GetSafeNormal();
                         FVector velLocalNormalized = velLocal.GetSafeNormal();
                         float dotProduct = FVector::DotProduct(velLocalNormalized, dirToObjectToGoal);
-                        float alignReward = dotProduct; // * velLocal.Size();
-                        ShapingSubReward += VelAlign_Scale * ThresholdAndClamp(alignReward, VelAlign_Min, VelAlign_Max);
+                        float alignReward = dotProduct * velLocal.Size();
+                        
+                        // Bounded with tanh (assuming typical velocities 0-100)
+                        // Scale factor of 0.01 means velocity of 100 -> tanh(1) ≈ 0.76
+                        float boundedAlignReward = FMath::Tanh(alignReward * 0.01f);
+                        totalAlignmentReward += VelAlign_Scale * boundedAlignReward; // ThresholdAndClamp(boundedAlignReward, VelAlign_Min, VelAlign_Max);
                     }
                 }
             }
@@ -374,6 +382,10 @@ float ATerraShiftEnvironment::Reward()
         }
     }
 
+    if (activeObjectCount > 0) {
+        AccumulatedReward += (totalAlignmentReward / activeObjectCount);
+    }
+        
     return AccumulatedReward;
 }
 
