@@ -9,6 +9,21 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FFMpegWriter
 from typing import Dict, List, Any, Tuple
 
+# Helper to find ffmpeg in conda env
+conda_prefix = os.environ.get("CONDA_PREFIX")
+if conda_prefix:
+    # Typical path for ffmpeg in a conda env on Windows
+    ffmpeg_path = os.path.join(conda_prefix, "Library", "bin", "ffmpeg.exe")
+    if os.path.exists(ffmpeg_path):
+        print(f"[StateRecorder] Found ffmpeg in conda environment: {ffmpeg_path}")
+        plt.rcParams['animation.ffmpeg_path'] = ffmpeg_path
+    else:
+        # Fallback for different structures or non-Windows
+        ffmpeg_path_alt = shutil.which("ffmpeg")
+        if ffmpeg_path_alt:
+             print(f"[StateRecorder] Found ffmpeg in PATH: {ffmpeg_path_alt}")
+             plt.rcParams['animation.ffmpeg_path'] = ffmpeg_path_alt
+
 class StateRecorder:
     def __init__(self, recorder_config: Dict[str, Any]):
         self.config = recorder_config
@@ -105,10 +120,8 @@ class StateRecorder:
             self.frames.clear() # Clear frames even if not saving video
             return
 
-        if shutil.which("ffmpeg") is None:
-            print("[StateRecorder] Save Video: FFmpeg is not installed or not in PATH. Cannot save video.")
-            self.frames.clear()
-            return
+        # The check for ffmpeg is now handled by setting rcParams, 
+        # or by FFMpegWriter raising an error if it's still not found.
 
         output_dir = os.path.dirname(self.output_path)
         if not os.path.exists(output_dir):
