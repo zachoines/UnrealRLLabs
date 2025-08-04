@@ -144,10 +144,10 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
 
     GridObjectManager = GetWorld()->SpawnActor<AGridObjectManager>(AGridObjectManager::StaticClass());
     if (GridObjectManager)
-{
-    GridObjectManager->SetPlatformActor(Platform);
-    GridObjectManager->SetFolderPath(FName(*(EnvironmentFolderPath + TEXT("/") + GridObjectManager->GetName())));
-}
+    {
+        GridObjectManager->SetPlatformActor(Platform);
+        GridObjectManager->SetFolderPath(FName(*(EnvironmentFolderPath + TEXT("/") + GridObjectManager->GetName())));
+    }
 
     UEnvironmentConfig* waveCfg = EnvConfig->Get(TEXT("environment/params/MultiAgentGaussianWaveHeightMap"));
     if (waveCfg && WaveSimulator) WaveSimulator->InitializeFromConfig(waveCfg);
@@ -362,13 +362,17 @@ float ATerraShiftEnvironment::Reward()
                         FVector velLocalNormalized = velLocal.GetSafeNormal();
                         float dotProduct = FVector::DotProduct(velLocalNormalized, dirToObjectToGoal);
                         float alignReward = dotProduct * velLocal.Size();
-                        
-                        // Bounded with tanh (assuming typical velocities 0-100)
-                        // Scale factor of 0.01 means velocity of 100 -> tanh(1) ≈ 0.76
-                        float boundedAlignReward = FMath::Tanh(alignReward * 0.01f);
-                        totalAlignmentReward += VelAlign_Scale * boundedAlignReward; // ThresholdAndClamp(boundedAlignReward, VelAlign_Min, VelAlign_Max);
+
+                        float boundedAlignReward = FMath::Tanh(alignReward);
+                        ShapingSubReward += VelAlign_Scale * boundedAlignReward; // ThresholdAndClamp(boundedAlignReward, VelAlign_Min, VelAlign_Max);
                     }
                 }
+            }
+
+            float speed = StateManager->GetCurrentVelocity(ObjIndex).Size();
+            if (speed < 2.0f)  // Below minimum acceptable speed
+            {
+                ShapingSubReward -= 0.001f;  // Constant drain for stationary objects
             }
 
             AccumulatedReward += ShapingSubReward;
@@ -382,11 +386,7 @@ float ATerraShiftEnvironment::Reward()
         }
     }
 
-    if (activeObjectCount > 0) {
-        AccumulatedReward += (totalAlignmentReward / activeObjectCount);
-    }
-        
-    return AccumulatedReward;
+    return AccumulatedReward / CurrentGridObjects;
 }
 
 float ATerraShiftEnvironment::ThresholdAndClamp(float value, float minThreshold, float maxClamp)
