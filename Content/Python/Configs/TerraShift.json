@@ -26,8 +26,8 @@
         "ZAccel_Scale": 0.0001,
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
-        "EventReward_GoalReached": 0.5,
-        "EventReward_OutOfBounds": -0.10,
+        "EventReward_GoalReached": 10.0,
+        "EventReward_OutOfBounds": -1.0,
         "TimeStepPenalty": 0.0
       },
       "GoalManager": {"DefaultRadius": 1.0},
@@ -41,24 +41,24 @@
         "bAccumulatedWave": false,
         "AccumulatedWaveFadeGamma": 0.95,
         "bWrapAroundEdges": true,
-        "VelMinMax": [-1.5, 1.5],
-        "AngVelRange": [-1.57, 1.57],
+        "VelMinMax": [-1, 1],
+        "AngVelRange": [-0.785, 0.785],
         "AmpMinMax": [-6.0, 6.0],
         "SigMinMax": [0.5, 4.0],
-        "DeltaVelScale": 1.5,
-        "DeltaAngVelScale": 1.57,
-        "DeltaAmpScale": 6.0,
-        "DeltaSigmaScale": 1.75
+        "DeltaVelScale": 0.50,
+        "DeltaAngVelScale": 0.3925,
+        "DeltaAmpScale": 3.0,
+        "DeltaSigmaScale": 0.875
       },
       "StateManager": {
         "MaxGridObjects": 4,
-        "MarginXY": 1.5,
+        "MarginXY": -1.0,
         "MinZ": 0.0,
         "MaxZ": 40.0,
         "ObjectScale": 0.15,
         "ObjectMass": 0.1,
         "MaxColumnHeight": 6.0,
-        "BaseRespawnDelay": 0.0,
+        "BaseRespawnDelay": 0.2,
         "OverheadCameraDistance_disabled": 1500.0,
         "OverheadCameraFOV_disabled": 90.0,
         "OverheadCameraResX_disabled": 25,
@@ -155,7 +155,7 @@
     "params": {
       "enable_memory": true,
       "memory_type": "gru",
-      "gru": {"input_size": 128, "hidden_size": 128, "num_layers": 2, "bias": true, "dropout": 0.05},
+      "gru": {"input_size": 128, "hidden_size": 128, "num_layers": 2, "bias": true, "dropout": 0.0},
       "enable_iqn_distillation": false,
       "disagreement_rewards_disabled": {
         "enabled": false,
@@ -191,13 +191,13 @@
       "lr_disagreement": 1e-04,
       "optimizer_betas": {"default": [0.9, 0.999]},
       "weight_decay": {"default": 0.0},
-      "gamma": 0.99,
-      "lmbda": 0.95,
+      "gamma": 0.95,
+      "lmbda": 0.92,
       "value_loss_coeff": 1.0,
       "baseline_loss_coeff": 0.5,
       "normalize_advantages": true,
-      "max_grad_norm": 0.5,
-      "ppo_clip_range": 0.15,
+      "max_grad_norm": 1,
+      "ppo_clip_range": 0.2,
       "value_clip_range": 1000.0,
       "entropy_coeff": 0.01,
       "schedulers": {
@@ -210,9 +210,9 @@
         "lr_rnd_predictor": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
         "lr_disagreement": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
         "entropy_coeff": {"start_value": 0.005, "end_value": 0.001, "total_iters": 10000},
-        "policy_clip": {"start_value": 0.15, "end_value": 0.1, "total_iters": 10000},
+        "policy_clip": {"start_value": 0.2, "end_value": 0.1, "total_iters": 10000},
         "value_clip_disabled": {"start_value": 1.0, "end_value": 0.1, "total_iters": 10000},
-        "max_grad_norm": {"start_value": 1.0, "end_value": 0.5, "total_iters": 10000}
+        "max_grad_norm": {"start_value": 2.0, "end_value": 0.5, "total_iters": 10000}
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
@@ -222,7 +222,7 @@
             "embed_dim": 128,
             "num_heads": 8,
             "transformer_layers": 3,
-            "dropout_rate": 0.1,
+            "dropout_rate": 0.0,
             "use_agent_id": true,
             "ff_hidden_factor": 3,
             "id_num_freqs": 8,
@@ -270,7 +270,7 @@
             "state_dim": 128,
             "hidden_size": 128,
             "output_size": 128,
-            "dropout_rate": 0.1,
+            "dropout_rate": 0.0,
             "activation": true,
             "layer_norm": true
           },
@@ -279,7 +279,7 @@
             "action_dim": 6,
             "hidden_size": 128,
             "output_size": 128,
-            "dropout_rate": 0.1,
+            "dropout_rate": 0.0,
             "activation": true,
             "layer_norm": true
           }
@@ -291,7 +291,7 @@
           "param_init_bias": 0.0,
           "min_concentration": 1.01,
           "linear_init_scale": 0.1,
-          "dropout_rate": 0.05
+          "dropout_rate": 0.0
         },
         "critic_network": {
           "feature_dim_for_iqn": 128,
