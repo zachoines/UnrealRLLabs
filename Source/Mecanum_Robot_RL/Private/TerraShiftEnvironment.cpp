@@ -329,8 +329,15 @@ float ATerraShiftEnvironment::Reward()
                 float currentDistanceValue = StateManager->GetCurrentDistance(ObjIndex);
                 if (previousDistance > 0.f && currentDistanceValue > 0.f)
                 {
-                    float deltaDistance = (previousDistance - currentDistanceValue) / PlatformWorldSize.X;
-                    ShapingSubReward += DistImprove_Scale * ThresholdAndClamp(deltaDistance, DistImprove_Min, DistImprove_Max);
+                    if ((previousDistance - currentDistanceValue) > 0.0)
+                    {
+                        ShapingSubReward += 0.1f;
+                    }
+                    else {
+                        ShapingSubReward -= 0.1f;
+                    }
+                    // float deltaDistance = (previousDistance - currentDistanceValue) / PlatformWorldSize.X;
+                    // ShapingSubReward += DistImprove_Scale * ThresholdAndClamp(deltaDistance, DistImprove_Min, DistImprove_Max);
                 }
             }
 
@@ -370,9 +377,9 @@ float ATerraShiftEnvironment::Reward()
             }
 
             float speed = StateManager->GetCurrentVelocity(ObjIndex).Size();
-            if (speed < 2.0f)  // Below minimum acceptable speed
+            if (speed < 10.0f)  // Below minimum acceptable speed
             {
-                ShapingSubReward -= 0.001f;  // Constant drain for stationary objects
+                ShapingSubReward -= 0.01f;  // Constant drain for stationary objects
             }
 
             AccumulatedReward += ShapingSubReward;
