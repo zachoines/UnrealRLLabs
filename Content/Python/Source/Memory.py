@@ -67,24 +67,28 @@ class RecurrentMemoryNetwork(nn.Module):
 
 class GRUSequenceMemory(RecurrentMemoryNetwork):
     """
-    GRU-based recurrent memory module.
+    GRU-based recurrent memory module with optional gated residual connections.
     Wraps nn.GRU and provides the RecurrentMemoryNetwork interface.
     """
-    def __init__(self, input_size: int, hidden_size: int, num_layers: int, 
-                 bias: bool = True, dropout: float = 0.0, **kwargs):
+    def __init__(self, input_size: int, hidden_size: int, num_layers: int,
+                 bias: bool = True, dropout: float = 0.0,
+                 use_residual: bool = True, **kwargs):
         """
         Args:
             input_size (int): The number of expected features in the input.
             hidden_size (int): The number of features in the hidden state.
             num_layers (int): Number of recurrent layers.
             bias (bool): If False, then the layer does not use bias weights b_ih and b_hh. Default: True.
-            dropout (float): If non-zero, introduces a Dropout layer on the outputs of each GRU layer 
+            dropout (float): If non-zero, introduces a Dropout layer on the outputs of each GRU layer
                              except the last layer, with dropout probability equal to dropout. Default: 0.
+            use_residual (bool): If True, applies a gated residual connection from the input features
+                                 to the GRU outputs. Default: True.
         """
         super().__init__(input_size, hidden_size, num_layers)
+        self.use_residual = use_residual
         # Ensure dropout is only applied if num_layers > 1, as per nn.GRU behavior
         actual_dropout = dropout if num_layers > 1 else 0.0
-        
+
         self.gru = nn.GRU(
             input_size=input_size,
             hidden_size=hidden_size,
@@ -93,7 +97,19 @@ class GRUSequenceMemory(RecurrentMemoryNetwork):
             batch_first=True, # Crucial: Expects (Batch, Seq, Feature) input
             dropout=actual_dropout
         )
-        print(f"GRUSequenceMemory: Initialized nn.GRU with input_size={input_size}, hidden_size={hidden_size}, num_layers={num_layers}, dropout={actual_dropout}, batch_first=True")
+
+        # Projection layer if residual connection dimensions differ
+        self.residual_projection = None
+        if self.use_residual and input_size != hidden_size:
+            self.residual_projection = nn.Linear(input_size, hidden_size)
+            nn.init.xavier_uniform_(self.residual_projection.weight, gain=0.1)
+            nn.init.zeros_(self.residual_projection.bias)
+
+        # Learnable gate controlling residual contribution
+        if self.use_residual:
+            self.residual_gate = nn.Parameter(torch.tensor(0.1))
+
+        print(f"GRUSequenceMemory: Initialized nn.GRU with input_size={input_size}, hidden_size={hidden_size}, num_layers={num_layers}, dropout={actual_dropout}, batch_first=True, use_residual={self.use_residual}")
 
     def forward_step(self, features: torch.Tensor, h_prev: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -122,9 +138,19 @@ class GRUSequenceMemory(RecurrentMemoryNetwork):
         # gru_out_seq shape: (N, 1, H_out)
         # h_next shape: (D, N, H_out)
         gru_out_seq, h_next = self.gru(features_unsqueezed, h_prev)
-        
+
         # Squeeze the sequence length dimension from GRU output
         processed_features = gru_out_seq.squeeze(1) # Shape: (N, H_out)
+
+        # Apply residual connection if enabled
+        if self.use_residual:
+            if self.residual_projection is not None:
+                residual = self.residual_projection(features)
+            else:
+                residual = features
+            gate_value = torch.sigmoid(self.residual_gate)
+            processed_features = (1 - gate_value) * processed_features + gate_value * residual
+
         return processed_features, h_next
 
     def forward_sequence(self, features_seq: torch.Tensor, h_initial: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -150,6 +176,16 @@ class GRUSequenceMemory(RecurrentMemoryNetwork):
         # processed_features_seq shape: (N, L, H_out)
         # h_final shape: (D, N, H_out)
         processed_features_seq, h_final = self.gru(features_seq, h_initial)
+
+        # Apply residual connection if enabled
+        if self.use_residual:
+            if self.residual_projection is not None:
+                residual = self.residual_projection(features_seq)
+            else:
+                residual = features_seq
+            gate_value = torch.sigmoid(self.residual_gate)
+            processed_features_seq = (1 - gate_value) * processed_features_seq + gate_value * residual
+
         return processed_features_seq, h_final
 
 # Example of how you might add an LSTM later:
