@@ -27,11 +27,7 @@
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
         "EventReward_GoalReached": 10.0,
-<<<<<<< HEAD
         "EventReward_OutOfBounds": -2.5,
-=======
-        "EventReward_OutOfBounds": -1.0,
->>>>>>> 963ef39f3b1a72f7aa1e284df7548dc65d15bb89
         "TimeStepPenalty": 0.0
       },
       "GoalManager": {"DefaultRadius": 1.0},
@@ -48,19 +44,11 @@
         "VelMinMax": [-1, 1],
         "AngVelRange": [-0.785, 0.785],
         "AmpMinMax": [-6.0, 6.0],
-<<<<<<< HEAD
         "SigMinMax": [0.2, 2.0],
         "DeltaVelScale": 1.0,
         "DeltaAngVelScale": 0.78,
         "DeltaAmpScale": 3.0,
         "DeltaSigmaScale": 0.5
-=======
-        "SigMinMax": [0.5, 4.0],
-        "DeltaVelScale": 0.50,
-        "DeltaAngVelScale": 0.3925,
-        "DeltaAmpScale": 3.0,
-        "DeltaSigmaScale": 0.875
->>>>>>> 963ef39f3b1a72f7aa1e284df7548dc65d15bb89
       },
       "StateManager": {
         "MaxGridObjects": 4,
@@ -167,7 +155,7 @@
     "params": {
       "enable_memory": true,
       "memory_type": "gru",
-      "gru": {"input_size": 128, "hidden_size": 128, "num_layers": 2, "bias": true, "dropout": 0.0},
+      "gru": {"input_size": 128, "hidden_size": 128, "num_layers": 2, "bias": true, "dropout": 0.05},
       "enable_iqn_distillation": false,
       "disagreement_rewards_disabled": {
         "enabled": false,
@@ -208,11 +196,7 @@
       "value_loss_coeff": 1.0,
       "baseline_loss_coeff": 0.5,
       "normalize_advantages": true,
-<<<<<<< HEAD
       "max_grad_norm": 5,
-=======
-      "max_grad_norm": 1,
->>>>>>> 963ef39f3b1a72f7aa1e284df7548dc65d15bb89
       "ppo_clip_range": 0.2,
       "value_clip_range": 1000.0,
       "entropy_coeff": 0.01,
@@ -238,11 +222,7 @@
             "embed_dim": 128,
             "num_heads": 8,
             "transformer_layers": 3,
-<<<<<<< HEAD
             "dropout_rate": 0.05,
-=======
-            "dropout_rate": 0.0,
->>>>>>> 963ef39f3b1a72f7aa1e284df7548dc65d15bb89
             "use_agent_id": true,
             "ff_hidden_factor": 3,
             "id_num_freqs": 8,
@@ -290,11 +270,7 @@
             "state_dim": 128,
             "hidden_size": 128,
             "output_size": 128,
-<<<<<<< HEAD
             "dropout_rate": 0.05,
-=======
-            "dropout_rate": 0.0,
->>>>>>> 963ef39f3b1a72f7aa1e284df7548dc65d15bb89
             "activation": true,
             "layer_norm": true
           },
@@ -303,11 +279,7 @@
             "action_dim": 6,
             "hidden_size": 128,
             "output_size": 128,
-<<<<<<< HEAD
             "dropout_rate": 0.05,
-=======
-            "dropout_rate": 0.0,
->>>>>>> 963ef39f3b1a72f7aa1e284df7548dc65d15bb89
             "activation": true,
             "layer_norm": true
           }
@@ -319,7 +291,7 @@
           "param_init_bias": 0.0,
           "min_concentration": 1.01,
           "linear_init_scale": 0.1,
-          "dropout_rate": 0.0
+          "dropout_rate": 0.05
         },
         "critic_network": {
           "feature_dim_for_iqn": 128,
