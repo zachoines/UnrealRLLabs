@@ -329,15 +329,8 @@ float ATerraShiftEnvironment::Reward()
                 float currentDistanceValue = StateManager->GetCurrentDistance(ObjIndex);
                 if (previousDistance > 0.f && currentDistanceValue > 0.f)
                 {
-                    if ((previousDistance - currentDistanceValue) > 0.0)
-                    {
-                        ShapingSubReward += 0.1f;
-                    }
-                    else {
-                        ShapingSubReward -= 0.1f;
-                    }
-                    // float deltaDistance = (previousDistance - currentDistanceValue) / PlatformWorldSize.X;
-                    // ShapingSubReward += DistImprove_Scale * ThresholdAndClamp(deltaDistance, DistImprove_Min, DistImprove_Max);
+                    float deltaDistance = (previousDistance - currentDistanceValue) / PlatformWorldSize.X;
+                    ShapingSubReward += DistImprove_Scale * ThresholdAndClamp(deltaDistance, DistImprove_Min, DistImprove_Max);
                 }
             }
 
@@ -370,8 +363,8 @@ float ATerraShiftEnvironment::Reward()
                         float dotProduct = FVector::DotProduct(velLocalNormalized, dirToObjectToGoal);
                         float alignReward = dotProduct * velLocal.Size();
 
-                        float boundedAlignReward = FMath::Tanh(alignReward);
-                        ShapingSubReward += VelAlign_Scale * boundedAlignReward; // ThresholdAndClamp(boundedAlignReward, VelAlign_Min, VelAlign_Max);
+                        // float boundedAlignReward = FMath::Tanh(alignReward);
+                        ShapingSubReward += VelAlign_Scale * ThresholdAndClamp(alignReward, VelAlign_Min, VelAlign_Max);
                     }
                 }
             }
