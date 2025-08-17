@@ -20,7 +20,7 @@
         "VelAlign_Scale": 1.0,
         "VelAlign_Min": 0.0,
         "VelAlign_Max": 100.0,
-        "DistImprove_Scale": 10.0,
+        "DistImprove_Scale": 100.0,
         "DistImprove_Min": 0.0,
         "DistImprove_Max": 1.0,
         "ZAccel_Scale": 0.0001,
@@ -212,7 +212,7 @@
         "entropy_coeff": {"start_value": 0.005, "end_value": 0.001, "total_iters": 10000},
         "policy_clip": {"start_value": 0.2, "end_value": 0.1, "total_iters": 10000},
         "value_clip_disabled": {"start_value": 1.0, "end_value": 0.1, "total_iters": 10000},
-        "max_grad_norm": {"start_value": 2.0, "end_value": 0.5, "total_iters": 10000}
+        "max_grad_norm": {"start_value": 3.0, "end_value": 0.5, "total_iters": 10000}
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
@@ -357,17 +357,17 @@
   "train": {
     "sequence_length": 32,
     "pad_trajectories": true,
-    "batch_size": 512,
-    "buffer_size": 512,
+    "batch_size": 1024,
+    "buffer_size": 1024,
     "num_environments": 8,
     "epochs": 4,
-    "mini_batch_size": 8,
-    "ActionRepeat": 4,
+    "mini_batch_size": 32,
+    "ActionRepeat": 2,
     "saveFrequency": 9,
     "states_normalizer_disabled": {"epsilon": 1e-08, "warmup_steps": 0}
   },
   "test": {
-    "enabled": false,
+    "enabled": true,
     "frequency": 1,
     "steps": 128
   }
