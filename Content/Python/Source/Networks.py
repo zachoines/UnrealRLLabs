@@ -624,6 +624,77 @@ class FeedForwardBlock(nn.Module):
         return residual + out    # Add residual connection
 
 
+class ContextualImportanceAggregator(nn.Module):
+    """Aggregates agent features with learned importance weights.
+
+    The module operates over the agent dimension (dim=1) and supports
+    optional masking where ``True`` values denote padded agents that should
+    be ignored during aggregation.
+    """
+
+    def __init__(self, embed_dim: int):
+        super().__init__()
+        self.context_encoder = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, embed_dim)
+        )
+        self.importance_scorer = nn.Sequential(
+            nn.Linear(embed_dim * 2, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, 1)
+        )
+        self.gate = nn.Sequential(
+            nn.Linear(embed_dim * 2, embed_dim),
+            nn.Sigmoid()
+        )
+        # Initialize linear layers using project helper
+        self.apply(lambda m: init_weights_gelu_linear(m) if isinstance(m, nn.Linear) else None)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        reduce: bool = True,
+    ) -> torch.Tensor:
+        """Apply importance weighting over agents.
+
+        Args:
+            x: Tensor of shape ``(B, A, embed_dim)``.
+            mask: Optional boolean tensor of shape ``(B, A)`` where ``True``
+                marks padded agents to ignore.
+            reduce: If ``True`` (default), aggregate across agents and return
+                ``(B, embed_dim)``. If ``False``, return the weighted features
+                per agent with shape ``(B, A, embed_dim)``.
+
+        Returns:
+            Tensor of shape ``(B, embed_dim)`` if ``reduce`` else
+            ``(B, A, embed_dim)``.
+        """
+        if mask is None:
+            mask = torch.zeros(x.shape[0], x.shape[1], dtype=torch.bool, device=x.device)
+
+        valid = (~mask).unsqueeze(-1)
+        denom = valid.sum(dim=1, keepdim=True).clamp(min=1)
+        global_ctx = (x * valid).sum(dim=1, keepdim=True) / denom
+        global_ctx = self.context_encoder(global_ctx).expand(-1, x.shape[1], -1)
+
+        combined = torch.cat([x, global_ctx], dim=-1)
+        importance_logits = self.importance_scorer(combined).squeeze(-1)
+        importance_logits = importance_logits.masked_fill(mask, float('-inf'))
+        importance = F.softmax(importance_logits, dim=1).unsqueeze(-1)
+
+        gate_values = self.gate(combined)
+        gate_values = gate_values.masked_fill(mask.unsqueeze(-1), 0.0)
+        gated_features = x * gate_values
+
+        weighted = gated_features * importance
+        if reduce:
+            return weighted.sum(dim=1)
+        else:
+            return weighted
+
+
 class SharedCritic(nn.Module):
     """
     Shared critic architecture.
@@ -645,6 +716,14 @@ class SharedCritic(nn.Module):
         # Attention mechanisms
         self.value_attention = ResidualAttention(**net_cfg["value_attention"])
         self.baseline_attention = ResidualAttention(**net_cfg['baseline_attention'])
+
+        # Agent-wise aggregators
+        self.value_aggregator = ContextualImportanceAggregator(
+            embed_dim=net_cfg["value_attention"]["embed_dim"]
+        )
+        self.baseline_aggregator = ContextualImportanceAggregator(
+            embed_dim=net_cfg["baseline_attention"]["embed_dim"]
+        )
 
         # IQN Networks
         self.value_iqn_net = ImplicitQuantileNetwork(
@@ -668,45 +747,63 @@ class SharedCritic(nn.Module):
         self.value_attention.apply(lambda m: init_weights_gelu_linear(m, scale=init_scale) if isinstance(m, nn.Linear) and not isinstance(m, nn.LayerNorm) else None)
         self.baseline_attention.apply(lambda m: init_weights_gelu_linear(m, scale=init_scale) if isinstance(m, nn.Linear) and not isinstance(m, nn.LayerNorm) else None)
 
-    def values(self, x: torch.Tensor, taus: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def values(
+        self,
+        x: torch.Tensor,
+        taus: torch.Tensor,
+        agent_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Computes the centralized state value V(s) using IQN and Distillation.
-        Input x shape: (..., A, H_input_to_attention)
-        taus shape: (B_flat, num_quantiles_for_IQN_input, 1) or (B_flat * num_quantiles, 1)
+
+        Args:
+            x: Input tensor of shape ``(..., A, H_input_to_attention)``.
+            taus: Quantile fractions for IQN.
+            agent_mask: Optional boolean tensor ``(..., A)`` with ``True`` for
+                padded agents.
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]:
-                - v_distilled: Distilled scalar state value. Shape: (..., 1)
-                - value_quantiles: Quantile values from IQN. Shape: (B_flat, num_quantiles)
+            Tuple containing the distilled scalar value ``(..., 1)`` and
+            quantile values ``(B_flat, num_quantiles)``.
         """
         input_shape = x.shape
-        # H_attention_out is the output dim of attention, which is feature_dim for IQN
         H_attention_out = self.value_attention.embed_dim
         A = input_shape[-2]
         leading_dims = input_shape[:-2]
         B_flat = int(np.prod(leading_dims))
 
-        x_flat = x.reshape(B_flat, A, x.shape[-1]) # x.shape[-1] is input dim to attention
+        x_flat = x.reshape(B_flat, A, x.shape[-1])
         attn_out, _ = self.value_attention(x_flat)  # (B_flat, A, H_attention_out)
-        aggregated_emb = attn_out.mean(dim=1)      # (B_flat, H_attention_out)
 
-        v_ppo = self.value_head_ppo(aggregated_emb) # (B_flat, 1)
-        value_quantiles = self.value_iqn_net(aggregated_emb, taus) # (B_flat, num_quantiles)
-        v_distilled = self.value_distill_net(v_ppo, value_quantiles) # (B_flat, 1)
+        if agent_mask is not None:
+            agent_mask = agent_mask.view(B_flat, A)
+        aggregated_emb = self.value_aggregator(attn_out, mask=agent_mask)
+
+        v_ppo = self.value_head_ppo(aggregated_emb)
+        value_quantiles = self.value_iqn_net(aggregated_emb, taus)
+        v_distilled = self.value_distill_net(v_ppo, value_quantiles)
 
         v_distilled_reshaped = v_distilled.view(*leading_dims, 1)
         return v_distilled_reshaped, value_quantiles
 
-    def baselines(self, x: torch.Tensor, taus: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def baselines(
+        self,
+        x: torch.Tensor,
+        taus: torch.Tensor,
+        agent_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Computes the per-agent counterfactual baseline B(s, a_j) using IQN and Distillation.
-        Input x shape: (..., A, SeqLen, H_input_to_attention)
-        taus shape: (B_flat*A, num_quantiles_for_IQN_input, 1) or (B_flat*A * num_quantiles, 1)
+        Computes the counterfactual baseline B(s, a) using IQN and Distillation.
+
+        Args:
+            x: Input tensor of shape ``(..., A, SeqLen, H_input_to_attention)``.
+            taus: Quantile fractions for IQN.
+            agent_mask: Optional boolean tensor ``(..., A)`` with ``True`` for
+                padded agents.
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]:
-                - b_distilled: Distilled scalar baseline values. Shape: (..., A, 1)
-                - baseline_quantiles: Quantile values from IQN. Shape: (B_flat*A, num_quantiles)
+            Tuple containing distilled baseline values ``(..., A, 1)`` and
+            quantile values ``(B_flat, A, num_quantiles)``.
         """
         input_shape = x.shape
         H_attention_out = self.baseline_attention.embed_dim
@@ -716,14 +813,32 @@ class SharedCritic(nn.Module):
         B_flat = int(np.prod(leading_dims))
 
         x_flat_for_attn = x.reshape(B_flat * A, SeqLen, x.shape[-1])
-        x_attn, _ = self.baseline_attention(x_flat_for_attn) # (B_flat*A, SeqLen, H_attention_out)
-        agent_emb_for_baseline = x_attn.mean(dim=1)          # (B_flat*A, H_attention_out)
+        x_attn, _ = self.baseline_attention(x_flat_for_attn)
+        per_agent_embs = x_attn.mean(dim=1).view(B_flat, A, H_attention_out)
 
-        b_ppo = self.baseline_head_ppo(agent_emb_for_baseline) # (B_flat*A, 1)
-        baseline_quantiles = self.baseline_iqn_net(agent_emb_for_baseline, taus) # (B_flat*A, num_quantiles)
-        b_distilled = self.baseline_distill_net(b_ppo, baseline_quantiles) # (B_flat*A, 1)
+        if agent_mask is not None:
+            agent_mask = agent_mask.view(B_flat, A)
+
+        # Importance weighting over agents without collapsing the agent dimension
+        weighted_embs = self.baseline_aggregator(
+            per_agent_embs, mask=agent_mask, reduce=False
+        )  # (B_flat, A, H_attention_out)
+
+        # Flatten agent dimension for heads
+        flat_weighted = weighted_embs.view(B_flat * A, H_attention_out)
+
+        b_ppo = self.baseline_head_ppo(flat_weighted)
+
+        taus_expanded = taus.unsqueeze(1).expand(-1, A, -1, -1)
+        taus_expanded = taus_expanded.reshape(B_flat * A, taus.shape[-2], 1)
+        baseline_quantiles = self.baseline_iqn_net(flat_weighted, taus_expanded)
+        b_distilled = self.baseline_distill_net(b_ppo, baseline_quantiles)
+
+        b_distilled = b_distilled.view(B_flat, A, 1)
+        baseline_quantiles = baseline_quantiles.view(B_flat, A, -1)
 
         b_distilled_reshaped = b_distilled.view(*leading_dims, A, 1)
+        baseline_quantiles = baseline_quantiles.view(*leading_dims, A, -1)
         return b_distilled_reshaped, baseline_quantiles
 
 
