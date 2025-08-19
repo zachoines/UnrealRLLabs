@@ -1035,82 +1035,85 @@ class ImplicitQuantileNetwork(nn.Module):
     
 
 class DistillationNetwork(nn.Module):
-    """
-    Distills information from a scalar PPO-style value/baseline (V_ppo)
-    and a set of quantile values (Z_tau) from an IQN into a single scalar output.
-    """
-    def __init__(self,
-                 num_quantiles: int,
-                 hidden_size: int = 128, 
-                 combination_method: str = "hadamard_product", # 'hadamard_product', 'concatenate', or 'average_iqn_concatenate'
-                 linear_init_scale: float = 1.0,
-                 dropout_rate: float = 0.0):
+    """Distills a scalar value/baseline with quantile information."""
+
+    def __init__(
+        self,
+        num_quantiles: Optional[int] = None,
+        hidden_size: int = 128,
+        combination_method: str = "hadamard_product",
+        linear_init_scale: float = 1.0,
+        dropout_rate: float = 0.0,
+    ):
         super().__init__()
-        self.num_quantiles = num_quantiles
         self.hidden_size = hidden_size
         self.combination_method = combination_method
+        self.linear_init_scale = linear_init_scale
+        self.dropout_rate = dropout_rate
 
-        # The input dimension to the first linear layer depends on the combination method
+        self.mlp: Optional[nn.Sequential] = None
+        self.input_dim_to_mlp: Optional[int] = None
+
+        if num_quantiles is not None:
+            self._build_mlp(num_quantiles)
+
+    def _build_mlp(self, num_quantiles: int) -> None:
         if self.combination_method == "hadamard_product":
-            # V_ppo (scalar) is expanded and multiplied element-wise with IQN quantiles (vector)
-            # So, the input features to the MLP will be num_quantiles
-            self.input_dim_to_mlp = self.num_quantiles
+            input_dim = num_quantiles
         elif self.combination_method == "concatenate":
-            # V_ppo (scalar, becomes 1 feature) is concatenated with IQN quantiles (num_quantiles features)
-            self.input_dim_to_mlp = 1 + self.num_quantiles
+            input_dim = 1 + num_quantiles
         elif self.combination_method == "average_iqn_concatenate":
-            # V_ppo (scalar) is concatenated with the mean of IQN quantiles (scalar)
-            self.input_dim_to_mlp = 1 + 1
+            input_dim = 2
         else:
             raise ValueError(f"Unsupported combination_method: {self.combination_method}")
 
+        self.input_dim_to_mlp = input_dim
         self.mlp = nn.Sequential(
-            nn.Linear(self.input_dim_to_mlp, self.hidden_size),
-            nn.GELU(), # Or GELU
-            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
+            nn.Linear(input_dim, self.hidden_size),
+            nn.GELU(),
+            nn.Dropout(self.dropout_rate) if self.dropout_rate > 0.0 else nn.Identity(),
             nn.Linear(self.hidden_size, self.hidden_size),
-            nn.GELU(), # Or GELU
-            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
-            nn.Linear(self.hidden_size, 1) # Outputs a single distilled scalar value
+            nn.GELU(),
+            nn.Dropout(self.dropout_rate) if self.dropout_rate > 0.0 else nn.Identity(),
+            nn.Linear(self.hidden_size, 1),
+        )
+        self.mlp.apply(
+            lambda m: init_weights_gelu_linear(m, scale=self.linear_init_scale)
+            if isinstance(m, nn.Linear)
+            else None
         )
 
-        # Initialize weights
-        self.mlp.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
 
     def forward(self, v_ppo: torch.Tensor, quantile_values: torch.Tensor) -> torch.Tensor:
-        """
-        Combines V_ppo and quantile_values and processes them to output a distilled scalar value.
+        """Combine PPO scalar and quantile values into a distilled scalar."""
 
-        Args:
-            v_ppo (torch.Tensor): Scalar value output from the original PPO-style head.
-                                  Shape: (BatchSize, 1).
-            quantile_values (torch.Tensor): Quantile values from the IQN.
-                                            Shape: (BatchSize, num_quantiles).
-
-        Returns:
-            torch.Tensor: The distilled scalar value. Shape: (BatchSize, 1).
-        """
         batch_size = v_ppo.shape[0]
         if v_ppo.shape != (batch_size, 1):
             raise ValueError(f"Expected v_ppo shape ({batch_size}, 1), got {v_ppo.shape}")
-        if quantile_values.shape != (batch_size, self.num_quantiles):
-            raise ValueError(f"Expected quantile_values shape ({batch_size}, {self.num_quantiles}), got {quantile_values.shape}")
+
+        num_q = quantile_values.shape[1]
+        expected_dim = (
+            num_q
+            if self.combination_method == "hadamard_product"
+            else 1 + num_q
+            if self.combination_method == "concatenate"
+            else 2
+        )
+        if self.mlp is None or self.input_dim_to_mlp != expected_dim:
+            self._build_mlp(num_q)
 
         if self.combination_method == "hadamard_product":
-            # Expand v_ppo to match the shape of quantile_values for element-wise product
-            v_ppo_expanded = v_ppo.expand_as(quantile_values) # (BatchSize, num_quantiles)
-            combined_input = v_ppo_expanded * quantile_values  # (BatchSize, num_quantiles)
+            v_ppo_expanded = v_ppo.expand_as(quantile_values)
+            combined_input = v_ppo_expanded * quantile_values
         elif self.combination_method == "concatenate":
-            combined_input = torch.cat([v_ppo, quantile_values], dim=-1) # (BatchSize, 1 + num_quantiles)
+            combined_input = torch.cat([v_ppo, quantile_values], dim=-1)
         elif self.combination_method == "average_iqn_concatenate":
-            mean_quantile_value = quantile_values.mean(dim=1, keepdim=True) # (BatchSize, 1)
-            combined_input = torch.cat([v_ppo, mean_quantile_value], dim=-1) # (BatchSize, 2)
+            mean_quantile_value = quantile_values.mean(dim=1, keepdim=True)
+            combined_input = torch.cat([v_ppo, mean_quantile_value], dim=-1)
         else:
-            # This case should have been caught in __init__
             raise ValueError(f"Unsupported combination_method: {self.combination_method}")
 
-        distilled_value = self.mlp(combined_input) # (BatchSize, 1)
-        return distilled_value
+        return self.mlp(combined_input)
     
 
 class LinearNetwork(nn.Module):

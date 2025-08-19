@@ -869,15 +869,15 @@ class MAPOCAAgent(Agent):
             if self.train_distill_with_quantile_loss and s_val_valid.shape[0] > 0:
                 v_ppo_cur = self.shared_critic.value_head_ppo(s_val_valid)
                 distilled_val = self.shared_critic.value_distill_net(v_ppo_cur, current_value_quantiles)
-                distill_val_exp = distilled_val.expand_as(current_value_quantiles)
-                value_distill_loss = self._compute_huber_quantile_loss(distill_val_exp, bellman_targets.detach(), taus_current_val)
+                target_mean_val = bellman_targets.detach().mean(dim=1, keepdim=True)
+                value_distill_loss = F.mse_loss(distilled_val, target_mean_val)
                 val_distill_losses.append(value_distill_loss.item())
 
             if self.train_distill_with_quantile_loss and s_base_valid.shape[0] > 0:
                 b_ppo_cur = self.shared_critic.baseline_head_ppo(s_base_valid)
                 distilled_base = self.shared_critic.baseline_distill_net(b_ppo_cur, current_baseline_quantiles)
-                distill_base_exp = distilled_base.expand_as(current_baseline_quantiles)
-                baseline_distill_loss = self._compute_huber_quantile_loss(distill_base_exp, baseline_bellman_targets.detach(), taus_current_base)
+                target_mean_base = baseline_bellman_targets.detach().mean(dim=1, keepdim=True)
+                baseline_distill_loss = F.mse_loss(distilled_base, target_mean_base)
                 base_distill_losses.append(baseline_distill_loss.item())
 
             # --- Optimization Step ---
@@ -1095,7 +1095,7 @@ class MAPOCAAgent(Agent):
         # --- Value Path ---
         val_input_flat = feats_seq.reshape(B_T_flat, NA, -1)
         s_val_attn_out, _ = self.shared_critic.value_attention(val_input_flat)
-        s_val_feats_agg = s_val_attn_out.mean(dim=1)  # Shape: (B*T, H_embed)
+        s_val_feats_agg = self.shared_critic.value_aggregator(s_val_attn_out)
 
         # --- Baseline Path ---
         baseline_feats = feats_seq
@@ -1107,12 +1107,14 @@ class MAPOCAAgent(Agent):
         base_input_comb = self.embedding_net.get_baseline_embeddings(baseline_feats, actions_seq)
         base_input_flat = base_input_comb.reshape(B_T_NA_flat, NA, -1)
         s_base_attn_out, _ = self.shared_critic.baseline_attention(base_input_flat)
-        s_base_feats_agg = s_base_attn_out.mean(dim=1) # Shape: (B*T*NA, H_embed)
-        
+        per_agent_embs = s_base_attn_out.mean(dim=1).view(B_T_flat, NA, -1)
+        weighted_embs = self.shared_critic.baseline_aggregator(per_agent_embs, reduce=False)
+        s_base_feats_agg = weighted_embs.view(B_T_NA_flat, -1)
+
         if self.enable_iqn_distillation:
             taus_val = self._sample_taus(B_T_flat, self.num_quantiles)
             taus_base = self._sample_taus(B_T_NA_flat, self.num_quantiles)
-            
+
             v_ppo = self.shared_critic.value_head_ppo(s_val_feats_agg)
             value_quantiles = self.shared_critic.value_iqn_net(s_val_feats_agg, taus_val)
             val_distilled_norm = self.shared_critic.value_distill_net(v_ppo, value_quantiles)
@@ -1124,12 +1126,12 @@ class MAPOCAAgent(Agent):
             val_distilled_norm = self.shared_critic.value_head_ppo(s_val_feats_agg)
             base_distilled_norm = self.shared_critic.baseline_head_ppo(s_base_feats_agg)
             value_quantiles = None
-        
+
         # Reshape all outputs
         final_val = val_distilled_norm.reshape(B, T, 1)
         final_base = base_distilled_norm.reshape(B, T, NA, 1)
         final_s_val_feats = s_val_feats_agg.reshape(B, T, -1)
-        final_s_base_feats = s_base_feats_agg.reshape(B, T, NA, -1)
+        final_s_base_feats = weighted_embs.view(B, T, NA, -1)
 
         return final_val, final_base, value_quantiles, final_s_val_feats, final_s_base_feats
     
