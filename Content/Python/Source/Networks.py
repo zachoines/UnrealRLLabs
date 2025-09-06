@@ -598,6 +598,7 @@ class BetaPolicyNetwork(BasePolicyNetwork):
 
         return log_probs, entropies
     
+
 class FeedForwardBlock(nn.Module):
     """Transformer FFN sublayer: LN -> Linear -> GELU -> Dropout -> Linear -> Dropout + Residual"""
     def __init__(self, embed_dim: int, hidden_dim: int = None, dropout: float = 0.0):
@@ -626,105 +627,113 @@ class FeedForwardBlock(nn.Module):
 
 class SharedCritic(nn.Module):
     """
-    Shared critic architecture.
-    MODIFIED to integrate IQN and Distillation networks for value and baseline.
-    It now expects its main config (net_cfg) to contain sub-configs for
-    iqn_params and distillation_params, and feature_dim for IQNs.
+    Clean shared critic architecture for MA-POCA with IQN value function.
+    
+    Architecture:
+    - IQN for centralized value estimation (distributional)
+    - Scalar baseline for per-agent counterfactuals (more efficient)
+    - No distillation networks (simplified approach)
     """
     def __init__(self, net_cfg: Dict[str, Any]):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # Extract IQN and Distillation specific configurations
-        iqn_config = net_cfg.get("iqn_params", {})
-
-        # Original PPO-style value and baseline heads
-        self.value_head_ppo = ValueNetwork(**net_cfg["value_head"])
-        self.baseline_head_ppo = ValueNetwork(**net_cfg["baseline_head"])
-
-        # Attention mechanisms
+        
+        # Attention mechanisms (unchanged)
         self.value_attention = ResidualAttention(**net_cfg["value_attention"])
-        self.baseline_attention = ResidualAttention(**net_cfg['baseline_attention'])
-
-        # IQN Networks
-        self.value_iqn_net = ImplicitQuantileNetwork(
-            **iqn_config.get("iqn_network", {})
-        )
-        self.baseline_iqn_net = ImplicitQuantileNetwork(
-            **iqn_config.get("iqn_network", {})
-        )
-
-        # Distillation Networks
-        self.value_distill_net = DistillationNetwork(
-            **iqn_config.get("distillation_network", {})
-        )
-        self.baseline_distill_net = DistillationNetwork(
-            **iqn_config.get("distillation_network", {})
-        )
-
+        self.baseline_attention = ResidualAttention(**net_cfg["baseline_attention"])
+        
+        # IQN for value function (distributional)
+        iqn_config = net_cfg.get("iqn_params", {})
+        iqn_network_config = iqn_config.get("iqn_network", {}).copy()
+        
+        # Set feature_dim from attention output if not specified
+        if "feature_dim" not in iqn_network_config:
+            iqn_network_config["feature_dim"] = self.value_attention.embed_dim
+        
+        # Remove parameters that belong to the loss function, not the network
+        iqn_network_config.pop("iqn_kappa", None)  # Used in quantile loss, not network
+            
+        self.value_iqn_net = ImplicitQuantileNetwork(**iqn_network_config)
+        
+        # Scalar baseline (more efficient for per-agent values)
+        self.baseline_head = ValueNetwork(**net_cfg["baseline_head"])
+        
+        # Store number of quantiles for easy access
+        self.num_quantiles = iqn_network_config.get("num_quantiles", 32)
+        
+        # Initialize attention layers
         init_scale = net_cfg.get("linear_init_scale", 0.1)
-        # Apply initialization to attention layers if they don't do it internally
-        # Assuming ValueNetwork, ImplicitQuantileNetwork, DistillationNetwork handle their own init.
-        self.value_attention.apply(lambda m: init_weights_gelu_linear(m, scale=init_scale) if isinstance(m, nn.Linear) and not isinstance(m, nn.LayerNorm) else None)
-        self.baseline_attention.apply(lambda m: init_weights_gelu_linear(m, scale=init_scale) if isinstance(m, nn.Linear) and not isinstance(m, nn.LayerNorm) else None)
+        self.value_attention.apply(
+            lambda m: init_weights_gelu_linear(m, scale=init_scale) 
+            if isinstance(m, nn.Linear) and not isinstance(m, nn.LayerNorm) else None
+        )
+        self.baseline_attention.apply(
+            lambda m: init_weights_gelu_linear(m, scale=init_scale) 
+            if isinstance(m, nn.Linear) and not isinstance(m, nn.LayerNorm) else None
+        )
 
-    def values(self, x: torch.Tensor, taus: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_values_and_baselines(self, feats_seq: torch.Tensor, actions_seq: torch.Tensor, 
+                               taus: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Computes the centralized state value V(s) using IQN and Distillation.
-        Input x shape: (..., A, H_input_to_attention)
-        taus shape: (B_flat, num_quantiles_for_IQN_input, 1) or (B_flat * num_quantiles, 1)
-
+        Clean interface to get both values and baselines in one forward pass.
+        
+        Args:
+            feats_seq: Feature sequence, shape (B, T, NA, F)
+            actions_seq: Action sequence, shape (B, T, NA, action_dim)  
+            taus: Optional quantile fractions for IQN. If None, uses random sampling.
+            
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]:
-                - v_distilled: Distilled scalar state value. Shape: (..., 1)
-                - value_quantiles: Quantile values from IQN. Shape: (B_flat, num_quantiles)
+            values: Scalar values for PPO, shape (B, T, 1)
+            baselines: Scalar baselines, shape (B, T, NA, 1) 
+            value_quantiles: IQN quantiles for loss computation, shape (B*T, num_quantiles)
         """
-        input_shape = x.shape
-        # H_attention_out is the output dim of attention, which is feature_dim for IQN
-        H_attention_out = self.value_attention.embed_dim
-        A = input_shape[-2]
-        leading_dims = input_shape[:-2]
-        B_flat = int(np.prod(leading_dims))
-
-        x_flat = x.reshape(B_flat, A, x.shape[-1]) # x.shape[-1] is input dim to attention
-        attn_out, _ = self.value_attention(x_flat)  # (B_flat, A, H_attention_out)
-        aggregated_emb = attn_out.mean(dim=1)      # (B_flat, H_attention_out)
-
-        v_ppo = self.value_head_ppo(aggregated_emb) # (B_flat, 1)
-        value_quantiles = self.value_iqn_net(aggregated_emb, taus) # (B_flat, num_quantiles)
-        v_distilled = self.value_distill_net(v_ppo, value_quantiles) # (B_flat, 1)
-
-        v_distilled_reshaped = v_distilled.view(*leading_dims, 1)
-        return v_distilled_reshaped, value_quantiles
-
-    def baselines(self, x: torch.Tensor, taus: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        B, T, NA, F = feats_seq.shape
+        
+        # Value path: Centralized attention -> IQN
+        val_input = feats_seq.reshape(B * T, NA, F)  # (B*T, NA, F)
+        val_attn_out, _ = self.value_attention(val_input)  # (B*T, NA, H)
+        val_feats = val_attn_out.mean(dim=1)  # (B*T, H) - aggregate over agents
+        
+        # Get quantile estimates
+        value_quantiles = self.value_iqn_net(val_feats, taus)  # (B*T, N)
+        
+        # Use expectation over quantiles as scalar value estimate for PPO
+        values = value_quantiles.mean(dim=-1, keepdim=True)  # (B*T, 1)
+        values = values.reshape(B, T, 1)  # (B, T, 1)
+        
+        # Baseline path: Per-agent attention -> scalar baseline
+        # Simplified approach that doesn't require MultiAgentEmbeddingNetwork
+        # In practice, this would use the embedding network's get_baseline_embeddings method
+        
+        # For testing/demo purposes, we'll process features directly
+        # Reshape to per-agent: (B, T, NA, F) -> (B*T*NA, F)  
+        base_input_flat = feats_seq.reshape(B * T * NA, F)  # (B*T*NA, F)
+        
+        # Add sequence dimension for attention: (B*T*NA, F) -> (B*T*NA, 1, F)
+        base_input = base_input_flat.unsqueeze(1)  # (B*T*NA, 1, F)
+        base_attn_out, _ = self.baseline_attention(base_input)  # (B*T*NA, 1, H)
+        base_feats = base_attn_out.squeeze(1)  # (B*T*NA, H)
+        
+        baselines = self.baseline_head(base_feats)  # (B*T*NA, 1)
+        baselines = baselines.reshape(B, T, NA, 1)  # (B, T, NA, 1)
+        
+        return values, baselines, value_quantiles
+    
+    def get_values_only(self, val_feats: torch.Tensor, taus: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Computes the per-agent counterfactual baseline B(s, a_j) using IQN and Distillation.
-        Input x shape: (..., A, SeqLen, H_input_to_attention)
-        taus shape: (B_flat*A, num_quantiles_for_IQN_input, 1) or (B_flat*A * num_quantiles, 1)
-
+        Get only values for inference (no baselines needed).
+        
+        Args:
+            val_feats: Value features after attention, shape (B, H)
+            taus: Optional quantile fractions
+            
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]:
-                - b_distilled: Distilled scalar baseline values. Shape: (..., A, 1)
-                - baseline_quantiles: Quantile values from IQN. Shape: (B_flat*A, num_quantiles)
+            values: Scalar values, shape (B, 1)
+            value_quantiles: IQN quantiles, shape (B, N)
         """
-        input_shape = x.shape
-        H_attention_out = self.baseline_attention.embed_dim
-        SeqLen = input_shape[-2]
-        A = input_shape[-3]
-        leading_dims = input_shape[:-3]
-        B_flat = int(np.prod(leading_dims))
-
-        x_flat_for_attn = x.reshape(B_flat * A, SeqLen, x.shape[-1])
-        x_attn, _ = self.baseline_attention(x_flat_for_attn) # (B_flat*A, SeqLen, H_attention_out)
-        agent_emb_for_baseline = x_attn.mean(dim=1)          # (B_flat*A, H_attention_out)
-
-        b_ppo = self.baseline_head_ppo(agent_emb_for_baseline) # (B_flat*A, 1)
-        baseline_quantiles = self.baseline_iqn_net(agent_emb_for_baseline, taus) # (B_flat*A, num_quantiles)
-        b_distilled = self.baseline_distill_net(b_ppo, baseline_quantiles) # (B_flat*A, 1)
-
-        b_distilled_reshaped = b_distilled.view(*leading_dims, A, 1)
-        return b_distilled_reshaped, baseline_quantiles
+        value_quantiles = self.value_iqn_net(val_feats, taus)  # (B, N)
+        values = value_quantiles.mean(dim=-1, keepdim=True)  # (B, 1)
+        return values, value_quantiles
 
 
 class RNDTargetNetwork(nn.Module):
@@ -795,208 +804,144 @@ class RNDPredictorNetwork(nn.Module):
 
 class ImplicitQuantileNetwork(nn.Module):
     """
-    Implicit Quantile Network (IQN) for distributional reinforcement learning.
-    It predicts the quantile values of a state (or state-action) value distribution.
+    Clean Implicit Quantile Network (IQN) for distributional reinforcement learning.
+    Predicts quantile values of state value distribution Z(s,τ).
     """
     def __init__(self,
-            feature_dim: int,
-            hidden_size: int = 128,
-            quantile_embedding_dim: int = 64,
-            linear_init_scale: float = 1.0,
-            num_quantiles: int = 32,
-            dropout_rate: float = 0.0
-        ):
+                 feature_dim: int,
+                 hidden_size: int = 128,
+                 quantile_embedding_dim: int = 64,
+                 num_quantiles: int = 32,
+                 use_dueling: bool = True,
+                 linear_init_scale: float = 1.0,
+                 dropout_rate: float = 0.0):
         super().__init__()
         self.feature_dim = feature_dim
         self.num_quantiles = num_quantiles
         self.quantile_embedding_dim = quantile_embedding_dim
         self.hidden_size = hidden_size
+        self.use_dueling = use_dueling
+
+        # Fix: Start cosine embedding from i=1 (as per IQN paper)
+        self.register_buffer('i_pi_values', 
+                           torch.arange(1, quantile_embedding_dim + 1, dtype=torch.float32) * math.pi)
 
         # Cosine embedding layer for quantile fractions (τ)
-        # This projects τ into a higher dimensional space using cosine basis functions.
-        # See equation (4) in the IQN paper (Dabney et al., 2018).
-        self.cosine_embedding_layer = nn.Linear(self.quantile_embedding_dim, self.feature_dim)
-        # Pre-calculate i * pi for cosine embeddings for efficiency
-        # self.i_pi = nn.Parameter(torch.arange(1, self.quantile_embedding_dim + 1, dtype=torch.float32) * math.pi, requires_grad=False)
-        # A common way is to pre-calculate a range of i:
-        self.register_buffer('i_pi_values', torch.arange(0, self.quantile_embedding_dim, dtype=torch.float32) * math.pi)
+        self.cosine_embedding = nn.Linear(quantile_embedding_dim, feature_dim)
 
-
-        # MLP to process the merged state and quantile embeddings
-        self.merge_mlp = nn.Sequential(
-            nn.Linear(self.feature_dim, self.hidden_size),
-            nn.GELU(), # Or GELU, consistent with your other networks
-            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity()
-        )
-
-        # Output layer that predicts the quantile values
-        self.output_layer = nn.Linear(self.hidden_size, 1) # Outputs a single value per quantile sample
+        if self.use_dueling:
+            # Dueling architecture: separate value and advantage streams
+            self.value_stream = nn.Sequential(
+                nn.Linear(feature_dim, hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
+                nn.Linear(hidden_size, hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
+                nn.Linear(hidden_size, 1)
+            )
+            
+            self.advantage_stream = nn.Sequential(
+                nn.Linear(feature_dim, hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
+                nn.Linear(hidden_size, hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
+                nn.Linear(hidden_size, 1)
+            )
+        else:
+            # Standard architecture
+            self.quantile_mlp = nn.Sequential(
+                nn.Linear(feature_dim, hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
+                nn.Linear(hidden_size, hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
+                nn.Linear(hidden_size, 1)
+            )
 
         # Initialize weights
-        # Cosine embedding layer might have specific init, but Linear with GELU-like init is a reasonable start
-        init_weights_gelu_linear(self.cosine_embedding_layer, scale=linear_init_scale)
-        self.merge_mlp.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
-        init_weights_gelu_linear(self.output_layer, scale=linear_init_scale)
+        self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) 
+                  if isinstance(m, nn.Linear) else None)
 
 
     def embed_quantiles(self, taus: torch.Tensor) -> torch.Tensor:
         """
         Embeds quantile fractions τ using cosine basis functions.
         Args:
-            taus (torch.Tensor): Tensor of quantile fractions τ, shape (BatchSize, NumQuantilesToEmbed, 1)
-                                 or (BatchSize * NumQuantilesToEmbed, 1).
-                                 The τ values should be in [0, 1].
+            taus: Quantile fractions, shape (B, N, 1) or (B*N, 1)
         Returns:
-            torch.Tensor: Embedded quantile fractions, shape (BatchSize, NumQuantilesToEmbed, feature_dim)
-                          or (BatchSize * NumQuantilesToEmbed, feature_dim).
+            Embedded quantile fractions, shape (B*N, feature_dim)
         """
-        # Ensure taus has a trailing dimension if it's flat
-        if taus.dim() == 1: # (BatchSize * NumQuantilesToEmbed)
-            taus_unsqueezed = taus.unsqueeze(-1)
-        elif taus.dim() == 2: # (BatchSize, NumQuantilesToEmbed)
-            taus_unsqueezed = taus.unsqueeze(-1) # -> (BatchSize, NumQuantilesToEmbed, 1)
-        else:
-            taus_unsqueezed = taus
-
-        # Cosine embedding: cos(i * pi * τ)
-        # taus_unsqueezed shape: (..., 1)
-        # self.i_pi_values shape: (quantile_embedding_dim,)
-        # Broadcasting taus_unsqueezed with self.i_pi_values
-        # (..., 1) * (quantile_embedding_dim,) -> (..., quantile_embedding_dim)
-        cosine_features = torch.cos(taus_unsqueezed * self.i_pi_values.view(1, -1).to(taus_unsqueezed.device))
+        # Ensure proper shape: (B*N, 1)
+        if taus.dim() == 3:  # (B, N, 1)
+            taus = taus.reshape(-1, 1)
+        elif taus.dim() == 2 and taus.shape[1] != 1:  # (B, N)
+            taus = taus.reshape(-1, 1)
+            
+        # Cosine embedding: cos(i * π * τ) for i = 1, 2, ..., quantile_embedding_dim
+        cosine_features = torch.cos(taus * self.i_pi_values.unsqueeze(0))  # (B*N, embed_dim)
         
-        # Project cosine features to feature_dim
-        quantile_embeddings = F.gelu(self.cosine_embedding_layer(cosine_features)) # (..., feature_dim)
+        # Project to feature space and apply activation
+        quantile_embeddings = torch.relu(self.cosine_embedding(cosine_features))
         return quantile_embeddings
 
-    def forward(self, state_features: torch.Tensor, taus: torch.Tensor) -> torch.Tensor:
+    def forward(self, state_features: torch.Tensor, taus: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Predicts quantile values for the given state features and quantile fractions.
-
+        Predicts quantile values Z(s,τ) for given state features and quantile fractions.
+        
         Args:
-            state_features (torch.Tensor): State or feature embeddings from the main network.
-                                           Shape: (BatchSize, feature_dim).
-            taus (torch.Tensor): Quantile fractions τ to sample.
-                                 Shape: (BatchSize, num_quantiles_to_sample_for_this_forward_pass, 1)
-                                 or (BatchSize * num_quantiles_to_sample_for_this_forward_pass, 1).
-                                 The `num_quantiles_to_sample_for_this_forward_pass` is typically `self.num_quantiles`
-                                 during training for loss calculation, or a different number (e.g., for evaluation if needed).
-
+            state_features: State embeddings, shape (B, feature_dim)
+            taus: Quantile fractions. If None, samples random taus. Shape (B, N, 1) or (B*N, 1)
+            
         Returns:
-            torch.Tensor: Predicted quantile values. Shape: (BatchSize, num_quantiles_to_sample_for_this_forward_pass).
+            Quantile values, shape (B, N) where N is num_quantiles
         """
         batch_size = state_features.shape[0]
         
-        # Embed quantile fractions
-        # taus might come in as (B, N_taus, 1) or (B * N_taus, 1)
-        # If taus is (B * N_taus, 1), state_features needs to be repeated
-        # If taus is (B, N_taus, 1), state_features needs to be unsqueezed and repeated
-
-        if taus.dim() == 2 and taus.shape[0] == batch_size * self.num_quantiles: # (B * N_taus, 1)
-            num_sampled_taus_per_state = self.num_quantiles
-            state_features_expanded = state_features.repeat_interleave(num_sampled_taus_per_state, dim=0) # (B * N_taus, feature_dim)
-            quantile_embeddings = self.embed_quantiles(taus) # (B * N_taus, feature_dim)
-        elif taus.dim() == 3 and taus.shape[0] == batch_size: # (B, N_taus, 1)
-            num_sampled_taus_per_state = taus.shape[1]
-            state_features_expanded = state_features.unsqueeze(1).expand(-1, num_sampled_taus_per_state, -1) # (B, N_taus, feature_dim)
-            quantile_embeddings = self.embed_quantiles(taus) # (B, N_taus, feature_dim)
-            # Reshape for element-wise product and MLP
-            state_features_expanded = state_features_expanded.reshape(-1, self.feature_dim)
-            quantile_embeddings = quantile_embeddings.reshape(-1, self.feature_dim)
+        # Sample random quantiles if not provided
+        if taus is None:
+            taus = torch.rand(batch_size, self.num_quantiles, 1, 
+                            device=state_features.device, dtype=state_features.dtype)
+        
+        # Determine number of quantiles
+        if taus.dim() == 3:  # (B, N, 1)
+            num_quantiles = taus.shape[1]
+        elif taus.dim() == 2:  # (B*N, 1) or (B, N)
+            if taus.shape[0] == batch_size:  # (B, N)
+                num_quantiles = taus.shape[1]
+                taus = taus.unsqueeze(-1)  # (B, N, 1)
+            else:  # (B*N, 1)
+                num_quantiles = taus.shape[0] // batch_size
+        
+        # Expand state features: (B, feature_dim) -> (B*N, feature_dim)
+        state_features_exp = state_features.unsqueeze(1).expand(-1, num_quantiles, -1)
+        state_features_flat = state_features_exp.reshape(-1, self.feature_dim)
+        
+        # Embed quantiles: (B*N, feature_dim)
+        tau_embeddings = self.embed_quantiles(taus)
+        
+        # Hadamard product (element-wise multiplication)
+        combined_features = state_features_flat * tau_embeddings  # (B*N, feature_dim)
+        
+        if self.use_dueling:
+            # Dueling architecture: Q(s,τ) = V(s) + A(s,τ) - mean(A(s,τ))
+            values = self.value_stream(state_features_flat)  # (B*N, 1)
+            advantages = self.advantage_stream(combined_features)  # (B*N, 1)
+            
+            # Subtract mean advantage per state for better stability
+            advantages_reshaped = advantages.view(batch_size, num_quantiles, 1)
+            mean_advantages = advantages_reshaped.mean(dim=1, keepdim=True)  # (B, 1, 1)
+            advantages_centered = advantages_reshaped - mean_advantages  # (B, N, 1)
+            
+            quantile_values = values.view(batch_size, num_quantiles, 1) + advantages_centered
+            return quantile_values.squeeze(-1)  # (B, N)
         else:
-            raise ValueError(f"Unsupported taus shape: {taus.shape} for state_features shape: {state_features.shape}")
-
-        # Element-wise product of state features and quantile embeddings
-        merged_features = state_features_expanded * quantile_embeddings # (B * N_taus, feature_dim)
-
-        # Pass through MLP
-        x = self.merge_mlp(merged_features) # (B * N_taus, hidden_size)
-        quantile_values = self.output_layer(x)   # (B * N_taus, 1)
-
-        # Reshape to (BatchSize, num_sampled_taus_per_state)
-        quantile_values = quantile_values.view(batch_size, num_sampled_taus_per_state)
-
-        return quantile_values
-    
-
-class DistillationNetwork(nn.Module):
-    """
-    Distills information from a scalar PPO-style value/baseline (V_ppo)
-    and a set of quantile values (Z_tau) from an IQN into a single scalar output.
-    """
-    def __init__(self,
-                 num_quantiles: int,
-                 hidden_size: int = 128, 
-                 combination_method: str = "hadamard_product", # 'hadamard_product', 'concatenate', or 'average_iqn_concatenate'
-                 linear_init_scale: float = 1.0,
-                 dropout_rate: float = 0.0):
-        super().__init__()
-        self.num_quantiles = num_quantiles
-        self.hidden_size = hidden_size
-        self.combination_method = combination_method
-
-        # The input dimension to the first linear layer depends on the combination method
-        if self.combination_method == "hadamard_product":
-            # V_ppo (scalar) is expanded and multiplied element-wise with IQN quantiles (vector)
-            # So, the input features to the MLP will be num_quantiles
-            self.input_dim_to_mlp = self.num_quantiles
-        elif self.combination_method == "concatenate":
-            # V_ppo (scalar, becomes 1 feature) is concatenated with IQN quantiles (num_quantiles features)
-            self.input_dim_to_mlp = 1 + self.num_quantiles
-        elif self.combination_method == "average_iqn_concatenate":
-            # V_ppo (scalar) is concatenated with the mean of IQN quantiles (scalar)
-            self.input_dim_to_mlp = 1 + 1
-        else:
-            raise ValueError(f"Unsupported combination_method: {self.combination_method}")
-
-        self.mlp = nn.Sequential(
-            nn.Linear(self.input_dim_to_mlp, self.hidden_size),
-            nn.GELU(), # Or GELU
-            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
-            nn.Linear(self.hidden_size, self.hidden_size),
-            nn.GELU(), # Or GELU
-            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
-            nn.Linear(self.hidden_size, 1) # Outputs a single distilled scalar value
-        )
-
-        # Initialize weights
-        self.mlp.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
-
-    def forward(self, v_ppo: torch.Tensor, quantile_values: torch.Tensor) -> torch.Tensor:
-        """
-        Combines V_ppo and quantile_values and processes them to output a distilled scalar value.
-
-        Args:
-            v_ppo (torch.Tensor): Scalar value output from the original PPO-style head.
-                                  Shape: (BatchSize, 1).
-            quantile_values (torch.Tensor): Quantile values from the IQN.
-                                            Shape: (BatchSize, num_quantiles).
-
-        Returns:
-            torch.Tensor: The distilled scalar value. Shape: (BatchSize, 1).
-        """
-        batch_size = v_ppo.shape[0]
-        if v_ppo.shape != (batch_size, 1):
-            raise ValueError(f"Expected v_ppo shape ({batch_size}, 1), got {v_ppo.shape}")
-        if quantile_values.shape != (batch_size, self.num_quantiles):
-            raise ValueError(f"Expected quantile_values shape ({batch_size}, {self.num_quantiles}), got {quantile_values.shape}")
-
-        if self.combination_method == "hadamard_product":
-            # Expand v_ppo to match the shape of quantile_values for element-wise product
-            v_ppo_expanded = v_ppo.expand_as(quantile_values) # (BatchSize, num_quantiles)
-            combined_input = v_ppo_expanded * quantile_values  # (BatchSize, num_quantiles)
-        elif self.combination_method == "concatenate":
-            combined_input = torch.cat([v_ppo, quantile_values], dim=-1) # (BatchSize, 1 + num_quantiles)
-        elif self.combination_method == "average_iqn_concatenate":
-            mean_quantile_value = quantile_values.mean(dim=1, keepdim=True) # (BatchSize, 1)
-            combined_input = torch.cat([v_ppo, mean_quantile_value], dim=-1) # (BatchSize, 2)
-        else:
-            # This case should have been caught in __init__
-            raise ValueError(f"Unsupported combination_method: {self.combination_method}")
-
-        distilled_value = self.mlp(combined_input) # (BatchSize, 1)
-        return distilled_value
-    
+            # Standard architecture
+            quantile_values = self.quantile_mlp(combined_features)  # (B*N, 1)
+            return quantile_values.view(batch_size, num_quantiles)  # (B, N)
 
 class LinearNetwork(nn.Module):
     """Simple MLP block: Linear -> [Dropout] -> [GELU] -> [LayerNorm]"""

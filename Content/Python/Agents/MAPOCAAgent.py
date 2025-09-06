@@ -1,13 +1,11 @@
 from __future__ import annotations
-from typing import Dict, Tuple, Optional, List, Any, Union
+from typing import Dict, Tuple, Optional, List, Any
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn, optim
 from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import LinearLR
-import copy
-import random
 
 from Source.Agent import Agent
 from Source.Utility import RunningMeanStdNormalizer, LinearValueScheduler, PopArtNormalizer
@@ -35,36 +33,6 @@ def _get_avg_grad_mag(params_list: List[torch.nn.Parameter]) -> float:
             total_abs_grad += p.grad.abs().mean().item()
             num_params_with_grad += 1
     return total_abs_grad / num_params_with_grad if num_params_with_grad > 0 else 0.0
-
-# --- Replay Buffer for IQN ---
-class IQNReplayBuffer:
-    def __init__(self, capacity: int, device: torch.device):
-        self.capacity = capacity
-        self.device = device
-        self.buffer: List[Tuple] = []
-        self.position = 0
-
-    def push_batch(self, *args):
-        if self.capacity == 0: return
-        cpu_args = [arg.detach().cpu() if torch.is_tensor(arg) else arg for arg in args]
-        num_sequences_in_batch = cpu_args[0].shape[0]
-        for i in range(num_sequences_in_batch):
-            if len(self.buffer) < self.capacity:
-                self.buffer.append(None) # type: ignore
-            sequence_data = tuple(arg[i] if arg is not None else None for arg in cpu_args)
-            self.buffer[self.position] = sequence_data
-            self.position = (self.position + 1) % self.capacity
-
-    def sample(self, batch_size: int):
-        if len(self.buffer) < batch_size: return None
-        batch_tuples = random.sample(self.buffer, batch_size)
-        return tuple(
-            torch.stack([s[i] for s in batch_tuples if s[i] is not None]).to(self.device) if batch_tuples[0][i] is not None else None
-            for i in range(len(batch_tuples[0]))
-        )
-
-    def __len__(self) -> int:
-        return len(self.buffer)
 
 class MAPOCAAgent(Agent):
     """
@@ -141,8 +109,22 @@ class MAPOCAAgent(Agent):
         self.policy_net = policy_class_map[policy_type_str](**pol_cfg).to(device)
 
         critic_full_config = net_cfg["critic_network"].copy()
-        critic_full_config["feature_dim_for_iqn"] = trunk_dim
+        # Ensure IQN config has feature_dim set
+        if "iqn_params" not in critic_full_config:
+            critic_full_config["iqn_params"] = {}
+        if "iqn_network" not in critic_full_config["iqn_params"]:
+            critic_full_config["iqn_params"]["iqn_network"] = {}
+        critic_full_config["iqn_params"]["iqn_network"]["feature_dim"] = trunk_dim
+        
         self.shared_critic = SharedCritic(net_cfg=critic_full_config).to(device)
+        
+        # Store IQN parameters for easier access
+        self.num_quantiles = critic_full_config["iqn_params"]["iqn_network"].get("num_quantiles", 32)
+        self.iqn_kappa = critic_full_config["iqn_params"]["iqn_network"].get("iqn_kappa", 1.0)
+        
+        # Check if IQN is enabled (could be disabled by setting num_quantiles=0 or adding enable_iqn=False)
+        self.enable_iqn = (self.num_quantiles > 0 and 
+                          critic_full_config["iqn_params"]["iqn_network"].get("enable_iqn", True))
 
         # --- Auxiliary Modules Setup ---
         self.disagreement_cfg = a_cfg.get("disagreement_rewards")
@@ -153,13 +135,13 @@ class MAPOCAAgent(Agent):
 
         if self.rnd_cfg:
             self._setup_rnd(self.rnd_cfg, trunk_dim)
-
-        self.enable_iqn_distillation = a_cfg.get("enable_iqn_distillation", False)
+        
+        # --- Normalization Setup ---
         self.enable_popart = a_cfg.get("enable_popart", False)
-
-        if self.enable_iqn_distillation: self._setup_iqn(critic_full_config)
-        if self.enable_popart: self._setup_popart(a_cfg)
-        else: self.rewards_normalizer = RunningMeanStdNormalizer(**a_cfg.get("rewards_normalizer", {}), device=device) if a_cfg.get("rewards_normalizer") else None
+        if self.enable_popart:
+            self._setup_popart(a_cfg)
+        else:
+            self.rewards_normalizer = RunningMeanStdNormalizer(**a_cfg.get("rewards_normalizer", {}), device=device) if a_cfg.get("rewards_normalizer") else None
 
         # --- Final Setup Steps ---
         self._setup_optimizers(a_cfg)
@@ -216,7 +198,7 @@ class MAPOCAAgent(Agent):
         with torch.no_grad():
             feats_seq = feats_for_policy.unsqueeze(1)  # (B,1,NA,F)
             act_seq = actions_shaped.unsqueeze(1)
-            val_norm, base_norm, _, _, _ = self._get_critic_outputs(feats_seq, act_seq, B_env, 1, NA_runtime)
+            val_norm, base_norm, _ = self._get_critic_outputs(feats_seq, act_seq, B_env, 1, NA_runtime)
 
         values_output = val_norm.squeeze(1)
         baselines_output = base_norm.squeeze(1)
@@ -274,9 +256,6 @@ class MAPOCAAgent(Agent):
             feats_s_seq, h_n_for_next_buffer = self._apply_memory_seq(emb_s_seq, initial_hidden_states_batch, return_hidden=True)
             feats_ns_seq = self._apply_memory_seq(emb_ns_seq, h_n_for_next_buffer)
 
-            _, _, _, s_val_feats_agg, s_base_feats_agg = self._get_critic_outputs(feats_s_seq, padded_actions_seq, B, T, NA)
-            _, _, _, ns_val_feats_agg, ns_base_feats_agg = self._get_critic_outputs(feats_ns_seq, torch.zeros_like(padded_actions_seq), B, T, NA)
-
             intrinsic_rewards, intrinsic_stats = self._compute_intrinsic_rewards(feats_s_seq, padded_actions_seq, mask_btna)
             self._log_intrinsic_reward_stats(logs_acc, intrinsic_stats)
             padded_returns_seq = padded_returns_seq + intrinsic_rewards.mean(dim=-1, keepdim=True)
@@ -284,20 +263,6 @@ class MAPOCAAgent(Agent):
             if self.enable_popart:
                 self._update_popart_stats(padded_returns_seq, attention_mask_batch.unsqueeze(-1), mask_btna.unsqueeze(-1))
                 self._log_popart_stats(logs_acc)
-
-            if self.enable_iqn_distillation:
-                self._push_to_iqn_buffer(
-                    s_val_feats_agg,
-                    ns_val_feats_agg,
-                    s_base_feats_agg,
-                    ns_base_feats_agg,
-                    padded_actions_seq,
-                    padded_returns_seq,
-                    padded_dones_seq,
-                    attention_mask_batch,
-                    initial_hidden_states_batch,
-                h_n_for_next_buffer,
-                )
 
         baseline_denorm = (
             self.baseline_popart.denormalize_outputs(old_baselines_seq)
@@ -333,17 +298,31 @@ class MAPOCAAgent(Agent):
 
                 # --- PPO Core Loss Calculation ---
                 new_lp_mb, ent_mb = self._recompute_log_probs_from_features(feats_s_mb, mb_actions)
-                new_val_norm, new_base_norm, _, _, _ = self._get_critic_outputs(feats_s_mb, mb_actions, M, T, NA)
+                new_val_norm, new_base_norm, new_val_quantiles = self._get_critic_outputs(feats_s_mb, mb_actions, M, T, NA)
                 
                 pol_loss = self._ppo_clip_loss(new_lp_mb, mb_old_logp.detach(), mb_adv.detach(), self.ppo_clip_range, mb_mask_btna)
                 ent_loss = (-ent_mb * mb_mask_btna).sum() / mb_mask_btna.sum().clamp(min=1e-8)
-                val_targets = mb_returns if not self.enable_popart else self.value_popart.normalize_targets(mb_returns)
-                val_loss = self._clipped_value_loss(mb_old_val_norm.detach(), new_val_norm, val_targets.detach(), self.value_clip_range, attention_mask_batch[mb_idx].unsqueeze(-1))
+                
+                # Value function loss (IQN or clipped depending on configuration)
+                if self.enable_iqn:
+                    # IQN Quantile Regression Loss for value function
+                    val_targets = mb_returns if not self.enable_popart else self.value_popart.normalize_targets(mb_returns)
+                    # Reshape val_targets from (B, T, 1) to (B*T, 1) to match quantiles shape (B*T, num_quantiles)
+                    val_targets_reshaped = val_targets.reshape(-1, val_targets.shape[-1])
+                    # Reshape attention mask from (B, T) to (B*T,) to match
+                    mask_reshaped = attention_mask_batch[mb_idx].reshape(-1)
+                    val_loss = self._compute_iqn_quantile_loss(new_val_quantiles, val_targets_reshaped, mask_reshaped)
+                else:
+                    # Standard clipped value loss when IQN is disabled
+                    val_targets = mb_returns if not self.enable_popart else self.value_popart.normalize_targets(mb_returns)
+                    val_loss = self._clipped_value_loss(mb_old_val_norm.detach(), new_val_norm, val_targets.detach(), self.value_clip_range, attention_mask_batch[mb_idx].unsqueeze(-1))
+                
+                # Scalar baseline loss (unchanged)  
                 base_targets = mb_returns.unsqueeze(2).expand_as(new_base_norm)
                 if self.enable_popart: base_targets = self.baseline_popart.normalize_targets(base_targets)
                 base_loss = self._clipped_value_loss(mb_old_base_norm.detach(), new_base_norm, base_targets.detach(), self.value_clip_range, mb_mask_btna.unsqueeze(-1))
                 
-                # --- PPO Optimization Step ---
+                # --- Combined PPO Loss ---
                 ppo_total_loss = pol_loss + self.entropy_coeff * ent_loss + self.value_loss_coeff * val_loss + self.baseline_loss_coeff * base_loss
                 
                 ppo_opts = [self.optimizers["trunk"], self.optimizers["policy"], self.optimizers["value_path"], self.optimizers["baseline_path"]]
@@ -379,11 +358,8 @@ class MAPOCAAgent(Agent):
                 self._log_minibatch_stats(
                     logs_acc, pol_loss, val_loss, base_loss, ent_mb, new_lp_mb, 
                     mb_mask_btna, rnd_loss, disagreement_loss, feats_s_mb, 
-                    total_grad_norm, new_val_norm, new_base_norm
+                    total_grad_norm, new_val_norm, new_base_norm, new_val_quantiles if self.enable_iqn else None
                 )
-
-        if self.enable_iqn_distillation:
-            self._train_iqn_networks(logs_acc)
         
         self._step_schedulers()
         
@@ -407,17 +383,11 @@ class MAPOCAAgent(Agent):
             logs_acc.update({"loss/rnd": [], "reward/rnd_raw_mean": [], "reward/rnd_raw_std": [], "reward/rnd_norm_mean": [], "reward/rnd_norm_std": [], "grad_norm/rnd_predictor": []})
         if self.disagreement_cfg:
             logs_acc.update({"loss/disagreement": [], "reward/disagreement_raw_mean": [], "reward/disagreement_raw_std": [], "reward/disagreement_norm_mean": [], "reward/disagreement_norm_std": [], "grad_norm/disagreement_ensemble": []})
-        if self.enable_iqn_distillation:
-            logs_acc.update({
-                "loss/value_iqn": [], "loss/baseline_iqn": [],
-                "loss/value_distill_iqn": [], "loss/baseline_distill_iqn": [],
-                "mean/value_quantiles": [], "std/value_quantiles": [],
-                "mean/baseline_quantiles": [], "std/baseline_quantiles": [],
-                "mean/distilled_value": [], "std/distilled_value": [],
-                "mean/distilled_baseline": [], "std/distilled_baseline": [],
-                "grad_norm/value_iqn": [], "grad_norm/baseline_iqn": [],
-                "grad_norm/distill_value": [], "grad_norm/distill_baseline": []
-            })
+
+        logs_acc.update({
+            "loss/iqn_value": [],
+            "mean/value_quantiles": [], "std/value_quantiles": []
+        })
         if self.enable_popart:
             logs_acc.update({"popart/value_mu": [], "popart/value_sigma": [], "popart/baseline_mu": [], "popart/baseline_sigma": []})
         if self.action_space_type_str_from_config == "beta":
@@ -438,39 +408,20 @@ class MAPOCAAgent(Agent):
             self.action_dim = [d["num_choices"] for d in action_spec["discrete"]]
             self.total_action_dim_per_agent = len(self.action_dim)
 
-    def _setup_iqn(self, critic_cfg):
-        iqn_params = critic_cfg.get("iqn_params", {})
-        self.num_quantiles = iqn_params.get("num_quantiles", 32)
-        self.num_quantiles_prime = iqn_params.get("num_quantiles_prime", self.num_quantiles)
-        self.iqn_kappa = iqn_params.get("kappa", 1.0)
-        self.iqn_polyak = iqn_params.get("polyak_tau", 0.005)
-
-        self.iqn_max_grad_norm = iqn_params.get("iqn_max_grad_norm", self.max_grad_norm)
-        self.iqn_epochs = iqn_params.get("iqn_epochs", 1)
-
-        self.value_iqn_loss_coeff = iqn_params.get("value_iqn_loss_coeff", 0.25)
-        self.baseline_iqn_loss_coeff = iqn_params.get("baseline_iqn_loss_coeff", 0.25)
-        self.train_distill_with_quantile_loss = iqn_params.get("train_distill_with_quantile_loss", False)
-        self.value_distill_iqn_loss_coeff = iqn_params.get("value_distill_iqn_loss_coeff", 0.25)
-        self.baseline_distill_iqn_loss_coeff = iqn_params.get("baseline_distill_iqn_loss_coeff", 0.25)
-        self.iqn_target_update_freq = iqn_params.get("iqn_target_update_freq", 10)
-        self.iqn_batch_size = iqn_params.get("iqn_batch_size", self.mini_batch_size)
-        
-        self._iqn_total_updates_counter = 0
-        self.iqn_replay_buffer = IQNReplayBuffer(iqn_params.get("iqn_replay_buffer_size", 10000), self.device)
-        self.target_value_iqn_net = copy.deepcopy(self.shared_critic.value_iqn_net).to(self.device)
-        self.target_baseline_iqn_net = copy.deepcopy(self.shared_critic.baseline_iqn_net).to(self.device)
-        for p in self.target_value_iqn_net.parameters(): p.requires_grad = False
-        for p in self.target_baseline_iqn_net.parameters(): p.requires_grad = False
-
     def _setup_popart(self, a_cfg):
         beta, eps = a_cfg.get("popart_beta", 0.999), a_cfg.get("popart_epsilon", 1e-5)
-        if self.enable_iqn_distillation:
-            self.value_popart = PopArtNormalizer(self.shared_critic.value_distill_net.mlp[-1], beta, eps, self.device)
-            self.baseline_popart = PopArtNormalizer(self.shared_critic.baseline_distill_net.mlp[-1], beta, eps, self.device)
+        
+        if self.enable_iqn:
+            # PopArt with IQN is complex since IQN outputs distributions, not scalars
+            print("Warning: PopArt normalization with IQN is not fully implemented in the clean approach.")
+            print("Consider using standard reward normalization instead.")
+            self.value_popart = None  # IQN doesn't need PopArt normalization
         else:
-            self.value_popart = PopArtNormalizer(self.shared_critic.value_head_ppo.output_layer, beta, eps, self.device)
-            self.baseline_popart = PopArtNormalizer(self.shared_critic.baseline_head_ppo.output_layer, beta, eps, self.device)
+            # Standard PopArt for scalar value function
+            self.value_popart = PopArtNormalizer(self.shared_critic.value_head.output_layer, beta, eps, self.device)
+        
+        # Baseline PopArt (always scalar)
+        self.baseline_popart = PopArtNormalizer(self.shared_critic.baseline_head.output_layer, beta, eps, self.device)
         self.rewards_normalizer = None
 
     def _setup_rnd(self, rnd_cfg: Dict, trunk_dim: int):
@@ -526,13 +477,16 @@ class MAPOCAAgent(Agent):
         trunk_params = list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])
         self.optimizers["trunk"] = optim.AdamW(trunk_params, lr=lr_conf["lr_trunk"], betas=tuple(beta_conf.get("trunk", default_betas)), weight_decay=wd_conf.get("trunk", default_wd))
         self.optimizers["policy"] = optim.AdamW(self.policy_net.parameters(), lr=lr_conf["lr_policy"], betas=tuple(beta_conf.get("policy", default_betas)), weight_decay=wd_conf.get("policy", default_wd))
-        value_path_params = list(self.shared_critic.value_head_ppo.parameters()) + list(self.shared_critic.value_attention.parameters()) + (list(self.shared_critic.value_distill_net.parameters()) if self.enable_iqn_distillation else [])
+        
+        # value path includes IQN network + attention
+        value_path_params = (list(self.shared_critic.value_iqn_net.parameters()) + 
+                           list(self.shared_critic.value_attention.parameters()))
         self.optimizers["value_path"] = optim.AdamW(value_path_params, lr=lr_conf["lr_value_path"], betas=tuple(beta_conf.get("value", default_betas)), weight_decay=wd_conf.get("value", default_wd))
-        baseline_path_params = list(self.shared_critic.baseline_head_ppo.parameters()) + list(self.shared_critic.baseline_attention.parameters()) + (list(self.shared_critic.baseline_distill_net.parameters()) if self.enable_iqn_distillation else [])
+        
+        # Baseline path: scalar baseline + attention
+        baseline_path_params = (list(self.shared_critic.baseline_head.parameters()) + 
+                              list(self.shared_critic.baseline_attention.parameters()))
         self.optimizers["baseline_path"] = optim.AdamW(baseline_path_params, lr=lr_conf["lr_baseline_path"], betas=tuple(beta_conf.get("baseline", default_betas)), weight_decay=wd_conf.get("baseline", default_wd))
-        if self.enable_iqn_distillation:
-            self.optimizers["value_iqn"] = optim.AdamW(self.shared_critic.value_iqn_net.parameters(), lr=lr_conf["lr_value_iqn"], betas=tuple(beta_conf.get("iqn_value", default_betas)), weight_decay=wd_conf.get("iqn_value", 0.0))
-            self.optimizers["baseline_iqn"] = optim.AdamW(self.shared_critic.baseline_iqn_net.parameters(), lr=lr_conf["lr_baseline_iqn"], betas=tuple(beta_conf.get("iqn_baseline", default_betas)), weight_decay=wd_conf.get("iqn_baseline", 0.0))
         if self.rnd_cfg: self.optimizers["rnd_predictor"] = optim.AdamW(self.rnd_predictor_network.parameters(), lr=lr_conf["lr_rnd_predictor"], betas=tuple(beta_conf.get("rnd", default_betas)), weight_decay=wd_conf.get("rnd", 0.0))
         if self.disagreement_cfg: self.optimizers["disagreement_ensemble"] = optim.AdamW(self.dynamics_ensemble.parameters(), lr=lr_conf["lr_disagreement"], betas=tuple(beta_conf.get("disagreement", default_betas)), weight_decay=wd_conf.get("disagreement", 0.0))
 
@@ -748,26 +702,55 @@ class MAPOCAAgent(Agent):
         
         return total_loss / self.ensemble_size
 
-    def _push_to_iqn_buffer(
-        self, 
-        s_val_feats_agg: torch.Tensor, 
-        ns_val_feats_agg: torch.Tensor, 
-        s_base_feats_agg: torch.Tensor, 
-        ns_base_feats_agg: torch.Tensor,
-        actions_seq: torch.Tensor, 
-        rewards_seq: torch.Tensor, 
-        dones_seq: torch.Tensor, 
-        attention_mask: torch.Tensor, 
-        initial_h: Optional[torch.Tensor], 
-        next_initial_h: Optional[torch.Tensor]
-    ):
-        """Pushes pre-computed features and trajectory data to the IQN replay buffer."""
-        self.iqn_replay_buffer.push_batch(
-            s_val_feats_agg, ns_val_feats_agg,
-            s_base_feats_agg, ns_base_feats_agg,
-            actions_seq, rewards_seq, dones_seq, attention_mask,
-            initial_h, next_initial_h
+    def _compute_iqn_quantile_loss(self, current_quantiles: torch.Tensor, 
+                                  target_values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """
+        Compute IQN quantile regression loss for on-policy value function training.
+        
+        Args:
+            current_quantiles: IQN quantile predictions, shape (B*T, num_quantiles)
+            target_values: Target values (returns), shape (B*T, 1) or (B*T,)
+            mask: Valid timestep mask, shape (B*T,)
+            
+        Returns:
+            Scalar loss value
+        """
+        B_T, num_quantiles = current_quantiles.shape
+        
+        # Expand target values to match quantiles: (B*T, 1) -> (B*T, num_quantiles)  
+        if target_values.dim() == 1:
+            target_values = target_values.unsqueeze(-1)
+        target_expanded = target_values.expand(-1, num_quantiles)
+        
+        # Compute TD errors: target - prediction
+        td_errors = target_expanded - current_quantiles  # (B*T, num_quantiles)
+        
+        # Generate quantile fractions (τ) for current quantiles
+        # Use uniform spacing as approximation: τ_i = (i + 0.5) / N
+        taus = torch.linspace(0.5 / num_quantiles, 1 - 0.5 / num_quantiles, 
+                             num_quantiles, device=current_quantiles.device)
+        taus = taus.unsqueeze(0).expand(B_T, -1)  # (B*T, num_quantiles)
+        
+        # Asymmetric Huber quantile loss
+        abs_errors = torch.abs(td_errors)
+        huber_loss = torch.where(
+            abs_errors <= self.iqn_kappa,
+            0.5 * td_errors.pow(2),
+            self.iqn_kappa * (abs_errors - 0.5 * self.iqn_kappa)
         )
+        
+        # Quantile regression weighting: |τ - I{δ < 0}|
+        indicators = (td_errors < 0).float()
+        quantile_weights = torch.abs(taus - indicators)
+        
+        # Weighted loss
+        weighted_loss = quantile_weights * huber_loss  # (B*T, num_quantiles)
+        
+        # Apply mask and average
+        mask_expanded = mask.unsqueeze(-1).expand_as(weighted_loss)
+        masked_loss = weighted_loss * mask_expanded
+        
+        return masked_loss.sum() / mask_expanded.sum().clamp(min=1e-8)
 
     def _compute_huber_quantile_loss(self, current_quantiles, target_quantiles_detached, taus_for_current):
         """
@@ -795,159 +778,6 @@ class MAPOCAAgent(Agent):
         # The final loss is the mean over all dimensions
         loss = (delta_weight * huber_loss_matrix).mean()
         return loss
-
-    def _train_iqn_networks(self, logs_acc: Dict):
-        """Performs off-policy training for the IQN value and baseline networks."""
-        if not (self.enable_iqn_distillation and self.iqn_replay_buffer and len(self.iqn_replay_buffer) >= self.iqn_batch_size):
-            return
-
-        self._iqn_total_updates_counter += 1
-        
-        # --- FIX: Move accumulators inside, as this is one self-contained training step ---
-        val_iqn_losses, base_iqn_losses = [], []
-        val_distill_losses, base_distill_losses = [], []
-        val_q_means, val_q_stds = [], []
-        base_q_means, base_q_stds = [], []
-        val_iqn_grads, base_iqn_grads = [], []
-        val_distill_grads, base_distill_grads = [], []
-
-        for _epoch_iqn in range(self.iqn_epochs):
-            sample = self.iqn_replay_buffer.sample(self.iqn_batch_size)
-            if sample is None: continue
-
-            s_val_agg, ns_val_agg, s_base_agg, ns_base_agg, _, r_seq, d_seq, mask, _, _ = sample
-            B, T, NA, _ = s_base_agg.shape
-            
-            # --- Value IQN Loss ---
-            valid_mask_val_flat = mask.view(-1).bool()
-            s_val_valid = s_val_agg.view(B * T, -1)[valid_mask_val_flat]
-            
-            if s_val_valid.shape[0] > 0:
-                ns_val_valid = ns_val_agg.view(B * T, -1)[valid_mask_val_flat]
-                r_val_valid = r_seq.view(B * T, -1)[valid_mask_val_flat]
-                d_val_valid = d_seq.view(B * T, -1)[valid_mask_val_flat]
-                
-                eff_b_val = s_val_valid.shape[0]
-                taus_current_val = self._sample_taus(eff_b_val, self.num_quantiles)
-                taus_next_val = self._sample_taus(eff_b_val, self.num_quantiles_prime)
-
-                current_value_quantiles = self.shared_critic.value_iqn_net(s_val_valid, taus_current_val)
-                with torch.no_grad():
-                    next_value_quantiles = self.target_value_iqn_net(ns_val_valid, taus_next_val)
-                
-                bellman_targets = r_val_valid + self.gamma * (1.0 - d_val_valid) * next_value_quantiles
-                value_iqn_loss = self._compute_huber_quantile_loss(current_value_quantiles, bellman_targets.detach(), taus_current_val)
-                
-                val_iqn_losses.append(value_iqn_loss.item())
-                val_q_means.append(current_value_quantiles.mean().item())
-                val_q_stds.append(current_value_quantiles.std().item())
-            
-            # --- Baseline IQN Loss ---
-            valid_mask_base_flat = mask.unsqueeze(-1).expand(-1, -1, NA).reshape(-1).bool()
-            s_base_valid = s_base_agg.view(B * T * NA, -1)[valid_mask_base_flat]
-
-            if s_base_valid.shape[0] > 0:
-                ns_base_valid = ns_base_agg.view(B * T * NA, -1)[valid_mask_base_flat]
-                r_base_valid = r_seq.unsqueeze(2).expand(-1, -1, NA, -1).reshape(B*T*NA, 1)[valid_mask_base_flat]
-                d_base_valid = d_seq.unsqueeze(2).expand(-1, -1, NA, -1).reshape(B*T*NA, 1)[valid_mask_base_flat]
-
-                eff_b_base = s_base_valid.shape[0]
-                taus_current_base = self._sample_taus(eff_b_base, self.num_quantiles)
-                taus_next_base = self._sample_taus(eff_b_base, self.num_quantiles_prime)
-
-                current_baseline_quantiles = self.shared_critic.baseline_iqn_net(s_base_valid, taus_current_base)
-                with torch.no_grad():
-                    next_baseline_quantiles = self.target_baseline_iqn_net(ns_base_valid, taus_next_base)
-
-                baseline_bellman_targets = r_base_valid + self.gamma * (1.0 - d_base_valid) * next_baseline_quantiles
-                baseline_iqn_loss = self._compute_huber_quantile_loss(current_baseline_quantiles, baseline_bellman_targets.detach(), taus_current_base)
-
-                base_iqn_losses.append(baseline_iqn_loss.item())
-                base_q_means.append(current_baseline_quantiles.mean().item())
-                base_q_stds.append(current_baseline_quantiles.std().item())
-
-            if self.train_distill_with_quantile_loss and s_val_valid.shape[0] > 0:
-                v_ppo_cur = self.shared_critic.value_head_ppo(s_val_valid)
-                distilled_val = self.shared_critic.value_distill_net(v_ppo_cur, current_value_quantiles)
-                distill_val_exp = distilled_val.expand_as(current_value_quantiles)
-                value_distill_loss = self._compute_huber_quantile_loss(distill_val_exp, bellman_targets.detach(), taus_current_val)
-                val_distill_losses.append(value_distill_loss.item())
-
-            if self.train_distill_with_quantile_loss and s_base_valid.shape[0] > 0:
-                b_ppo_cur = self.shared_critic.baseline_head_ppo(s_base_valid)
-                distilled_base = self.shared_critic.baseline_distill_net(b_ppo_cur, current_baseline_quantiles)
-                distill_base_exp = distilled_base.expand_as(current_baseline_quantiles)
-                baseline_distill_loss = self._compute_huber_quantile_loss(distill_base_exp, baseline_bellman_targets.detach(), taus_current_base)
-                base_distill_losses.append(baseline_distill_loss.item())
-
-            # --- Optimization Step ---
-            if 'value_iqn_loss' in locals() and 'baseline_iqn_loss' in locals():
-                total_iqn_loss = (self.value_iqn_loss_coeff * value_iqn_loss) + (self.baseline_iqn_loss_coeff * baseline_iqn_loss)
-
-                if self.train_distill_with_quantile_loss and 'value_distill_loss' in locals() and 'baseline_distill_loss' in locals():
-                    total_iqn_loss = total_iqn_loss + (
-                        self.value_distill_iqn_loss_coeff * value_distill_loss
-                    ) + (
-                        self.baseline_distill_iqn_loss_coeff * baseline_distill_loss
-                    )
-
-                self.optimizers["value_iqn"].zero_grad()
-                self.optimizers["baseline_iqn"].zero_grad()
-                if self.train_distill_with_quantile_loss:
-                    self.optimizers["value_path"].zero_grad()
-                    self.optimizers["baseline_path"].zero_grad()
-
-                if total_iqn_loss > 0:
-                    total_iqn_loss.backward()
-
-                    iqn_params = list(self.shared_critic.value_iqn_net.parameters()) + \
-                                 list(self.shared_critic.baseline_iqn_net.parameters())
-                    if self.train_distill_with_quantile_loss:
-                        iqn_params += list(self.shared_critic.value_distill_net.parameters()) + \
-                                      list(self.shared_critic.baseline_distill_net.parameters()) + \
-                                      list(self.shared_critic.value_head_ppo.parameters()) + \
-                                      list(self.shared_critic.baseline_head_ppo.parameters())
-
-                    clip_grad_norm_(iqn_params, self.iqn_max_grad_norm)
-
-                    val_iqn_grads.append(_get_avg_grad_mag(self.shared_critic.value_iqn_net.parameters()))
-                    base_iqn_grads.append(_get_avg_grad_mag(self.shared_critic.baseline_iqn_net.parameters()))
-                    if self.train_distill_with_quantile_loss:
-                        val_distill_grads.append(_get_avg_grad_mag(self.shared_critic.value_distill_net.parameters()))
-                        base_distill_grads.append(_get_avg_grad_mag(self.shared_critic.baseline_distill_net.parameters()))
-
-                    self.optimizers["value_iqn"].step()
-                    self.optimizers["baseline_iqn"].step()
-                    if self.train_distill_with_quantile_loss:
-                        self.optimizers["value_path"].step()
-                        self.optimizers["baseline_path"].step()
-
-        # --- Append logs for the entire IQN training phase ---
-        if val_iqn_losses: logs_acc["loss/value_iqn"].append(np.mean(val_iqn_losses))
-        if base_iqn_losses: logs_acc["loss/baseline_iqn"].append(np.mean(base_iqn_losses))
-        if val_q_means: logs_acc["mean/value_quantiles"].append(np.mean(val_q_means))
-        if val_q_stds: logs_acc["std/value_quantiles"].append(np.mean(val_q_stds))
-        if base_q_means: logs_acc["mean/baseline_quantiles"].append(np.mean(base_q_means))
-        if base_q_stds: logs_acc["std/baseline_quantiles"].append(np.mean(base_q_stds))
-        if val_iqn_grads: logs_acc["grad_norm/value_iqn"].append(np.mean(val_iqn_grads))
-        if base_iqn_grads: logs_acc["grad_norm/baseline_iqn"].append(np.mean(base_iqn_grads))
-        if self.train_distill_with_quantile_loss:
-            if val_distill_losses: logs_acc["loss/value_distill_iqn"].append(np.mean(val_distill_losses))
-            if base_distill_losses: logs_acc["loss/baseline_distill_iqn"].append(np.mean(base_distill_losses))
-            if val_distill_grads: logs_acc["grad_norm/distill_value"].append(np.mean(val_distill_grads))
-            if base_distill_grads: logs_acc["grad_norm/distill_baseline"].append(np.mean(base_distill_grads))
-
-        # --- Target Network Update ---
-        if self._iqn_total_updates_counter % self.iqn_target_update_freq == 0:
-            self._update_target_iqn_networks()
-
-    def _update_target_iqn_networks(self):
-        """Performs a soft (Polyak) update of the IQN target networks."""
-        if self.enable_iqn_distillation:
-            for target_param, online_param in zip(self.target_value_iqn_net.parameters(), self.shared_critic.value_iqn_net.parameters()):
-                target_param.data.copy_(self.iqn_polyak * online_param.data + (1.0 - self.iqn_polyak) * target_param.data)
-            for target_param, online_param in zip(self.target_baseline_iqn_net.parameters(), self.shared_critic.baseline_iqn_net.parameters()):
-                target_param.data.copy_(self.iqn_polyak * online_param.data + (1.0 - self.iqn_polyak) * target_param.data)
 
     def _update_popart_stats(self, returns_seq, mask_bt1, mask_btna1):
         """Updates PopArt normalizers for value and baseline networks."""
@@ -1076,62 +906,21 @@ class MAPOCAAgent(Agent):
         """Generates random quantile fractions (taus) for IQN."""
         return torch.rand(batch_dim0_size, num_quantiles, 1, device=self.device)
     
-    def _get_critic_outputs(self, feats_seq: torch.Tensor, actions_seq: torch.Tensor, B: int, T: int, NA: int) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+    def _get_critic_outputs(self, feats_seq: torch.Tensor, actions_seq: torch.Tensor, B: int, T: int, NA: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Helper to get all critic-related outputs.
+        Clean helper to get critic outputs using IQN value function and scalar baselines.
         
         Returns:
-            A tuple of (
-                value_distilled_or_ppo (Tensor),
-                baseline_distilled_or_ppo (Tensor),
-                value_quantiles (Tensor, optional),
-                s_val_feats_agg (Tensor, optional), -> FOR REPLAY BUFFER
-                s_base_feats_agg (Tensor, optional) -> FOR REPLAY BUFFER
-            )
+            values: Scalar values from IQN expectation, shape (B, T, 1)
+            baselines: Scalar baselines, shape (B, T, NA, 1)  
+            value_quantiles: IQN quantiles for loss computation, shape (B*T, num_quantiles)
         """
-        B_T_flat = B * T
-        B_T_NA_flat = B * T * NA
-
-        # --- Value Path ---
-        val_input_flat = feats_seq.reshape(B_T_flat, NA, -1)
-        s_val_attn_out, _ = self.shared_critic.value_attention(val_input_flat)
-        s_val_feats_agg = s_val_attn_out.mean(dim=1)  # Shape: (B*T, H_embed)
-
-        # --- Baseline Path ---
-        baseline_feats = feats_seq
-        if baseline_feats.shape[-1] != self.emb_out_dim:
-            if self.memory_to_embed_proj is not None:
-                baseline_feats = self.memory_to_embed_proj(baseline_feats)
-            else:
-                baseline_feats = baseline_feats[..., : self.emb_out_dim]
-        base_input_comb = self.embedding_net.get_baseline_embeddings(baseline_feats, actions_seq)
-        base_input_flat = base_input_comb.reshape(B_T_NA_flat, NA, -1)
-        s_base_attn_out, _ = self.shared_critic.baseline_attention(base_input_flat)
-        s_base_feats_agg = s_base_attn_out.mean(dim=1) # Shape: (B*T*NA, H_embed)
+        # Use the simplified SharedCritic interface
+        values, baselines, value_quantiles = self.shared_critic.get_values_and_baselines(
+            feats_seq, actions_seq, taus=None  # Let IQN sample random quantiles
+        )
         
-        if self.enable_iqn_distillation:
-            taus_val = self._sample_taus(B_T_flat, self.num_quantiles)
-            taus_base = self._sample_taus(B_T_NA_flat, self.num_quantiles)
-            
-            v_ppo = self.shared_critic.value_head_ppo(s_val_feats_agg)
-            value_quantiles = self.shared_critic.value_iqn_net(s_val_feats_agg, taus_val)
-            val_distilled_norm = self.shared_critic.value_distill_net(v_ppo, value_quantiles)
-
-            b_ppo = self.shared_critic.baseline_head_ppo(s_base_feats_agg)
-            baseline_quantiles = self.shared_critic.baseline_iqn_net(s_base_feats_agg, taus_base)
-            base_distilled_norm = self.shared_critic.baseline_distill_net(b_ppo, baseline_quantiles)
-        else:
-            val_distilled_norm = self.shared_critic.value_head_ppo(s_val_feats_agg)
-            base_distilled_norm = self.shared_critic.baseline_head_ppo(s_base_feats_agg)
-            value_quantiles = None
-        
-        # Reshape all outputs
-        final_val = val_distilled_norm.reshape(B, T, 1)
-        final_base = base_distilled_norm.reshape(B, T, NA, 1)
-        final_s_val_feats = s_val_feats_agg.reshape(B, T, -1)
-        final_s_base_feats = s_base_feats_agg.reshape(B, T, NA, -1)
-
-        return final_val, final_base, value_quantiles, final_s_val_feats, final_s_base_feats
+        return values, baselines, value_quantiles
     
     # --- Optimization & Logging ---
     
@@ -1162,11 +951,17 @@ class MAPOCAAgent(Agent):
         self.value_clip_range = self.schedulers["value_clip"].step()
         self.max_grad_norm = self.schedulers["max_grad_norm"].step()
 
-    def _log_minibatch_stats(self, logs_acc, pol_loss, val_loss, base_loss, ent_mb, new_lp_mb, mask_mbna, rnd_loss, disagreement_loss, feats_s_mb, total_grad_norm, new_val_norm=None, new_base_norm=None):
+    def _log_minibatch_stats(self, logs_acc, pol_loss, val_loss, base_loss, ent_mb, new_lp_mb, mask_mbna, rnd_loss, disagreement_loss, feats_s_mb, total_grad_norm, new_val_norm=None, new_base_norm=None, new_val_quantiles=None):
         """Accumulates statistics from a single minibatch into the logs dictionary."""
         # Core PPO Losses
         logs_acc["loss/policy"].append(pol_loss.item())
-        logs_acc["loss/value"].append(val_loss.item())
+        
+        # Log value loss under appropriate category
+        if self.enable_iqn:
+            logs_acc["loss/iqn_value"].append(val_loss.item())
+        else:
+            logs_acc["loss/value"].append(val_loss.item())
+            
         logs_acc["loss/baseline"].append(base_loss.item())
         
         logs_acc["grad_norm/total"].append(total_grad_norm)
@@ -1181,16 +976,10 @@ class MAPOCAAgent(Agent):
         if self.rnd_cfg: logs_acc["loss/rnd"].append(rnd_loss.item())
         if self.disagreement_cfg: logs_acc["loss/disagreement"].append(disagreement_loss.item())
         
-        # Log distilled values if IQN is enabled
-        if self.enable_iqn_distillation and new_val_norm is not None and new_base_norm is not None:
-            valid_val_mask = mask_mbna.any(dim=-1, keepdim=True).bool()
-            if valid_val_mask.any():
-                logs_acc["mean/distilled_value"].append(new_val_norm[valid_val_mask].mean().item())
-                logs_acc["std/distilled_value"].append(new_val_norm[valid_val_mask].std().item())
-            valid_base_mask = mask_mbna.unsqueeze(-1).bool()
-            if valid_base_mask.any():
-                logs_acc["mean/distilled_baseline"].append(new_base_norm[valid_base_mask].mean().item())
-                logs_acc["std/distilled_baseline"].append(new_base_norm[valid_base_mask].std().item())
+        # Log IQN quantiles and loss (only if IQN is enabled)
+        if self.enable_iqn and new_val_quantiles is not None:
+            logs_acc["mean/value_quantiles"].append(new_val_quantiles.mean().item())
+            logs_acc["std/value_quantiles"].append(new_val_quantiles.std().item())
 
         # Policy-Specific Logging
         if self.action_space_type_str_from_config == "beta":
@@ -1208,17 +997,14 @@ class MAPOCAAgent(Agent):
         logs_acc["grad_norm/trunk"].append(_get_avg_grad_mag(list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])))
         logs_acc["grad_norm/policy"].append(_get_avg_grad_mag(list(self.policy_net.parameters())))
         
-        value_path_params = list(self.shared_critic.value_head_ppo.parameters()) + list(self.shared_critic.value_attention.parameters())
-        if self.enable_iqn_distillation: value_path_params += list(self.shared_critic.value_distill_net.parameters())
+        # Clean IQN gradient norms
+        value_path_params = (list(self.shared_critic.value_iqn_net.parameters()) + 
+                           list(self.shared_critic.value_attention.parameters()))
         logs_acc["grad_norm/value_path"].append(_get_avg_grad_mag(value_path_params))
         
-        baseline_path_params = list(self.shared_critic.baseline_head_ppo.parameters()) + list(self.shared_critic.baseline_attention.parameters())
-        if self.enable_iqn_distillation: baseline_path_params += list(self.shared_critic.baseline_distill_net.parameters())
+        baseline_path_params = (list(self.shared_critic.baseline_head.parameters()) + 
+                              list(self.shared_critic.baseline_attention.parameters()))
         logs_acc["grad_norm/baseline_path"].append(_get_avg_grad_mag(baseline_path_params))
-        
-        if self.enable_iqn_distillation:
-            logs_acc["grad_norm/distill_value"].append(_get_avg_grad_mag(self.shared_critic.value_distill_net.parameters()))
-            logs_acc["grad_norm/distill_baseline"].append(_get_avg_grad_mag(self.shared_critic.baseline_distill_net.parameters()))
 
         if self.rnd_cfg: logs_acc["grad_norm/rnd_predictor"].append(_get_avg_grad_mag(self.rnd_predictor_network.parameters()))
         if self.disagreement_cfg: logs_acc["grad_norm/disagreement_ensemble"].append(_get_avg_grad_mag(self.dynamics_ensemble.parameters()))
