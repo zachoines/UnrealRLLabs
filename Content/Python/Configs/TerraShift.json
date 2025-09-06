@@ -66,7 +66,7 @@
         "bUseRandomGoals": true,
         "bRespawnOnGoal": false,
         "bRespawnOnOOB": false,
-        "bTerminateOnAllGoalsReached": false,
+        "bTerminateOnAllGoalsReached": true,
         "bTerminateOnMaxSteps": true,
         "GoalRadius": 8.0,
         "ObjectRadius": 8.0,
@@ -309,8 +309,8 @@
             "dropout": 0.05,
             "self_attention": true
           },
-          "iqn_params": {
-            "iqn_network": {
+          "distributional_network_params": {
+            "iqn_network_disabled": {
               "feature_dim": 128,
               "hidden_size": 128,
               "quantile_embedding_dim": 64,
@@ -319,6 +319,21 @@
               "linear_init_scale": 1.0,
               "dropout_rate": 0.05,
               "iqn_kappa": 1.0
+            },
+            "fqf_network": {
+              "feature_dim": 128,
+              "hidden_size": 128,
+              "quantile_embedding_dim": 64,
+              "num_quantiles": 32,
+              "use_dueling": true,
+              "linear_init_scale": 1.0,
+              "dropout_rate": 0.05,
+              "iqn_kappa": 1.0,
+              "fraction_net_hidden": 64,
+              "fraction_loss_coeff": 0.1,
+              "exploration_noise_scale": 0.01,
+              "logit_clamp_epsilon": 1e-8,
+              "monotonicity_epsilon": 1e-6
             }
           }
         }

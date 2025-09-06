@@ -109,22 +109,46 @@ class MAPOCAAgent(Agent):
         self.policy_net = policy_class_map[policy_type_str](**pol_cfg).to(device)
 
         critic_full_config = net_cfg["critic_network"].copy()
-        # Ensure IQN config has feature_dim set
-        if "iqn_params" not in critic_full_config:
-            critic_full_config["iqn_params"] = {}
-        if "iqn_network" not in critic_full_config["iqn_params"]:
-            critic_full_config["iqn_params"]["iqn_network"] = {}
-        critic_full_config["iqn_params"]["iqn_network"]["feature_dim"] = trunk_dim
+        # Ensure distributional network config has feature_dim set
+        if "distributional_network_params" not in critic_full_config:
+            critic_full_config["distributional_network_params"] = {}
+        
+        distrib_config = critic_full_config["distributional_network_params"]
+        
+        # Set feature_dim for whichever network is enabled
+        if "fqf_network" in distrib_config:
+            distrib_config["fqf_network"]["feature_dim"] = trunk_dim
+        elif "iqn_network" in distrib_config:
+            distrib_config["iqn_network"]["feature_dim"] = trunk_dim
+        # If no distributional network is specified, we'll use traditional scalar value function
+        # (SharedCritic will handle this case)
         
         self.shared_critic = SharedCritic(net_cfg=critic_full_config).to(device)
         
-        # Store IQN parameters for easier access
-        self.num_quantiles = critic_full_config["iqn_params"]["iqn_network"].get("num_quantiles", 32)
-        self.iqn_kappa = critic_full_config["iqn_params"]["iqn_network"].get("iqn_kappa", 1.0)
-        
-        # Check if IQN is enabled (could be disabled by setting num_quantiles=0 or adding enable_iqn=False)
-        self.enable_iqn = (self.num_quantiles > 0 and 
-                          critic_full_config["iqn_params"]["iqn_network"].get("enable_iqn", True))
+        # Store parameters for easier access based on which network is active
+        if "fqf_network" in distrib_config:
+            # FQF is enabled
+            network_config = distrib_config["fqf_network"]
+            self.use_fqf = True
+            self.fraction_loss_coeff = network_config.get("fraction_loss_coeff", 0.1)
+            self.num_quantiles = network_config.get("num_quantiles", 32)
+            self.iqn_kappa = network_config.get("iqn_kappa", 1.0)
+            self.enable_iqn = (self.num_quantiles > 0 and network_config.get("enable_iqn", True))
+        elif "iqn_network" in distrib_config:
+            # IQN is enabled  
+            network_config = distrib_config["iqn_network"]
+            self.use_fqf = False
+            self.fraction_loss_coeff = 0.0  # Not used for IQN
+            self.num_quantiles = network_config.get("num_quantiles", 32)
+            self.iqn_kappa = network_config.get("iqn_kappa", 1.0)
+            self.enable_iqn = (self.num_quantiles > 0 and network_config.get("enable_iqn", True))
+        else:
+            # No distributional network - use traditional scalar value function
+            self.use_fqf = False
+            self.fraction_loss_coeff = 0.0
+            self.num_quantiles = 0
+            self.iqn_kappa = 1.0  # Not used, but set for consistency
+            self.enable_iqn = False  # Traditional scalar value function
 
         # --- Auxiliary Modules Setup ---
         self.disagreement_cfg = a_cfg.get("disagreement_rewards")
@@ -303,15 +327,28 @@ class MAPOCAAgent(Agent):
                 pol_loss = self._ppo_clip_loss(new_lp_mb, mb_old_logp.detach(), mb_adv.detach(), self.ppo_clip_range, mb_mask_btna)
                 ent_loss = (-ent_mb * mb_mask_btna).sum() / mb_mask_btna.sum().clamp(min=1e-8)
                 
-                # Value function loss (IQN or clipped depending on configuration)
+                # Value function loss (FQF/IQN or clipped depending on configuration)
                 if self.enable_iqn:
-                    # IQN Quantile Regression Loss for value function
                     val_targets = mb_returns if not self.enable_popart else self.value_popart.normalize_targets(mb_returns)
                     # Reshape val_targets from (B, T, 1) to (B*T, 1) to match quantiles shape (B*T, num_quantiles)
                     val_targets_reshaped = val_targets.reshape(-1, val_targets.shape[-1])
                     # Reshape attention mask from (B, T) to (B*T,) to match
                     mask_reshaped = attention_mask_batch[mb_idx].reshape(-1)
-                    val_loss = self._compute_iqn_quantile_loss(new_val_quantiles, val_targets_reshaped, mask_reshaped)
+                    
+                    if self.use_fqf:
+                        # FQF Loss with learned quantile fractions
+                        learned_taus = self.shared_critic.last_learned_taus  # Set during forward pass
+                        if learned_taus is not None:
+                            val_loss = self._compute_fqf_quantile_loss(
+                                new_val_quantiles, learned_taus, val_targets_reshaped, 
+                                mask_reshaped, self.fraction_loss_coeff
+                            )
+                        else:
+                            # Fallback to IQN if no learned taus available
+                            val_loss = self._compute_iqn_quantile_loss(new_val_quantiles, val_targets_reshaped, mask_reshaped)
+                    else:
+                        # Standard IQN Quantile Regression Loss
+                        val_loss = self._compute_iqn_quantile_loss(new_val_quantiles, val_targets_reshaped, mask_reshaped)
                 else:
                     # Standard clipped value loss when IQN is disabled
                     val_targets = mb_returns if not self.enable_popart else self.value_popart.normalize_targets(mb_returns)
@@ -384,8 +421,10 @@ class MAPOCAAgent(Agent):
         if self.disagreement_cfg:
             logs_acc.update({"loss/disagreement": [], "reward/disagreement_raw_mean": [], "reward/disagreement_raw_std": [], "reward/disagreement_norm_mean": [], "reward/disagreement_norm_std": [], "grad_norm/disagreement_ensemble": []})
 
+        # Add distributional RL logs
         logs_acc.update({
             "loss/iqn_value": [],
+            "loss/fqf_value": [],
             "mean/value_quantiles": [], "std/value_quantiles": []
         })
         if self.enable_popart:
@@ -751,6 +790,87 @@ class MAPOCAAgent(Agent):
         masked_loss = weighted_loss * mask_expanded
         
         return masked_loss.sum() / mask_expanded.sum().clamp(min=1e-8)
+    
+    def _compute_fqf_quantile_loss(self, current_quantiles: torch.Tensor, 
+                                  learned_taus: torch.Tensor,
+                                  target_values: torch.Tensor, 
+                                  mask: torch.Tensor,
+                                  fraction_loss_coeff: float = 0.1) -> torch.Tensor:
+        """
+        Compute FQF (Fully Parameterized Quantile Functions) loss.
+        
+        Combines standard quantile regression loss with fraction proposal penalty
+        to encourage diverse and well-spaced quantile fractions.
+        
+        Args:
+            current_quantiles: FQF quantile predictions, shape (B*T, num_quantiles)
+            learned_taus: Learned quantile fractions, shape (B*T, num_quantiles, 1) or (B*T, num_quantiles)
+            target_values: Target values (returns), shape (B*T, 1) or (B*T,)
+            mask: Valid timestep mask, shape (B*T,)
+            fraction_loss_coeff: Coefficient for fraction penalty term
+            
+        Returns:
+            Combined FQF loss (quantile loss + fraction penalty)
+        """
+        # Standard quantile regression loss (same as IQN)
+        B_T, num_quantiles = current_quantiles.shape
+        
+        # Expand target values to match quantiles
+        if target_values.dim() == 1:
+            target_values = target_values.unsqueeze(-1)
+        target_expanded = target_values.expand(-1, num_quantiles)
+        
+        # Compute TD errors
+        td_errors = target_expanded - current_quantiles
+        
+        # Reshape learned_taus to (B*T, num_quantiles) if needed
+        if learned_taus.dim() == 3:
+            learned_taus_2d = learned_taus.squeeze(-1)  # (B*T, num_quantiles)
+        else:
+            learned_taus_2d = learned_taus  # Already (B*T, num_quantiles)
+        
+        # Asymmetric Huber quantile loss with learned τ
+        abs_errors = torch.abs(td_errors)
+        huber_loss = torch.where(
+            abs_errors <= self.iqn_kappa,
+            0.5 * td_errors.pow(2),
+            self.iqn_kappa * (abs_errors - 0.5 * self.iqn_kappa)
+        )
+        
+        # Quantile regression weighting with learned τ
+        indicators = (td_errors < 0).float()
+        quantile_weights = torch.abs(learned_taus_2d - indicators)
+        
+        # Weighted quantile loss
+        quantile_weighted_loss = quantile_weights * huber_loss
+        
+        # Apply mask and compute quantile loss
+        mask_expanded = mask.unsqueeze(-1).expand_as(quantile_weighted_loss)
+        masked_quantile_loss = quantile_weighted_loss * mask_expanded
+        quantile_loss = masked_quantile_loss.sum() / mask_expanded.sum().clamp(min=1e-8)
+        
+        # Fraction proposal penalty: encourage diverse τ spacing
+        # Penalize adjacent fractions being too close (log-barrier penalty)
+        valid_mask_any = mask.bool()  # (B*T,)
+        if valid_mask_any.any():
+            # Only compute fraction penalty for valid timesteps
+            valid_taus = learned_taus_2d[valid_mask_any]  # (valid_count, N)
+            
+            # Compute differences between adjacent quantiles
+            tau_diffs = valid_taus[:, 1:] - valid_taus[:, :-1]  # (valid_count, N-1)
+            
+            # Log-barrier penalty: -log(τᵢ₊₁ - τᵢ)
+            # Add small epsilon to prevent log(0)
+            epsilon = 1e-8
+            log_penalty = -torch.log(tau_diffs + epsilon)
+            fraction_penalty = log_penalty.mean()  # Average over all differences
+        else:
+            fraction_penalty = torch.tensor(0.0, device=current_quantiles.device)
+        
+        # Combined FQF loss
+        total_loss = quantile_loss + fraction_loss_coeff * fraction_penalty
+        
+        return total_loss
 
     def _compute_huber_quantile_loss(self, current_quantiles, target_quantiles_detached, taus_for_current):
         """
@@ -958,7 +1078,10 @@ class MAPOCAAgent(Agent):
         
         # Log value loss under appropriate category
         if self.enable_iqn:
-            logs_acc["loss/iqn_value"].append(val_loss.item())
+            if self.use_fqf:
+                logs_acc["loss/fqf_value"].append(val_loss.item())
+            else:
+                logs_acc["loss/iqn_value"].append(val_loss.item())
         else:
             logs_acc["loss/value"].append(val_loss.item())
             

@@ -642,24 +642,65 @@ class SharedCritic(nn.Module):
         self.value_attention = ResidualAttention(**net_cfg["value_attention"])
         self.baseline_attention = ResidualAttention(**net_cfg["baseline_attention"])
         
-        # IQN for value function (distributional)
-        iqn_config = net_cfg.get("iqn_params", {})
-        iqn_network_config = iqn_config.get("iqn_network", {}).copy()
+        # IQN/FQF for value function (distributional)
+        distrib_config = net_cfg.get("distributional_network_params", {})
         
-        # Set feature_dim from attention output if not specified
-        if "feature_dim" not in iqn_network_config:
-            iqn_network_config["feature_dim"] = self.value_attention.embed_dim
-        
-        # Remove parameters that belong to the loss function, not the network
-        iqn_network_config.pop("iqn_kappa", None)  # Used in quantile loss, not network
+        # Determine which network to use based on what's present in config
+        if "fqf_network" in distrib_config:
+            # Use FQF
+            self.use_fqf = True
+            network_config = distrib_config["fqf_network"].copy()
             
-        self.value_iqn_net = ImplicitQuantileNetwork(**iqn_network_config)
+            # Set feature_dim from attention output if not specified
+            if "feature_dim" not in network_config:
+                network_config["feature_dim"] = self.value_attention.embed_dim
+            
+            # Remove loss-specific parameters (not needed by network)
+            network_config.pop("iqn_kappa", None)
+            network_config.pop("fraction_loss_coeff", None)
+            
+            self.value_iqn_net = FullyParameterizedQuantileNetwork(**network_config)
+            
+        elif "iqn_network" in distrib_config:
+            # Use IQN  
+            self.use_fqf = False
+            network_config = distrib_config["iqn_network"].copy()
+            
+            # Set feature_dim from attention output if not specified
+            if "feature_dim" not in network_config:
+                network_config["feature_dim"] = self.value_attention.embed_dim
+            
+            # Remove loss-specific parameters (not needed by network)
+            network_config.pop("iqn_kappa", None)
+            
+            self.value_iqn_net = ImplicitQuantileNetwork(**network_config)
+            
+        else:
+            # No distributional network specified - use traditional scalar value function
+            self.use_fqf = False
+            self.value_iqn_net = None  # No distributional network
+            
+            # Create traditional scalar value head instead
+            value_head_config = {
+                "in_features": self.value_attention.embed_dim,
+                "hidden_size": 64,  # Default size
+                "dropout_rate": 0.0,
+                "output_layer_init_gain": 1.0
+            }
+            # Override with any provided config
+            if "value_head" in net_cfg:
+                value_head_config.update(net_cfg["value_head"])
+            
+            self.value_head = ValueNetwork(**value_head_config)
         
         # Scalar baseline (more efficient for per-agent values)
         self.baseline_head = ValueNetwork(**net_cfg["baseline_head"])
         
         # Store number of quantiles for easy access
-        self.num_quantiles = iqn_network_config.get("num_quantiles", 32)
+        if self.value_iqn_net is not None:
+            self.num_quantiles = network_config.get("num_quantiles", 32)
+        else:
+            self.num_quantiles = 0  # Traditional scalar value function
         
         # Initialize attention layers
         init_scale = net_cfg.get("linear_init_scale", 0.1)
@@ -694,12 +735,28 @@ class SharedCritic(nn.Module):
         val_attn_out, _ = self.value_attention(val_input)  # (B*T, NA, H)
         val_feats = val_attn_out.mean(dim=1)  # (B*T, H) - aggregate over agents
         
-        # Get quantile estimates
-        value_quantiles = self.value_iqn_net(val_feats, taus)  # (B*T, N)
-        
-        # Use expectation over quantiles as scalar value estimate for PPO
-        values = value_quantiles.mean(dim=-1, keepdim=True)  # (B*T, 1)
-        values = values.reshape(B, T, 1)  # (B, T, 1)
+        # Get value estimates (different handling for distributional vs scalar)
+        if self.value_iqn_net is not None:
+            # Distributional case (IQN or FQF)
+            if self.use_fqf:
+                # FQF returns (quantiles, learned_taus)
+                value_quantiles, learned_taus = self.value_iqn_net(val_feats, deterministic_taus=False)  # (B*T, N), (B*T, N, 1)
+                # Store learned taus for loss computation
+                self.last_learned_taus = learned_taus
+            else:
+                # IQN returns only quantiles
+                value_quantiles = self.value_iqn_net(val_feats, taus)  # (B*T, N)
+                self.last_learned_taus = None
+            
+            # Use expectation over quantiles as scalar value estimate for PPO
+            values = value_quantiles.mean(dim=-1, keepdim=True)  # (B*T, 1)
+            values = values.reshape(B, T, 1)  # (B, T, 1)
+        else:
+            # Traditional scalar value function
+            values = self.value_head(val_feats)  # (B*T, 1)
+            values = values.reshape(B, T, 1)  # (B, T, 1)
+            value_quantiles = None  # No quantiles for traditional approach
+            self.last_learned_taus = None
         
         # Baseline path: Per-agent attention -> scalar baseline
         # Simplified approach that doesn't require MultiAgentEmbeddingNetwork
@@ -731,8 +788,19 @@ class SharedCritic(nn.Module):
             values: Scalar values, shape (B, 1)
             value_quantiles: IQN quantiles, shape (B, N)
         """
-        value_quantiles = self.value_iqn_net(val_feats, taus)  # (B, N)
-        values = value_quantiles.mean(dim=-1, keepdim=True)  # (B, 1)
+        # Handle distributional vs traditional for inference
+        if self.value_iqn_net is not None:
+            # Distributional case
+            if self.use_fqf:
+                value_quantiles, _ = self.value_iqn_net(val_feats, deterministic_taus=True)  # (B, N), (B, N, 1) 
+            else:
+                value_quantiles = self.value_iqn_net(val_feats, taus)  # (B, N)
+            values = value_quantiles.mean(dim=-1, keepdim=True)  # (B, 1)
+        else:
+            # Traditional scalar case
+            values = self.value_head(val_feats)  # (B, 1)
+            value_quantiles = None
+        
         return values, value_quantiles
 
 
@@ -942,6 +1010,128 @@ class ImplicitQuantileNetwork(nn.Module):
             # Standard architecture
             quantile_values = self.quantile_mlp(combined_features)  # (B*N, 1)
             return quantile_values.view(batch_size, num_quantiles)  # (B, N)
+
+
+class FullyParameterizedQuantileNetwork(nn.Module):
+    """
+    Fully Parameterized Quantile Functions (FQF) for distributional reinforcement learning.
+    
+    FQF improves upon IQN by learning both quantile fractions (τ) and quantile values Z(s,τ)
+    simultaneously, rather than using fixed uniform quantile sampling.
+    
+    Key improvements over IQN:
+    - Learnable quantile fractions τᵢ ∈ [0,1] 
+    - Adaptive quantile spacing based on value distribution
+    - Better approximation through optimal quantile placement
+    """
+    def __init__(self,
+                 feature_dim: int,
+                 hidden_size: int = 128,
+                 quantile_embedding_dim: int = 64,
+                 num_quantiles: int = 32,
+                 use_dueling: bool = True,
+                 linear_init_scale: float = 1.0,
+                 dropout_rate: float = 0.0,
+                 fraction_net_hidden: int = 64,
+                 exploration_noise_scale: float = 0.01,
+                 logit_clamp_epsilon: float = 1e-8,
+                 monotonicity_epsilon: float = 1e-6):
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.num_quantiles = num_quantiles
+        self.fraction_net_hidden = fraction_net_hidden
+        
+        # Store hyperparameters
+        self.exploration_noise_scale = exploration_noise_scale
+        self.logit_clamp_epsilon = logit_clamp_epsilon
+        self.monotonicity_epsilon = monotonicity_epsilon
+        
+        # Fraction proposal network: learns optimal τᵢ locations
+        self.fraction_net = nn.Sequential(
+            nn.Linear(feature_dim, fraction_net_hidden),
+            nn.GELU(),
+            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
+            nn.Linear(fraction_net_hidden, fraction_net_hidden),
+            nn.GELU(), 
+            nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
+            nn.Linear(fraction_net_hidden, num_quantiles),
+            nn.Sigmoid()  # Ensure τᵢ ∈ [0,1]
+        )
+        
+        # Quantile value network (reuse IQN architecture)
+        self.quantile_net = ImplicitQuantileNetwork(
+            feature_dim=feature_dim,
+            hidden_size=hidden_size,
+            quantile_embedding_dim=quantile_embedding_dim,
+            num_quantiles=num_quantiles,
+            use_dueling=use_dueling,
+            linear_init_scale=linear_init_scale,
+            dropout_rate=dropout_rate
+        )
+        
+        # Initialize fraction network weights
+        self.fraction_net.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale)
+                               if isinstance(m, nn.Linear) else None)
+    
+    def forward(self, state_features: torch.Tensor, deterministic_taus: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Predicts quantile values Z(s,τ) using learned quantile fractions τ.
+        
+        Args:
+            state_features: State embeddings, shape (B, feature_dim)
+            deterministic_taus: If True, use learned τ; if False, add noise for exploration
+            
+        Returns:
+            quantile_values: Quantile values Z(s,τ), shape (B, N)
+            taus: Learned quantile fractions, shape (B, N, 1)
+        """
+        batch_size = state_features.shape[0]
+        
+        # Generate quantile fractions using fraction proposal network
+        raw_fractions = self.fraction_net(state_features)  # (B, N)
+        
+        # Add small amount of noise during training for exploration
+        if not deterministic_taus and self.training:
+            noise = torch.randn_like(raw_fractions) * self.exploration_noise_scale
+            raw_fractions = torch.sigmoid(torch.logit(raw_fractions.clamp(self.logit_clamp_epsilon, 1-self.logit_clamp_epsilon)) + noise)
+        
+        # Ensure monotonicity: sort τᵢ in ascending order
+        taus_sorted, _ = torch.sort(raw_fractions, dim=-1)  # (B, N)
+        
+        # Add small epsilon to prevent identical quantiles (gradient-friendly approach)
+        epsilon = self.monotonicity_epsilon
+        taus_list = [taus_sorted[:, 0]]  # Start with first quantile
+        
+        for i in range(1, self.num_quantiles):
+            min_val = taus_list[i-1] + epsilon  # Tensor
+            max_val = torch.full_like(taus_list[i-1], 1.0 - epsilon * (self.num_quantiles - i))  # Tensor with same shape
+            # Use clamp without in-place assignment
+            clamped_tau = torch.clamp(taus_sorted[:, i], min=min_val, max=max_val)
+            taus_list.append(clamped_tau)
+        
+        # Stack to recreate the sorted tensor without in-place ops
+        taus_sorted = torch.stack(taus_list, dim=1)  # (B, N)
+        
+        # Reshape for quantile network: (B, N) -> (B, N, 1)
+        taus = taus_sorted.unsqueeze(-1)
+        
+        # Predict quantile values using the learned fractions
+        quantile_values = self.quantile_net(state_features, taus)  # (B, N)
+        
+        return quantile_values, taus
+    
+    def get_uniform_baseline(self, state_features: torch.Tensor) -> torch.Tensor:
+        """
+        Get quantile values using uniform τ sampling (for comparison/ablation).
+        
+        Args:
+            state_features: State embeddings, shape (B, feature_dim)
+            
+        Returns:
+            quantile_values: Quantile values with uniform τ, shape (B, N)
+        """
+        return self.quantile_net(state_features, taus=None)  # Uses uniform sampling
+
 
 class LinearNetwork(nn.Module):
     """Simple MLP block: Linear -> [Dropout] -> [GELU] -> [LayerNorm]"""
