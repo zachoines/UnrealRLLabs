@@ -272,6 +272,10 @@ void UStateManager::UpdateGridObjectFlags()
 
         FVector wPos = Obj->GetObjectLocation();
 
+        // Check both goal reach and OOB conditions
+        bool bReachedGoal = false;
+        bool bOOB = false;
+
         // (1) Check if object reached its goal
         int32 gIdx = ObjectGoalIndices[i];
         if (gIdx >= 0)
@@ -279,25 +283,17 @@ void UStateManager::UpdateGridObjectFlags()
             bool bInRadius = GoalManager->IsInRadiusOf(gIdx, wPos, GoalCollectRadius);
             if (bInRadius)
             {
-                ObjectSlotStates[i] = EObjectSlotState::GoalReached;
-                bShouldCollect[i] = true;
-                bShouldResp[i] = bRespawnOnGoal; // Use the new toggle
-
-                if (!bShouldResp[i] && bRemoveObjectsOnGoal)
-                {
-                    ObjectMgr->DisableGridObject(i);
-                    OccupancyGrid->RemoveObject(i, FName("GridObjects"));
-                }
-                continue;
+                bReachedGoal = true;
             }
         }
 
-        // (2) OOB Check
+        // (2) OOB Check - always check regardless of goal status
         float dx = FMath::Abs(wPos.X - PlatformCenter.X);
         float dy = FMath::Abs(wPos.Y - PlatformCenter.Y);
         float zPos = wPos.Z;
-        bool bOOB = (dx > (halfX + MarginXY) || dy > (halfY + MarginXY) || zPos < minZLocal || zPos > maxZLocal);
+        bOOB = (dx > (halfX + MarginXY) || dy > (halfY + MarginXY) || zPos < minZLocal || zPos > maxZLocal);
 
+        // Handle state transitions - OOB takes priority over goal reached
         if (bOOB)
         {
             ObjectSlotStates[i] = EObjectSlotState::OutOfBounds;
@@ -305,6 +301,18 @@ void UStateManager::UpdateGridObjectFlags()
             bShouldResp[i] = bRespawnOnOOB;
 
             if (!bShouldResp[i])
+            {
+                ObjectMgr->DisableGridObject(i);
+                OccupancyGrid->RemoveObject(i, FName("GridObjects"));
+            }
+        }
+        else if (bReachedGoal)
+        {
+            ObjectSlotStates[i] = EObjectSlotState::GoalReached;
+            bShouldCollect[i] = true;
+            bShouldResp[i] = bRespawnOnGoal;
+
+            if (!bShouldResp[i] && bRemoveObjectsOnGoal)
             {
                 ObjectMgr->DisableGridObject(i);
                 OccupancyGrid->RemoveObject(i, FName("GridObjects"));
