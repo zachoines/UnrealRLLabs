@@ -135,7 +135,7 @@ class MAPOCAAgent(Agent):
             self.iqn_kappa = network_config.get("iqn_kappa", 1.0)
             self.enable_iqn = (self.num_quantiles > 0 and network_config.get("enable_iqn", True))
         elif "iqn_network" in distrib_config:
-            # IQN is enabled  
+            # IQN is enabled
             network_config = distrib_config["iqn_network"]
             self.use_fqf = False
             self.fraction_loss_coeff = 0.0  # Not used for IQN

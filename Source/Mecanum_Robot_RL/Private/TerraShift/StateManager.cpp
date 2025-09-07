@@ -45,6 +45,7 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     bRespawnOnOOB = Config->GetOrDefaultBool(TEXT("bRespawnOnOOB"), true);
     bTerminateOnAllGoalsReached = Config->GetOrDefaultBool(TEXT("bTerminateOnAllGoalsReached"), false);
     bTerminateOnMaxSteps = Config->GetOrDefaultBool(TEXT("bTerminateOnMaxSteps"), true);
+    bRemoveObjectsOnGoal = Config->GetOrDefaultBool(TEXT("bRemoveObjectsOnGoal"), true);
 
     GoalRadius = Config->GetOrDefaultNumber(TEXT("GoalRadius"), GoalRadius);
     GoalCollectRadius = Config->GetOrDefaultNumber(TEXT("GoalCollectRadius"), GoalCollectRadius);
@@ -282,7 +283,7 @@ void UStateManager::UpdateGridObjectFlags()
                 bShouldCollect[i] = true;
                 bShouldResp[i] = bRespawnOnGoal; // Use the new toggle
 
-                if (!bShouldResp[i])
+                if (!bShouldResp[i] && bRemoveObjectsOnGoal)
                 {
                     ObjectMgr->DisableGridObject(i);
                     OccupancyGrid->RemoveObject(i, FName("GridObjects"));
