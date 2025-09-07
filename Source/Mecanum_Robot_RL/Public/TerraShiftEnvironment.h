@@ -133,6 +133,13 @@ private:
     UPROPERTY()
     bool bTerminateOnMaxSteps;
 
+    // Play mode toggles
+    UPROPERTY()
+    bool bUseDistanceBasedReward;
+
+    UPROPERTY()
+    bool bDisableEventRewards;
+
     // --- Runtime State for Potential Shaping ---
     UPROPERTY()
     TArray<float> PreviousPotential;

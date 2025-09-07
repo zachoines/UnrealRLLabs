@@ -32,7 +32,7 @@
 /**
  * UStateManager:
  *
- * - Tracks a certain number of “grid objects”
+ * - Tracks a certain number of ï¿½grid objectsï¿½
  * - Uses an OccupancyGrid to place random goals and objects without overlap
  * - Manages toggles for removing or keeping objects on goals/OOB, or "respawning" them
  * - Builds NxN height-based "central state" + optionally a goals-occupancy channel
@@ -196,6 +196,7 @@ private:
     UPROPERTY() bool bRespawnOnOOB;
     UPROPERTY() bool bTerminateOnAllGoalsReached;
     UPROPERTY() bool bTerminateOnMaxSteps;
+    UPROPERTY() bool bRemoveObjectsOnGoal = true;
     UPROPERTY() float GoalRadius = 1.f;
     UPROPERTY() float GoalCollectRadius = 6.f;
     UPROPERTY() float ObjectRadius = 1.f;

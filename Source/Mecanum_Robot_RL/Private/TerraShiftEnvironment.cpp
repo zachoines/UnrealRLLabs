@@ -118,6 +118,9 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
         EventReward_GoalReached = envSpecificCfg->GetOrDefaultNumber(TEXT("EventReward_GoalReached"), 10.0f);
         EventReward_OutOfBounds = envSpecificCfg->GetOrDefaultNumber(TEXT("EventReward_OutOfBounds"), -10.0f);
         TimeStepPenalty = envSpecificCfg->GetOrDefaultNumber(TEXT("TimeStepPenalty"), -0.001f);
+
+        bUseDistanceBasedReward = envSpecificCfg->GetOrDefaultBool(TEXT("bUseDistanceBasedReward"), false);
+        bDisableEventRewards = envSpecificCfg->GetOrDefaultBool(TEXT("bDisableEventRewards"), false);
     }
 
     TerraShiftRoot->SetWorldLocation(TerraShiftParams->Location);
@@ -290,7 +293,7 @@ float ATerraShiftEnvironment::Reward()
     for (int32 ObjIndex = 0; ObjIndex < CurrentGridObjects; ++ObjIndex)
     {
         // Check for one-time events (Goal Reached / Out of Bounds)
-        if (StateManager->GetShouldCollectReward(ObjIndex))
+        if (StateManager->GetShouldCollectReward(ObjIndex) && !bDisableEventRewards)
         {
             if (StateManager->GetHasReachedGoal(ObjIndex))
             {
@@ -382,6 +385,24 @@ float ATerraShiftEnvironment::Reward()
             if (bUsePotentialShaping && PreviousPotential.IsValidIndex(ObjIndex))
             {
                 PreviousPotential[ObjIndex] = 0.f;
+            }
+        }
+
+        // --- Distance-based Reward (Play Mode) ---
+        if (bUseDistanceBasedReward)
+        {
+            // Calculate 1 - distance_i for the ith gridobject
+            int32 goalIndex = StateManager->GetGoalIndex(ObjIndex);
+            if (goalIndex >= 0 && GoalManager)
+            {
+                FVector goalPosWorld = GoalManager->GetGoalLocation(goalIndex);
+                FVector objPosLocal = StateManager->GetCurrentPosition(ObjIndex);
+                FVector goalPosLocal = Platform->GetActorTransform().InverseTransformPosition(goalPosWorld);
+                
+                float distance = FVector::Dist(objPosLocal, goalPosLocal);
+                float normalizedDistance = distance / PlatformWorldSize.X;  // Normalize by platform size
+                float distanceReward = 1.0f - FMath::Clamp(normalizedDistance, 0.0f, 1.0f);
+                AccumulatedReward += distanceReward;
             }
         }
     }
