@@ -272,50 +272,49 @@ void UStateManager::UpdateGridObjectFlags()
 
         FVector wPos = Obj->GetObjectLocation();
 
-        // Check both goal reach and OOB conditions
-        bool bReachedGoal = false;
-        bool bOOB = false;
-
-        // (1) Check if object reached its goal
+        // (1) Check if object reached its goal first
         int32 gIdx = ObjectGoalIndices[i];
         if (gIdx >= 0)
         {
             bool bInRadius = GoalManager->IsInRadiusOf(gIdx, wPos, GoalCollectRadius);
             if (bInRadius)
             {
-                bReachedGoal = true;
+                ObjectSlotStates[i] = EObjectSlotState::GoalReached;
+                bShouldCollect[i] = true;
+                bShouldResp[i] = bRespawnOnGoal;
+
+                // Remove/disable based on bRemoveObjectsOnGoal setting
+                if (bRemoveObjectsOnGoal)
+                {
+                    ObjectMgr->DisableGridObject(i);
+                    OccupancyGrid->RemoveObject(i, FName("GridObjects"));
+                    continue; // Skip OOB check since object is now disabled
+                }
+                
+                // If bRemoveObjectsOnGoal is false, object stays active and continues to OOB check
             }
         }
 
-        // (2) OOB Check - always check regardless of goal status
-        float dx = FMath::Abs(wPos.X - PlatformCenter.X);
-        float dy = FMath::Abs(wPos.Y - PlatformCenter.Y);
-        float zPos = wPos.Z;
-        bOOB = (dx > (halfX + MarginXY) || dy > (halfY + MarginXY) || zPos < minZLocal || zPos > maxZLocal);
-
-        // Handle state transitions - OOB takes priority over goal reached
-        if (bOOB)
+        // (2) OOB Check - only for objects that are still active
+        if (ObjectSlotStates[i] == EObjectSlotState::Active || 
+            (ObjectSlotStates[i] == EObjectSlotState::GoalReached && !bRemoveObjectsOnGoal))
         {
-            ObjectSlotStates[i] = EObjectSlotState::OutOfBounds;
-            bShouldCollect[i] = true;
-            bShouldResp[i] = bRespawnOnOOB;
+            float dx = FMath::Abs(wPos.X - PlatformCenter.X);
+            float dy = FMath::Abs(wPos.Y - PlatformCenter.Y);
+            float zPos = wPos.Z;
+            bool bOOB = (dx > (halfX + MarginXY) || dy > (halfY + MarginXY) || zPos < minZLocal || zPos > maxZLocal);
 
-            if (!bShouldResp[i])
+            if (bOOB)
             {
-                ObjectMgr->DisableGridObject(i);
-                OccupancyGrid->RemoveObject(i, FName("GridObjects"));
-            }
-        }
-        else if (bReachedGoal)
-        {
-            ObjectSlotStates[i] = EObjectSlotState::GoalReached;
-            bShouldCollect[i] = true;
-            bShouldResp[i] = bRespawnOnGoal;
+                ObjectSlotStates[i] = EObjectSlotState::OutOfBounds;
+                bShouldCollect[i] = true;
+                bShouldResp[i] = bRespawnOnOOB;
 
-            if (!bShouldResp[i] && bRemoveObjectsOnGoal)
-            {
-                ObjectMgr->DisableGridObject(i);
-                OccupancyGrid->RemoveObject(i, FName("GridObjects"));
+                if (!bShouldResp[i])
+                {
+                    ObjectMgr->DisableGridObject(i);
+                    OccupancyGrid->RemoveObject(i, FName("GridObjects"));
+                }
             }
         }
     }
