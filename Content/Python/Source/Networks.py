@@ -627,182 +627,170 @@ class FeedForwardBlock(nn.Module):
 
 class SharedCritic(nn.Module):
     """
-    Clean shared critic architecture for MA-POCA with IQN value function.
-    
+    Corrected shared critic architecture for MA-POCA, preserving the IQN/FQF value function.
+
+    This version restores the correct counterfactual baseline calculation required by MA-POCA,
+    where each agent's baseline is conditioned on the actions of all other agents.
+
     Architecture:
-    - IQN for centralized value estimation (distributional)
-    - Scalar baseline for per-agent counterfactuals (more efficient)
-    - No distillation networks (simplified approach)
+    - Centralized Value Function (V(s)):
+        - Uses attention over all agent features.
+        - The aggregated feature is passed to a distributional head (IQN or FQF)
+          to estimate the shared state-value distribution.
+    - Counterfactual Baseline (b_j(s, a_{-j})):
+        - Takes a specially constructed counterfactual input tensor of shape (B, T, NA, NA, F).
+        - For each agent 'j', it attends over the features of all other agents.
+        - The output is passed to a standard scalar ValueNetwork to produce the per-agent baseline.
     """
     def __init__(self, net_cfg: Dict[str, Any]):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-        # Attention mechanisms (unchanged)
+
+        # --- Attention Mechanisms ---
         self.value_attention = ResidualAttention(**net_cfg["value_attention"])
         self.baseline_attention = ResidualAttention(**net_cfg["baseline_attention"])
-        
-        # IQN/FQF for value function (distributional)
+
+        # --- Value Function Head (Distributional: FQF, IQN, or Scalar) ---
         distrib_config = net_cfg.get("distributional_network_params", {})
-        
-        # Determine which network to use based on what's present in config
+        self.use_fqf = False
+        self.value_iqn_net = None
+        self.value_head = None
+        self.num_quantiles = 0
+        self.last_learned_taus = None # For FQF loss calculation
+
         if "fqf_network" in distrib_config:
-            # Use FQF
             self.use_fqf = True
             network_config = distrib_config["fqf_network"].copy()
-            
-            # Set feature_dim from attention output if not specified
             if "feature_dim" not in network_config:
                 network_config["feature_dim"] = self.value_attention.embed_dim
-            
-            # Remove loss-specific parameters (not needed by network)
             network_config.pop("iqn_kappa", None)
             network_config.pop("fraction_loss_coeff", None)
-            
             self.value_iqn_net = FullyParameterizedQuantileNetwork(**network_config)
-            
+            self.num_quantiles = network_config.get("num_quantiles", 32)
+
         elif "iqn_network" in distrib_config:
-            # Use IQN  
             self.use_fqf = False
             network_config = distrib_config["iqn_network"].copy()
-            
-            # Set feature_dim from attention output if not specified
             if "feature_dim" not in network_config:
                 network_config["feature_dim"] = self.value_attention.embed_dim
-            
-            # Remove loss-specific parameters (not needed by network)
             network_config.pop("iqn_kappa", None)
-            
             self.value_iqn_net = ImplicitQuantileNetwork(**network_config)
-            
-        else:
-            # No distributional network specified - use traditional scalar value function
-            self.use_fqf = False
-            self.value_iqn_net = None  # No distributional network
-            
-            # Create traditional scalar value head instead
+            self.num_quantiles = network_config.get("num_quantiles", 32)
+
+        else: # Fallback to a traditional scalar value function
             value_head_config = {
                 "in_features": self.value_attention.embed_dim,
-                "hidden_size": 64,  # Default size
-                "dropout_rate": 0.0,
-                "output_layer_init_gain": 1.0
+                "hidden_size": 64, "dropout_rate": 0.0, "output_layer_init_gain": 1.0
             }
-            # Override with any provided config
             if "value_head" in net_cfg:
                 value_head_config.update(net_cfg["value_head"])
-            
             self.value_head = ValueNetwork(**value_head_config)
-        
-        # Scalar baseline (more efficient for per-agent values)
+
+        # --- Baseline Head (Always Scalar) ---
+        # The baseline head processes the output of the baseline_attention mechanism.
         self.baseline_head = ValueNetwork(**net_cfg["baseline_head"])
-        
-        # Store number of quantiles for easy access
-        if self.value_iqn_net is not None:
-            self.num_quantiles = network_config.get("num_quantiles", 32)
-        else:
-            self.num_quantiles = 0  # Traditional scalar value function
-        
-        # Initialize attention layers
+
+        # --- Weight Initialization ---
         init_scale = net_cfg.get("linear_init_scale", 0.1)
         self.value_attention.apply(
-            lambda m: init_weights_gelu_linear(m, scale=init_scale) 
+            lambda m: init_weights_gelu_linear(m, scale=init_scale)
             if isinstance(m, nn.Linear) and not isinstance(m, nn.LayerNorm) else None
         )
         self.baseline_attention.apply(
-            lambda m: init_weights_gelu_linear(m, scale=init_scale) 
+            lambda m: init_weights_gelu_linear(m, scale=init_scale)
             if isinstance(m, nn.Linear) and not isinstance(m, nn.LayerNorm) else None
         )
 
-    def get_values_and_baselines(self, feats_seq: torch.Tensor, actions_seq: torch.Tensor, 
-                               taus: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def get_values_and_baselines(
+        self,
+        value_feats_seq: torch.Tensor,
+        baseline_feats_seq: torch.Tensor,
+        taus: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
-        Clean interface to get both values and baselines in one forward pass.
-        
-        Args:
-            feats_seq: Feature sequence, shape (B, T, NA, F)
-            actions_seq: Action sequence, shape (B, T, NA, action_dim)  
-            taus: Optional quantile fractions for IQN. If None, uses random sampling.
-            
-        Returns:
-            values: Scalar values for PPO, shape (B, T, 1)
-            baselines: Scalar baselines, shape (B, T, NA, 1) 
-            value_quantiles: IQN quantiles for loss computation, shape (B*T, num_quantiles)
-        """
-        B, T, NA, F = feats_seq.shape
-        
-        # Value path: Centralized attention -> IQN
-        val_input = feats_seq.reshape(B * T, NA, F)  # (B*T, NA, F)
-        val_attn_out, _ = self.value_attention(val_input)  # (B*T, NA, H)
-        val_feats = val_attn_out.mean(dim=1)  # (B*T, H) - aggregate over agents
-        
-        # Get value estimates (different handling for distributional vs scalar)
-        if self.value_iqn_net is not None:
-            # Distributional case (IQN or FQF)
-            if self.use_fqf:
-                # FQF returns (quantiles, learned_taus)
-                value_quantiles, learned_taus = self.value_iqn_net(val_feats, deterministic_taus=False)  # (B*T, N), (B*T, N, 1)
-                # Store learned taus for loss computation
-                self.last_learned_taus = learned_taus
-            else:
-                # IQN returns only quantiles
-                value_quantiles = self.value_iqn_net(val_feats, taus)  # (B*T, N)
-                self.last_learned_taus = None
-            
-            # Use expectation over quantiles as scalar value estimate for PPO
-            values = value_quantiles.mean(dim=-1, keepdim=True)  # (B*T, 1)
-            values = values.reshape(B, T, 1)  # (B, T, 1)
-        else:
-            # Traditional scalar value function
-            values = self.value_head(val_feats)  # (B*T, 1)
-            values = values.reshape(B, T, 1)  # (B, T, 1)
-            value_quantiles = None  # No quantiles for traditional approach
-            self.last_learned_taus = None
-        
-        # Baseline path: Per-agent attention -> scalar baseline
-        # Simplified approach that doesn't require MultiAgentEmbeddingNetwork
-        # In practice, this would use the embedding network's get_baseline_embeddings method
-        
-        # For testing/demo purposes, we'll process features directly
-        # Reshape to per-agent: (B, T, NA, F) -> (B*T*NA, F)  
-        base_input_flat = feats_seq.reshape(B * T * NA, F)  # (B*T*NA, F)
-        
-        # Add sequence dimension for attention: (B*T*NA, F) -> (B*T*NA, 1, F)
-        base_input = base_input_flat.unsqueeze(1)  # (B*T*NA, 1, F)
-        base_attn_out, _ = self.baseline_attention(base_input)  # (B*T*NA, 1, H)
-        base_feats = base_attn_out.squeeze(1)  # (B*T*NA, H)
-        
-        baselines = self.baseline_head(base_feats)  # (B*T*NA, 1)
-        baselines = baselines.reshape(B, T, NA, 1)  # (B, T, NA, 1)
-        
-        return values, baselines, value_quantiles
-    
-    def get_values_only(self, val_feats: torch.Tensor, taus: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Get only values for inference (no baselines needed).
-        
-        Args:
-            val_feats: Value features after attention, shape (B, H)
-            taus: Optional quantile fractions
-            
-        Returns:
-            values: Scalar values, shape (B, 1)
-            value_quantiles: IQN quantiles, shape (B, N)
-        """
-        # Handle distributional vs traditional for inference
-        if self.value_iqn_net is not None:
-            # Distributional case
-            if self.use_fqf:
-                value_quantiles, _ = self.value_iqn_net(val_feats, deterministic_taus=True)  # (B, N), (B, N, 1) 
-            else:
-                value_quantiles = self.value_iqn_net(val_feats, taus)  # (B, N)
-            values = value_quantiles.mean(dim=-1, keepdim=True)  # (B, 1)
-        else:
-            # Traditional scalar case
-            values = self.value_head(val_feats)  # (B, 1)
-            value_quantiles = None
-        
-        return values, value_quantiles
+        Computes the shared state value and the per-agent counterfactual baselines.
 
+        Args:
+            value_feats_seq: Base feature sequence for V(s). Shape (B, T, NA, F).
+            baseline_feats_seq: Counterfactual feature sequence for b_j(s, a_{-j}).
+                                Shape (B, T, NA_j, NA_i, F).
+            taus: Optional quantile fractions for IQN. If None, uses random/learned sampling.
+
+        Returns:
+            values: Scalar shared values for PPO, shape (B, T, 1).
+            baselines: Scalar counterfactual baselines, shape (B, T, NA, 1).
+            value_quantiles: IQN/FQF quantiles for loss computation, shape (B*T, num_quantiles).
+        """
+        # --- 1. Calculate Shared State Value (V(s)) ---
+        B, T, NA, F_val = value_feats_seq.shape
+        val_input_flat = value_feats_seq.reshape(B * T, NA, F_val)
+        val_attn_out, _ = self.value_attention(val_input_flat)
+        val_feats_agg = val_attn_out.mean(dim=1)  # Aggregate over agents -> (B*T, H)
+
+        value_quantiles = None
+        if self.value_iqn_net is not None: # Distributional Path
+            if self.use_fqf:
+                value_quantiles, learned_taus = self.value_iqn_net(val_feats_agg, deterministic_taus=False)
+                self.last_learned_taus = learned_taus
+            else: # IQN
+                value_quantiles = self.value_iqn_net(val_feats_agg, taus)
+                self.last_learned_taus = None
+            # Use expectation over quantiles as the scalar value for PPO advantage calculation
+            values = value_quantiles.mean(dim=-1, keepdim=True)
+
+        else: # Scalar Path
+            values = self.value_head(val_feats_agg)
+            self.last_learned_taus = None
+
+        values = values.reshape(B, T, 1)
+
+        # --- 2. Calculate Counterfactual Baselines (b_j) ---
+        # baseline_feats_seq has shape (B, T, NA_j, NA_i, F_base)
+        # NA_j is the agent for whom we calculate the baseline.
+        # NA_i is the sequence of other agents' info it attends to.
+        _, _, NA_j, NA_i, F_base = baseline_feats_seq.shape
+        
+        # Reshape for batch processing: Each agent j's perspective becomes a batch item.
+        # (B, T, NA_j, NA_i, F) -> (B * T * NA_j, NA_i, F)
+        baseline_input_flat = baseline_feats_seq.reshape(B * T * NA_j, NA_i, F_base)
+        
+        # Apply attention: each agent 'j' attends over the sequence of other agents 'i'.
+        base_attn_out, _ = self.baseline_attention(baseline_input_flat) # (B*T*NA_j, NA_i, H)
+        
+        # Aggregate the attended features for each agent 'j'.
+        base_feats_agg = base_attn_out.mean(dim=1) # (B*T*NA_j, H)
+        
+        # Pass through the scalar baseline head.
+        baselines_flat = self.baseline_head(base_feats_agg) # (B*T*NA_j, 1)
+
+        # Reshape back to the original batch structure.
+        baselines = baselines_flat.reshape(B, T, NA_j, 1)
+
+        return values, baselines, value_quantiles
+
+    def get_values_only(self, val_feats: torch.Tensor, taus: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Get only values for inference (no baselines needed). This remains unchanged.
+
+        Args:
+            val_feats: Value features after attention, shape (B, H).
+            taus: Optional quantile fractions.
+
+        Returns:
+            values: Scalar values, shape (B, 1).
+            value_quantiles: IQN/FQF quantiles, shape (B, N).
+        """
+        value_quantiles = None
+        if self.value_iqn_net is not None:
+            if self.use_fqf:
+                value_quantiles, _ = self.value_iqn_net(val_feats, deterministic_taus=True)
+            else:
+                value_quantiles = self.value_iqn_net(val_feats, taus)
+            values = value_quantiles.mean(dim=-1, keepdim=True)
+        else:
+            values = self.value_head(val_feats)
+
+        return values, value_quantiles
 
 class RNDTargetNetwork(nn.Module):
     """
