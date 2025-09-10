@@ -388,21 +388,24 @@ float ATerraShiftEnvironment::Reward()
             }
         }
 
-        // --- Distance-based Reward (Play Mode) ---
+        // --- Distance-based Reward (Play Mode) - only for active objects ---
         if (bUseDistanceBasedReward)
         {
-            // Calculate 1 - distance_i for the ith gridobject
-            int32 goalIndex = StateManager->GetGoalIndex(ObjIndex);
-            if (goalIndex >= 0 && GoalManager)
+            if (SlotState == EObjectSlotState::Active || SlotState == EObjectSlotState::GoalReached)
             {
-                FVector goalPosWorld = GoalManager->GetGoalLocation(goalIndex);
-                FVector objPosLocal = StateManager->GetCurrentPosition(ObjIndex);
-                FVector goalPosLocal = Platform->GetActorTransform().InverseTransformPosition(goalPosWorld);
-                
-                float distance = FVector::Dist(objPosLocal, goalPosLocal);
-                float normalizedDistance = distance / PlatformWorldSize.X;  // Normalize by platform size
-                float distanceReward = 1.0f - FMath::Clamp(normalizedDistance, 0.0f, 1.0f);
-                AccumulatedReward += distanceReward;
+                // Calculate 1 - distance_i for the ith gridobject
+                int32 goalIndex = StateManager->GetGoalIndex(ObjIndex);
+                if (goalIndex >= 0 && GoalManager)
+                {
+                    FVector goalPosWorld = GoalManager->GetGoalLocation(goalIndex);
+                    FVector objPosLocal = StateManager->GetCurrentPosition(ObjIndex);
+                    FVector goalPosLocal = Platform->GetActorTransform().InverseTransformPosition(goalPosWorld);
+                    
+                    float distance = FVector::Dist(objPosLocal, goalPosLocal);
+                    float normalizedDistance = distance / PlatformWorldSize.X;  // Normalize by platform size
+                    float distanceReward = 1.0f - FMath::Clamp(normalizedDistance, 0.0f, 1.0f);
+                    AccumulatedReward += (distanceReward / 10.0) ;
+                }
             }
         }
     }

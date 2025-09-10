@@ -264,7 +264,9 @@ void UStateManager::UpdateGridObjectFlags()
 
     for (int32 i = 0; i < ObjectSlotStates.Num(); i++)
     {
-        if (ObjectSlotStates[i] != EObjectSlotState::Active)
+        // Skip objects that are not active, except goal-reached objects for when bRemoveObjectsOnGoal is false
+        if (ObjectSlotStates[i] != EObjectSlotState::Active && 
+            !(ObjectSlotStates[i] == EObjectSlotState::GoalReached && !bRemoveObjectsOnGoal))
             continue;
 
         AGridObject* Obj = ObjectMgr->GetGridObject(i);
@@ -272,30 +274,49 @@ void UStateManager::UpdateGridObjectFlags()
 
         FVector wPos = Obj->GetObjectLocation();
 
-        // (1) Check if object reached its goal first
+        // (1) Check goal status and handle state transitions
         int32 gIdx = ObjectGoalIndices[i];
         if (gIdx >= 0)
         {
             bool bInRadius = GoalManager->IsInRadiusOf(gIdx, wPos, GoalCollectRadius);
+            
             if (bInRadius)
             {
-                ObjectSlotStates[i] = EObjectSlotState::GoalReached;
-                bShouldCollect[i] = true;
-                bShouldResp[i] = bRespawnOnGoal;
-
-                // Remove/disable based on bRemoveObjectsOnGoal setting
-                if (bRemoveObjectsOnGoal)
+                // Object is at goal
+                if (ObjectSlotStates[i] == EObjectSlotState::Active)
                 {
-                    ObjectMgr->DisableGridObject(i);
-                    OccupancyGrid->RemoveObject(i, FName("GridObjects"));
-                    continue; // Skip OOB check since object is now disabled
+                    // First time reaching goal - collect reward
+                    bShouldCollect[i] = true;
+                    bShouldResp[i] = bRespawnOnGoal;
+                    
+                    // Handle based on bRemoveObjectsOnGoal setting
+                    if (bRemoveObjectsOnGoal)
+                    {
+                        ObjectSlotStates[i] = EObjectSlotState::GoalReached;
+                        ObjectMgr->DisableGridObject(i);
+                        OccupancyGrid->RemoveObject(i, FName("GridObjects"));
+                        continue; // Skip OOB check since object is now disabled
+                    }
+                    else
+                    {
+                        // Set to GoalReached for reward collection
+                        ObjectSlotStates[i] = EObjectSlotState::GoalReached;
+                    }
                 }
-                
-                // If bRemoveObjectsOnGoal is false, object stays active and continues to OOB check
+                // If already GoalReached, stay in that state while at goal
+            }
+            else
+            {
+                // Object is NOT at goal
+                if (ObjectSlotStates[i] == EObjectSlotState::GoalReached && !bRemoveObjectsOnGoal)
+                {
+                    // Object moved away from goal, return to Active
+                    ObjectSlotStates[i] = EObjectSlotState::Active;
+                }
             }
         }
 
-        // (2) OOB Check - only for objects that are still active
+        // (2) OOB Check - for active objects and goal-reached for when bRemoveObjectsOnGoal is false
         if (ObjectSlotStates[i] == EObjectSlotState::Active || 
             (ObjectSlotStates[i] == EObjectSlotState::GoalReached && !bRemoveObjectsOnGoal))
         {
@@ -327,9 +348,10 @@ void UStateManager::UpdateObjectStats(float DeltaTime)
 {
     for (int32 i = 0; i < MaxGridObjects; i++)
     {
-        if (GetObjectSlotState(i) != EObjectSlotState::Active)
+        // Zero out stats for inactive/terminal objects (except goal-reached in for when bRemoveObjectsOnGoal is false)
+        if (GetObjectSlotState(i) != EObjectSlotState::Active && 
+            !(GetObjectSlotState(i) == EObjectSlotState::GoalReached && !bRemoveObjectsOnGoal))
         {
-            // Zero out stats for inactive/terminal objects
             PrevVel[i] = FVector::ZeroVector;
             CurrVel[i] = FVector::ZeroVector;
             PrevAcc[i] = FVector::ZeroVector;
@@ -443,7 +465,11 @@ bool UStateManager::AllGridObjectsHandled() const
 {
     for (int32 i = 0; i < MaxGridObjects; ++i)
     {
-        if (GetObjectSlotState(i) == EObjectSlotState::Active || GetObjectSlotState(i) == EObjectSlotState::Empty)
+        EObjectSlotState state = GetObjectSlotState(i);
+        // Objects are still "in play" if they're Active, Empty, or GoalReached for when bRemoveObjectsOnGoal is false
+        if (state == EObjectSlotState::Active || 
+            state == EObjectSlotState::Empty ||
+            (state == EObjectSlotState::GoalReached && !bRemoveObjectsOnGoal))
         {
             return false;
         }
@@ -536,7 +562,9 @@ TArray<float> UStateManager::GetCentralState()
 
         for (int32 i = 0; i < MaxGridObjectsForState; ++i)
         {
-            if (GetObjectSlotState(i) == EObjectSlotState::Active)
+            // Include active objects and goal-reached objects for when bRemoveObjectsOnGoal is false
+            if (GetObjectSlotState(i) == EObjectSlotState::Active || 
+                (GetObjectSlotState(i) == EObjectSlotState::GoalReached && !bRemoveObjectsOnGoal))
             {
                 FVector ObjPosLocal = GetCurrentPosition(i);
                 int32 GoalIdx = GetGoalIndex(i);
@@ -693,7 +721,6 @@ void UStateManager::SetupOverheadCamera()
     comp->bCaptureEveryFrame = false;
     comp->bCaptureOnMovement = false;
     comp->MaxViewDistanceOverride = OverheadCamDistance * 1.1f;
-    // ... (ShowFlags settings remain the same) ...
     comp->SetActive(true);
 }
 
