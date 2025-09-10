@@ -220,9 +220,16 @@ class MAPOCAAgent(Agent):
         entropies_output = entropies_flat.view(B_env, NA_runtime)
 
         with torch.no_grad():
-            feats_seq = feats_for_policy.unsqueeze(1)  # (B,1,NA,F)
-            act_seq = actions_shaped.unsqueeze(1)
-            val_norm, base_norm, _ = self._get_critic_outputs(feats_seq, act_seq, B_env, 1, NA_runtime)
+            # Get the counterfactual embeddings needed for the baseline
+            baseline_feats_seq = self.embedding_net.get_baseline_embeddings(
+                common_emb=feats_for_policy.unsqueeze(1), # Add time dim: (B, 1, NA, F)
+                actions=actions_shaped.unsqueeze(1)      # Add time dim: (B, 1, NA, Act)
+            )
+
+            val_norm, base_norm, _ = self.shared_critic.get_values_and_baselines(
+                value_feats_seq=feats_for_policy.unsqueeze(1),
+                baseline_feats_seq=baseline_feats_seq
+            )
 
         values_output = val_norm.squeeze(1)
         baselines_output = base_norm.squeeze(1)
@@ -320,9 +327,19 @@ class MAPOCAAgent(Agent):
                 emb_s_mb, _ = self.embedding_net.get_base_embedding(mb_states_dict, central_component_padding_masks=mb_s_mask)
                 feats_s_mb = self._apply_memory_seq(emb_s_mb, mb_init_h)
 
+                # Generate the counterfactual baseline embeddings for the mini-batch
+                baseline_feats_s_mb = self.embedding_net.get_baseline_embeddings(
+                    common_emb=feats_s_mb,
+                    actions=mb_actions
+                )
+
                 # --- PPO Core Loss Calculation ---
                 new_lp_mb, ent_mb = self._recompute_log_probs_from_features(feats_s_mb, mb_actions)
-                new_val_norm, new_base_norm, new_val_quantiles = self._get_critic_outputs(feats_s_mb, mb_actions, M, T, NA)
+                # Pass both sets of features to the corrected critic
+                new_val_norm, new_base_norm, new_val_quantiles = self.shared_critic.get_values_and_baselines(
+                    value_feats_seq=feats_s_mb,
+                    baseline_feats_seq=baseline_feats_s_mb
+                )
                 
                 pol_loss = self._ppo_clip_loss(new_lp_mb, mb_old_logp.detach(), mb_adv.detach(), self.ppo_clip_range, mb_mask_btna)
                 ent_loss = (-ent_mb * mb_mask_btna).sum() / mb_mask_btna.sum().clamp(min=1e-8)

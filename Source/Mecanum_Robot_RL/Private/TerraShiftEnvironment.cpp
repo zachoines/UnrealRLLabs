@@ -404,7 +404,7 @@ float ATerraShiftEnvironment::Reward()
                     float distance = FVector::Dist(objPosLocal, goalPosLocal);
                     float normalizedDistance = distance / PlatformWorldSize.X;  // Normalize by platform size
                     float distanceReward = 1.0f - FMath::Clamp(normalizedDistance, 0.0f, 1.0f);
-                    AccumulatedReward += (distanceReward / 10.0) ;
+                    AccumulatedReward += distanceReward;
                 }
             }
         }
