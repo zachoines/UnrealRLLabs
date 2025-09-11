@@ -665,6 +665,7 @@ class SharedCritic(nn.Module):
                 network_config["feature_dim"] = self.value_attention.embed_dim
             network_config.pop("iqn_kappa", None)
             network_config.pop("fraction_loss_coeff", None)
+            network_config.pop("fraction_entropy_coeff", None)
             self.value_iqn_net = FullyParameterizedQuantileNetwork(**network_config)
             self.num_quantiles = network_config.get("num_quantiles", 32)
 
@@ -726,16 +727,21 @@ class SharedCritic(nn.Module):
         val_input_flat = value_feats_seq.reshape(B * T, NA, F_val)
         val_attn_out, _ = self.value_attention(val_input_flat)
         val_feats_agg = val_attn_out.mean(dim=1)  # Aggregate over agents -> (B*T, H)
+        # Expose aggregated features for fraction-loss computation (FQF)
+        self.last_value_feats_agg = val_feats_agg
 
         value_quantiles = None
         if self.value_iqn_net is not None: # Distributional Path
             if self.use_fqf:
-                # FQF returns quantiles evaluated at midpoints tau_hat and the learned fractions (sorted)
-                value_quantiles, learned_taus = self.value_iqn_net(val_feats_agg, deterministic_taus=False)
+                # Use paper-aligned softmax+cumsum fractions if available
+                if hasattr(self.value_iqn_net, 'forward_softmax'):
+                    value_quantiles, learned_taus = self.value_iqn_net.forward_softmax(val_feats_agg, deterministic_taus=False)
+                else:
+                    value_quantiles, learned_taus = self.value_iqn_net(val_feats_agg, deterministic_taus=False)
                 self.last_learned_taus = learned_taus
                 # Compute expectation using interval widths between boundaries [0, learned_taus..., 1]
                 BT = val_feats_agg.shape[0]
-                taus_sorted = learned_taus.squeeze(-1) if learned_taus.dim() == 3 else learned_taus  # (B*T, N)
+                taus_sorted = learned_taus.squeeze(-1) if learned_taus.dim() == 3 else learned_taus  # (B*T, N-1)
                 zeros = torch.zeros(BT, 1, device=taus_sorted.device, dtype=taus_sorted.dtype)
                 ones = torch.ones(BT, 1, device=taus_sorted.device, dtype=taus_sorted.dtype)
                 tau_boundaries = torch.cat([zeros, taus_sorted, ones], dim=1)  # (B*T, N+1)
@@ -793,10 +799,13 @@ class SharedCritic(nn.Module):
         value_quantiles = None
         if self.value_iqn_net is not None:
             if self.use_fqf:
-                value_quantiles, learned_taus = self.value_iqn_net(val_feats, deterministic_taus=True)
+                if hasattr(self.value_iqn_net, 'forward_softmax'):
+                    value_quantiles, learned_taus = self.value_iqn_net.forward_softmax(val_feats, deterministic_taus=True)
+                else:
+                    value_quantiles, learned_taus = self.value_iqn_net(val_feats, deterministic_taus=True)
                 # Weighted expectation using learned boundaries
                 B = val_feats.shape[0]
-                taus_sorted = learned_taus.squeeze(-1) if learned_taus.dim() == 3 else learned_taus  # (B, N)
+                taus_sorted = learned_taus.squeeze(-1) if learned_taus.dim() == 3 else learned_taus  # (B, N-1)
                 zeros = torch.zeros(B, 1, device=taus_sorted.device, dtype=taus_sorted.dtype)
                 ones = torch.ones(B, 1, device=taus_sorted.device, dtype=taus_sorted.dtype)
                 tau_boundaries = torch.cat([zeros, taus_sorted, ones], dim=1)  # (B, N+1)
@@ -1041,7 +1050,9 @@ class FullyParameterizedQuantileNetwork(nn.Module):
                  fraction_net_hidden: int = 64,
                  exploration_noise_scale: float = 0.01,
                  logit_clamp_epsilon: float = 1e-8,
-                 monotonicity_epsilon: float = 1e-6):
+                 monotonicity_epsilon: float = 1e-6,
+                 softmax_temperature: float = 1.0,
+                 prior_blend_alpha: float = 0.0):
         super().__init__()
         self.feature_dim = feature_dim
         self.num_quantiles = num_quantiles
@@ -1051,8 +1062,10 @@ class FullyParameterizedQuantileNetwork(nn.Module):
         self.exploration_noise_scale = exploration_noise_scale
         self.logit_clamp_epsilon = logit_clamp_epsilon
         self.monotonicity_epsilon = monotonicity_epsilon
+        self.softmax_temperature = softmax_temperature
+        self.prior_blend_alpha = prior_blend_alpha
         
-        # Fraction proposal network: learns optimal τᵢ locations
+        # Fraction proposal network: outputs interval logits (softmax applied in forward_softmax)
         self.fraction_net = nn.Sequential(
             nn.Linear(feature_dim, fraction_net_hidden),
             nn.GELU(),
@@ -1060,8 +1073,7 @@ class FullyParameterizedQuantileNetwork(nn.Module):
             nn.Linear(fraction_net_hidden, fraction_net_hidden),
             nn.GELU(), 
             nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
-            nn.Linear(fraction_net_hidden, num_quantiles),
-            nn.Sigmoid()  # Ensure τᵢ ∈ [0,1]
+            nn.Linear(fraction_net_hidden, num_quantiles)
         )
         
         # Quantile value network (reuse IQN architecture)
@@ -1078,7 +1090,7 @@ class FullyParameterizedQuantileNetwork(nn.Module):
         # Initialize fraction network weights
         self.fraction_net.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale)
                                if isinstance(m, nn.Linear) else None)
-    
+
     def forward(self, state_features: torch.Tensor, deterministic_taus: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Predicts quantile values Z(s,τ) using learned quantile fractions τ.
@@ -1136,6 +1148,37 @@ class FullyParameterizedQuantileNetwork(nn.Module):
         quantile_values = self.quantile_net(state_features, tau_hat_expanded)  # (B, N)
 
         return quantile_values, taus
+
+    def forward_softmax(self, state_features: torch.Tensor, deterministic_taus: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Paper-aligned FQF forward using softmax+cumsum to obtain quantile fractions.
+
+        This variant recovers interval logits via logit(raw) since fraction_net ends with Sigmoid,
+        then applies softmax to produce interval probabilities and computes midpoints tau_hat.
+
+        Returns quantiles at tau_hat and learned internal boundaries (exclude 0 and 1).
+        """
+        batch_size = state_features.shape[0]
+        # Use interval logits directly and apply softmax to get interval probabilities
+        interval_logits = self.fraction_net(state_features)  # (B, N)
+        if not deterministic_taus and self.training and self.exploration_noise_scale > 0.0:
+            interval_logits = interval_logits + torch.randn_like(interval_logits) * self.exploration_noise_scale
+        T = max(float(getattr(self, 'softmax_temperature', 1.0)), 1e-8)
+        interval_probs = torch.softmax(interval_logits / T, dim=1)  # (B, N)
+        # Prior blend to prevent collapse early: p <- (1-a)*p + a*(1/N)
+        a = float(getattr(self, 'prior_blend_alpha', 0.0))
+        if a > 0.0:
+            uniform = torch.full_like(interval_probs, 1.0 / interval_probs.shape[1])
+            interval_probs = (1.0 - a) * interval_probs + a * uniform
+
+        # Boundaries and midpoints
+        tau_cum = torch.cumsum(interval_probs, dim=1)  # (B, N)
+        taus_internal = tau_cum[:, :-1] if self.num_quantiles > 1 else tau_cum[:, :0]  # (B, N-1)
+        tau_prev = F.pad(tau_cum[:, :-1], (1, 0), value=0.0)
+        tau_hat = tau_prev + 0.5 * interval_probs  # (B, N)
+
+        quantile_values = self.quantile_net(state_features, tau_hat.unsqueeze(-1).detach())  # (B, N)
+        return quantile_values, taus_internal.unsqueeze(-1)
     
     def get_uniform_baseline(self, state_features: torch.Tensor) -> torch.Tensor:
         """

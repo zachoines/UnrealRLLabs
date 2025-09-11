@@ -187,6 +187,8 @@
       "lr_trunk": 1e-04,
       "lr_value_path": 2e-04,
       "lr_baseline_path": 2e-04,
+      "lr_value_quantile": 1e-04,
+      "lr_value_fraction": 2e-04,
       "lr_value_iqn": 1e-04,
       "lr_baseline_iqn": 1e-04,
       "lr_rnd_predictor": 1e-04,
@@ -206,13 +208,18 @@
         "lr_trunk": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
         "lr_policy": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
         "lr_value_path": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
+        "lr_value_quantile": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 10000},
+        "lr_value_fraction": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 10000},
         "lr_baseline_path": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
         "lr_rnd_predictor": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
         "lr_disagreement": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
         "entropy_coeff": {"start_value": 0.005, "end_value": 0.001, "total_iters": 10000},
         "policy_clip": {"start_value": 0.2, "end_value": 0.1, "total_iters": 10000},
         "value_clip_disabled": {"start_value": 1.0, "end_value": 0.1, "total_iters": 10000},
-        "max_grad_norm": {"start_value": 20.0, "end_value": 0.5, "total_iters": 10000}
+        "max_grad_norm": {"start_value": 5.0, "end_value": 0.5, "total_iters": 10000},
+        "fqf_temperature": {"start_value": 2.0, "end_value": 1.0, "total_iters": 10000},
+        "fqf_prior_blend_alpha": {"start_value": 0.1, "end_value": 0.0, "total_iters": 10000},
+        "fraction_entropy_coeff": {"start_value": 0.01, "end_value": 0.002, "total_iters": 10000}
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
@@ -334,6 +341,9 @@
               "iqn_kappa": 1.0,
               "fraction_net_hidden": 64,
               "fraction_loss_coeff": 0.1,
+              "fraction_entropy_coeff": 0.01,
+              "softmax_temperature": 2.0,
+              "prior_blend_alpha": 0.1,
               "exploration_noise_scale": 0.01,
               "logit_clamp_epsilon": 1e-8,
               "monotonicity_epsilon": 1e-6
