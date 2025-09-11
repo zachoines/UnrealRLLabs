@@ -730,13 +730,23 @@ class SharedCritic(nn.Module):
         value_quantiles = None
         if self.value_iqn_net is not None: # Distributional Path
             if self.use_fqf:
+                # FQF returns quantiles evaluated at midpoints tau_hat and the learned fractions (sorted)
                 value_quantiles, learned_taus = self.value_iqn_net(val_feats_agg, deterministic_taus=False)
                 self.last_learned_taus = learned_taus
+                # Compute expectation using interval widths between boundaries [0, learned_taus..., 1]
+                BT = val_feats_agg.shape[0]
+                taus_sorted = learned_taus.squeeze(-1) if learned_taus.dim() == 3 else learned_taus  # (B*T, N)
+                zeros = torch.zeros(BT, 1, device=taus_sorted.device, dtype=taus_sorted.dtype)
+                ones = torch.ones(BT, 1, device=taus_sorted.device, dtype=taus_sorted.dtype)
+                tau_boundaries = torch.cat([zeros, taus_sorted, ones], dim=1)  # (B*T, N+1)
+                interval_widths = (tau_boundaries[:, 1:] - tau_boundaries[:, :-1])  # (B*T, N)
+                values = (value_quantiles * interval_widths).sum(dim=-1, keepdim=True)  # (B*T, 1)
             else: # IQN
+                # If explicit taus provided, use them to ensure consistency with loss; else IQN samples internally
                 value_quantiles = self.value_iqn_net(val_feats_agg, taus)
                 self.last_learned_taus = None
-            # Use expectation over quantiles as the scalar value for PPO advantage calculation
-            values = value_quantiles.mean(dim=-1, keepdim=True)
+                # For IQN with uniform/random taus, mean over quantiles approximates expectation
+                values = value_quantiles.mean(dim=-1, keepdim=True)
 
         else: # Scalar Path
             values = self.value_head(val_feats_agg)
@@ -783,10 +793,18 @@ class SharedCritic(nn.Module):
         value_quantiles = None
         if self.value_iqn_net is not None:
             if self.use_fqf:
-                value_quantiles, _ = self.value_iqn_net(val_feats, deterministic_taus=True)
+                value_quantiles, learned_taus = self.value_iqn_net(val_feats, deterministic_taus=True)
+                # Weighted expectation using learned boundaries
+                B = val_feats.shape[0]
+                taus_sorted = learned_taus.squeeze(-1) if learned_taus.dim() == 3 else learned_taus  # (B, N)
+                zeros = torch.zeros(B, 1, device=taus_sorted.device, dtype=taus_sorted.dtype)
+                ones = torch.ones(B, 1, device=taus_sorted.device, dtype=taus_sorted.dtype)
+                tau_boundaries = torch.cat([zeros, taus_sorted, ones], dim=1)  # (B, N+1)
+                interval_widths = (tau_boundaries[:, 1:] - tau_boundaries[:, :-1])  # (B, N)
+                values = (value_quantiles * interval_widths).sum(dim=-1, keepdim=True)
             else:
                 value_quantiles = self.value_iqn_net(val_feats, taus)
-            values = value_quantiles.mean(dim=-1, keepdim=True)
+                values = value_quantiles.mean(dim=-1, keepdim=True)
         else:
             values = self.value_head(val_feats)
 
@@ -1100,12 +1118,23 @@ class FullyParameterizedQuantileNetwork(nn.Module):
         # Stack to recreate the sorted tensor without in-place ops
         taus_sorted = torch.stack(taus_list, dim=1)  # (B, N)
         
-        # Reshape for quantile network: (B, N) -> (B, N, 1)
-        taus = taus_sorted.unsqueeze(-1)
-        
-        # Predict quantile values using the learned fractions
-        quantile_values = self.quantile_net(state_features, taus)  # (B, N)
-        
+        # Build boundaries with 0 and 1
+        tau_boundaries = torch.cat([
+            torch.zeros(batch_size, 1, device=taus_sorted.device, dtype=taus_sorted.dtype),
+            taus_sorted,
+            torch.ones(batch_size, 1, device=taus_sorted.device, dtype=taus_sorted.dtype)
+        ], dim=1)  # (B, N+1)
+
+        # Midpoints τ̂ for evaluating Z(s, τ̂)
+        tau_hat = 0.5 * (tau_boundaries[:, :-1] + tau_boundaries[:, 1:])  # (B, N)
+
+        # Reshape for quantile network
+        taus = taus_sorted.unsqueeze(-1)  # keep learned sorted fractions for logging/penalty
+        tau_hat_expanded = tau_hat.unsqueeze(-1)  # (B, N, 1)
+
+        # Predict quantile values using midpoints
+        quantile_values = self.quantile_net(state_features, tau_hat_expanded)  # (B, N)
+
         return quantile_values, taus
     
     def get_uniform_baseline(self, state_features: torch.Tensor) -> torch.Tensor:
