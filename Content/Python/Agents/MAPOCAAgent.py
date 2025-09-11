@@ -134,6 +134,8 @@ class MAPOCAAgent(Agent):
             self.num_quantiles = network_config.get("num_quantiles", 32)
             self.iqn_kappa = network_config.get("iqn_kappa", 1.0)
             self.enable_iqn = (self.num_quantiles > 0 and network_config.get("enable_iqn", True))
+            # New optional controls
+            self.fraction_entropy_coeff = network_config.get("fraction_entropy_coeff", 0.0)
         elif "iqn_network" in distrib_config:
             # IQN is enabled
             network_config = distrib_config["iqn_network"]
@@ -364,12 +366,37 @@ class MAPOCAAgent(Agent):
                         learned_taus = self.shared_critic.last_learned_taus  # Set during forward pass
                         if learned_taus is not None:
                             val_loss = self._compute_fqf_quantile_loss(
-                                new_val_quantiles, learned_taus, val_targets_reshaped,
+                                new_val_quantiles, learned_taus, val_targets_reshaped, 
                                 mask_reshaped, self.fraction_loss_coeff
                             )
                         else:
                             # Fallback to IQN if no learned taus available
                             val_loss = self._compute_iqn_quantile_loss(new_val_quantiles, val_targets_reshaped, mask_reshaped, taus_bt.squeeze(-1) if taus_bt is not None else None)
+                        # Entropy regularizer + fraction diagnostics
+                        with torch.no_grad():
+                            val_feats_agg_ng = getattr(self.shared_critic, 'last_value_feats_agg', None)
+                            if val_feats_agg_ng is not None:
+                                T = getattr(self.shared_critic.value_iqn_net, 'softmax_temperature', 1.0)
+                                logits_ng = self.shared_critic.value_iqn_net.fraction_net(val_feats_agg_ng)
+                                probs_ng = torch.softmax(logits_ng / max(T, 1e-8), dim=1)
+                                ent_ng = -(probs_ng * (probs_ng.clamp(min=1e-8).log())).sum(dim=1)
+                                valid_mask_float = mask_reshaped.float()
+                                denom = valid_mask_float.sum().clamp(min=1e-8)
+                                logs_acc["fraction/entropy"].append((ent_ng * valid_mask_float).sum().item() / denom.item())
+                                logs_acc["fraction/prob_max"].append((probs_ng.max(dim=1).values * valid_mask_float).sum().item() / denom.item())
+                                logs_acc["fraction/prob_min"].append((probs_ng.min(dim=1).values * valid_mask_float).sum().item() / denom.item())
+                                top1 = torch.topk(probs_ng, k=1, dim=1).values.squeeze(-1)
+                                logs_acc["fraction/top1_mass"].append((top1 * valid_mask_float).sum().item() / denom.item())
+                        if getattr(self, 'fraction_entropy_coeff', 0.0) > 0.0:
+                            # Apply entropy regularizer with gradients flowing to fraction net
+                            val_feats_agg_g = getattr(self.shared_critic, 'last_value_feats_agg', None)
+                            if val_feats_agg_g is not None:
+                                logits = self.shared_critic.value_iqn_net.fraction_net(val_feats_agg_g)
+                                T = getattr(self.shared_critic.value_iqn_net, 'softmax_temperature', 1.0)
+                                probs = torch.softmax(logits / max(T, 1e-8), dim=1)
+                                ent = -(probs * (probs.clamp(min=1e-8).log())).sum(dim=1)
+                                ent_mean = (ent * mask_reshaped.float()).sum() / mask_reshaped.float().sum().clamp(min=1e-8)
+                                val_loss = val_loss - self.fraction_entropy_coeff * ent_mean
                     else:
                         # Standard IQN Quantile Regression Loss
                         val_loss = self._compute_iqn_quantile_loss(new_val_quantiles, val_targets_reshaped, mask_reshaped, taus_bt.squeeze(-1) if taus_bt is not None else None)
@@ -386,7 +413,15 @@ class MAPOCAAgent(Agent):
                 # --- Combined PPO Loss ---
                 ppo_total_loss = pol_loss + self.entropy_coeff * ent_loss + self.value_loss_coeff * val_loss + self.baseline_loss_coeff * base_loss
                 
-                ppo_opts = [self.optimizers["trunk"], self.optimizers["policy"], self.optimizers["value_path"], self.optimizers["baseline_path"]]
+                # Optimizers to step
+                if self.use_fqf and "value_quantile" in self.optimizers and "value_fraction" in self.optimizers:
+                    ppo_opts = [
+                        self.optimizers["trunk"], self.optimizers["policy"],
+                        self.optimizers["value_quantile"], self.optimizers["value_fraction"],
+                        self.optimizers["baseline_path"]
+                    ]
+                else:
+                    ppo_opts = [self.optimizers["trunk"], self.optimizers["policy"], self.optimizers["value_path"], self.optimizers["baseline_path"]]
                 for opt in ppo_opts: opt.zero_grad()
                 ppo_total_loss.backward()
                 total_grad_norm = self._clip_and_step_ppo_optimizers(ppo_opts)
@@ -438,7 +473,10 @@ class MAPOCAAgent(Agent):
             "reward/raw_mean": [], "reward/raw_std": [],
             "mean/value_prediction": [], "std/value_prediction": [],
             "grad_norm/total": [], "grad_norm/trunk": [], "grad_norm/policy": [],
-            "grad_norm/value_path": [], "grad_norm/baseline_path": []
+            "grad_norm/value_path": [], "grad_norm/baseline_path": [],
+            "grad_norm/value_quantile_net": [], "grad_norm/value_fraction_net": [], "grad_norm/value_attention": [],
+            "fqf/min_tau_diff": [], "fqf/mean_tau_diff": [],
+            "fraction/entropy": [], "fraction/prob_max": [], "fraction/prob_min": [], "fraction/top1_mass": []
         }
         if self.rnd_cfg:
             logs_acc.update({"loss/rnd": [], "reward/rnd_raw_mean": [], "reward/rnd_raw_std": [], "reward/rnd_norm_mean": [], "reward/rnd_norm_std": [], "grad_norm/rnd_predictor": []})
@@ -534,17 +572,33 @@ class MAPOCAAgent(Agent):
 
     def _setup_optimizers(self, a_cfg):
         self.optimizers = {}
-        lr_conf = {k: a_cfg.get(k, self.lr_base) for k in ["lr_trunk", "lr_policy", "lr_value_path", "lr_baseline_path", "lr_value_iqn", "lr_baseline_iqn", "lr_rnd_predictor", "lr_disagreement"]}
+        lr_conf = {k: a_cfg.get(k, self.lr_base) for k in [
+            "lr_trunk", "lr_policy", "lr_value_path", "lr_baseline_path",
+            "lr_value_iqn", "lr_baseline_iqn", "lr_rnd_predictor", "lr_disagreement",
+            "lr_value_quantile", "lr_value_fraction"
+        ]}
         beta_conf = a_cfg.get("optimizer_betas", {}); wd_conf = a_cfg.get("weight_decay", {})
         default_betas = tuple(beta_conf.get("default", (0.9, 0.999))); default_wd = wd_conf.get("default", 0.0)
         trunk_params = list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])
         self.optimizers["trunk"] = optim.AdamW(trunk_params, lr=lr_conf["lr_trunk"], betas=tuple(beta_conf.get("trunk", default_betas)), weight_decay=wd_conf.get("trunk", default_wd))
         self.optimizers["policy"] = optim.AdamW(self.policy_net.parameters(), lr=lr_conf["lr_policy"], betas=tuple(beta_conf.get("policy", default_betas)), weight_decay=wd_conf.get("policy", default_wd))
         
-        # value path includes IQN network + attention
-        value_path_params = (list(self.shared_critic.value_iqn_net.parameters()) + 
-                           list(self.shared_critic.value_attention.parameters()))
-        self.optimizers["value_path"] = optim.AdamW(value_path_params, lr=lr_conf["lr_value_path"], betas=tuple(beta_conf.get("value", default_betas)), weight_decay=wd_conf.get("value", default_wd))
+        # Value path
+        if self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'fraction_net'):
+            # Split optimizers: quantile+attention vs fraction
+            quantile_params = list(self.shared_critic.value_iqn_net.quantile_net.parameters()) + \
+                              list(self.shared_critic.value_attention.parameters())
+            fraction_params = list(self.shared_critic.value_iqn_net.fraction_net.parameters())
+            base_vlr = a_cfg.get("lr_value_path", self.lr_base)
+            lr_vq = a_cfg.get("lr_value_quantile", base_vlr)
+            lr_vf = a_cfg.get("lr_value_fraction", base_vlr * 2.0)
+            self.optimizers["value_quantile"] = optim.AdamW(quantile_params, lr=lr_vq, betas=tuple(beta_conf.get("value_quantile", default_betas)), weight_decay=wd_conf.get("value_quantile", default_wd))
+            self.optimizers["value_fraction"] = optim.AdamW(fraction_params, lr=lr_vf, betas=tuple(beta_conf.get("value_fraction", default_betas)), weight_decay=wd_conf.get("value_fraction", default_wd))
+        else:
+            # Single optimizer for value path (IQN or scalar)
+            value_path_params = (list(self.shared_critic.value_iqn_net.parameters()) + 
+                               list(self.shared_critic.value_attention.parameters()))
+            self.optimizers["value_path"] = optim.AdamW(value_path_params, lr=lr_conf["lr_value_path"], betas=tuple(beta_conf.get("value", default_betas)), weight_decay=wd_conf.get("value", default_wd))
         
         # Baseline path: scalar baseline + attention
         baseline_path_params = (list(self.shared_critic.baseline_head.parameters()) + 
@@ -560,6 +614,27 @@ class MAPOCAAgent(Agent):
         self.schedulers["policy_clip"] = LinearValueScheduler(**sched_cfg.get("policy_clip", {"start_value":self.ppo_clip_range, "end_value":self.ppo_clip_range, "total_iters":1}))
         self.schedulers["value_clip"] = LinearValueScheduler(**sched_cfg.get("value_clip", {"start_value":self.value_clip_range, "end_value":self.value_clip_range, "total_iters":1}))
         self.schedulers["max_grad_norm"] = LinearValueScheduler(**sched_cfg.get("max_grad_norm", {"start_value":self.max_grad_norm, "end_value":self.max_grad_norm, "total_iters":1}))
+        # New: schedulers for FQF extras
+        self.schedulers["fraction_entropy_coeff"] = LinearValueScheduler(**sched_cfg.get(
+            "fraction_entropy_coeff",
+            {"start_value": getattr(self, 'fraction_entropy_coeff', 0.0), "end_value": getattr(self, 'fraction_entropy_coeff', 0.0), "total_iters": 1}
+        ))
+        # Temperature scheduler controls the FQF network's softmax temperature
+        init_temp = 1.0
+        if self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'softmax_temperature'):
+            init_temp = float(self.shared_critic.value_iqn_net.softmax_temperature)
+        self.schedulers["fqf_temperature"] = LinearValueScheduler(**sched_cfg.get(
+            "fqf_temperature",
+            {"start_value": init_temp, "end_value": init_temp, "total_iters": 1}
+        ))
+        # Prior blend alpha scheduler
+        init_alpha = 0.0
+        if self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'prior_blend_alpha'):
+            init_alpha = float(self.shared_critic.value_iqn_net.prior_blend_alpha)
+        self.schedulers["fqf_prior_blend_alpha"] = LinearValueScheduler(**sched_cfg.get(
+            "fqf_prior_blend_alpha",
+            {"start_value": init_alpha, "end_value": init_alpha, "total_iters": 1}
+        ))
     
     def _calculate_advantages(self, returns_seq: torch.Tensor, baseline_seq: torch.Tensor, mask: torch.Tensor, logs_acc: Dict[str, List[float]]) -> torch.Tensor:
         """
@@ -817,7 +892,9 @@ class MAPOCAAgent(Agent):
         mask_expanded = mask.unsqueeze(-1).expand_as(weighted_loss)
         masked_loss = weighted_loss * mask_expanded
         
-        return masked_loss.sum() / mask_expanded.sum().clamp(min=1e-8)
+        quantile_loss = masked_loss.sum() / mask_expanded.sum().clamp(min=1e-8)
+        # Normalize by number of quantiles to keep scale comparable
+        return quantile_loss / max(float(num_quantiles), 1.0)
     
     def _compute_fqf_quantile_loss(self, current_quantiles: torch.Tensor,
                                   learned_taus: torch.Tensor,
@@ -825,30 +902,20 @@ class MAPOCAAgent(Agent):
                                   mask: torch.Tensor,
                                   fraction_loss_coeff: float = 0.1) -> torch.Tensor:
         """
-        Compute FQF (Fully Parameterized Quantile Functions) loss.
+        Paper-aligned FQF objective: quantile Huber loss at t^ midpoints + fraction loss.
 
-        Uses quantile Huber regression weighted by midpoints between learned t boundaries,
-        plus a log-barrier penalty on adjacent learned t to encourage spacing.
-
-        Args:
-            current_quantiles: Quantile predictions at midpoints, shape (B*T, Q)
-            learned_taus: Learned fractions (without 0/1), shape (B*T, N, 1) or (B*T, N)
-            target_values: Targets (returns), shape (B*T, 1) or (B*T,)
-            mask: Valid timestep mask, shape (B*T,)
-            fraction_loss_coeff: Coefficient for fraction penalty
-
-        Returns:
-            Scalar FQF loss
+        - Use t^ midpoints reconstructed from learned internal boundaries for weighting.
+        - Fraction loss uses gradient-of-t surrogate from the FQF paper (needs quantiles at boundaries).
         """
-        B_T, q_count = current_quantiles.shape
+        B_T, num_quantiles = current_quantiles.shape  # N quantiles
 
-        # Expand targets to match quantile count
+        # Expand targets to match quantiles
         if target_values.dim() == 1:
             target_values = target_values.unsqueeze(-1)
-        target_expanded = target_values.expand(-1, q_count)
+        target_expanded = target_values.expand(-1, num_quantiles)
 
         # TD errors and Huber
-        td_errors = target_expanded - current_quantiles  # (B*T, Q)
+        td_errors = target_expanded - current_quantiles
         abs_errors = torch.abs(td_errors)
         huber_loss = torch.where(
             abs_errors <= self.iqn_kappa,
@@ -856,40 +923,47 @@ class MAPOCAAgent(Agent):
             self.iqn_kappa * (abs_errors - 0.5 * self.iqn_kappa)
         )
 
-        # Build midpoints from learned t boundaries
-        learned_taus_2d = learned_taus.squeeze(-1) if learned_taus.dim() == 3 else learned_taus  # (B*T, N)
+        # Reconstruct t^ from learned internal boundaries: [0, t_1..t_{N-1}, 1]
+        learned_taus_2d = learned_taus.squeeze(-1) if learned_taus.dim() == 3 else learned_taus  # (B*T, N-1)
         zeros = torch.zeros(B_T, 1, device=current_quantiles.device, dtype=current_quantiles.dtype)
         ones = torch.ones(B_T, 1, device=current_quantiles.device, dtype=current_quantiles.dtype)
         tau_boundaries = torch.cat([zeros, learned_taus_2d, ones], dim=1)  # (B*T, N+1)
-        tau_hat = 0.5 * (tau_boundaries[:, :-1] + tau_boundaries[:, 1:])  # (B*T, N+1)
+        interval_widths = tau_boundaries[:, 1:] - tau_boundaries[:, :-1]  # (B*T, N)
+        tau_prev = tau_boundaries[:, :-1]  # (B*T, N)
+        tau_hat = tau_prev + 0.5 * interval_widths  # (B*T, N)
 
-        # Align shapes defensively
-        if tau_hat.shape[1] != q_count:
-            tau_hat = torch.linspace(0.5 / q_count, 1 - 0.5 / q_count, q_count,
-                                     device=current_quantiles.device, dtype=current_quantiles.dtype).unsqueeze(0).expand(B_T, -1)
-
+        # Quantile regression weighting at t^
         indicators = (td_errors < 0).float()
         quantile_weights = torch.abs(tau_hat - indicators)
 
-        # Weighted quantile regression
-        quantile_weighted_loss = quantile_weights * huber_loss
-        mask_expanded = mask.unsqueeze(-1).expand_as(quantile_weighted_loss)
-        quantile_loss = (quantile_weighted_loss * mask_expanded).sum() / mask_expanded.sum().clamp(min=1e-8)
+        # Weighted quantile loss with mask normalization
+        qloss = (quantile_weights * huber_loss)
+        mask_expanded = mask.unsqueeze(-1).expand_as(qloss)
+        quantile_loss = (qloss * mask_expanded).sum() / mask_expanded.sum().clamp(min=1e-8)
+        # Normalize by number of quantiles to keep value loss scale comparable
+        quantile_loss = quantile_loss / max(float(num_quantiles), 1.0)
 
-        # Fraction spacing penalty (log barrier)
-        if mask.any():
-            valid_taus = learned_taus_2d[mask.bool()]
-            if valid_taus.numel() > 0 and valid_taus.shape[1] > 1:
-                tau_diffs = valid_taus[:, 1:] - valid_taus[:, :-1]
-                epsilon = 1e-8
-                log_penalty = -torch.log(tau_diffs + epsilon)
-                fraction_penalty = log_penalty.mean()
-            else:
-                fraction_penalty = torch.tensor(0.0, device=current_quantiles.device)
-        else:
-            fraction_penalty = torch.tensor(0.0, device=current_quantiles.device)
+        # Fraction loss: need quantiles at boundaries (internal only)
+        with torch.no_grad():
+            val_feats_agg = getattr(self.shared_critic, 'last_value_feats_agg', None)
+            if val_feats_agg is None:
+                return quantile_loss  # fallback
+            sa_quantiles = self.shared_critic.value_iqn_net.quantile_net(
+                val_feats_agg, learned_taus_2d.unsqueeze(-1))  # (B*T, N-1)
+        sa_quantile_hats = current_quantiles.detach()  # (B*T, N)
 
-        return quantile_loss + fraction_loss_coeff * fraction_penalty
+        values_1 = sa_quantiles - sa_quantile_hats[:, :-1]
+        signs_1 = sa_quantiles > torch.cat([sa_quantile_hats[:, :1], sa_quantiles[:, :-1]], dim=1)
+        values_2 = sa_quantiles - sa_quantile_hats[:, 1:]
+        signs_2 = sa_quantiles < torch.cat([sa_quantiles[:, 1:], sa_quantile_hats[:, -1:]], dim=1)
+        gradient_of_taus = (torch.where(signs_1, values_1, -values_1)
+                            + torch.where(signs_2, values_2, -values_2))  # (B*T, N-1)
+
+        mask_tau = mask.unsqueeze(-1).expand_as(gradient_of_taus)
+        fraction_loss = ((gradient_of_taus * learned_taus_2d) * mask_tau).sum() / mask_tau.sum().clamp(min=1e-8)
+
+        return quantile_loss + fraction_loss_coeff * fraction_loss
+
     def _compute_huber_quantile_loss(self, current_quantiles, target_quantiles_detached, taus_for_current):
         """
         Calculates the Huber quantile regression loss for IQN.
@@ -1088,6 +1162,15 @@ class MAPOCAAgent(Agent):
         self.ppo_clip_range = self.schedulers["policy_clip"].step()
         self.value_clip_range = self.schedulers["value_clip"].step()
         self.max_grad_norm = self.schedulers["max_grad_norm"].step()
+        # Update FQF extras
+        if "fraction_entropy_coeff" in self.schedulers:
+            self.fraction_entropy_coeff = self.schedulers["fraction_entropy_coeff"].step()
+        if self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'softmax_temperature'):
+            new_temp = self.schedulers["fqf_temperature"].step()
+            self.shared_critic.value_iqn_net.softmax_temperature = float(new_temp)
+        if self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'prior_blend_alpha'):
+            new_alpha = self.schedulers["fqf_prior_blend_alpha"].step()
+            self.shared_critic.value_iqn_net.prior_blend_alpha = float(new_alpha)
 
     def _log_minibatch_stats(self, logs_acc, pol_loss, val_loss, base_loss, ent_mb, new_lp_mb, mask_mbna, rnd_loss, disagreement_loss, feats_s_mb, total_grad_norm, new_val_norm=None, new_base_norm=None, new_val_quantiles=None):
         """Accumulates statistics from a single minibatch into the logs dictionary."""
@@ -1138,10 +1221,15 @@ class MAPOCAAgent(Agent):
         logs_acc["grad_norm/trunk"].append(_get_avg_grad_mag(list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])))
         logs_acc["grad_norm/policy"].append(_get_avg_grad_mag(list(self.policy_net.parameters())))
         
-        # Clean IQN gradient norms
+        # Value path gradient norms (split attention, quantile, fraction)
         value_path_params = (list(self.shared_critic.value_iqn_net.parameters()) + 
                            list(self.shared_critic.value_attention.parameters()))
         logs_acc["grad_norm/value_path"].append(_get_avg_grad_mag(value_path_params))
+        logs_acc["grad_norm/value_attention"].append(_get_avg_grad_mag(list(self.shared_critic.value_attention.parameters())))
+        if hasattr(self.shared_critic.value_iqn_net, 'quantile_net'):
+            logs_acc["grad_norm/value_quantile_net"].append(_get_avg_grad_mag(self.shared_critic.value_iqn_net.quantile_net.parameters()))
+        if hasattr(self.shared_critic.value_iqn_net, 'fraction_net'):
+            logs_acc["grad_norm/value_fraction_net"].append(_get_avg_grad_mag(self.shared_critic.value_iqn_net.fraction_net.parameters()))
         
         baseline_path_params = (list(self.shared_critic.baseline_head.parameters()) + 
                               list(self.shared_critic.baseline_attention.parameters()))
@@ -1149,6 +1237,18 @@ class MAPOCAAgent(Agent):
 
         if self.rnd_cfg: logs_acc["grad_norm/rnd_predictor"].append(_get_avg_grad_mag(self.rnd_predictor_network.parameters()))
         if self.disagreement_cfg: logs_acc["grad_norm/disagreement_ensemble"].append(_get_avg_grad_mag(self.dynamics_ensemble.parameters()))
+
+        # FQF tau spacing stats
+        if self.enable_iqn and self.use_fqf and getattr(self.shared_critic, 'last_learned_taus', None) is not None:
+            with torch.no_grad():
+                taus_internal = self.shared_critic.last_learned_taus.squeeze(-1)
+                B_T = taus_internal.shape[0]
+                zeros = torch.zeros(B_T, 1, device=taus_internal.device, dtype=taus_internal.dtype)
+                ones = torch.ones(B_T, 1, device=taus_internal.device, dtype=taus_internal.dtype)
+                tau_boundaries = torch.cat([zeros, taus_internal, ones], dim=1)
+                tau_diffs = tau_boundaries[:, 1:] - tau_boundaries[:, :-1]
+                logs_acc["fqf/min_tau_diff"].append(tau_diffs.min().item())
+                logs_acc["fqf/mean_tau_diff"].append(tau_diffs.mean().item())
 
     def _finalize_logs(self, logs_acc: Dict) -> Dict[str, float]:
         """
