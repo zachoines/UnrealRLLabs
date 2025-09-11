@@ -336,9 +336,16 @@ class MAPOCAAgent(Agent):
                 # --- PPO Core Loss Calculation ---
                 new_lp_mb, ent_mb = self._recompute_log_probs_from_features(feats_s_mb, mb_actions)
                 # Pass both sets of features to the corrected critic
+                # If using IQN (not FQF), sample taus explicitly to align loss weighting with forward
+                taus_bt = None
+                if self.enable_iqn and not self.use_fqf:
+                    B_mb, T_mb = feats_s_mb.shape[0], feats_s_mb.shape[1]
+                    taus_bt = torch.rand(B_mb * T_mb, self.num_quantiles, 1, device=self.device)
+
                 new_val_norm, new_base_norm, new_val_quantiles = self.shared_critic.get_values_and_baselines(
                     value_feats_seq=feats_s_mb,
-                    baseline_feats_seq=baseline_feats_s_mb
+                    baseline_feats_seq=baseline_feats_s_mb,
+                    taus=taus_bt
                 )
                 
                 pol_loss = self._ppo_clip_loss(new_lp_mb, mb_old_logp.detach(), mb_adv.detach(), self.ppo_clip_range, mb_mask_btna)
@@ -357,15 +364,15 @@ class MAPOCAAgent(Agent):
                         learned_taus = self.shared_critic.last_learned_taus  # Set during forward pass
                         if learned_taus is not None:
                             val_loss = self._compute_fqf_quantile_loss(
-                                new_val_quantiles, learned_taus, val_targets_reshaped, 
+                                new_val_quantiles, learned_taus, val_targets_reshaped,
                                 mask_reshaped, self.fraction_loss_coeff
                             )
                         else:
                             # Fallback to IQN if no learned taus available
-                            val_loss = self._compute_iqn_quantile_loss(new_val_quantiles, val_targets_reshaped, mask_reshaped)
+                            val_loss = self._compute_iqn_quantile_loss(new_val_quantiles, val_targets_reshaped, mask_reshaped, taus_bt.squeeze(-1) if taus_bt is not None else None)
                     else:
                         # Standard IQN Quantile Regression Loss
-                        val_loss = self._compute_iqn_quantile_loss(new_val_quantiles, val_targets_reshaped, mask_reshaped)
+                        val_loss = self._compute_iqn_quantile_loss(new_val_quantiles, val_targets_reshaped, mask_reshaped, taus_bt.squeeze(-1) if taus_bt is not None else None)
                 else:
                     # Standard clipped value loss when IQN is disabled
                     val_targets = mb_returns if not self.enable_popart else self.value_popart.normalize_targets(mb_returns)
@@ -759,7 +766,8 @@ class MAPOCAAgent(Agent):
         return total_loss / self.ensemble_size
 
     def _compute_iqn_quantile_loss(self, current_quantiles: torch.Tensor, 
-                                  target_values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+                                  target_values: torch.Tensor, mask: torch.Tensor,
+                                  taus_used: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Compute IQN quantile regression loss for on-policy value function training.
         
@@ -786,6 +794,9 @@ class MAPOCAAgent(Agent):
         taus = torch.linspace(0.5 / num_quantiles, 1 - 0.5 / num_quantiles, 
                              num_quantiles, device=current_quantiles.device)
         taus = taus.unsqueeze(0).expand(B_T, -1)  # (B*T, num_quantiles)
+        # If explicit taus were used to generate current_quantiles, prefer them for correct weighting
+        if taus_used is not None:
+            taus = taus_used
         
         # Asymmetric Huber quantile loss
         abs_errors = torch.abs(td_errors)
@@ -808,87 +819,77 @@ class MAPOCAAgent(Agent):
         
         return masked_loss.sum() / mask_expanded.sum().clamp(min=1e-8)
     
-    def _compute_fqf_quantile_loss(self, current_quantiles: torch.Tensor, 
+    def _compute_fqf_quantile_loss(self, current_quantiles: torch.Tensor,
                                   learned_taus: torch.Tensor,
-                                  target_values: torch.Tensor, 
+                                  target_values: torch.Tensor,
                                   mask: torch.Tensor,
                                   fraction_loss_coeff: float = 0.1) -> torch.Tensor:
         """
         Compute FQF (Fully Parameterized Quantile Functions) loss.
-        
-        Combines standard quantile regression loss with fraction proposal penalty
-        to encourage diverse and well-spaced quantile fractions.
-        
+
+        Uses quantile Huber regression weighted by midpoints between learned t boundaries,
+        plus a log-barrier penalty on adjacent learned t to encourage spacing.
+
         Args:
-            current_quantiles: FQF quantile predictions, shape (B*T, num_quantiles)
-            learned_taus: Learned quantile fractions, shape (B*T, num_quantiles, 1) or (B*T, num_quantiles)
-            target_values: Target values (returns), shape (B*T, 1) or (B*T,)
+            current_quantiles: Quantile predictions at midpoints, shape (B*T, Q)
+            learned_taus: Learned fractions (without 0/1), shape (B*T, N, 1) or (B*T, N)
+            target_values: Targets (returns), shape (B*T, 1) or (B*T,)
             mask: Valid timestep mask, shape (B*T,)
-            fraction_loss_coeff: Coefficient for fraction penalty term
-            
+            fraction_loss_coeff: Coefficient for fraction penalty
+
         Returns:
-            Combined FQF loss (quantile loss + fraction penalty)
+            Scalar FQF loss
         """
-        # Standard quantile regression loss (same as IQN)
-        B_T, num_quantiles = current_quantiles.shape
-        
-        # Expand target values to match quantiles
+        B_T, q_count = current_quantiles.shape
+
+        # Expand targets to match quantile count
         if target_values.dim() == 1:
             target_values = target_values.unsqueeze(-1)
-        target_expanded = target_values.expand(-1, num_quantiles)
-        
-        # Compute TD errors
-        td_errors = target_expanded - current_quantiles
-        
-        # Reshape learned_taus to (B*T, num_quantiles) if needed
-        if learned_taus.dim() == 3:
-            learned_taus_2d = learned_taus.squeeze(-1)  # (B*T, num_quantiles)
-        else:
-            learned_taus_2d = learned_taus  # Already (B*T, num_quantiles)
-        
-        # Asymmetric Huber quantile loss with learned τ
+        target_expanded = target_values.expand(-1, q_count)
+
+        # TD errors and Huber
+        td_errors = target_expanded - current_quantiles  # (B*T, Q)
         abs_errors = torch.abs(td_errors)
         huber_loss = torch.where(
             abs_errors <= self.iqn_kappa,
             0.5 * td_errors.pow(2),
             self.iqn_kappa * (abs_errors - 0.5 * self.iqn_kappa)
         )
-        
-        # Quantile regression weighting with learned τ
+
+        # Build midpoints from learned t boundaries
+        learned_taus_2d = learned_taus.squeeze(-1) if learned_taus.dim() == 3 else learned_taus  # (B*T, N)
+        zeros = torch.zeros(B_T, 1, device=current_quantiles.device, dtype=current_quantiles.dtype)
+        ones = torch.ones(B_T, 1, device=current_quantiles.device, dtype=current_quantiles.dtype)
+        tau_boundaries = torch.cat([zeros, learned_taus_2d, ones], dim=1)  # (B*T, N+1)
+        tau_hat = 0.5 * (tau_boundaries[:, :-1] + tau_boundaries[:, 1:])  # (B*T, N+1)
+
+        # Align shapes defensively
+        if tau_hat.shape[1] != q_count:
+            tau_hat = torch.linspace(0.5 / q_count, 1 - 0.5 / q_count, q_count,
+                                     device=current_quantiles.device, dtype=current_quantiles.dtype).unsqueeze(0).expand(B_T, -1)
+
         indicators = (td_errors < 0).float()
-        quantile_weights = torch.abs(learned_taus_2d - indicators)
-        
-        # Weighted quantile loss
+        quantile_weights = torch.abs(tau_hat - indicators)
+
+        # Weighted quantile regression
         quantile_weighted_loss = quantile_weights * huber_loss
-        
-        # Apply mask and compute quantile loss
         mask_expanded = mask.unsqueeze(-1).expand_as(quantile_weighted_loss)
-        masked_quantile_loss = quantile_weighted_loss * mask_expanded
-        quantile_loss = masked_quantile_loss.sum() / mask_expanded.sum().clamp(min=1e-8)
-        
-        # Fraction proposal penalty: encourage diverse τ spacing
-        # Penalize adjacent fractions being too close (log-barrier penalty)
-        valid_mask_any = mask.bool()  # (B*T,)
-        if valid_mask_any.any():
-            # Only compute fraction penalty for valid timesteps
-            valid_taus = learned_taus_2d[valid_mask_any]  # (valid_count, N)
-            
-            # Compute differences between adjacent quantiles
-            tau_diffs = valid_taus[:, 1:] - valid_taus[:, :-1]  # (valid_count, N-1)
-            
-            # Log-barrier penalty: -log(τᵢ₊₁ - τᵢ)
-            # Add small epsilon to prevent log(0)
-            epsilon = 1e-8
-            log_penalty = -torch.log(tau_diffs + epsilon)
-            fraction_penalty = log_penalty.mean()  # Average over all differences
+        quantile_loss = (quantile_weighted_loss * mask_expanded).sum() / mask_expanded.sum().clamp(min=1e-8)
+
+        # Fraction spacing penalty (log barrier)
+        if mask.any():
+            valid_taus = learned_taus_2d[mask.bool()]
+            if valid_taus.numel() > 0 and valid_taus.shape[1] > 1:
+                tau_diffs = valid_taus[:, 1:] - valid_taus[:, :-1]
+                epsilon = 1e-8
+                log_penalty = -torch.log(tau_diffs + epsilon)
+                fraction_penalty = log_penalty.mean()
+            else:
+                fraction_penalty = torch.tensor(0.0, device=current_quantiles.device)
         else:
             fraction_penalty = torch.tensor(0.0, device=current_quantiles.device)
-        
-        # Combined FQF loss
-        total_loss = quantile_loss + fraction_loss_coeff * fraction_penalty
-        
-        return total_loss
 
+        return quantile_loss + fraction_loss_coeff * fraction_penalty
     def _compute_huber_quantile_loss(self, current_quantiles, target_quantiles_detached, taus_for_current):
         """
         Calculates the Huber quantile regression loss for IQN.
