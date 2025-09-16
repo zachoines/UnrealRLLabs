@@ -679,13 +679,7 @@ class SharedCritic(nn.Module):
             self.num_quantiles = network_config.get("num_quantiles", 32)
 
         else: # Fallback to a traditional scalar value function
-            value_head_config = {
-                "in_features": self.value_attention.embed_dim,
-                "hidden_size": 64, "dropout_rate": 0.0, "output_layer_init_gain": 1.0
-            }
-            if "value_head" in net_cfg:
-                value_head_config.update(net_cfg["value_head"])
-            self.value_head = ValueNetwork(**value_head_config)
+            self.value_head = ValueNetwork(**net_cfg["value_head"])
 
         # --- Baseline Head (Always Scalar) ---
         # The baseline head processes the output of the baseline_attention mechanism.
@@ -889,6 +883,7 @@ class ImplicitQuantileNetwork(nn.Module):
     """
     Clean Implicit Quantile Network (IQN) for distributional reinforcement learning.
     Predicts quantile values of state value distribution Z(s,τ).
+    https://arxiv.org/abs/1806.06923
     """
     def __init__(self,
                  feature_dim: int,
@@ -1030,6 +1025,7 @@ class ImplicitQuantileNetwork(nn.Module):
 class FullyParameterizedQuantileNetwork(nn.Module):
     """
     Fully Parameterized Quantile Functions (FQF) for distributional reinforcement learning.
+    https://arxiv.org/abs/1911.02140
     
     FQF improves upon IQN by learning both quantile fractions (τ) and quantile values Z(s,τ)
     simultaneously, rather than using fixed uniform quantile sampling.

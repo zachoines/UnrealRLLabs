@@ -584,21 +584,27 @@ class MAPOCAAgent(Agent):
         self.optimizers["policy"] = optim.AdamW(self.policy_net.parameters(), lr=lr_conf["lr_policy"], betas=tuple(beta_conf.get("policy", default_betas)), weight_decay=wd_conf.get("policy", default_wd))
         
         # Value path
-        if self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'fraction_net'):
-            # Split optimizers: quantile+attention vs fraction
-            quantile_params = list(self.shared_critic.value_iqn_net.quantile_net.parameters()) + \
-                              list(self.shared_critic.value_attention.parameters())
-            fraction_params = list(self.shared_critic.value_iqn_net.fraction_net.parameters())
-            base_vlr = a_cfg.get("lr_value_path", self.lr_base)
-            lr_vq = a_cfg.get("lr_value_quantile", base_vlr)
-            lr_vf = a_cfg.get("lr_value_fraction", base_vlr * 2.0)
-            self.optimizers["value_quantile"] = optim.AdamW(quantile_params, lr=lr_vq, betas=tuple(beta_conf.get("value_quantile", default_betas)), weight_decay=wd_conf.get("value_quantile", default_wd))
-            self.optimizers["value_fraction"] = optim.AdamW(fraction_params, lr=lr_vf, betas=tuple(beta_conf.get("value_fraction", default_betas)), weight_decay=wd_conf.get("value_fraction", default_wd))
+        if self.shared_critic.value_iqn_net is not None:
+            if self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'fraction_net'):
+                # Split optimizers: quantile+attention vs fraction
+                quantile_params = list(self.shared_critic.value_iqn_net.quantile_net.parameters()) + \
+                                  list(self.shared_critic.value_attention.parameters())
+                fraction_params = list(self.shared_critic.value_iqn_net.fraction_net.parameters())
+                base_vlr = a_cfg.get("lr_value_path", self.lr_base)
+                lr_vq = a_cfg.get("lr_value_quantile", base_vlr)
+                lr_vf = a_cfg.get("lr_value_fraction", base_vlr * 2.0)
+                self.optimizers["value_quantile"] = optim.AdamW(quantile_params, lr=lr_vq, betas=tuple(beta_conf.get("value_quantile", default_betas)), weight_decay=wd_conf.get("value_quantile", default_wd))
+                self.optimizers["value_fraction"] = optim.AdamW(fraction_params, lr=lr_vf, betas=tuple(beta_conf.get("value_fraction", default_betas)), weight_decay=wd_conf.get("value_fraction", default_wd))
+            else:
+                # Single optimizer for IQN value path (quantile + attention)
+                value_path_params = (list(self.shared_critic.value_iqn_net.parameters()) +
+                                   list(self.shared_critic.value_attention.parameters()))
+                self.optimizers["value_path"] = optim.AdamW(value_path_params, lr=lr_conf["lr_value_path"], betas=tuple(beta_conf.get("value", default_betas)), weight_decay=wd_conf.get("value", default_wd))
         else:
-            # Single optimizer for value path (IQN or scalar)
-            value_path_params = (list(self.shared_critic.value_iqn_net.parameters()) + 
-                               list(self.shared_critic.value_attention.parameters()))
-            self.optimizers["value_path"] = optim.AdamW(value_path_params, lr=lr_conf["lr_value_path"], betas=tuple(beta_conf.get("value", default_betas)), weight_decay=wd_conf.get("value", default_wd))
+            # Scalar value path (no distributional network): value_head + attention
+            value_scalar_params = list(self.shared_critic.value_head.parameters()) + \
+                                  list(self.shared_critic.value_attention.parameters())
+            self.optimizers["value_path"] = optim.AdamW(value_scalar_params, lr=lr_conf["lr_value_path"], betas=tuple(beta_conf.get("value", default_betas)), weight_decay=wd_conf.get("value", default_wd))
         
         # Baseline path: scalar baseline + attention
         baseline_path_params = (list(self.shared_critic.baseline_head.parameters()) + 
@@ -1221,15 +1227,21 @@ class MAPOCAAgent(Agent):
         logs_acc["grad_norm/trunk"].append(_get_avg_grad_mag(list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])))
         logs_acc["grad_norm/policy"].append(_get_avg_grad_mag(list(self.policy_net.parameters())))
         
-        # Value path gradient norms (split attention, quantile, fraction)
-        value_path_params = (list(self.shared_critic.value_iqn_net.parameters()) + 
-                           list(self.shared_critic.value_attention.parameters()))
-        logs_acc["grad_norm/value_path"].append(_get_avg_grad_mag(value_path_params))
+        # Value path gradient norms (handle scalar vs distributional)
         logs_acc["grad_norm/value_attention"].append(_get_avg_grad_mag(list(self.shared_critic.value_attention.parameters())))
-        if hasattr(self.shared_critic.value_iqn_net, 'quantile_net'):
-            logs_acc["grad_norm/value_quantile_net"].append(_get_avg_grad_mag(self.shared_critic.value_iqn_net.quantile_net.parameters()))
-        if hasattr(self.shared_critic.value_iqn_net, 'fraction_net'):
-            logs_acc["grad_norm/value_fraction_net"].append(_get_avg_grad_mag(self.shared_critic.value_iqn_net.fraction_net.parameters()))
+        if self.shared_critic.value_iqn_net is not None:
+            value_path_params = (list(self.shared_critic.value_iqn_net.parameters()) +
+                               list(self.shared_critic.value_attention.parameters()))
+            logs_acc["grad_norm/value_path"].append(_get_avg_grad_mag(value_path_params))
+            if hasattr(self.shared_critic.value_iqn_net, 'quantile_net'):
+                logs_acc["grad_norm/value_quantile_net"].append(_get_avg_grad_mag(self.shared_critic.value_iqn_net.quantile_net.parameters()))
+            if hasattr(self.shared_critic.value_iqn_net, 'fraction_net'):
+                logs_acc["grad_norm/value_fraction_net"].append(_get_avg_grad_mag(self.shared_critic.value_iqn_net.fraction_net.parameters()))
+        else:
+            # Scalar path: value_head + attention
+            value_scalar_params = list(self.shared_critic.value_head.parameters()) + \
+                                  list(self.shared_critic.value_attention.parameters())
+            logs_acc["grad_norm/value_path"].append(_get_avg_grad_mag(value_scalar_params))
         
         baseline_path_params = (list(self.shared_critic.baseline_head.parameters()) + 
                               list(self.shared_critic.baseline_attention.parameters()))
