@@ -95,6 +95,10 @@ public:
     UFUNCTION(BlueprintCallable)
     void UpdateGridColumnsColors();
 
+    // Optimization: Toggle column collision based on nearby GridObjects
+    UFUNCTION(BlueprintCallable)
+    void UpdateColumnCollisionBasedOnOccupancy();
+
     // ----------------------------------------------------------------
     //  Accessors: data for environment's reward or logic
     // ----------------------------------------------------------------
@@ -213,6 +217,15 @@ private:
     UPROPERTY() int32 MaxGridObjectsForState;
     UPROPERTY() int32 GridObjectFeatureSize;
 
+    // ------------------------------
+    //  Optional Optimizations
+    // ------------------------------
+    // Enable/disable ROI-based collision toggling for columns
+    UPROPERTY() bool bEnableColumnCollisionOptimization = false;
+    // Radius in grid cells around each active GridObject to keep column collision enabled
+    UPROPERTY() int32 ColumnCollisionRadiusCells = 2;
+    // Hybrid height map is enabled when bEnableColumnCollisionOptimization is true.
+
     // ----------------------------------------------------------------
     //  Geometry
     // ----------------------------------------------------------------
@@ -227,6 +240,9 @@ private:
     UPROPERTY() FMatrix2D PreviousHeight;
     UPROPERTY() FMatrix2D CurrentHeight;
     unsigned long Step = 0;
+
+    // Track previously enabled column cells to avoid redundant toggling
+    UPROPERTY() TSet<int32> PrevEnabledColumnCells;
 
     // ----------------------------------------------------------------
     //  Object States

@@ -94,7 +94,9 @@
         "StateOverheadImageResY": 60,
         "bIncludeGridObjectSequenceInState": true,
         "MaxGridObjectsForState": 4,
-        "GridObjectFeatureSize": 9
+        "GridObjectFeatureSize": 9,
+        "bEnableColumnCollisionOptimization": false,
+        "ColumnCollisionRadiusCells": 2
       }
     },
     "shape": {
