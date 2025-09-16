@@ -302,8 +302,13 @@ void UStateManager::UpdateGridObjectFlags()
                         // Set to GoalReached for reward collection
                         ObjectSlotStates[i] = EObjectSlotState::GoalReached;
                     }
+                } 
+                // If already GoalReached, Keep collecting reward
+                else if (ObjectSlotStates[i] == EObjectSlotState::GoalReached && !bRemoveObjectsOnGoal)
+                {
+                    bShouldCollect[i] = true;
                 }
-                // If already GoalReached, stay in that state while at goal
+                
             }
             else
             {

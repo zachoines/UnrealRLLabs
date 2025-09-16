@@ -15,6 +15,8 @@
         "bUseXYDistanceImprovement": true,
         "bUseZAccelerationPenalty": false,
         "bUsePotentialShaping": false,
+        "bUseDistanceBasedReward": false,
+        "bDisableEventRewards": false,
         "PotentialShaping_Gamma": 0.99,
         "PotentialShaping_Scale": 1.0,
         "VelAlign_Scale": 1.0,
@@ -68,6 +70,7 @@
         "bRespawnOnOOB": true,
         "bTerminateOnAllGoalsReached": false,
         "bTerminateOnMaxSteps": true,
+        "bRemoveObjectsOnGoal": true,
         "GoalRadius": 8.0,
         "ObjectRadius": 8.0,
         "GoalCollectRadius": 10.0,
@@ -184,6 +187,10 @@
       "lr_trunk": 1e-04,
       "lr_value_path": 2e-04,
       "lr_baseline_path": 2e-04,
+      "lr_value_quantile": 1e-04,
+      "lr_value_fraction": 2e-04,
+      "lr_value_iqn": 1e-04,
+      "lr_baseline_iqn": 1e-04,
       "lr_rnd_predictor": 1e-04,
       "lr_disagreement": 1e-04,
       "optimizer_betas": {"default": [0.9, 0.999]},
@@ -193,21 +200,26 @@
       "value_loss_coeff": 1.0,
       "baseline_loss_coeff": 0.5,
       "normalize_advantages": true,
-      "max_grad_norm": 5,
+      "max_grad_norm": 0.5,
       "ppo_clip_range": 0.2,
       "value_clip_range": 1000.0,
-      "entropy_coeff": 0.01,
+      "entropy_coeff": 0.005,
       "schedulers": {
         "lr_trunk": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
         "lr_policy": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
         "lr_value_path": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
+        "lr_value_quantile": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 10000},
+        "lr_value_fraction": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 10000},
         "lr_baseline_path": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
         "lr_rnd_predictor": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
         "lr_disagreement": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
         "entropy_coeff": {"start_value": 0.005, "end_value": 0.001, "total_iters": 10000},
         "policy_clip": {"start_value": 0.2, "end_value": 0.1, "total_iters": 10000},
         "value_clip_disabled": {"start_value": 1.0, "end_value": 0.1, "total_iters": 10000},
-        "max_grad_norm": {"start_value": 3.0, "end_value": 0.5, "total_iters": 10000}
+        "max_grad_norm": {"start_value": 5.0, "end_value": 0.5, "total_iters": 10000},
+        "fqf_temperature": {"start_value": 2.0, "end_value": 1.0, "total_iters": 10000},
+        "fqf_prior_blend_alpha": {"start_value": 0.1, "end_value": 0.0, "total_iters": 10000},
+        "fraction_entropy_coeff": {"start_value": 0.01, "end_value": 0.002, "total_iters": 10000}
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
@@ -292,7 +304,13 @@
           "baseline_head": {
             "in_features": 128,
             "hidden_size": 128,
-            "dropout_rate": 0.05,
+            "dropout_rate": 0.0,
+            "output_layer_init_gain": 1.0
+          },
+          "value_head": {
+            "in_features": 128,
+            "hidden_size": 128,
+            "dropout_rate": 0.0,
             "output_layer_init_gain": 1.0
           },
           "value_attention": {
@@ -308,7 +326,7 @@
             "self_attention": true
           },
           "distributional_network_params": {
-            "iqn_network": {
+            "iqn_network_disabled": {
               "feature_dim": 128,
               "hidden_size": 128,
               "quantile_embedding_dim": 64,
@@ -318,7 +336,7 @@
               "dropout_rate": 0.05,
               "iqn_kappa": 1.0
             },
-            "fqf_network_disabled": {
+            "fqf_network": {
               "feature_dim": 128,
               "hidden_size": 128,
               "quantile_embedding_dim": 64,
@@ -329,6 +347,9 @@
               "iqn_kappa": 1.0,
               "fraction_net_hidden": 64,
               "fraction_loss_coeff": 0.1,
+              "fraction_entropy_coeff": 0.01,
+              "softmax_temperature": 2.0,
+              "prior_blend_alpha": 0.1,
               "exploration_noise_scale": 0.01,
               "logit_clamp_epsilon": 1e-8,
               "monotonicity_epsilon": 1e-6
@@ -343,15 +364,15 @@
     "pad_trajectories": true,
     "batch_size": 1024,
     "buffer_size": 1024,
-    "num_environments": 8,
+    "num_environments": 4,
     "epochs": 4,
-    "mini_batch_size": 32,
+    "mini_batch_size": 8,
     "ActionRepeat": 2,
     "saveFrequency": 9,
     "states_normalizer_disabled": {"epsilon": 1e-08, "warmup_steps": 0}
   },
   "test": {
-    "enabled": true,
+    "enabled": false,
     "frequency": 1,
     "steps": 128
   }

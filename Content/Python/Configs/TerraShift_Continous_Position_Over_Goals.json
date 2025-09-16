@@ -8,11 +8,11 @@
       "ObjectSize": [0.15, 0.15, 0.15],
       "ObjectMass": 0.1,
       "GridSize": 15,
-      "MaxSteps": 1024,
+      "MaxSteps": 256,
       "MaxAgents": 8,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
-        "bUseXYDistanceImprovement": true,
+        "bUseXYDistanceImprovement": false,
         "bUseZAccelerationPenalty": false,
         "bUsePotentialShaping": false,
         "bUseDistanceBasedReward": false,
@@ -28,8 +28,8 @@
         "ZAccel_Scale": 0.0001,
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
-        "EventReward_GoalReached": 10.0,
-        "EventReward_OutOfBounds": -2.5,
+        "EventReward_GoalReached": 0.10,
+        "EventReward_OutOfBounds": -10.0,
         "TimeStepPenalty": 0.0
       },
       "GoalManager": {"DefaultRadius": 1.0},
@@ -66,11 +66,11 @@
         "OverheadCameraResX_disabled": 25,
         "OverheadCameraResY_disabled": 25,
         "bUseRandomGoals": true,
-        "bRespawnOnGoal": true,
-        "bRespawnOnOOB": true,
+        "bRespawnOnGoal": false,
+        "bRespawnOnOOB": false,
         "bTerminateOnAllGoalsReached": false,
         "bTerminateOnMaxSteps": true,
-        "bRemoveObjectsOnGoal": true,
+        "bRemoveObjectsOnGoal": false,
         "GoalRadius": 8.0,
         "ObjectRadius": 8.0,
         "GoalCollectRadius": 10.0,
@@ -203,7 +203,7 @@
       "max_grad_norm": 0.5,
       "ppo_clip_range": 0.2,
       "value_clip_range": 1000.0,
-      "entropy_coeff": 0.005,
+      "entropy_coeff": 0.01,
       "schedulers": {
         "lr_trunk": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
         "lr_policy": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
@@ -325,7 +325,7 @@
             "dropout": 0.05,
             "self_attention": true
           },
-          "distributional_network_params": {
+          "distributional_network_params_disabled": {
             "iqn_network_disabled": {
               "feature_dim": 128,
               "hidden_size": 128,
@@ -336,7 +336,7 @@
               "dropout_rate": 0.05,
               "iqn_kappa": 1.0
             },
-            "fqf_network": {
+            "fqf_network_disabled": {
               "feature_dim": 128,
               "hidden_size": 128,
               "quantile_embedding_dim": 64,
@@ -364,10 +364,10 @@
     "pad_trajectories": true,
     "batch_size": 1024,
     "buffer_size": 1024,
-    "num_environments": 4,
+    "num_environments": 8,
     "epochs": 4,
-    "mini_batch_size": 8,
-    "ActionRepeat": 2,
+    "mini_batch_size": 16,
+    "ActionRepeat": 4,
     "saveFrequency": 9,
     "states_normalizer_disabled": {"epsilon": 1e-08, "warmup_steps": 0}
   },
