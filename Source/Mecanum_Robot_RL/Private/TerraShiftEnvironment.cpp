@@ -216,6 +216,8 @@ void ATerraShiftEnvironment::PreTransition()
     StateManager->UpdateGridObjectFlags();
     StateManager->UpdateObjectStats(GetWorld()->GetDeltaSeconds());
     StateManager->RespawnGridObjects();
+    // Optional optimization: toggle column collision based on proximity to grid objects
+    StateManager->UpdateColumnCollisionBasedOnOccupancy();
     StateManager->UpdateGridColumnsColors();
     StateManager->BuildCentralState();
 }

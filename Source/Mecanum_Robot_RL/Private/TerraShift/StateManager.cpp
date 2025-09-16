@@ -68,6 +68,10 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     MaxGridObjectsForState = Config->GetOrDefaultInt(TEXT("MaxGridObjectsForState"), MaxGridObjects);
     GridObjectFeatureSize = Config->GetOrDefaultInt(TEXT("GridObjectFeatureSize"), 9);
 
+    // Optional optimizations
+    bEnableColumnCollisionOptimization = Config->GetOrDefaultBool(TEXT("bEnableColumnCollisionOptimization"), false);
+    ColumnCollisionRadiusCells = Config->GetOrDefaultInt(TEXT("ColumnCollisionRadiusCells"), 2);
+
     if (Config->HasPath(TEXT("GoalColors")))
     {
         TArray<UEnvironmentConfig*> colorArr = Config->Get(TEXT("GoalColors"))->AsArrayOfConfigs();
@@ -204,6 +208,8 @@ void UStateManager::Reset(int32 NumObjects, int32 CurrentAgents)
     PreviousHeight = FMatrix2D(StateH, StateW, 0.f);
     CurrentHeight = FMatrix2D(StateH, StateW, 0.f);
     Step = 0;
+    // Clear previous enabled column cache
+    PrevEnabledColumnCells.Empty();
 
     // 4) Clear occupancy
     OccupancyGrid->ResetGrid();
@@ -502,33 +508,248 @@ void UStateManager::BuildCentralState()
     }
 
     FMatrix2D HeightTmp(CurrentStateMapH, CurrentStateMapW, 0.f);
-    if (bIncludeHeightMapInState) {
+    if (bIncludeHeightMapInState)
+    {
         FTransform GridTransform = Grid->GetActorTransform();
-        float visMinZ = MinZ;
-        float visMaxZ = MaxZ;
-        float traceDistUp = FMath::Abs(visMaxZ);
-        float traceDistDown = FMath::Abs(visMinZ);
+        const float visMinZ = MinZ;
+        const float visMaxZ = MaxZ;
+        const float traceDistUp = FMath::Abs(visMaxZ);
+        const float traceDistDown = FMath::Abs(visMinZ);
 
-        for (int32 r_state = 0; r_state < CurrentStateMapH; ++r_state) {
-            for (int32 c_state = 0; c_state < CurrentStateMapW; ++c_state) {
-                float norm_x = (CurrentStateMapW > 1) ? static_cast<float>(c_state) / (CurrentStateMapW - 1) : 0.5f;
-                float norm_y = (CurrentStateMapH > 1) ? static_cast<float>(r_state) / (CurrentStateMapH - 1) : 0.5f;
-                float lx = (norm_x - 0.5f) * PlatformWorldSize.X;
-                float ly = (norm_y - 0.5f) * PlatformWorldSize.Y;
+        // If hybrid mode is enabled, start from the simulator wave and then overwrite with traces in ROI.
+        if (bEnableColumnCollisionOptimization && WaveSim)
+        {
+            const FMatrix2D& Wave = WaveSim->GetHeightMap();
+            const int32 WaveH = Wave.GetNumRows();
+            const int32 WaveW = Wave.GetNumColumns();
 
-                FVector wStart = GridTransform.TransformPosition(FVector(lx, ly, traceDistUp));
-                FVector wEnd = GridTransform.TransformPosition(FVector(lx, ly, -traceDistDown));
+            // Baseline: resample the wave into HeightTmp
+            for (int32 r_state = 0; r_state < CurrentStateMapH; ++r_state)
+            {
+                for (int32 c_state = 0; c_state < CurrentStateMapW; ++c_state)
+                {
+                    // Map state pixel to wave indices (bilinear sample)
+                    const float u = (CurrentStateMapW > 1) ? (float)c_state / (float)(CurrentStateMapW - 1) : 0.5f;
+                    const float v = (CurrentStateMapH > 1) ? (float)r_state / (float)(CurrentStateMapH - 1) : 0.5f;
+                    const float wf = u * (WaveW - 1);
+                    const float hf = v * (WaveH - 1);
+                    const int32 x0 = FMath::Clamp((int32)FMath::FloorToFloat(hf), 0, WaveH - 1);
+                    const int32 x1 = FMath::Clamp(x0 + 1, 0, WaveH - 1);
+                    const int32 y0 = FMath::Clamp((int32)FMath::FloorToFloat(wf), 0, WaveW - 1);
+                    const int32 y1 = FMath::Clamp(y0 + 1, 0, WaveW - 1);
+                    const float dx = hf - (float)x0;
+                    const float dy = wf - (float)y0;
 
-                FHitResult hit;
-                bool bHit = w->LineTraceSingleByChannel(hit, wStart, wEnd, ECC_Visibility);
+                    const float v00 = Wave[x0][y0];
+                    const float v01 = Wave[x0][y1];
+                    const float v10 = Wave[x1][y0];
+                    const float v11 = Wave[x1][y1];
+                    const float v0 = FMath::Lerp(v00, v01, dy);
+                    const float v1 = FMath::Lerp(v10, v11, dy);
+                    const float vInterp = FMath::Lerp(v0, v1, dx);
 
-                float finalLocalZ = bHit ? GridTransform.InverseTransformPosition(hit.ImpactPoint).Z : 0.f;
-                float clampedVisZ = FMath::Clamp(finalLocalZ, visMinZ, visMaxZ);
-                float norm_height = (visMaxZ > visMinZ) ? (clampedVisZ - visMinZ) / (visMaxZ - visMinZ) : 0.f;
-                HeightTmp[r_state][c_state] = (norm_height * 2.f) - 1.f;
+                    const float clampedVisZ = FMath::Clamp(vInterp, visMinZ, visMaxZ);
+                    const float norm_height = (visMaxZ > visMinZ) ? (clampedVisZ - visMinZ) / (visMaxZ - visMinZ) : 0.f;
+                    HeightTmp[r_state][c_state] = (norm_height * 2.f) - 1.f;
+                }
             }
+
+            // Analytical overlay for column curvature across non-traced positions
+            // Compute ellipsoid cap height per pixel within column XY footprint and overlay on baseline
+            for (int32 r_state = 0; r_state < CurrentStateMapH; ++r_state)
+            {
+                for (int32 c_state = 0; c_state < CurrentStateMapW; ++c_state)
+                {
+                    const float norm_x = (CurrentStateMapW > 1) ? (float)c_state / (float)(CurrentStateMapW - 1) : 0.5f;
+                    const float norm_y = (CurrentStateMapH > 1) ? (float)r_state / (float)(CurrentStateMapH - 1) : 0.5f;
+                    const float lx = (norm_x - 0.5f) * PlatformWorldSize.X;
+                    const float ly = (norm_y - 0.5f) * PlatformWorldSize.Y;
+
+                    const FVector wStart = GridTransform.TransformPosition(FVector(lx, ly, traceDistUp));
+                    const int32 gridCell = OccupancyGrid ? OccupancyGrid->WorldToGrid(wStart) : -1;
+                    if (!Grid || !Grid->Columns.IsValidIndex(gridCell))
+                    {
+                        continue;
+                    }
+                    AColumn* Col = Grid->Columns[gridCell];
+                    if (!Col || !Col->ColumnMesh) continue;
+
+                    // Column center in local frame
+                    const FVector colLocal = GridTransform.InverseTransformPosition(Col->GetActorLocation());
+                    const float dx = lx - colLocal.X;
+                    const float dy = ly - colLocal.Y;
+
+                    // Radii from mesh local bounds and relative scale
+                    const FBoxSphereBounds ColumnBounds = Col->ColumnMesh->CalcLocalBounds();
+                    const FVector colScale = Col->ColumnMesh->GetRelativeScale3D();
+                    const float rx = ColumnBounds.BoxExtent.X * colScale.X;
+                    const float ry = ColumnBounds.BoxExtent.Y * colScale.Y;
+                    const float rz = ColumnBounds.BoxExtent.Z * colScale.Z;
+                    if (rx <= KINDA_SMALL_NUMBER || ry <= KINDA_SMALL_NUMBER || rz <= KINDA_SMALL_NUMBER)
+                    {
+                        continue;
+                    }
+                    const float nx = dx / rx;
+                    const float ny = dy / ry;
+                    const float r2 = nx * nx + ny * ny;
+                    if (r2 > 1.0f) continue; // outside ellipsoid XY projection
+
+                    const float zLocalTop = colLocal.Z + rz * FMath::Sqrt(FMath::Max(0.f, 1.0f - r2));
+                    const float clampedVisZ = FMath::Clamp(zLocalTop, visMinZ, visMaxZ);
+                    const float norm_height = (visMaxZ > visMinZ) ? (clampedVisZ - visMinZ) / (visMaxZ - visMinZ) : 0.f;
+                    const float h01 = (norm_height * 2.f) - 1.f;
+                    if (h01 > HeightTmp[r_state][c_state])
+                    {
+                        HeightTmp[r_state][c_state] = h01;
+                    }
+                }
+            }
+
+            // Build ROI of grid cells near grid objects for tracing
+            TSet<int32> TraceCells;
+            const int32 R = FMath::Max(0, ColumnCollisionRadiusCells);
+            if (ObjectMgr && OccupancyGrid && R > 0)
+            {
+                const int32 TotalCols = GridSize * GridSize;
+                auto AddNeighbors = [&](int32 CenterIdx)
+                {
+                    const int gx = CenterIdx / GridSize;
+                    const int gy = CenterIdx % GridSize;
+                    const int minX = FMath::Max(gx - R, 0);
+                    const int maxX = FMath::Min(gx + R, GridSize - 1);
+                    const int minY = FMath::Max(gy - R, 0);
+                    const int maxY = FMath::Min(gy + R, GridSize - 1);
+                    for (int xx = minX; xx <= maxX; ++xx)
+                    {
+                        for (int yy = minY; yy <= maxY; ++yy)
+                        {
+                            const float dx = (float)(xx - gx);
+                            const float dy = (float)(yy - gy);
+                            if (dx * dx + dy * dy <= (float)(R * R))
+                            {
+                                TraceCells.Add(xx * GridSize + yy);
+                            }
+                        }
+                    }
+                };
+
+                for (int32 i = 0; i < ObjectSlotStates.Num(); ++i)
+                {
+                    const EObjectSlotState SlotState = ObjectSlotStates[i];
+                    if (!(SlotState == EObjectSlotState::Active || SlotState == EObjectSlotState::GoalReached)) continue;
+                    AGridObject* Obj = ObjectMgr->GetGridObject(i);
+                    if (!Obj) continue;
+                    const FVector wPos = Obj->GetObjectLocation();
+                    const int32 cell = OccupancyGrid->WorldToGrid(wPos);
+                    AddNeighbors(cell);
+                }
+            }
+
+            // Overwrite pixels that fall within TraceCells with line-trace heights
+            for (int32 r_state = 0; r_state < CurrentStateMapH; ++r_state)
+            {
+                for (int32 c_state = 0; c_state < CurrentStateMapW; ++c_state)
+                {
+                    // Map state pixel to world XY
+                    const float norm_x = (CurrentStateMapW > 1) ? (float)c_state / (float)(CurrentStateMapW - 1) : 0.5f;
+                    const float norm_y = (CurrentStateMapH > 1) ? (float)r_state / (float)(CurrentStateMapH - 1) : 0.5f;
+                    const float lx = (norm_x - 0.5f) * PlatformWorldSize.X;
+                    const float ly = (norm_y - 0.5f) * PlatformWorldSize.Y;
+
+                    const FVector wStart = GridTransform.TransformPosition(FVector(lx, ly, traceDistUp));
+                    const FVector wEnd = GridTransform.TransformPosition(FVector(lx, ly, -traceDistDown));
+
+                    // Determine column cell under this pixel
+                    const int32 gridCell = OccupancyGrid ? OccupancyGrid->WorldToGrid(wStart) : -1;
+                    if (TraceCells.Contains(gridCell))
+                    {
+                        FHitResult hit;
+                        bool bHit = w->LineTraceSingleByChannel(hit, wStart, wEnd, ECC_Visibility);
+                        float finalLocalZ;
+                        if (bHit)
+                        {
+                            finalLocalZ = GridTransform.InverseTransformPosition(hit.ImpactPoint).Z;
+                        }
+                        else
+                        {
+                            // Fallback: synthesize exact ellipsoid cap height for the column under this pixel
+                            float zLocalSynth = 0.f;
+                            bool bSynthValid = false;
+                            if (Grid && Grid->Columns.IsValidIndex(gridCell))
+                            {
+                                if (AColumn* Col = Grid->Columns[gridCell])
+                                {
+                                    if (Col->ColumnMesh)
+                                    {
+                                        const FVector colLocal = GridTransform.InverseTransformPosition(Col->GetActorLocation());
+                                        const float dx = lx - colLocal.X;
+                                        const float dy = ly - colLocal.Y;
+                                        const FBoxSphereBounds ColumnBounds = Col->ColumnMesh->CalcLocalBounds();
+                                        const FVector colScale = Col->ColumnMesh->GetRelativeScale3D();
+                                        const float rx = ColumnBounds.BoxExtent.X * colScale.X;
+                                        const float ry = ColumnBounds.BoxExtent.Y * colScale.Y;
+                                        const float rz = ColumnBounds.BoxExtent.Z * colScale.Z;
+                                        if (rx > KINDA_SMALL_NUMBER && ry > KINDA_SMALL_NUMBER && rz > KINDA_SMALL_NUMBER)
+                                        {
+                                            const float nx = dx / rx;
+                                            const float ny = dy / ry;
+                                            const float r2 = nx * nx + ny * ny;
+                                            if (r2 <= 1.0f)
+                                            {
+                                                zLocalSynth = colLocal.Z + rz * FMath::Sqrt(FMath::Max(0.f, 1.0f - r2));
+                                                bSynthValid = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (bSynthValid)
+                            {
+                                finalLocalZ = zLocalSynth;
+                            }
+                            else
+                            {
+                                // Ultimate fallback: top center point
+                                const int gx = FMath::Clamp(gridCell / GridSize, 0, GridSize - 1);
+                                const int gy = FMath::Clamp(gridCell % GridSize, 0, GridSize - 1);
+                                const FVector topWorld = GetColumnTopWorldLocation(gx, gy);
+                                finalLocalZ = GridTransform.InverseTransformPosition(topWorld).Z;
+                            }
+                        }
+                        const float clampedVisZ = FMath::Clamp(finalLocalZ, visMinZ, visMaxZ);
+                        const float norm_height = (visMaxZ > visMinZ) ? (clampedVisZ - visMinZ) / (visMaxZ - visMinZ) : 0.f;
+                        HeightTmp[r_state][c_state] = (norm_height * 2.f) - 1.f;
+                    }
+                }
+            }
+            HeightTmp.Clip(-1.f, 1.f);
         }
-        HeightTmp.Clip(-1.f, 1.f);
+        else
+        {
+            // Original: pure line-trace height map across the full state grid
+            for (int32 r_state = 0; r_state < CurrentStateMapH; ++r_state)
+            {
+                for (int32 c_state = 0; c_state < CurrentStateMapW; ++c_state)
+                {
+                    const float norm_x = (CurrentStateMapW > 1) ? static_cast<float>(c_state) / (CurrentStateMapW - 1) : 0.5f;
+                    const float norm_y = (CurrentStateMapH > 1) ? static_cast<float>(r_state) / (CurrentStateMapH - 1) : 0.5f;
+                    const float lx = (norm_x - 0.5f) * PlatformWorldSize.X;
+                    const float ly = (norm_y - 0.5f) * PlatformWorldSize.Y;
+
+                    const FVector wStart = GridTransform.TransformPosition(FVector(lx, ly, traceDistUp));
+                    const FVector wEnd = GridTransform.TransformPosition(FVector(lx, ly, -traceDistDown));
+
+                    FHitResult hit;
+                    const bool bHit = w->LineTraceSingleByChannel(hit, wStart, wEnd, ECC_Visibility);
+
+                    const float finalLocalZ = bHit ? GridTransform.InverseTransformPosition(hit.ImpactPoint).Z : 0.f;
+                    const float clampedVisZ = FMath::Clamp(finalLocalZ, visMinZ, visMaxZ);
+                    const float norm_height = (visMaxZ > visMinZ) ? (clampedVisZ - visMinZ) / (visMaxZ - visMinZ) : 0.f;
+                    HeightTmp[r_state][c_state] = (norm_height * 2.f) - 1.f;
+                }
+            }
+            HeightTmp.Clip(-1.f, 1.f);
+        }
     }
     PreviousHeight = CurrentHeight;
     CurrentHeight = HeightTmp;
@@ -749,4 +970,73 @@ TArray<float> UStateManager::CaptureOverheadImage() const
         out.Add(luminance01 * 2.0f - 1.0f);
     }
     return out;
+}
+
+void UStateManager::UpdateColumnCollisionBasedOnOccupancy()
+{
+    if (!bEnableColumnCollisionOptimization) return;
+    if (!Grid || !ObjectMgr || !OccupancyGrid || GridSize <= 0) return;
+
+    TSet<int32> EnableCells;
+    const int32 R = FMath::Max(0, ColumnCollisionRadiusCells);
+    auto AddNeighbors = [&](int32 CenterIdx)
+    {
+        const int gx = CenterIdx / GridSize;
+        const int gy = CenterIdx % GridSize;
+        const int minX = FMath::Max(gx - R, 0);
+        const int maxX = FMath::Min(gx + R, GridSize - 1);
+        const int minY = FMath::Max(gy - R, 0);
+        const int maxY = FMath::Min(gy + R, GridSize - 1);
+        for (int xx = minX; xx <= maxX; ++xx)
+        {
+            for (int yy = minY; yy <= maxY; ++yy)
+            {
+                const float dx = (float)(xx - gx);
+                const float dy = (float)(yy - gy);
+                if (dx * dx + dy * dy <= (float)(R * R))
+                {
+                    EnableCells.Add(xx * GridSize + yy);
+                }
+            }
+        }
+    };
+
+    // Collect neighbors around all visible grid objects (Active or GoalReached)
+    for (int32 i = 0; i < ObjectSlotStates.Num(); ++i)
+    {
+        const EObjectSlotState SlotState = ObjectSlotStates[i];
+        if (!(SlotState == EObjectSlotState::Active || SlotState == EObjectSlotState::GoalReached)) continue;
+        AGridObject* Obj = ObjectMgr->GetGridObject(i);
+        if (!Obj) continue;
+        const FVector wPos = Obj->GetObjectLocation();
+        const int32 cell = OccupancyGrid->WorldToGrid(wPos);
+        AddNeighbors(cell);
+    }
+
+    // Enable/disable only where changed from previous frame
+    TArray<int32> ToEnable;
+    TArray<int32> ToDisable;
+    ToEnable.Reserve(EnableCells.Num());
+    ToDisable.Reserve(PrevEnabledColumnCells.Num());
+
+    for (int32 idx : EnableCells)
+    {
+        if (!PrevEnabledColumnCells.Contains(idx))
+        {
+            ToEnable.Add(idx);
+        }
+    }
+    for (int32 idx : PrevEnabledColumnCells)
+    {
+        if (!EnableCells.Contains(idx))
+        {
+            ToDisable.Add(idx);
+        }
+    }
+
+    for (int32 idx : ToEnable) { Grid->SetColumnPhysics(idx, true); }
+    for (int32 idx : ToDisable) { Grid->SetColumnPhysics(idx, false); }
+
+    // Update cache
+    PrevEnabledColumnCells = EnableCells;
 }
