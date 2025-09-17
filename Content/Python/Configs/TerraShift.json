@@ -7,7 +7,7 @@
       "MaxColumnHeight": 6.0,
       "ObjectSize": [0.15, 0.15, 0.15],
       "ObjectMass": 0.1,
-      "GridSize": 15,
+      "GridSize": 16,
       "MaxSteps": 1024,
       "MaxAgents": 8,
       "TerraShiftEnvironment": {
@@ -35,7 +35,7 @@
       "GoalManager": {"DefaultRadius": 1.0},
       "MultiAgentGaussianWaveHeightMap": {
         "NumAgents": 8,
-        "GridSize": 15,
+        "GridSize": 16,
         "MinHeight": -6.0,
         "MaxHeight": 6.0,
         "NumActions": 6,
@@ -95,7 +95,7 @@
         "bIncludeGridObjectSequenceInState": true,
         "MaxGridObjectsForState": 4,
         "GridObjectFeatureSize": 9,
-        "bEnableColumnCollisionOptimization": false,
+        "bEnableColumnCollisionOptimization": true,
         "ColumnCollisionRadiusCells": 2
       }
     },
@@ -138,11 +138,10 @@
     }
   },
   "StateRecorder": {
-    "enabled": false,
-    "video_settings": {"output_path": "recordings\\TerraShift.mp4", "fps": 15, "dpi": 150},
-    "auto_save_every": 512,
+    "enabled": true,
+    "video_settings": {"output_path": "Recordings\\TerraShift.mp4", "fps": 30, "dpi": 150},
+    "auto_save_every": 1024,
     "components_to_record": [
-      
       {
         "enabled": true,
         "source_key": "central",
@@ -327,7 +326,7 @@
             "dropout": 0.05,
             "self_attention": true
           },
-          "distributional_network_params": {
+          "distributional_network_params_disabled": {
             "iqn_network_disabled": {
               "feature_dim": 128,
               "hidden_size": 128,
@@ -366,7 +365,7 @@
     "pad_trajectories": true,
     "batch_size": 1024,
     "buffer_size": 1024,
-    "num_environments": 4,
+    "num_environments": 8,
     "epochs": 4,
     "mini_batch_size": 8,
     "ActionRepeat": 2,
