@@ -1034,8 +1034,8 @@ void UStateManager::UpdateColumnCollisionBasedOnOccupancy()
         }
     }
 
-    for (int32 idx : ToEnable) { Grid->SetColumnPhysics(idx, true); }
-    for (int32 idx : ToDisable) { Grid->SetColumnPhysics(idx, false); }
+    for (int32 idx : ToEnable) { Grid->SetColumnCollision(idx, true); }
+    for (int32 idx : ToDisable) { Grid->SetColumnCollision(idx, false); }
 
     // Update cache
     PrevEnabledColumnCells = EnableCells;

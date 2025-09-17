@@ -89,4 +89,8 @@ private:
 
     // Map a value from one range to another
     float Map(float x, float in_min, float in_max, float out_min, float out_max);
+
+public:
+    // Public wrapper to set collision for a single column index
+    void SetColumnCollision(int32 ColumnIndex, bool bEnableCollision);
 };

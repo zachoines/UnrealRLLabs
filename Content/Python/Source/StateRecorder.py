@@ -2,27 +2,17 @@
 # Original code structure and logic by the project author.
 # The modifications are intended to enhance the functionality and performance of the code.
 # The author has reviewed all changes for correctness.
-import shutil
+
+# Fix OpenMP library conflict issues
 import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
+import shutil
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FFMpegWriter
 from typing import Dict, List, Any, Tuple
-
-# Helper to find ffmpeg in conda env
-conda_prefix = os.environ.get("CONDA_PREFIX")
-if conda_prefix:
-    # Typical path for ffmpeg in a conda env on Windows
-    ffmpeg_path = os.path.join(conda_prefix, "Library", "bin", "ffmpeg.exe")
-    if os.path.exists(ffmpeg_path):
-        print(f"[StateRecorder] Found ffmpeg in conda environment: {ffmpeg_path}")
-        plt.rcParams['animation.ffmpeg_path'] = ffmpeg_path
-    else:
-        # Fallback for different structures or non-Windows
-        ffmpeg_path_alt = shutil.which("ffmpeg")
-        if ffmpeg_path_alt:
-             print(f"[StateRecorder] Found ffmpeg in PATH: {ffmpeg_path_alt}")
-             plt.rcParams['animation.ffmpeg_path'] = ffmpeg_path_alt
+from datetime import datetime
 
 class StateRecorder:
     def __init__(self, recorder_config: Dict[str, Any]):
@@ -39,9 +29,12 @@ class StateRecorder:
         if not os.path.isabs(output_path_raw):
             # Assuming Train.py is in Content/Python, and output_path is relative to that
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # Up to Content/Python
-            self.output_path = os.path.join(base_dir, output_path_raw)
+            self.base_output_path = os.path.join(base_dir, output_path_raw)
         else:
-            self.output_path = output_path_raw
+            self.base_output_path = output_path_raw
+        
+        # Store config for timestamping (applied per save_video call)
+        self.add_timestamp = video_cfg.get("add_timestamp", True)
             
         self.dpi = video_cfg.get("dpi", 100)
         self.auto_save_every = self.config.get("auto_save_every", None)
@@ -77,7 +70,8 @@ class StateRecorder:
         self.frames: List[Dict[str, np.ndarray]] = [] # Stores dicts of component_name: data
 
         if self.is_enabled and self.num_subplots > 0 :
-             print(f"[StateRecorder] Initialized. Will plot {self.num_subplots} components. Output: {self.output_path}")
+             timestamp_info = " (with timestamps)" if self.add_timestamp else ""
+             print(f"[StateRecorder] Initialized. Will plot {self.num_subplots} components. Base output: {self.base_output_path}{timestamp_info}")
         elif self.is_enabled:
              print(f"[StateRecorder] Initialized, but no components configured for visualization. Will only store data if specified.")
 
@@ -120,10 +114,15 @@ class StateRecorder:
             self.frames.clear() # Clear frames even if not saving video
             return
 
-        # The check for ffmpeg is now handled by setting rcParams, 
-        # or by FFMpegWriter raising an error if it's still not found.
+        # Generate output path with fresh timestamp for each save_video call
+        if self.add_timestamp:
+            path_parts = os.path.splitext(self.base_output_path)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = f"{path_parts[0]}_{timestamp}{path_parts[1]}"
+        else:
+            output_path = self.base_output_path
 
-        output_dir = os.path.dirname(self.output_path)
+        output_dir = os.path.dirname(output_path)
         if not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
 
@@ -147,92 +146,131 @@ class StateRecorder:
             ax = fig.add_subplot(nrows, ncols, i + 1, projection='3d' if is_3d else None)
             axes_list.append(ax)
 
+        # Ensure ffmpeg path is explicitly set to avoid WinError 2
+        ffmpeg_path = shutil.which('ffmpeg')
+        if ffmpeg_path is None:
+            print("[StateRecorder] Error: FFmpeg not found in PATH")
+            plt.close(fig)
+            self.frames.clear()
+            return
+        
+        # On Windows, ensure the .exe extension is explicit
+        import platform
+        if platform.system() == 'Windows' and not ffmpeg_path.lower().endswith('.exe'):
+            ffmpeg_path += '.exe'
+            
+        # Set matplotlib backend to Agg to avoid display issues
+        plt.switch_backend('Agg')
+            
         writer = FFMpegWriter(
             fps=self.fps,
             metadata={"title": "TerraShift State Visualization", "artist": "StateRecorder"},
             extra_args=["-crf", "20", "-b:v", "3000k", "-pix_fmt", "yuv420p"]
         )
         
-        print(f"[StateRecorder] Attempting to save video to: {self.output_path} with {len(self.frames)} frames.")
+        # Explicitly set the ffmpeg binary path
+        writer.bin_path = lambda: ffmpeg_path
+        
+        print(f"[StateRecorder] Attempting to save video to: {output_path} with {len(self.frames)} frames.")
+        print(f"[StateRecorder] Using ffmpeg at: {ffmpeg_path}")
 
-        with writer.saving(fig, self.output_path, dpi=self.dpi):
-            plot_artists = [None] * self.num_subplots # To store surface/image artists for removal/update
+        try:
+            # Test if we can actually access the ffmpeg executable
+            import subprocess
+            try:
+                result = subprocess.run([ffmpeg_path, '-version'], 
+                                      capture_output=True, text=True, timeout=5)
+                if result.returncode != 0:
+                    print(f"[StateRecorder] Warning: FFmpeg test failed with return code {result.returncode}")
+            except Exception as e:
+                print(f"[StateRecorder] Warning: Cannot test ffmpeg executable: {e}")
+            
+            with writer.saving(fig, output_path, dpi=self.dpi):
+                plot_artists = [None] * self.num_subplots # To store surface/image artists for removal/update
 
-            for frame_idx, frame_data_dict in enumerate(self.frames):
-                for i, comp_viz_cfg in enumerate(self.components_to_visualize):
-                    ax = axes_list[i]
-                    ax.clear() # Clear previous frame's plot from this subplot
-                    
-                    data_key = f"{comp_viz_cfg['source_key']}_{comp_viz_cfg['component_name']}"
-                    component_data = frame_data_dict.get(data_key)
+                for frame_idx, frame_data_dict in enumerate(self.frames):
+                    for i, comp_viz_cfg in enumerate(self.components_to_visualize):
+                        ax = axes_list[i]
+                        ax.clear() # Clear previous frame's plot from this subplot
+                        
+                        data_key = f"{comp_viz_cfg['source_key']}_{comp_viz_cfg['component_name']}"
+                        component_data = frame_data_dict.get(data_key)
 
-                    if component_data is None:
-                        ax.set_title(f"{comp_viz_cfg['plot_title']} (No Data)")
-                        continue
+                        if component_data is None:
+                            ax.set_title(f"{comp_viz_cfg['plot_title']} (No Data)")
+                            continue
 
-                    ax.set_title(comp_viz_cfg["plot_title"])
-                    vis_type = comp_viz_cfg["visualization_type"]
+                        ax.set_title(comp_viz_cfg["plot_title"])
+                        vis_type = comp_viz_cfg["visualization_type"]
 
-                    if vis_type == "3d_surface":
-                        if component_data.ndim == 2:
-                            H, W = component_data.shape
-                            # Get or create meshgrid for this plot_idx (or specific H,W)
-                            if comp_viz_cfg["plot_idx"] in self.meshgrids:
-                                X, Y = self.meshgrids[comp_viz_cfg["plot_idx"]]
-                                # Ensure meshgrid dimensions match data if dynamically inferred
-                                if X.shape[1] != W or Y.shape[0] != H :
-                                    print(f"Warning: Meshgrid size mismatch for {data_key}. Recreating.")
-                                    Y_new, X_new = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
-                                    self.meshgrids[comp_viz_cfg["plot_idx"]] = (X_new, Y_new)
-                                    X, Y = X_new, Y_new
-                            elif comp_viz_cfg.get("shape_for_plot"): # Use explicitly defined shape if meshgrid wasn't precomputed
-                                shp = comp_viz_cfg["shape_for_plot"]
-                                Y_s, X_s = np.meshgrid(np.arange(shp["h"]), np.arange(shp["w"]), indexing='ij')
-                                X, Y = X_s, Y_s
-                            else: # Fallback: infer from data (might be slow if changing per frame)
-                               Y_fb, X_fb = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
-                               X, Y = X_fb, Y_fb
+                        if vis_type == "3d_surface":
+                            if component_data.ndim == 2:
+                                H, W = component_data.shape
+                                # Get or create meshgrid for this plot_idx (or specific H,W)
+                                if comp_viz_cfg["plot_idx"] in self.meshgrids:
+                                    X, Y = self.meshgrids[comp_viz_cfg["plot_idx"]]
+                                    # Ensure meshgrid dimensions match data if dynamically inferred
+                                    if X.shape[1] != W or Y.shape[0] != H :
+                                        print(f"Warning: Meshgrid size mismatch for {data_key}. Recreating.")
+                                        Y_new, X_new = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+                                        self.meshgrids[comp_viz_cfg["plot_idx"]] = (X_new, Y_new)
+                                        X, Y = X_new, Y_new
+                                elif comp_viz_cfg.get("shape_for_plot"): # Use explicitly defined shape if meshgrid wasn't precomputed
+                                    shp = comp_viz_cfg["shape_for_plot"]
+                                    Y_s, X_s = np.meshgrid(np.arange(shp["h"]), np.arange(shp["w"]), indexing='ij')
+                                    X, Y = X_s, Y_s
+                                else: # Fallback: infer from data (might be slow if changing per frame)
+                                   Y_fb, X_fb = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+                                   X, Y = X_fb, Y_fb
 
-                            surf = ax.plot_surface(
-                                X, Y, component_data,
-                                cmap=comp_viz_cfg.get("cmap_3d", "viridis"),
-                                edgecolor='none',
-                                vmin=comp_viz_cfg.get("val_range_2d", [-1.0, 1.0])[0], # Use val_range_2d for consistency or add specific 3d range
-                                vmax=comp_viz_cfg.get("val_range_2d", [-1.0, 1.0])[1]
+                                surf = ax.plot_surface(
+                                    X, Y, component_data,
+                                    cmap=comp_viz_cfg.get("cmap_3d", "viridis"),
+                                    edgecolor='none',
+                                    vmin=comp_viz_cfg.get("val_range_2d", [-1.0, 1.0])[0], # Use val_range_2d for consistency or add specific 3d range
+                                    vmax=comp_viz_cfg.get("val_range_2d", [-1.0, 1.0])[1]
+                                )
+                                ax.set_zlim(comp_viz_cfg.get("z_lim_3d", [-1.5, 1.5]))
+                                plot_artists[i] = surf # Not strictly needed if clearing axes
+                            else:
+                                ax.text(0.5, 0.5, "Data not 2D for 3D plot", ha='center', va='center')
+                                
+                        elif vis_type == "2d_image_grey":
+                            val_range = comp_viz_cfg.get("val_range_2d", [0.0, 1.0])
+                            img = ax.imshow(
+                                component_data,
+                                cmap=comp_viz_cfg.get("cmap_2d", "gray"),
+                                vmin=val_range[0], vmax=val_range[1]
                             )
-                            ax.set_zlim(comp_viz_cfg.get("z_lim_3d", [-1.5, 1.5]))
-                            plot_artists[i] = surf # Not strictly needed if clearing axes
-                        else:
-                            ax.text(0.5, 0.5, "Data not 2D for 3D plot", ha='center', va='center')
-                            
-                    elif vis_type == "2d_image_grey":
-                        val_range = comp_viz_cfg.get("val_range_2d", [0.0, 1.0])
-                        img = ax.imshow(
-                            component_data,
-                            cmap=comp_viz_cfg.get("cmap_2d", "gray"),
-                            vmin=val_range[0], vmax=val_range[1]
-                        )
-                        ax.set_xticks([])
-                        ax.set_yticks([])
-                        plot_artists[i] = img # Not strictly needed if clearing axes
-                    # Add other visualization types here ("none" is handled by not being in components_to_visualize)
-                
-                fig.suptitle(f"Frame {frame_idx + 1}/{len(self.frames)}", fontsize=12)
-                try:
-                    plt.tight_layout(rect=[0, 0, 1, 0.96]) # Adjust for suptitle
-                except Exception: # Sometimes tight_layout fails with 3D plots
-                    pass 
-                
-                try:
-                    writer.grab_frame()
-                except Exception as e:
-                    print(f"[StateRecorder] Error grabbing frame {frame_idx + 1}: {e}")
-                    break 
+                            ax.set_xticks([])
+                            ax.set_yticks([])
+                            plot_artists[i] = img # Not strictly needed if clearing axes
+                        # Add other visualization types here ("none" is handled by not being in components_to_visualize)
+                    
+                    fig.suptitle(f"Frame {frame_idx + 1}/{len(self.frames)}", fontsize=12)
+                    try:
+                        plt.tight_layout(rect=[0, 0, 1, 0.96]) # Adjust for suptitle
+                    except Exception: # Sometimes tight_layout fails with 3D plots
+                        pass 
+                    
+                    try:
+                        writer.grab_frame()
+                    except Exception as e:
+                        print(f"[StateRecorder] Error grabbing frame {frame_idx + 1}: {e}")
+                        break 
+            
+        except Exception as e:
+            print(f"[StateRecorder] Error initializing video writer: {e}")
+            print("[StateRecorder] This usually means ffmpeg is not properly installed or configured,")
+            print("[StateRecorder] or there's an issue with file permissions or output path.")
+            plt.close(fig)
+            self.frames.clear()
+            return
             
         plt.close(fig)
         self.frames.clear() # Clear frames after saving or attempting to save
 
-        if os.path.exists(self.output_path) and os.path.getsize(self.output_path) > 0:
-            print(f"[StateRecorder] Video successfully saved to: {self.output_path}")
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            print(f"[StateRecorder] Video successfully saved to: {output_path}")
         else:
-            print(f"[StateRecorder] Error: Video file was not created or is empty at {self.output_path}. Check FFMpeg messages or permissions.")
+            print(f"[StateRecorder] Error: Video file was not created or is empty at {output_path}. Check FFMpeg messages or permissions.")

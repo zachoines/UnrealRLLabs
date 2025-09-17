@@ -174,3 +174,8 @@ float AGrid::GetMinHeight() const {
 float AGrid::GetMaxHeight() const {
     return MaxHeight;
 }
+
+void AGrid::SetColumnCollision(int32 ColumnIndex, bool bEnableCollision)
+{
+    SetColumnPhysics(ColumnIndex, bEnableCollision);
+}
