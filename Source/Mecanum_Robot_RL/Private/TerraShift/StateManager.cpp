@@ -1,4 +1,4 @@
-﻿// NOTICE: This file includes modifications generated with the assistance of generative AI.
+// NOTICE: This file includes modifications generated with the assistance of generative AI.
 // Original code structure and logic by the project author.
 // This version incorporates the "Fixed-Slot Reward Structure" state management system.
 
@@ -555,7 +555,8 @@ void UStateManager::BuildCentralState()
             }
 
             // Analytical overlay for column curvature across non-traced positions
-            // Compute ellipsoid cap height per pixel within column XY footprint and overlay on baseline
+            // Compute ellipsoid cap height per pixel within column XY footprint and overlay on baseline.
+            // Consider up to 4 nearest column centers to handle footprints crossing cell boundaries.
             for (int32 r_state = 0; r_state < CurrentStateMapH; ++r_state)
             {
                 for (int32 c_state = 0; c_state < CurrentStateMapW; ++c_state)
@@ -565,46 +566,113 @@ void UStateManager::BuildCentralState()
                     const float lx = (norm_x - 0.5f) * PlatformWorldSize.X;
                     const float ly = (norm_y - 0.5f) * PlatformWorldSize.Y;
 
-                    const FVector wStart = GridTransform.TransformPosition(FVector(lx, ly, traceDistUp));
-                    const int32 gridCell = OccupancyGrid ? OccupancyGrid->WorldToGrid(wStart) : -1;
-                    if (!Grid || !Grid->Columns.IsValidIndex(gridCell))
+                    float h01_max = HeightTmp[r_state][c_state];
+                    const float halfX = PlatformWorldSize.X * 0.5f;
+                    const float halfY = PlatformWorldSize.Y * 0.5f;
+                    const float fx = (lx + halfX) / (CellSize > KINDA_SMALL_NUMBER ? CellSize : 1.f) - 0.5f;
+                    const float fy = (ly + halfY) / (CellSize > KINDA_SMALL_NUMBER ? CellSize : 1.f) - 0.5f;
+                    const int ix0 = FMath::Clamp(FMath::FloorToInt(fx), 0, GridSize - 1);
+                    const int iy0 = FMath::Clamp(FMath::FloorToInt(fy), 0, GridSize - 1);
+                    const int ix1 = FMath::Clamp(ix0 + 1, 0, GridSize - 1);
+                    const int iy1 = FMath::Clamp(iy0 + 1, 0, GridSize - 1);
+                    const int candIdx[4] = { ix0 * GridSize + iy0, ix0 * GridSize + iy1, ix1 * GridSize + iy0, ix1 * GridSize + iy1 };
+
+                    for (int k = 0; k < 4; ++k)
                     {
-                        continue;
+                        const int ci = candIdx[k];
+                        if (!Grid || !Grid->Columns.IsValidIndex(ci)) continue;
+                        AColumn* Col = Grid->Columns[ci];
+                        if (!Col || !Col->ColumnMesh) continue;
+
+                        const FVector colLocal = GridTransform.InverseTransformPosition(Col->GetActorLocation());
+                        const float dx = lx - colLocal.X;
+                        const float dy = ly - colLocal.Y;
+                        const FBoxSphereBounds WorldBounds = Col->ColumnMesh->Bounds;
+                        const float rx = WorldBounds.BoxExtent.X;
+                        const float ry = WorldBounds.BoxExtent.Y;
+                        const float rz = WorldBounds.BoxExtent.Z;
+                        if (rx <= KINDA_SMALL_NUMBER || ry <= KINDA_SMALL_NUMBER || rz <= KINDA_SMALL_NUMBER) continue;
+                        const float nx = dx / rx;
+                        const float ny = dy / ry;
+                        const float r2 = nx * nx + ny * ny;
+                        if (r2 > 1.0f) continue;
+                        const float zLocalTop = colLocal.Z + rz * FMath::Sqrt(FMath::Max(0.f, 1.0f - r2));
+                        const float clampedVisZ = FMath::Clamp(zLocalTop, visMinZ, visMaxZ);
+                        const float norm_height = (visMaxZ > visMinZ) ? (clampedVisZ - visMinZ) / (visMaxZ - visMinZ) : 0.f;
+                        const float h01 = (norm_height * 2.f) - 1.f;
+                        if (h01 > h01_max) h01_max = h01;
                     }
-                    AColumn* Col = Grid->Columns[gridCell];
-                    if (!Col || !Col->ColumnMesh) continue;
+                    HeightTmp[r_state][c_state] = h01_max;
+                }
+            // Analytical overlay for GridObjects (spherical/ellipsoidal), no traces
+            if (ObjectMgr)
+            {
+                const int32 nObjs = ObjectSlotStates.Num();
+                for (int32 i = 0; i < nObjs; ++i)
+                {
+                    const EObjectSlotState SlotState = ObjectSlotStates[i];
+                    if (!(SlotState == EObjectSlotState::Active || SlotState == EObjectSlotState::GoalReached)) continue;
+                    AGridObject* Obj = ObjectMgr->GetGridObject(i);
+                    if (!Obj || !Obj->MeshComponent) continue;
 
-                    // Column center in local frame
-                    const FVector colLocal = GridTransform.InverseTransformPosition(Col->GetActorLocation());
-                    const float dx = lx - colLocal.X;
-                    const float dy = ly - colLocal.Y;
+                    // Object center in local frame and radii from world bounds
+                    const FVector objLocal = GridTransform.InverseTransformPosition(Obj->GetObjectLocation());
+                    const FBoxSphereBounds ObjBounds = Obj->MeshComponent->Bounds;
+                    const float rx = ObjBounds.BoxExtent.X;
+                    const float ry = ObjBounds.BoxExtent.Y;
+                    const float rz = ObjBounds.BoxExtent.Z;
+                    if (rx <= KINDA_SMALL_NUMBER || ry <= KINDA_SMALL_NUMBER || rz <= KINDA_SMALL_NUMBER) continue;
 
-                    // Radii from mesh local bounds and relative scale
-                    const FBoxSphereBounds ColumnBounds = Col->ColumnMesh->CalcLocalBounds();
-                    const FVector colScale = Col->ColumnMesh->GetRelativeScale3D();
-                    const float rx = ColumnBounds.BoxExtent.X * colScale.X;
-                    const float ry = ColumnBounds.BoxExtent.Y * colScale.Y;
-                    const float rz = ColumnBounds.BoxExtent.Z * colScale.Z;
-                    if (rx <= KINDA_SMALL_NUMBER || ry <= KINDA_SMALL_NUMBER || rz <= KINDA_SMALL_NUMBER)
+                    // Compute pixel ROI bounds in state space
+                    const float halfX = PlatformWorldSize.X * 0.5f;
+                    const float halfY = PlatformWorldSize.Y * 0.5f;
+                    const float xmin = objLocal.X - rx;
+                    const float xmax = objLocal.X + rx;
+                    const float ymin = objLocal.Y - ry;
+                    const float ymax = objLocal.Y + ry;
+
+                    auto WorldXToCol = [&](float x)
                     {
-                        continue;
-                    }
-                    const float nx = dx / rx;
-                    const float ny = dy / ry;
-                    const float r2 = nx * nx + ny * ny;
-                    if (r2 > 1.0f) continue; // outside ellipsoid XY projection
-
-                    const float zLocalTop = colLocal.Z + rz * FMath::Sqrt(FMath::Max(0.f, 1.0f - r2));
-                    const float clampedVisZ = FMath::Clamp(zLocalTop, visMinZ, visMaxZ);
-                    const float norm_height = (visMaxZ > visMinZ) ? (clampedVisZ - visMinZ) / (visMaxZ - visMinZ) : 0.f;
-                    const float h01 = (norm_height * 2.f) - 1.f;
-                    if (h01 > HeightTmp[r_state][c_state])
+                        const float norm_x = (x + halfX) / PlatformWorldSize.X; // [0,1]
+                        return FMath::Clamp((int32)FMath::RoundToInt(norm_x * (CurrentStateMapW - 1)), 0, CurrentStateMapW - 1);
+                    };
+                    auto WorldYToRow = [&](float y)
                     {
-                        HeightTmp[r_state][c_state] = h01;
+                        const float norm_y = (y + halfY) / PlatformWorldSize.Y; // [0,1]
+                        return FMath::Clamp((int32)FMath::RoundToInt(norm_y * (CurrentStateMapH - 1)), 0, CurrentStateMapH - 1);
+                    };
+
+                    const int cmin = WorldXToCol(xmin);
+                    const int cmax = WorldXToCol(xmax);
+                    const int rmin = WorldYToRow(ymin);
+                    const int rmax = WorldYToRow(ymax);
+
+                    for (int r = rmin; r <= rmax; ++r)
+                    {
+                        // y at row center
+                        const float norm_y = (CurrentStateMapH > 1) ? (float)r / (float)(CurrentStateMapH - 1) : 0.5f;
+                        const float ly = (norm_y - 0.5f) * PlatformWorldSize.Y;
+                        for (int c = cmin; c <= cmax; ++c)
+                        {
+                            const float norm_x = (CurrentStateMapW > 1) ? (float)c / (float)(CurrentStateMapW - 1) : 0.5f;
+                            const float lx = (norm_x - 0.5f) * PlatformWorldSize.X;
+                            const float dx = lx - objLocal.X;
+                            const float dy = ly - objLocal.Y;
+                            const float nx = dx / rx;
+                            const float ny = dy / ry;
+                            const float r2 = nx * nx + ny * ny;
+                            if (r2 > 1.0f) continue;
+                            const float zLocalTop = objLocal.Z + rz * FMath::Sqrt(FMath::Max(0.f, 1.0f - r2));
+                            const float clampedVisZ = FMath::Clamp(zLocalTop, visMinZ, visMaxZ);
+                            const float h01 = (visMaxZ > visMinZ) ? (((clampedVisZ - visMinZ) / (visMaxZ - visMinZ)) * 2.f - 1.f) : 0.f;
+                            if (h01 > HeightTmp[r][c]) HeightTmp[r][c] = h01;
+                        }
                     }
                 }
             }
+            }
 
+#if 0
             // Build ROI of grid cells near grid objects for tracing
             TSet<int32> TraceCells;
             const int32 R = FMath::Max(0, ColumnCollisionRadiusCells);
@@ -684,11 +752,10 @@ void UStateManager::BuildCentralState()
                                         const FVector colLocal = GridTransform.InverseTransformPosition(Col->GetActorLocation());
                                         const float dx = lx - colLocal.X;
                                         const float dy = ly - colLocal.Y;
-                                        const FBoxSphereBounds ColumnBounds = Col->ColumnMesh->CalcLocalBounds();
-                                        const FVector colScale = Col->ColumnMesh->GetRelativeScale3D();
-                                        const float rx = ColumnBounds.BoxExtent.X * colScale.X;
-                                        const float ry = ColumnBounds.BoxExtent.Y * colScale.Y;
-                                        const float rz = ColumnBounds.BoxExtent.Z * colScale.Z;
+                                        const FBoxSphereBounds WorldBounds = Col->ColumnMesh->Bounds;
+                                        const float rx = WorldBounds.BoxExtent.X;
+                                        const float ry = WorldBounds.BoxExtent.Y;
+                                        const float rz = WorldBounds.BoxExtent.Z;
                                         if (rx > KINDA_SMALL_NUMBER && ry > KINDA_SMALL_NUMBER && rz > KINDA_SMALL_NUMBER)
                                         {
                                             const float nx = dx / rx;
@@ -722,6 +789,8 @@ void UStateManager::BuildCentralState()
                     }
                 }
             }
+            HeightTmp.Clip(-1.f, 1.f);
+#endif
             HeightTmp.Clip(-1.f, 1.f);
         }
         else
@@ -909,8 +978,9 @@ FVector UStateManager::GetColumnTopWorldLocation(int32 GridX, int32 GridY) const
         if (col && col->ColumnMesh)
         {
             FVector colRootLocation = col->GetActorLocation();
-            float scaledHalfMeshHeight = col->ColumnMesh->Bounds.BoxExtent.Z * col->ColumnMesh->GetComponentScale().Z;
-            return FVector(colRootLocation.X, colRootLocation.Y, colRootLocation.Z + (scaledHalfMeshHeight * 2.0));
+            // Use component world bounds; BoxExtent is already half-height in world units
+            const float halfHeightWorld = col->ColumnMesh->Bounds.BoxExtent.Z;
+            return FVector(colRootLocation.X, colRootLocation.Y, colRootLocation.Z + halfHeightWorld);
         }
     }
     return PlatformCenter + FVector(0, 0, 100.f);
