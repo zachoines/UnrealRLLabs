@@ -87,8 +87,8 @@
             [0.0, 1.0, 0.0]
         ],
         "bIncludeHeightMapInState": true,
-        "StateHeightMapResolutionH": 128,
-        "StateHeightMapResolutionW": 128,
+        "StateHeightMapResolutionH": 64,
+        "StateHeightMapResolutionW": 64,
         "bIncludeOverheadImageInState": false,
         "StateOverheadImageResX": 60,
         "StateOverheadImageResY": 60,
@@ -106,7 +106,7 @@
             "name": "height_map",
             "enabled": true,
             "type": "matrix2d",
-            "shape": {"h": 128, "w": 128, "c": 1}
+            "shape": {"h": 64, "w": 64, "c": 1}
           },
           {
             "name": "greyscale_image",
@@ -148,7 +148,7 @@
         "component_name": "height_map",
         "visualization_type": "3d_surface",
         "plot_title": "Height Map Visualization",
-        "shape_for_plot": {"h": 128, "w": 128, "c": 1},
+        "shape_for_plot": {"h": 64, "w": 64, "c": 1},
         "z_lim_3d": [-1, 1],
         "cmap_3d": "terrain"
       }
