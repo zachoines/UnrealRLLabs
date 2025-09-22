@@ -1,4 +1,4 @@
-// NOTICE: This file includes modifications generated with the assistance of generative AI.
+﻿// NOTICE: This file includes modifications generated with the assistance of generative AI.
 // Original code structure and logic by the project author.
 // This version incorporates the "Fixed-Slot Reward Structure" state management system.
 
@@ -9,6 +9,7 @@
 #include "TerraShift/GoalManager.h"
 #include "TerraShift/GoalPlatform.h"
 #include "TerraShift/Column.h"
+#include "HeightMapGenerator.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/World.h"
@@ -516,10 +517,63 @@ void UStateManager::BuildCentralState()
         const float traceDistUp = FMath::Abs(visMaxZ);
         const float traceDistDown = FMath::Abs(visMinZ);
 
-        // If hybrid mode is enabled, start from the simulator wave and then overwrite with traces in ROI.
+        // If optimization is enabled, try GPU heightmap generation first
         if (bEnableColumnCollisionOptimization && WaveSim)
         {
             const FMatrix2D& Wave = WaveSim->GetHeightMap();
+            // GPU path
+            {
+                TArray<float> WaveData = Wave.GetData();
+                TArray<FHeightMapObject> Objects;
+                for (int32 i = 0; i < ObjectSlotStates.Num(); ++i)
+                {
+                    const EObjectSlotState SlotState = ObjectSlotStates[i];
+                    if (!(SlotState == EObjectSlotState::Active || SlotState == EObjectSlotState::GoalReached)) continue;
+                    AGridObject* Obj = ObjectMgr->GetGridObject(i);
+                    if (!Obj || !Obj->MeshComponent) continue;
+                    FHeightMapObject H;
+                    H.CenterLocal = GridTransform.InverseTransformPosition(Obj->GetObjectLocation());
+                    const FBoxSphereBounds B = Obj->MeshComponent->Bounds;
+                    H.Radii = FVector(B.BoxExtent.X, B.BoxExtent.Y, B.BoxExtent.Z);
+                    Objects.Add(H);
+                }
+                FVector ColumnRadii = FVector::ZeroVector;
+                if (Grid && Grid->Columns.Num() > 0 && Grid->Columns[0] && Grid->Columns[0]->ColumnMesh)
+                {
+                    const FBoxSphereBounds CB = Grid->Columns[0]->ColumnMesh->Bounds;
+                    ColumnRadii = FVector(CB.BoxExtent.X, CB.BoxExtent.Y, CB.BoxExtent.Z);
+                }
+                FHeightMapGenParams GP;
+                GP.GridSize = GridSize;
+                GP.StateW = CurrentStateMapW;
+                GP.StateH = CurrentStateMapH;
+                GP.PlatformSize = FVector2D(PlatformWorldSize.X, PlatformWorldSize.Y);
+                GP.CellSize = CellSize;
+                GP.MinZ = visMinZ;
+                GP.MaxZ = visMaxZ;
+                GP.ColumnRadii = ColumnRadii;
+                TArray<float> OutState;
+                if (GenerateHeightMapGPU(GP, WaveData, Objects, OutState) && OutState.Num() == CurrentStateMapW * CurrentStateMapH)
+                {
+                    // Copy OutState into HeightTmp and return
+                    for (int32 r = 0; r < CurrentStateMapH; ++r)
+                    {
+                        for (int32 c = 0; c < CurrentStateMapW; ++c)
+                        {
+                            HeightTmp[r][c] = OutState[r * CurrentStateMapW + c];
+                        }
+                    }
+                    PreviousHeight = CurrentHeight;
+                    CurrentHeight = HeightTmp;
+                    if (bIncludeOverheadImageInState && OverheadCaptureActor)
+                    {
+                        OverheadCaptureActor->GetCaptureComponent2D()->CaptureScene();
+                    }
+                    Step++;
+                    return;
+                }
+            }
+            // GPU path failed; fall back to CPU path below
             const int32 WaveH = Wave.GetNumRows();
             const int32 WaveW = Wave.GetNumColumns();
 
@@ -604,194 +658,75 @@ void UStateManager::BuildCentralState()
                     }
                     HeightTmp[r_state][c_state] = h01_max;
                 }
-            // Analytical overlay for GridObjects (spherical/ellipsoidal), no traces
-            if (ObjectMgr)
-            {
-                const int32 nObjs = ObjectSlotStates.Num();
-                for (int32 i = 0; i < nObjs; ++i)
+                // Analytical overlay for GridObjects (spherical/ellipsoidal), no traces
+                if (ObjectMgr)
                 {
-                    const EObjectSlotState SlotState = ObjectSlotStates[i];
-                    if (!(SlotState == EObjectSlotState::Active || SlotState == EObjectSlotState::GoalReached)) continue;
-                    AGridObject* Obj = ObjectMgr->GetGridObject(i);
-                    if (!Obj || !Obj->MeshComponent) continue;
-
-                    // Object center in local frame and radii from world bounds
-                    const FVector objLocal = GridTransform.InverseTransformPosition(Obj->GetObjectLocation());
-                    const FBoxSphereBounds ObjBounds = Obj->MeshComponent->Bounds;
-                    const float rx = ObjBounds.BoxExtent.X;
-                    const float ry = ObjBounds.BoxExtent.Y;
-                    const float rz = ObjBounds.BoxExtent.Z;
-                    if (rx <= KINDA_SMALL_NUMBER || ry <= KINDA_SMALL_NUMBER || rz <= KINDA_SMALL_NUMBER) continue;
-
-                    // Compute pixel ROI bounds in state space
-                    const float halfX = PlatformWorldSize.X * 0.5f;
-                    const float halfY = PlatformWorldSize.Y * 0.5f;
-                    const float xmin = objLocal.X - rx;
-                    const float xmax = objLocal.X + rx;
-                    const float ymin = objLocal.Y - ry;
-                    const float ymax = objLocal.Y + ry;
-
-                    auto WorldXToCol = [&](float x)
+                    const int32 nObjs = ObjectSlotStates.Num();
+                    for (int32 i = 0; i < nObjs; ++i)
                     {
-                        const float norm_x = (x + halfX) / PlatformWorldSize.X; // [0,1]
-                        return FMath::Clamp((int32)FMath::RoundToInt(norm_x * (CurrentStateMapW - 1)), 0, CurrentStateMapW - 1);
-                    };
-                    auto WorldYToRow = [&](float y)
-                    {
-                        const float norm_y = (y + halfY) / PlatformWorldSize.Y; // [0,1]
-                        return FMath::Clamp((int32)FMath::RoundToInt(norm_y * (CurrentStateMapH - 1)), 0, CurrentStateMapH - 1);
-                    };
+                        const EObjectSlotState SlotState = ObjectSlotStates[i];
+                        if (!(SlotState == EObjectSlotState::Active || SlotState == EObjectSlotState::GoalReached)) continue;
+                        AGridObject* Obj = ObjectMgr->GetGridObject(i);
+                        if (!Obj || !Obj->MeshComponent) continue;
 
-                    const int cmin = WorldXToCol(xmin);
-                    const int cmax = WorldXToCol(xmax);
-                    const int rmin = WorldYToRow(ymin);
-                    const int rmax = WorldYToRow(ymax);
+                        // Object center in local frame and radii from world bounds
+                        const FVector objLocal = GridTransform.InverseTransformPosition(Obj->GetObjectLocation());
+                        const FBoxSphereBounds ObjBounds = Obj->MeshComponent->Bounds;
+                        const float rx = ObjBounds.BoxExtent.X;
+                        const float ry = ObjBounds.BoxExtent.Y;
+                        const float rz = ObjBounds.BoxExtent.Z;
+                        if (rx <= KINDA_SMALL_NUMBER || ry <= KINDA_SMALL_NUMBER || rz <= KINDA_SMALL_NUMBER) continue;
 
-                    for (int r = rmin; r <= rmax; ++r)
-                    {
-                        // y at row center
-                        const float norm_y = (CurrentStateMapH > 1) ? (float)r / (float)(CurrentStateMapH - 1) : 0.5f;
-                        const float ly = (norm_y - 0.5f) * PlatformWorldSize.Y;
-                        for (int c = cmin; c <= cmax; ++c)
-                        {
-                            const float norm_x = (CurrentStateMapW > 1) ? (float)c / (float)(CurrentStateMapW - 1) : 0.5f;
-                            const float lx = (norm_x - 0.5f) * PlatformWorldSize.X;
-                            const float dx = lx - objLocal.X;
-                            const float dy = ly - objLocal.Y;
-                            const float nx = dx / rx;
-                            const float ny = dy / ry;
-                            const float r2 = nx * nx + ny * ny;
-                            if (r2 > 1.0f) continue;
-                            const float zLocalTop = objLocal.Z + rz * FMath::Sqrt(FMath::Max(0.f, 1.0f - r2));
-                            const float clampedVisZ = FMath::Clamp(zLocalTop, visMinZ, visMaxZ);
-                            const float h01 = (visMaxZ > visMinZ) ? (((clampedVisZ - visMinZ) / (visMaxZ - visMinZ)) * 2.f - 1.f) : 0.f;
-                            if (h01 > HeightTmp[r][c]) HeightTmp[r][c] = h01;
-                        }
-                    }
-                }
-            }
-            }
+                        // Compute pixel ROI bounds in state space
+                        const float halfX = PlatformWorldSize.X * 0.5f;
+                        const float halfY = PlatformWorldSize.Y * 0.5f;
+                        const float xmin = objLocal.X - rx;
+                        const float xmax = objLocal.X + rx;
+                        const float ymin = objLocal.Y - ry;
+                        const float ymax = objLocal.Y + ry;
 
-#if 0
-            // Build ROI of grid cells near grid objects for tracing
-            TSet<int32> TraceCells;
-            const int32 R = FMath::Max(0, ColumnCollisionRadiusCells);
-            if (ObjectMgr && OccupancyGrid && R > 0)
-            {
-                const int32 TotalCols = GridSize * GridSize;
-                auto AddNeighbors = [&](int32 CenterIdx)
-                {
-                    const int gx = CenterIdx / GridSize;
-                    const int gy = CenterIdx % GridSize;
-                    const int minX = FMath::Max(gx - R, 0);
-                    const int maxX = FMath::Min(gx + R, GridSize - 1);
-                    const int minY = FMath::Max(gy - R, 0);
-                    const int maxY = FMath::Min(gy + R, GridSize - 1);
-                    for (int xx = minX; xx <= maxX; ++xx)
-                    {
-                        for (int yy = minY; yy <= maxY; ++yy)
-                        {
-                            const float dx = (float)(xx - gx);
-                            const float dy = (float)(yy - gy);
-                            if (dx * dx + dy * dy <= (float)(R * R))
+                        auto WorldXToCol = [&](float x)
                             {
-                                TraceCells.Add(xx * GridSize + yy);
+                                const float norm_x = (x + halfX) / PlatformWorldSize.X; // [0,1]
+                                return FMath::Clamp((int32)FMath::RoundToInt(norm_x * (CurrentStateMapW - 1)), 0, CurrentStateMapW - 1);
+                            };
+                        auto WorldYToRow = [&](float y)
+                            {
+                                const float norm_y = (y + halfY) / PlatformWorldSize.Y; // [0,1]
+                                return FMath::Clamp((int32)FMath::RoundToInt(norm_y * (CurrentStateMapH - 1)), 0, CurrentStateMapH - 1);
+                            };
+
+                        const int cmin = WorldXToCol(xmin);
+                        const int cmax = WorldXToCol(xmax);
+                        const int rmin = WorldYToRow(ymin);
+                        const int rmax = WorldYToRow(ymax);
+
+                        for (int r = rmin; r <= rmax; ++r)
+                        {
+                            // y at row center
+                            const float norm_y = (CurrentStateMapH > 1) ? (float)r / (float)(CurrentStateMapH - 1) : 0.5f;
+                            const float ly = (norm_y - 0.5f) * PlatformWorldSize.Y;
+                            for (int c = cmin; c <= cmax; ++c)
+                            {
+                                const float norm_x = (CurrentStateMapW > 1) ? (float)c / (float)(CurrentStateMapW - 1) : 0.5f;
+                                const float lx = (norm_x - 0.5f) * PlatformWorldSize.X;
+                                const float dx = lx - objLocal.X;
+                                const float dy = ly - objLocal.Y;
+                                const float nx = dx / rx;
+                                const float ny = dy / ry;
+                                const float r2 = nx * nx + ny * ny;
+                                if (r2 > 1.0f) continue;
+                                const float zLocalTop = objLocal.Z + rz * FMath::Sqrt(FMath::Max(0.f, 1.0f - r2));
+                                const float clampedVisZ = FMath::Clamp(zLocalTop, visMinZ, visMaxZ);
+                                const float h01 = (visMaxZ > visMinZ) ? (((clampedVisZ - visMinZ) / (visMaxZ - visMinZ)) * 2.f - 1.f) : 0.f;
+                                if (h01 > HeightTmp[r][c]) HeightTmp[r][c] = h01;
                             }
                         }
                     }
-                };
-
-                for (int32 i = 0; i < ObjectSlotStates.Num(); ++i)
-                {
-                    const EObjectSlotState SlotState = ObjectSlotStates[i];
-                    if (!(SlotState == EObjectSlotState::Active || SlotState == EObjectSlotState::GoalReached)) continue;
-                    AGridObject* Obj = ObjectMgr->GetGridObject(i);
-                    if (!Obj) continue;
-                    const FVector wPos = Obj->GetObjectLocation();
-                    const int32 cell = OccupancyGrid->WorldToGrid(wPos);
-                    AddNeighbors(cell);
                 }
+
+                HeightTmp.Clip(-1.f, 1.f);
             }
-
-            // Overwrite pixels that fall within TraceCells with line-trace heights
-            for (int32 r_state = 0; r_state < CurrentStateMapH; ++r_state)
-            {
-                for (int32 c_state = 0; c_state < CurrentStateMapW; ++c_state)
-                {
-                    // Map state pixel to world XY
-                    const float norm_x = (CurrentStateMapW > 1) ? (float)c_state / (float)(CurrentStateMapW - 1) : 0.5f;
-                    const float norm_y = (CurrentStateMapH > 1) ? (float)r_state / (float)(CurrentStateMapH - 1) : 0.5f;
-                    const float lx = (norm_x - 0.5f) * PlatformWorldSize.X;
-                    const float ly = (norm_y - 0.5f) * PlatformWorldSize.Y;
-
-                    const FVector wStart = GridTransform.TransformPosition(FVector(lx, ly, traceDistUp));
-                    const FVector wEnd = GridTransform.TransformPosition(FVector(lx, ly, -traceDistDown));
-
-                    // Determine column cell under this pixel
-                    const int32 gridCell = OccupancyGrid ? OccupancyGrid->WorldToGrid(wStart) : -1;
-                    if (TraceCells.Contains(gridCell))
-                    {
-                        FHitResult hit;
-                        bool bHit = w->LineTraceSingleByChannel(hit, wStart, wEnd, ECC_Visibility);
-                        float finalLocalZ;
-                        if (bHit)
-                        {
-                            finalLocalZ = GridTransform.InverseTransformPosition(hit.ImpactPoint).Z;
-                        }
-                        else
-                        {
-                            // Fallback: synthesize exact ellipsoid cap height for the column under this pixel
-                            float zLocalSynth = 0.f;
-                            bool bSynthValid = false;
-                            if (Grid && Grid->Columns.IsValidIndex(gridCell))
-                            {
-                                if (AColumn* Col = Grid->Columns[gridCell])
-                                {
-                                    if (Col->ColumnMesh)
-                                    {
-                                        const FVector colLocal = GridTransform.InverseTransformPosition(Col->GetActorLocation());
-                                        const float dx = lx - colLocal.X;
-                                        const float dy = ly - colLocal.Y;
-                                        const FBoxSphereBounds WorldBounds = Col->ColumnMesh->Bounds;
-                                        const float rx = WorldBounds.BoxExtent.X;
-                                        const float ry = WorldBounds.BoxExtent.Y;
-                                        const float rz = WorldBounds.BoxExtent.Z;
-                                        if (rx > KINDA_SMALL_NUMBER && ry > KINDA_SMALL_NUMBER && rz > KINDA_SMALL_NUMBER)
-                                        {
-                                            const float nx = dx / rx;
-                                            const float ny = dy / ry;
-                                            const float r2 = nx * nx + ny * ny;
-                                            if (r2 <= 1.0f)
-                                            {
-                                                zLocalSynth = colLocal.Z + rz * FMath::Sqrt(FMath::Max(0.f, 1.0f - r2));
-                                                bSynthValid = true;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if (bSynthValid)
-                            {
-                                finalLocalZ = zLocalSynth;
-                            }
-                            else
-                            {
-                                // Ultimate fallback: top center point
-                                const int gx = FMath::Clamp(gridCell / GridSize, 0, GridSize - 1);
-                                const int gy = FMath::Clamp(gridCell % GridSize, 0, GridSize - 1);
-                                const FVector topWorld = GetColumnTopWorldLocation(gx, gy);
-                                finalLocalZ = GridTransform.InverseTransformPosition(topWorld).Z;
-                            }
-                        }
-                        const float clampedVisZ = FMath::Clamp(finalLocalZ, visMinZ, visMaxZ);
-                        const float norm_height = (visMaxZ > visMinZ) ? (clampedVisZ - visMinZ) / (visMaxZ - visMinZ) : 0.f;
-                        HeightTmp[r_state][c_state] = (norm_height * 2.f) - 1.f;
-                    }
-                }
-            }
-            HeightTmp.Clip(-1.f, 1.f);
-#endif
-            HeightTmp.Clip(-1.f, 1.f);
         }
         else
         {
@@ -819,15 +754,16 @@ void UStateManager::BuildCentralState()
             }
             HeightTmp.Clip(-1.f, 1.f);
         }
-    }
-    PreviousHeight = CurrentHeight;
-    CurrentHeight = HeightTmp;
+        
+        PreviousHeight = CurrentHeight;
+        CurrentHeight = HeightTmp;
 
-    if (bIncludeOverheadImageInState && OverheadCaptureActor)
-    {
-        OverheadCaptureActor->GetCaptureComponent2D()->CaptureScene();
+        if (bIncludeOverheadImageInState && OverheadCaptureActor)
+        {
+            OverheadCaptureActor->GetCaptureComponent2D()->CaptureScene();
+        }
+        Step++;
     }
-    Step++;
 }
 
 // ------------------------------------------

@@ -138,9 +138,9 @@
     }
   },
   "StateRecorder": {
-    "enabled": true,
+    "enabled": false,
     "video_settings": {"output_path": "Recordings\\TerraShift.mp4", "fps": 30, "dpi": 150},
-    "auto_save_every": 256,
+    "auto_save_every": 512,
     "components_to_record": [
       {
         "enabled": true,
@@ -367,7 +367,7 @@
     "buffer_size": 1024,
     "num_environments": 8,
     "epochs": 4,
-    "mini_batch_size": 8,
+    "mini_batch_size": 16,
     "ActionRepeat": 2,
     "saveFrequency": 9,
     "states_normalizer_disabled": {"epsilon": 1e-08, "warmup_steps": 0}

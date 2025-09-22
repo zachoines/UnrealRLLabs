@@ -25,11 +25,9 @@ public class CustomShaders : ModuleRules
         );
 
         PublicDependencyModuleNames.AddRange(new string[] {
-			"Core", "CoreUObject", "Engine", "InputCore",
-			"RHI", "RenderCore", "Renderer", "Projects"
-			// "ShaderCore",
-			// "RayTracing"
-		});
+            "Core", "CoreUObject", "Engine", "InputCore",
+            "RHI", "RenderCore", "Renderer", "Projects"
+        });
 
 
         PrivateDependencyModuleNames.AddRange(

@@ -36,4 +36,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-# tensorboard --logdir runs --host localhost --port 8888
+# tensorboard --logdirphy runs --host localhost --port 8888
