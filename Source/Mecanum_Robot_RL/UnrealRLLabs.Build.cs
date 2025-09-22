@@ -18,7 +18,8 @@ public class UnrealRLLabs : ModuleRules
             "RenderCore", // Added for rendering support
             "RHI",         // Added for GPU interface support
             "ProceduralMeshComponent",
-            "Niagara"
+            "Niagara",
+            "CustomShaders"
         });
 
         PrivateDependencyModuleNames.AddRange(new string[] { });

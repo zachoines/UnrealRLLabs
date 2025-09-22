@@ -23,15 +23,15 @@
 		},
 		{
 			"Name": "PythonFoundationPackages",
-			"Enabled": true
-		},
-		{
-			"Name": "CustomShaders",
 			"Enabled": false
 		},
 		{
-			"Name": "ProceduralMeshComponent",
+			"Name": "CustomShaders",
 			"Enabled": true
+		},
+		{
+			"Name": "ProceduralMeshComponent",
+			"Enabled": false
 		},
 		{
 			"Name": "Niagara",
@@ -39,6 +39,10 @@
 		},
 		{
 			"Name": "DebugpyPythonPackage",
+			"Enabled": false
+		},
+		{
+			"Name": "TorchPlugin",
 			"Enabled": false
 		}
 	]
