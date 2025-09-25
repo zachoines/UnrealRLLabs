@@ -1173,7 +1173,7 @@ class FullyParameterizedQuantileNetwork(nn.Module):
         tau_prev = F.pad(tau_cum[:, :-1], (1, 0), value=0.0)
         tau_hat = tau_prev + 0.5 * interval_probs  # (B, N)
 
-        quantile_values = self.quantile_net(state_features, tau_hat.unsqueeze(-1).detach())  # (B, N)
+        quantile_values = self.quantile_net(state_features, tau_hat.unsqueeze(-1))  # Keep gradients for FQF loss!
         return quantile_values, taus_internal.unsqueeze(-1)
     
     def get_uniform_baseline(self, state_features: torch.Tensor) -> torch.Tensor:

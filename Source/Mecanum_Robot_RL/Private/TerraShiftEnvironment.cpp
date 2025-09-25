@@ -369,16 +369,17 @@ float ATerraShiftEnvironment::Reward()
                         float alignReward = dotProduct * velLocal.Size();
 
                         // float boundedAlignReward = FMath::Tanh(alignReward);
-                        ShapingSubReward += VelAlign_Scale * ThresholdAndClamp(alignReward, VelAlign_Min, VelAlign_Max);
+                        // ThresholdAndClamp(alignReward, VelAlign_Min, VelAlign_Max)
+                        ShapingSubReward += VelAlign_Scale * alignReward;
                     }
                 }
             }
 
-            float speed = StateManager->GetCurrentVelocity(ObjIndex).Size();
-            if (speed < 10.0f)  // Below minimum acceptable speed
-            {
-                ShapingSubReward -= 0.01f;  // Constant drain for stationary objects
-            }
+            //float speed = StateManager->GetCurrentVelocity(ObjIndex).Size();
+            //if (speed < 10.0f)  // Below minimum acceptable speed
+            //{
+            //    ShapingSubReward -= 0.01f;  // Constant drain for stationary objects
+            //}
 
             AccumulatedReward += ShapingSubReward;
         }
