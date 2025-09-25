@@ -950,13 +950,13 @@ class MAPOCAAgent(Agent):
         quantile_loss = quantile_loss / max(float(num_quantiles), 1.0)
 
         # Fraction loss: need quantiles at boundaries (internal only)
-        with torch.no_grad():
-            val_feats_agg = getattr(self.shared_critic, 'last_value_feats_agg', None)
-            if val_feats_agg is None:
-                return quantile_loss  # fallback
-            sa_quantiles = self.shared_critic.value_iqn_net.quantile_net(
-                val_feats_agg, learned_taus_2d.unsqueeze(-1))  # (B*T, N-1)
-        sa_quantile_hats = current_quantiles.detach()  # (B*T, N)
+        # Compute WITH gradients for fraction loss - critical for FQF optimization!
+        val_feats_agg = getattr(self.shared_critic, 'last_value_feats_agg', None)
+        if val_feats_agg is None:
+            return quantile_loss  # fallback
+        sa_quantiles = self.shared_critic.value_iqn_net.quantile_net(
+            val_feats_agg, learned_taus_2d.unsqueeze(-1))  # Keep gradients for tau optimization!
+        sa_quantile_hats = current_quantiles.detach()  # Only detach the midpoint quantiles
 
         values_1 = sa_quantiles - sa_quantile_hats[:, :-1]
         signs_1 = sa_quantiles > torch.cat([sa_quantile_hats[:, :1], sa_quantiles[:, :-1]], dim=1)
