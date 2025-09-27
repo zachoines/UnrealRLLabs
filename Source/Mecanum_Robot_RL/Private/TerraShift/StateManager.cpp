@@ -216,6 +216,7 @@ void UStateManager::Reset(int32 NumObjects, int32 CurrentAgents)
     PreviousHeight = FMatrix2D(StateH, StateW, 0.f);
     CurrentHeight = FMatrix2D(StateH, StateW, 0.f);
     Step = 0;
+    HeightMapGPUAsync.Reset();
     // Clear previous enabled column cache
     PrevEnabledColumnCells.Empty();
 
@@ -500,7 +501,6 @@ bool UStateManager::AllGridObjectsHandled() const
     return true;
 }
 
-
 // ------------------------------------------
 //   BuildCentralState
 // ------------------------------------------
@@ -523,269 +523,324 @@ void UStateManager::BuildCentralState()
     if (bIncludeHeightMapInState)
     {
         FTransform GridTransform = Grid->GetActorTransform();
-        FTransform PlatformTransform = Platform->GetActorTransform();
         const float visMinZ = MinZ;
         const float visMaxZ = MaxZ;
-        const float traceDistUp = FMath::Abs(visMaxZ);
-        const float traceDistDown = FMath::Abs(visMinZ);
 
         // If optimization is enabled, try GPU heightmap generation first
         if (bEnableColumnCollisionOptimization && WaveSim)
         {
-            const FMatrix2D& Wave = WaveSim->GetHeightMap();
-            // GPU path
+            FHeightMapGPUAsyncState* AsyncStatePtr = nullptr;
+            if (!HeightMapGPUAsync)
             {
-                TArray<FHeightMapObject> Objects;
-                for (int32 i = 0; i < ObjectSlotStates.Num(); ++i)
+                HeightMapGPUAsync = MakeUnique<FHeightMapGPUAsyncState>();
+            }
+            AsyncStatePtr = HeightMapGPUAsync.Get();
+
+            if (AsyncStatePtr)
+            {
+                AsyncStatePtr->EnsureDimensions(CurrentStateMapW, CurrentStateMapH);
+
+                bool bHasFreshGPUState = false;
+                if (AsyncStatePtr->DispatchHandle.IsActive())
                 {
-                    const EObjectSlotState SlotState = ObjectSlotStates[i];
-                    if (SlotState != EObjectSlotState::Active) continue;
-                    AGridObject* Obj = ObjectMgr->GetGridObject(i);
-                    if (!Obj || !Obj->MeshComponent || !Obj->IsActive()) continue;
-                    FHeightMapObject H;
-                    // Use platform-local coordinates to match shader mapping (lx, ly)
-                    H.CenterLocal = GridTransform.InverseTransformPosition(Obj->GetObjectLocation());
-                    // Use configured ObjectRadius for overlay consistency with config and occupancy
-                    const float r = ObjectRadius;
-                    H.Radii = FVector(r, r, r);
-                    Objects.Add(H);
-                }
-                // Build per-column centers and radii arrays (grid-local), y-major idx = y*N + x
-                TArray<FVector> ColumnCentersLocal;
-                TArray<FVector> ColumnRadiiLocal;
-                ColumnCentersLocal.SetNumZeroed(GridSize * GridSize);
-                ColumnRadiiLocal.SetNumZeroed(GridSize * GridSize);
-                if (Grid)
-                {
-                    for (int32 x = 0; x < GridSize; ++x)
+                    if (ResolveHeightMapGPU(AsyncStatePtr->DispatchHandle, AsyncStatePtr->BackState))
                     {
-                        for (int32 y = 0; y < GridSize; ++y)
+                        Swap(AsyncStatePtr->FrontState, AsyncStatePtr->BackState);
+                        AsyncStatePtr->bFrontValid = true;
+                        bHasFreshGPUState = true;
+                    }
+                }
+
+                if (!AsyncStatePtr->DispatchHandle.IsActive())
+                {
+                    const int32 ColCount = GridSize * GridSize;
+                    AsyncStatePtr->ColumnCentersScratch.SetNum(ColCount);
+                    AsyncStatePtr->ColumnRadiiScratch.SetNum(ColCount);
+
+                    if (Grid)
+                    {
+                        for (int32 x = 0; x < GridSize; ++x)
                         {
-                            const int32 idx = y * GridSize + x; // y-major flattening
-                            const int32 colIndex = x * GridSize + y; // grid storage order
-                            if (Grid->Columns.IsValidIndex(colIndex))
+                            for (int32 y = 0; y < GridSize; ++y)
                             {
-                                AColumn* Col = Grid->Columns[colIndex];
-                                if (Col && Col->ColumnMesh)
+                                const int32 idx = y * GridSize + x;
+                                const int32 colIndex = x * GridSize + y;
+                                if (Grid->Columns.IsValidIndex(colIndex))
                                 {
-                                    const FVector wpos = Col->GetActorLocation();
-                                    ColumnCentersLocal[idx] = GridTransform.InverseTransformPosition(wpos);
-                                    const FBoxSphereBounds CB = Col->ColumnMesh->Bounds;
-                                    ColumnRadiiLocal[idx] = FVector(CB.BoxExtent.X, CB.BoxExtent.Y, CB.BoxExtent.Z);
+                                    AColumn* Col = Grid->Columns[colIndex];
+                                    if (Col && Col->ColumnMesh)
+                                    {
+                                        const FVector wpos = Col->GetActorLocation();
+                                        const FVector local = GridTransform.InverseTransformPosition(wpos);
+                                        AsyncStatePtr->ColumnCentersScratch[idx] = FVector3f((float)local.X, (float)local.Y, (float)local.Z);
+
+                                        const FBoxSphereBounds CB = Col->ColumnMesh->Bounds;
+                                        AsyncStatePtr->ColumnRadiiScratch[idx] = FVector3f((float)CB.BoxExtent.X, (float)CB.BoxExtent.Y, (float)CB.BoxExtent.Z);
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                FHeightMapGenParams GP;
-                GP.GridSize = GridSize;
-                GP.StateW = CurrentStateMapW;
-                GP.StateH = CurrentStateMapH;
-                GP.PlatformSize = FVector2D(PlatformWorldSize.X, PlatformWorldSize.Y);
-                GP.CellSize = CellSize;
-                GP.MinZ = visMinZ;
-                GP.MaxZ = visMaxZ;
-                GP.ColZBias = ColumnZBias;
-                GP.ObjZBias = ObjectZBias;
-                TArray<float> OutState;
-                if (GenerateHeightMapGPU(GP, ColumnCentersLocal, ColumnRadiiLocal, Objects, OutState) && OutState.Num() == CurrentStateMapW * CurrentStateMapH)
-                {
-                    // Copy OutState into HeightTmp and return
-                    for (int32 r = 0; r < CurrentStateMapH; ++r)
+
+                    AsyncStatePtr->ObjCentersScratch.Reset();
+                    AsyncStatePtr->ObjRadiiScratch.Reset();
+                    AsyncStatePtr->ObjCentersScratch.Reserve(ObjectSlotStates.Num());
+                    AsyncStatePtr->ObjRadiiScratch.Reserve(ObjectSlotStates.Num());
+
+                    int32 NumActiveObjects = 0;
+                    if (ObjectMgr)
                     {
-                        for (int32 c = 0; c < CurrentStateMapW; ++c)
+                        for (int32 iObj = 0; iObj < ObjectSlotStates.Num(); ++iObj)
                         {
-                            HeightTmp[r][c] = OutState[r * CurrentStateMapW + c];
+                            if (ObjectSlotStates[iObj] != EObjectSlotState::Active)
+                            {
+                                continue;
+                            }
+
+                            AGridObject* Obj = ObjectMgr->GetGridObject(iObj);
+                            if (!Obj || !Obj->MeshComponent || !Obj->IsActive())
+                            {
+                                continue;
+                            }
+
+                            const FVector objLocal = GridTransform.InverseTransformPosition(Obj->GetObjectLocation());
+                            const float radius = ObjectRadius;
+                            AsyncStatePtr->ObjCentersScratch.Add(FVector3f((float)objLocal.X, (float)objLocal.Y, (float)objLocal.Z));
+                            AsyncStatePtr->ObjRadiiScratch.Add(FVector3f(radius, radius, radius));
+                            ++NumActiveObjects;
                         }
                     }
-                    PreviousHeight = CurrentHeight;
-                    CurrentHeight = HeightTmp;
-                    if (bIncludeOverheadImageInState && OverheadCaptureActor)
+
+                    AsyncStatePtr->BufferedNumObjects = NumActiveObjects;
+
+                    FHeightMapGenParams GP;
+                    GP.GridSize = GridSize;
+                    GP.StateW = CurrentStateMapW;
+                    GP.StateH = CurrentStateMapH;
+                    GP.PlatformSize = FVector2D(PlatformWorldSize.X, PlatformWorldSize.Y);
+                    GP.CellSize = CellSize;
+                    GP.MinZ = visMinZ;
+                    GP.MaxZ = visMaxZ;
+                    GP.ColZBias = ColumnZBias;
+                    GP.ObjZBias = ObjectZBias;
+                    GP.NumObjects = NumActiveObjects;
+                    if (NumActiveObjects == 0)
                     {
-                        OverheadCaptureActor->GetCaptureComponent2D()->CaptureScene();
+                        AsyncStatePtr->ObjCentersScratch.SetNum(1);
+                        AsyncStatePtr->ObjCentersScratch[0] = FVector3f::ZeroVector;
+                        AsyncStatePtr->ObjRadiiScratch.SetNum(1);
+                        AsyncStatePtr->ObjRadiiScratch[0] = FVector3f::ZeroVector;
                     }
-                    Step++;
-                    return;
-                }
-            }
-            // GPU path failed; fall back to CPU path below
-            const int32 WaveH = Wave.GetNumRows();
-            const int32 WaveW = Wave.GetNumColumns();
 
-            // Baseline: resample the wave into HeightTmp
-            for (int32 r_state = 0; r_state < CurrentStateMapH; ++r_state)
-            {
-                for (int32 c_state = 0; c_state < CurrentStateMapW; ++c_state)
-                {
-                    // Map state pixel to wave indices (bilinear sample)
-                    const float u = (CurrentStateMapW > 1) ? (float)c_state / (float)(CurrentStateMapW - 1) : 0.5f;
-                    const float v = (CurrentStateMapH > 1) ? (float)r_state / (float)(CurrentStateMapH - 1) : 0.5f;
-                    const float wf = u * (WaveW - 1);
-                    const float hf = v * (WaveH - 1);
-                    const int32 x0 = FMath::Clamp((int32)FMath::FloorToFloat(hf), 0, WaveH - 1);
-                    const int32 x1 = FMath::Clamp(x0 + 1, 0, WaveH - 1);
-                    const int32 y0 = FMath::Clamp((int32)FMath::FloorToFloat(wf), 0, WaveW - 1);
-                    const int32 y1 = FMath::Clamp(y0 + 1, 0, WaveW - 1);
-                    const float dx = hf - (float)x0;
-                    const float dy = wf - (float)y0;
-
-                    const float v00 = Wave[x0][y0];
-                    const float v01 = Wave[x0][y1];
-                    const float v10 = Wave[x1][y0];
-                    const float v11 = Wave[x1][y1];
-                    const float v0 = FMath::Lerp(v00, v01, dy);
-                    const float v1 = FMath::Lerp(v10, v11, dy);
-                    const float vInterp = FMath::Lerp(v0, v1, dx);
-
-                    const float clampedVisZ = FMath::Clamp(vInterp, visMinZ, visMaxZ);
-                    const float norm_height = (visMaxZ > visMinZ) ? (clampedVisZ - visMinZ) / (visMaxZ - visMinZ) : 0.f;
-                    HeightTmp[r_state][c_state] = (norm_height * 2.f) - 1.f;
-                }
-            }
-
-            // Analytical overlay for column curvature across non-traced positions
-            // Compute ellipsoid cap height per pixel within column XY footprint and overlay on baseline.
-            // Consider up to 4 nearest column centers to handle footprints crossing cell boundaries.
-            for (int32 r_state = 0; r_state < CurrentStateMapH; ++r_state)
-            {
-                for (int32 c_state = 0; c_state < CurrentStateMapW; ++c_state)
-                {
-                    const float norm_x = (CurrentStateMapW > 1) ? (float)c_state / (float)(CurrentStateMapW - 1) : 0.5f;
-                    const float norm_y = (CurrentStateMapH > 1) ? (float)r_state / (float)(CurrentStateMapH - 1) : 0.5f;
-                    const float lx = (norm_x - 0.5f) * PlatformWorldSize.X;
-                    const float ly = (norm_y - 0.5f) * PlatformWorldSize.Y;
-
-                    float h01_max = HeightTmp[r_state][c_state];
-                    const float halfX = PlatformWorldSize.X * 0.5f;
-                    const float halfY = PlatformWorldSize.Y * 0.5f;
-                    const float fx = (lx + halfX) / (CellSize > KINDA_SMALL_NUMBER ? CellSize : 1.f) - 0.5f;
-                    const float fy = (ly + halfY) / (CellSize > KINDA_SMALL_NUMBER ? CellSize : 1.f) - 0.5f;
-                    const int ix0 = FMath::Clamp(FMath::FloorToInt(fx), 0, GridSize - 1);
-                    const int iy0 = FMath::Clamp(FMath::FloorToInt(fy), 0, GridSize - 1);
-                    const int ix1 = FMath::Clamp(ix0 + 1, 0, GridSize - 1);
-                    const int iy1 = FMath::Clamp(iy0 + 1, 0, GridSize - 1);
-                    const int candIdx[4] = { ix0 * GridSize + iy0, ix0 * GridSize + iy1, ix1 * GridSize + iy0, ix1 * GridSize + iy1 };
-
-                    for (int k = 0; k < 4; ++k)
+                    if (!DispatchHeightMapGPU(GP,
+                                              AsyncStatePtr->ColumnCentersScratch,
+                                              AsyncStatePtr->ColumnRadiiScratch,
+                                              AsyncStatePtr->ObjCentersScratch,
+                                              AsyncStatePtr->ObjRadiiScratch,
+                                              AsyncStatePtr->DispatchHandle))
                     {
-                        const int ci = candIdx[k];
-                        if (!Grid || !Grid->Columns.IsValidIndex(ci)) continue;
-                        AColumn* Col = Grid->Columns[ci];
-                        if (!Col || !Col->ColumnMesh) continue;
-
-                        // Use platform-local for consistency with pixel mapping
-                        const FVector colLocal = GridTransform.InverseTransformPosition(Col->GetActorLocation());
-                        const float dx = lx - colLocal.X;
-                        const float dy = ly - colLocal.Y;
-                        const FBoxSphereBounds WorldBounds = Col->ColumnMesh->Bounds;
-                        const float rx = WorldBounds.BoxExtent.X;
-                        const float ry = WorldBounds.BoxExtent.Y;
-                        const float rz = WorldBounds.BoxExtent.Z;
-                        if (rx <= KINDA_SMALL_NUMBER || ry <= KINDA_SMALL_NUMBER || rz <= KINDA_SMALL_NUMBER) continue;
-                        const float nx = dx / rx;
-                        const float ny = dy / ry;
-                        const float r2 = nx * nx + ny * ny;
-                        if (r2 > 1.0f) continue;
-                        const float zLocalTop = colLocal.Z + rz * FMath::Sqrt(FMath::Max(0.f, 1.0f - r2));
-                        const float clampedVisZ = FMath::Clamp(zLocalTop, visMinZ, visMaxZ);
-                        const float norm_height = (visMaxZ > visMinZ) ? (clampedVisZ - visMinZ) / (visMaxZ - visMinZ) : 0.f;
-                        const float h01 = (norm_height * 2.f) - 1.f;
-                        if (h01 > h01_max) h01_max = h01;
+                        AsyncStatePtr->DispatchHandle.Reset();
                     }
-                    HeightTmp[r_state][c_state] = h01_max;
                 }
-                // Analytical overlay for GridObjects (spherical/ellipsoidal), no traces
-                if (ObjectMgr)
+
+                if (bHasFreshGPUState)
                 {
-                    const int32 nObjs = ObjectSlotStates.Num();
-                    for (int32 i = 0; i < nObjs; ++i)
+                    const TArray<float>& GPUState = AsyncStatePtr->FrontState;
+                    const int32 ExpectedCount = CurrentStateMapW * CurrentStateMapH;
+                    if (GPUState.Num() == ExpectedCount)
                     {
-                        const EObjectSlotState SlotState = ObjectSlotStates[i];
-                        if (SlotState != EObjectSlotState::Active) continue;
-                        AGridObject* Obj = ObjectMgr->GetGridObject(i);
-                        if (!Obj || !Obj->MeshComponent || !Obj->IsActive()) continue;
-
-                        // Object center in local frame and radii from config (ObjectRadius)
-                        // Use platform-local for consistency with pixel mapping
-                        const FVector objLocal = GridTransform.InverseTransformPosition(Obj->GetObjectLocation());
-                        const float rx = ObjectRadius;
-                        const float ry = ObjectRadius;
-                        const float rz = ObjectRadius;
-                        if (rx <= KINDA_SMALL_NUMBER) continue;
-
-                        // Compute pixel ROI bounds in state space
-                        const float halfX = PlatformWorldSize.X * 0.5f;
-                        const float halfY = PlatformWorldSize.Y * 0.5f;
-                        const float xmin = objLocal.X - rx;
-                        const float xmax = objLocal.X + rx;
-                        const float ymin = objLocal.Y - ry;
-                        const float ymax = objLocal.Y + ry;
-
-                        auto WorldXToCol = [&](float x)
-                            {
-                                const float norm_x = (x + halfX) / PlatformWorldSize.X; // [0,1]
-                                return FMath::Clamp((int32)FMath::RoundToInt(norm_x * (CurrentStateMapW - 1)), 0, CurrentStateMapW - 1);
-                            };
-                        auto WorldYToRow = [&](float y)
-                            {
-                                const float norm_y = (y + halfY) / PlatformWorldSize.Y; // [0,1]
-                                return FMath::Clamp((int32)FMath::RoundToInt(norm_y * (CurrentStateMapH - 1)), 0, CurrentStateMapH - 1);
-                            };
-
-                        const int cmin = WorldXToCol(xmin);
-                        const int cmax = WorldXToCol(xmax);
-                        const int rmin = WorldYToRow(ymin);
-                        const int rmax = WorldYToRow(ymax);
-
-                        for (int r = rmin; r <= rmax; ++r)
+                        for (int32 r = 0; r < CurrentStateMapH; ++r)
                         {
-                            // y at row center
-                            const float norm_y = (CurrentStateMapH > 1) ? (float)r / (float)(CurrentStateMapH - 1) : 0.5f;
-                            const float ly = (norm_y - 0.5f) * PlatformWorldSize.Y;
-                            for (int c = cmin; c <= cmax; ++c)
+                            const int32 rowStart = r * CurrentStateMapW;
+                            for (int32 c = 0; c < CurrentStateMapW; ++c)
                             {
-                                const float norm_x = (CurrentStateMapW > 1) ? (float)c / (float)(CurrentStateMapW - 1) : 0.5f;
-                                const float lx = (norm_x - 0.5f) * PlatformWorldSize.X;
-                                const float dx = lx - objLocal.X;
-                                const float dy = ly - objLocal.Y;
-                                const float nx = dx / rx;
-                                const float ny = dy / ry;
-                                const float r2 = nx * nx + ny * ny;
-                                if (r2 > 1.0f) continue;
-                                const float zLocalTop = objLocal.Z + rz * FMath::Sqrt(FMath::Max(0.f, 1.0f - r2));
-                                const float clampedVisZ = FMath::Clamp(zLocalTop, visMinZ, visMaxZ);
-                                const float h01 = (visMaxZ > visMinZ) ? (((clampedVisZ - visMinZ) / (visMaxZ - visMinZ)) * 2.f - 1.f) : 0.f;
-                                if (h01 > HeightTmp[r][c]) HeightTmp[r][c] = h01;
+                                HeightTmp[r][c] = GPUState[rowStart + c];
+                            }
+                        }
+
+                        PreviousHeight = CurrentHeight;
+                        CurrentHeight = HeightTmp;
+
+                        if (bIncludeOverheadImageInState && OverheadCaptureActor)
+                        {
+                            OverheadCaptureActor->GetCaptureComponent2D()->CaptureScene();
+                        }
+
+                        Step++;
+                        return;
+                    }
+
+                    UE_LOG(LogTemp, Warning, TEXT("StateManager::BuildCentralState => GPU height map size mismatch (expected %d, got %d)"), ExpectedCount, GPUState.Num());
+                    AsyncStatePtr->bFrontValid = false;
+                }
+
+                if (AsyncStatePtr->bFrontValid)
+                {
+                    const TArray<float>& GPUState = AsyncStatePtr->FrontState;
+                    const int32 ExpectedCount = CurrentStateMapW * CurrentStateMapH;
+                    if (GPUState.Num() == ExpectedCount)
+                    {
+                        for (int32 r = 0; r < CurrentStateMapH; ++r)
+                        {
+                            const int32 rowStart = r * CurrentStateMapW;
+                            for (int32 c = 0; c < CurrentStateMapW; ++c)
+                            {
+                                HeightTmp[r][c] = GPUState[rowStart + c];
+                            }
+                        }
+
+                        PreviousHeight = CurrentHeight;
+                        CurrentHeight = HeightTmp;
+
+                        if (bIncludeOverheadImageInState && OverheadCaptureActor)
+                        {
+                            OverheadCaptureActor->GetCaptureComponent2D()->CaptureScene();
+                        }
+
+                        Step++;
+                        return;
+                    }
+
+                    UE_LOG(LogTemp, Warning, TEXT("StateManager::BuildCentralState => GPU cached state size mismatch (expected %d, got %d)"), ExpectedCount, GPUState.Num());
+                    AsyncStatePtr->bFrontValid = false;
+                    AsyncStatePtr->FrontState.Reset();
+                }
+            }
+
+            const float InvRangeZ = (visMaxZ > visMinZ) ? 1.0f / (visMaxZ - visMinZ) : 0.0f;
+            const float HalfX = PlatformWorldSize.X * 0.5f;
+            const float HalfY = PlatformWorldSize.Y * 0.5f;
+            const float SafeCellSize = (CellSize > KINDA_SMALL_NUMBER) ? CellSize : 1.f;
+
+            const int32 BufferedObjects = AsyncStatePtr ? AsyncStatePtr->BufferedNumObjects : 0;
+            const int32 ColumnScratchCount = AsyncStatePtr ? AsyncStatePtr->ColumnCentersScratch.Num() : 0;
+
+            for (int32 RowIdx = 0; RowIdx < CurrentStateMapH; ++RowIdx)
+            {
+                const float normY = (CurrentStateMapH > 1) ? static_cast<float>(RowIdx) / static_cast<float>(CurrentStateMapH - 1) : 0.5f;
+                const float ly = (normY - 0.5f) * PlatformWorldSize.Y;
+                const float fy = (ly + HalfY) / SafeCellSize - 0.5f;
+                const int iy0 = FMath::Clamp((int32)FMath::FloorToFloat(fy), 0, GridSize - 1);
+                const int iy1 = FMath::Clamp(iy0 + 1, 0, GridSize - 1);
+
+                for (int32 ColIdx = 0; ColIdx < CurrentStateMapW; ++ColIdx)
+                {
+                    const float normX = (CurrentStateMapW > 1) ? static_cast<float>(ColIdx) / static_cast<float>(CurrentStateMapW - 1) : 0.5f;
+                    const float lx = (normX - 0.5f) * PlatformWorldSize.X;
+
+                    float zLocal = visMinZ;
+
+                    if (AsyncStatePtr && ColumnScratchCount > 0)
+                    {
+                        const float fx = (lx + HalfX) / SafeCellSize - 0.5f;
+                        const int ix0 = FMath::Clamp((int32)FMath::FloorToFloat(fx), 0, GridSize - 1);
+                        const int ix1 = FMath::Clamp(ix0 + 1, 0, GridSize - 1);
+                        const int candIdx[4] = { iy0 * GridSize + ix0, iy1 * GridSize + ix0, iy0 * GridSize + ix1, iy1 * GridSize + ix1 };
+
+                        for (int candidate = 0; candidate < 4; ++candidate)
+                        {
+                            const int ci = candIdx[candidate];
+                            if (!AsyncStatePtr->ColumnCentersScratch.IsValidIndex(ci) || !AsyncStatePtr->ColumnRadiiScratch.IsValidIndex(ci))
+                            {
+                                continue;
+                            }
+
+                            const FVector3f& cc = AsyncStatePtr->ColumnCentersScratch[ci];
+                            const FVector3f& cr = AsyncStatePtr->ColumnRadiiScratch[ci];
+                            const float rx = FMath::Max(cr.X, KINDA_SMALL_NUMBER);
+                            const float ry = FMath::Max(cr.Y, KINDA_SMALL_NUMBER);
+                            const float rz = FMath::Max(cr.Z, KINDA_SMALL_NUMBER);
+                            const float dx = lx - cc.X;
+                            const float dy = ly - cc.Y;
+                            const float nx = dx / rx;
+                            const float ny = dy / ry;
+                            const float r2 = nx * nx + ny * ny;
+
+                            if (r2 <= 1.0f)
+                            {
+                                const float candidateZ = (cc.Z + ColumnZBias) + rz * FMath::Sqrt(FMath::Max(0.f, 1.0f - r2));
+                                zLocal = FMath::Max(zLocal, candidateZ);
                             }
                         }
                     }
-                }
 
-                HeightTmp.Clip(-1.f, 1.f);
+                    if (AsyncStatePtr && BufferedObjects > 0)
+                    {
+                        for (int32 objIdx = 0; objIdx < BufferedObjects; ++objIdx)
+                        {
+                            if (!AsyncStatePtr->ObjCentersScratch.IsValidIndex(objIdx) || !AsyncStatePtr->ObjRadiiScratch.IsValidIndex(objIdx))
+                            {
+                                continue;
+                            }
+
+                            const FVector3f& oc = AsyncStatePtr->ObjCentersScratch[objIdx];
+                            const FVector3f& orad = AsyncStatePtr->ObjRadiiScratch[objIdx];
+                            const float rx = FMath::Max(orad.X, KINDA_SMALL_NUMBER);
+                            const float ry = FMath::Max(orad.Y, KINDA_SMALL_NUMBER);
+                            const float rz = FMath::Max(orad.Z, KINDA_SMALL_NUMBER);
+                            const float onx = (lx - oc.X) / rx;
+                            const float ony = (ly - oc.Y) / ry;
+                            const float or2 = onx * onx + ony * ony;
+
+                            if (or2 <= 1.0f)
+                            {
+                                const float candidateZ = (oc.Z + ObjectZBias) + rz * FMath::Sqrt(FMath::Max(0.f, 1.0f - or2));
+                                zLocal = FMath::Max(zLocal, candidateZ);
+                            }
+                        }
+                    }
+
+                    const float zClamped = FMath::Clamp(zLocal, visMinZ, visMaxZ);
+                    const float normHeight = (zClamped - visMinZ) * InvRangeZ;
+                    HeightTmp[RowIdx][ColIdx] = FMath::Clamp(normHeight * 2.f - 1.f, -1.f, 1.f);
+                }
+            }
+
+            HeightTmp.Clip(-1.f, 1.f);
+
+            if (AsyncStatePtr)
+            {
+                const int32 ExpectedCount = CurrentStateMapW * CurrentStateMapH;
+                AsyncStatePtr->FrontState.SetNum(ExpectedCount, EAllowShrinking::No);
+                for (int32 r = 0; r < CurrentStateMapH; ++r)
+                {
+                    const int32 rowStart = r * CurrentStateMapW;
+                    for (int32 c = 0; c < CurrentStateMapW; ++c)
+                    {
+                        AsyncStatePtr->FrontState[rowStart + c] = HeightTmp[r][c];
+                    }
+                }
+                AsyncStatePtr->bFrontValid = true;
             }
         }
         else
         {
             // Original: pure line-trace height map across the full state grid
-            for (int32 r_state = 0; r_state < CurrentStateMapH; ++r_state)
-            {
-                for (int32 c_state = 0; c_state < CurrentStateMapW; ++c_state)
-                {
-                    const float norm_x = (CurrentStateMapW > 1) ? static_cast<float>(c_state) / (CurrentStateMapW - 1) : 0.5f;
-                    const float norm_y = (CurrentStateMapH > 1) ? static_cast<float>(r_state) / (CurrentStateMapH - 1) : 0.5f;
-                    const float lx = (norm_x - 0.5f) * PlatformWorldSize.X;
-                    const float ly = (norm_y - 0.5f) * PlatformWorldSize.Y;
+            const FTransform LocalGridTransform = Grid->GetActorTransform();
+            const float LocalVisMinZ = MinZ;
+            const float LocalVisMaxZ = MaxZ;
+            const float LocalTraceDistUp = FMath::Abs(LocalVisMaxZ);
+            const float LocalTraceDistDown = FMath::Abs(LocalVisMinZ);
 
-                    const FVector wStart = GridTransform.TransformPosition(FVector(lx, ly, traceDistUp));
-                    const FVector wEnd = GridTransform.TransformPosition(FVector(lx, ly, -traceDistDown));
+            for (int32 TraceRowIdx = 0; TraceRowIdx < CurrentStateMapH; ++TraceRowIdx)
+            {
+                for (int32 TraceColIdx = 0; TraceColIdx < CurrentStateMapW; ++TraceColIdx)
+                {
+                    const float normX = (CurrentStateMapW > 1) ? static_cast<float>(TraceColIdx) / static_cast<float>(CurrentStateMapW - 1) : 0.5f;
+                    const float normY = (CurrentStateMapH > 1) ? static_cast<float>(TraceRowIdx) / static_cast<float>(CurrentStateMapH - 1) : 0.5f;
+                    const float lx = (normX - 0.5f) * PlatformWorldSize.X;
+                    const float ly = (normY - 0.5f) * PlatformWorldSize.Y;
+
+                    const FVector wStart = LocalGridTransform.TransformPosition(FVector(lx, ly, LocalTraceDistUp));
+                    const FVector wEnd = LocalGridTransform.TransformPosition(FVector(lx, ly, -LocalTraceDistDown));
 
                     FHitResult hit;
                     const bool bHit = w->LineTraceSingleByChannel(hit, wStart, wEnd, ECC_Visibility);
 
-                    const float finalLocalZ = bHit ? GridTransform.InverseTransformPosition(hit.ImpactPoint).Z : 0.f;
-                    const float clampedVisZ = FMath::Clamp(finalLocalZ, visMinZ, visMaxZ);
-                    const float norm_height = (visMaxZ > visMinZ) ? (clampedVisZ - visMinZ) / (visMaxZ - visMinZ) : 0.f;
-                    HeightTmp[r_state][c_state] = (norm_height * 2.f) - 1.f;
+                    const float finalLocalZ = bHit ? LocalGridTransform.InverseTransformPosition(hit.ImpactPoint).Z : 0.f;
+                    const float clampedVisZ = FMath::Clamp(finalLocalZ, LocalVisMinZ, LocalVisMaxZ);
+                    const float normHeight = (LocalVisMaxZ > LocalVisMinZ) ? (clampedVisZ - LocalVisMinZ) / (LocalVisMaxZ - LocalVisMinZ) : 0.f;
+                    HeightTmp[TraceRowIdx][TraceColIdx] = (normHeight * 2.f) - 1.f;
                 }
             }
             HeightTmp.Clip(-1.f, 1.f);

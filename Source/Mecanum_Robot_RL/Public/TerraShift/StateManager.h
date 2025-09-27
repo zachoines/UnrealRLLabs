@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Templates/UniquePtr.h"
 #include "UObject/NoExportTypes.h"
 #include "EnvironmentConfig.h"
 #include "TerraShift/MainPlatform.h"
@@ -9,6 +10,7 @@
 #include "TerraShift/GoalManager.h"
 #include "TerraShift/Matrix2D.h"
 #include "TerraShift/MultiAgentGaussianWaveHeightMap.h"
+#include "HeightMapGenerator.h"
 #include "TerraShift/OccupancyGrid.h"
 #include "Engine/World.h"
 #include "Camera/CameraActor.h"
@@ -16,6 +18,34 @@
 #include "Components/SceneCaptureComponent2D.h"
 #include "Kismet/KismetRenderingLibrary.h"
 #include "StateManager.generated.h"
+struct FHeightMapGPUAsyncState
+{
+    FHeightMapGPUDispatchHandle DispatchHandle;
+    TArray<float> FrontState;
+    TArray<float> BackState;
+    bool bFrontValid = false;
+    int32 StateW = 0;
+    int32 StateH = 0;
+    TArray<FVector3f> ColumnCentersScratch;
+    TArray<FVector3f> ColumnRadiiScratch;
+    TArray<FVector3f> ObjCentersScratch;
+    TArray<FVector3f> ObjRadiiScratch;
+    int32 BufferedNumObjects = 0;
+
+    void EnsureDimensions(int32 InW, int32 InH)
+    {
+        if (StateW != InW || StateH != InH)
+        {
+            StateW = InW;
+            StateH = InH;
+            const int32 Count = StateW * StateH;
+            FrontState.SetNumZeroed(Count);
+            BackState.SetNumZeroed(Count);
+            bFrontValid = false;
+        }
+        BufferedNumObjects = 0;
+    }
+};
 
 /**
  * NEW: Enum to track the persistent state of each object slot throughout an episode.
@@ -32,7 +62,7 @@
 /**
  * UStateManager:
  *
- * - Tracks a certain number of �grid objects�
+ * - Tracks a certain number of "grid objects"
  * - Uses an OccupancyGrid to place random goals and objects without overlap
  * - Manages toggles for removing or keeping objects on goals/OOB, or "respawning" them
  * - Builds NxN height-based "central state" + optionally a goals-occupancy channel
@@ -246,6 +276,7 @@ private:
     UPROPERTY() FMatrix2D PreviousHeight;
     UPROPERTY() FMatrix2D CurrentHeight;
     unsigned long Step = 0;
+    TUniquePtr<FHeightMapGPUAsyncState> HeightMapGPUAsync;
 
     // Track previously enabled column cells to avoid redundant toggling
     UPROPERTY() TSet<int32> PrevEnabledColumnCells;

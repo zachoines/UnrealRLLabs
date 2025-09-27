@@ -35,7 +35,7 @@ void UExperienceBuffer::AddExperience(int32 EnvIndex, const FExperience& Exp)
     // If over capacity => remove oldest
     while (EnvDeques[EnvIndex].Num() > BufferCapacity)
     {
-        EnvDeques[EnvIndex].RemoveAt(0, 1, false);
+        EnvDeques[EnvIndex].RemoveAt(0, 1, EAllowShrinking::No);
     }
 }
 
@@ -80,7 +80,7 @@ TArray<FExperienceBatch> UExperienceBuffer::SampleEnvironmentTrajectories(int32 
 
                 if (!bSampleWithReplacement)
                 {
-                    EnvDeques[e].RemoveAt(idx, 1, false);
+                    EnvDeques[e].RemoveAt(idx, 1, EAllowShrinking::No);
                 }
             }
         }
@@ -92,7 +92,7 @@ TArray<FExperienceBatch> UExperienceBuffer::SampleEnvironmentTrajectories(int32 
                 batch.Experiences.Add(EnvDeques[e][0]);
                 if (!bSampleWithReplacement)
                 {
-                    EnvDeques[e].RemoveAt(0, 1, false);
+                    EnvDeques[e].RemoveAt(0, 1, EAllowShrinking::No);
                 }
             }
         }

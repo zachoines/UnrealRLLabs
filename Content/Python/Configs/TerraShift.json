@@ -7,11 +7,11 @@
       "MaxColumnHeight": 6.0,
       "ObjectMass": 0.1,
       "GridSize": 8,
-      "MaxSteps": 256,
+      "MaxSteps": 1024,
       "MaxAgents": 16,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
-        "bUseXYDistanceImprovement": true,
+        "bUseXYDistanceImprovement": false,
         "bUseZAccelerationPenalty": false,
         "bUsePotentialShaping": false,
         "bUseDistanceBasedReward": false,
@@ -42,22 +42,22 @@
         "bAccumulatedWave": false,
         "AccumulatedWaveFadeGamma": 0.95,
         "bWrapAroundEdges": true,
-        "VelMinMax": [-1, 1],
+        "VelMinMax": [-2, 2],
         "AngVelRange": [-0.785, 0.785],
         "AmpMinMax": [-6.0, 6.0],
-        "SigMinMax": [0.2, 2.0],
-        "DeltaVelScale": 1.0,
-        "DeltaAngVelScale": 0.78,
+        "SigMinMax": [0.1, 2.0],
+        "DeltaVelScale": 2.0,
+        "DeltaAngVelScale": 0.785,
         "DeltaAmpScale": 6.0,
-        "DeltaSigmaScale": 0.5
+        "DeltaSigmaScale": 1.0
       },
       "StateManager": {
         "MaxGridObjects": 8,
         "MarginXY": -1.0,
         "MinZ": 0.0,
-        "MaxZ": 80.0,
-        "SpawnPaddingZ": 0.2,
-        "SpawnSeparationRadius": 15.0,
+        "MaxZ": 60.0,
+        "SpawnPaddingZ": 10.0,
+        "SpawnSeparationRadius": 10.0,
         "ObjectMass": 0.1,
         "MaxColumnHeight": 6.0,
         "BaseRespawnDelay": 0.2,
@@ -71,8 +71,8 @@
         "bTerminateOnAllGoalsReached": true,
         "bTerminateOnMaxSteps": true,
         "bRemoveObjectsOnGoal": true,
-        "GoalRadius": 7.0,
-        "ObjectRadius": 7.0,
+        "GoalRadius": 8.0,
+        "ObjectRadius": 6.0,
         "GoalCollectRadius": 10.0,
         "GoalColors": [
             [1.0, 0.0, 1.0],
@@ -138,9 +138,9 @@
     }
   },
   "StateRecorder": {
-    "enabled": true,
-    "video_settings": {"output_path": "Recordings\\TerraShift.mp4", "fps": 30, "dpi": 150},
-    "auto_save_every": 32,
+    "enabled": false,
+    "video_settings": {"output_path": "Recordings\\TerraShift.mp4", "fps": 32, "dpi": 150},
+    "auto_save_every": 1024,
     "components_to_record": [
       {
         "enabled": true,
@@ -176,7 +176,7 @@
         "normalize_reward": false,
         "network": {"output_size": 128, "hidden_size": 256}
       },
-      "rewards_normalizer": {
+      "rewards_normalizer_disabled": {
         "epsilon": 1e-05,
         "warmup_steps": 0
       },
@@ -305,7 +305,7 @@
         "policy_network": {
           "type": "beta",
           "in_features": 256,
-          "hidden_size": 384,
+          "hidden_size": 256,
           "param_init_bias": 0.0,
           "min_concentration": 1.01,
           "linear_init_scale": 0.1,
@@ -336,7 +336,7 @@
             "dropout": 0.05,
             "self_attention": true
           },
-          "distributional_network_params": {
+          "distributional_network_params_disabled": {
             "iqn_network_disabled": {
               "feature_dim": 256,
               "hidden_size": 256,
@@ -347,7 +347,7 @@
               "dropout_rate": 0.05,
               "iqn_kappa": 1.0
             },
-            "fqf_network": {
+            "fqf_network_disabled": {
               "feature_dim": 256,
               "hidden_size": 256,
               "quantile_embedding_dim": 64,
@@ -373,12 +373,12 @@
   "train": {
     "sequence_length": 16,
     "pad_trajectories": true,
-    "batch_size": 1024,
-    "buffer_size": 1024,
-    "num_environments": 1,
+    "batch_size": 128,
+    "buffer_size": 128,
+    "num_environments": 32,
     "epochs": 3,
-    "mini_batch_size": 8,
-    "ActionRepeat": 2,
+    "mini_batch_size": 32,
+    "ActionRepeat": 1,
     "saveFrequency": 9,
     "states_normalizer_disabled": {"epsilon": 1e-08, "warmup_steps": 0}
   },
