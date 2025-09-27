@@ -191,7 +191,10 @@ private:
     UPROPERTY() float MinZ = -4.f;
     UPROPERTY() float MaxZ = 100.f;
     UPROPERTY() int32 MarginCells = 4;
-    UPROPERTY() float ObjectScale = 0.1f;
+    // Deprecated: ObjectScale replaced by ObjectRadius-driven scaling
+    // Removed from code paths to avoid confusion.
+    UPROPERTY(Transient) float SpawnPaddingZ = 0.1f; // extra Z clearance on spawn
+    UPROPERTY() float SpawnSeparationRadius = -1.f;   // if >0 overrides ObjectRadius for occupancy spacing
     UPROPERTY() float ObjectMass = 0.1f;
     UPROPERTY() float MaxColumnHeight = 4.f;
     UPROPERTY() float BaseRespawnDelay = 0.25f;
@@ -205,6 +208,9 @@ private:
     UPROPERTY() float GoalCollectRadius = 6.f;
     UPROPERTY() float ObjectRadius = 1.f;
     UPROPERTY() float ObjectUnscaledSize = 50.f;
+    // Heightmap rendering biases (grid-local Z adjustments)
+    UPROPERTY() float ColumnZBias = 0.f;
+    UPROPERTY() float ObjectZBias = 0.f;
     UPROPERTY() TArray<FLinearColor> GoalColors;
     UPROPERTY() TArray<FLinearColor> GridObjectColors;
     UPROPERTY() bool bIncludeHeightMapInState;

@@ -43,6 +43,8 @@ public:
 
     // Spawns or reuses a GridObject at the specified index and location
     void SpawnGridObjectAtIndex(int32 Index, FVector InWorldLocation, FVector InObjectSize, float InObjectMass);
+    // Configure extra Z clearance on spawn
+    void SetSpawnPaddingZ(float InPadding) { SpawnPaddingZ = InPadding; }
     
     // Event triggered when a GridObject is spawned
     UPROPERTY(BlueprintAssignable, Category = "Events")
@@ -65,6 +67,9 @@ private:
 
     // The platform actor reference
     AActor* PlatformActor;
+
+    // Extra Z clearance added above surface at spawn to avoid interpenetration
+    UPROPERTY() float SpawnPaddingZ = 0.1f;
 
     // Helper function to create a new GridObject
     AGridObject* CreateNewGridObjectAtIndex(int32 Index, FVector InObjectSize, float InObjectMass);

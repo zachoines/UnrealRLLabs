@@ -66,16 +66,29 @@ void AGridObjectManager::SpawnGridObjectAtIndex(int32 Index, FVector InWorldLoca
     }
 
     if (GridObject) {
+        // Ensure visual scale matches requested size every spawn (for reuse cases)
+        if (GridObject->MeshComponent)
+        {
+            GridObject->MeshComponent->SetWorldScale3D(InObjectSize);
+            GridObject->MeshComponent->UpdateBounds();
+        }
         // Adjust the GridObject's location to ensure it's above the grid
         FVector Location = InWorldLocation;
 
         // Reset and activate the GridObject
         GridObject->ResetGridObject();
 
-        // Get offset before set location
-        float sphereRadius = GridObject->MeshComponent->Bounds.BoxExtent.Z * 2; // Avoiding collision with grid 
+        // Ensure bounds are up-to-date after any scale changes
+        if (GridObject->MeshComponent)
+        {
+            GridObject->MeshComponent->UpdateBounds();
+        }
 
-        Location.Z += sphereRadius;
+        // Place directly above the provided point (expected to be column top)
+        // by one radius plus a small padding to avoid initial interpenetration.
+        float sphereRadius = GridObject->MeshComponent ? GridObject->MeshComponent->Bounds.BoxExtent.Z : 0.f;
+        Location = InWorldLocation;
+        Location.Z += sphereRadius + SpawnPaddingZ;
 
         // Set the GridObject's world location
         GridObject->SetActorLocation(Location);

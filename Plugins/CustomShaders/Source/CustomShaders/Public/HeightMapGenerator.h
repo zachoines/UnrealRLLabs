@@ -18,13 +18,15 @@ struct CUSTOMSHADERS_API FHeightMapGenParams
     float CellSize = 1.f;
     float MinZ = 0.f;
     float MaxZ = 1.f;
-    FVector ColumnRadii = FVector::ZeroVector; // world bounds BoxExtent for a column
+    FVector ColumnRadii = FVector::ZeroVector; // legacy (unused when per-column radii provided)
+    float ColZBias = 0.0f;  // additive Z bias for columns (world units in grid-local)
+    float ObjZBias = 7.5f;  // additive Z bias for objects (world units in grid-local)
 };
 
 // Returns true on success and fills OutState with StateH*StateW floats in [-1,1]
-CUSTOMSHADERS_API bool GenerateHeightMapGPU(const FHeightMapGenParams& Params,
-                          const TArray<float>& WaveHeights,
+CUSTOMSHADERS_API bool GenerateHeightMapGPU(
+                          const FHeightMapGenParams& Params,
+                          const TArray<FVector>& ColumnCenters,
+                          const TArray<FVector>& ColumnRadiiArray,
                           const TArray<FHeightMapObject>& Objects,
                           TArray<float>& OutState);
-
-
