@@ -3,6 +3,24 @@
 
 #include "CoreMinimal.h"
 
+class FRHIGPUBufferReadback;
+
+struct CUSTOMSHADERS_API FHeightMapGPUDispatchHandle
+{
+    TSharedPtr<FRHIGPUBufferReadback, ESPMode::ThreadSafe> Readback;
+    uint64 ExpectedBytes = 0;
+    int32 ElementCount = 0;
+    bool bInFlight = false;
+
+    bool IsActive() const { return bInFlight; }
+    void Reset()
+    {
+        bInFlight = false;
+        ExpectedBytes = 0;
+        ElementCount = 0;
+    }
+};
+
 struct CUSTOMSHADERS_API FHeightMapObject
 {
     FVector CenterLocal; // in grid local space
@@ -21,7 +39,19 @@ struct CUSTOMSHADERS_API FHeightMapGenParams
     FVector ColumnRadii = FVector::ZeroVector; // legacy (unused when per-column radii provided)
     float ColZBias = 0.0f;  // additive Z bias for columns (world units in grid-local)
     float ObjZBias = 7.5f;  // additive Z bias for objects (world units in grid-local)
+    int32 NumObjects = 0;
 };
+
+// Dispatch/resolve helpers for async height map generation
+CUSTOMSHADERS_API bool DispatchHeightMapGPU(
+                          const FHeightMapGenParams& Params,
+                          const TArray<FVector3f>& ColumnCenters,
+                          const TArray<FVector3f>& ColumnRadiiArray,
+                          const TArray<FVector3f>& ObjectCenters,
+                          const TArray<FVector3f>& ObjectRadii,
+                          FHeightMapGPUDispatchHandle& InOutHandle);
+
+CUSTOMSHADERS_API bool ResolveHeightMapGPU(FHeightMapGPUDispatchHandle& Handle, TArray<float>& OutState);
 
 // Returns true on success and fills OutState with StateH*StateW floats in [-1,1]
 CUSTOMSHADERS_API bool GenerateHeightMapGPU(

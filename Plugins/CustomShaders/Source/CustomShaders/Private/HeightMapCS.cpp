@@ -6,6 +6,8 @@
 #include "RHIStaticStates.h"
 #include "RHI.h"
 #include "RHIGPUReadback.h"
+#include "HAL/Event.h"
+#include "HAL/PlatformProcess.h"
 
 class FHeightMapCS : public FGlobalShader
 {
@@ -43,6 +45,7 @@ END_SHADER_PARAMETER_STRUCT()
 
 static FRDGBufferRef CreateStructuredBufferWithData(FRDGBuilder& GraphBuilder, const TCHAR* Name, uint32 Stride, uint32 NumElements, const void* InitialData)
 {
+    check(NumElements > 0);
     const uint64 SizeInBytes = (uint64)Stride * (uint64)NumElements;
     FRDGBufferRef Buffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(Stride, NumElements), Name);
     FUploadParams* UploadParams = GraphBuilder.AllocParameters<FUploadParams>();
@@ -60,6 +63,176 @@ static FRDGBufferRef CreateStructuredBufferWithData(FRDGBuilder& GraphBuilder, c
         }
     );
     return Buffer;
+}
+
+bool DispatchHeightMapGPU(const FHeightMapGenParams& P,
+                          const TArray<FVector3f>& ColumnCenters,
+                          const TArray<FVector3f>& ColumnRadiiIn,
+                          const TArray<FVector3f>& ObjectCenters,
+                          const TArray<FVector3f>& ObjectRadii,
+                          FHeightMapGPUDispatchHandle& InOutHandle)
+{
+    if (InOutHandle.IsActive())
+    {
+        UE_LOG(LogTemp, Warning, TEXT("DispatchHeightMapGPU: Previous readback still in flight"));
+        return false;
+    }
+
+    if (P.GridSize <= 0 || P.StateW <= 0 || P.StateH <= 0)
+    {
+        UE_LOG(LogTemp, Error, TEXT("DispatchHeightMapGPU: Invalid dimensions (Grid=%d, StateW=%d, StateH=%d)"), P.GridSize, P.StateW, P.StateH);
+        return false;
+    }
+
+    const int32 ColCount = P.GridSize * P.GridSize;
+    if (ColumnCenters.Num() != ColCount || ColumnRadiiIn.Num() != ColCount)
+    {
+        UE_LOG(LogTemp, Error, TEXT("DispatchHeightMapGPU: Expected %d column entries (got %d centers / %d radii)"), ColCount, ColumnCenters.Num(), ColumnRadiiIn.Num());
+        return false;
+    }
+
+    if (ObjectCenters.Num() != ObjectRadii.Num())
+    {
+        UE_LOG(LogTemp, Error, TEXT("DispatchHeightMapGPU: Object centers/radii mismatch (%d vs %d)"), ObjectCenters.Num(), ObjectRadii.Num());
+        return false;
+    }
+
+    const int32 OutCount = P.StateW * P.StateH;
+    if (OutCount <= 0)
+    {
+        UE_LOG(LogTemp, Error, TEXT("DispatchHeightMapGPU: Output element count must be positive"));
+        return false;
+    }
+
+    if (!InOutHandle.Readback.IsValid())
+    {
+        static FLazyName ReadbackName(TEXT("HeightMapReadback"));
+        InOutHandle.Readback = MakeShared<FRHIGPUBufferReadback, ESPMode::ThreadSafe>(ReadbackName);
+    }
+
+    const TSharedPtr<FRHIGPUBufferReadback, ESPMode::ThreadSafe> ReadbackPtr = InOutHandle.Readback;
+    static const FVector3f ZeroVector = FVector3f::ZeroVector;
+    const FVector3f* ObjCentersPtr = ObjectCenters.Num() > 0 ? ObjectCenters.GetData() : &ZeroVector;
+    const FVector3f* ObjRadiiPtr = ObjectRadii.Num() > 0 ? ObjectRadii.GetData() : &ZeroVector;
+    const int32 ObjBufferCount = FMath::Max(ObjectCenters.Num(), 1);
+
+    const FVector3f* ColCentersPtr = ColumnCenters.GetData();
+    const FVector3f* ColRadiiPtr = ColumnRadiiIn.GetData();
+
+    const uint64 BytesToCopy = (uint64)OutCount * sizeof(float);
+
+    InOutHandle.ExpectedBytes = BytesToCopy;
+    InOutHandle.ElementCount = OutCount;
+
+    ENQUEUE_RENDER_COMMAND(HeightMapDispatch)([P, ColCentersPtr, ColRadiiPtr, ObjCentersPtr, ObjRadiiPtr, ColCount, ObjBufferCount, ReadbackPtr, BytesToCopy](FRHICommandListImmediate& RHICmdList)
+    {
+        FRDGBuilder GraphBuilder(RHICmdList);
+
+        FRDGBufferRef ColCentersBuf = CreateStructuredBufferWithData(GraphBuilder, TEXT("ColumnCenters"), sizeof(FVector3f), ColCount, ColCentersPtr);
+        FRDGBufferSRVRef ColCentersSRV = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(ColCentersBuf));
+
+        FRDGBufferRef ColRadiiBuf = CreateStructuredBufferWithData(GraphBuilder, TEXT("ColumnRadiiArray"), sizeof(FVector3f), ColCount, ColRadiiPtr);
+        FRDGBufferSRVRef ColRadiiSRV = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(ColRadiiBuf));
+
+        FRDGBufferRef ObjCentersBuf = CreateStructuredBufferWithData(GraphBuilder, TEXT("ObjCenters"), sizeof(FVector3f), ObjBufferCount, ObjCentersPtr);
+        FRDGBufferSRVRef ObjCentersSRV = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(ObjCentersBuf));
+
+        FRDGBufferRef ObjRadiiBuf = CreateStructuredBufferWithData(GraphBuilder, TEXT("ObjRadii"), sizeof(FVector3f), ObjBufferCount, ObjRadiiPtr);
+        FRDGBufferSRVRef ObjRadiiSRV = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(ObjRadiiBuf));
+
+        FRDGBufferRef OutBuf = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(float), P.StateW * P.StateH), TEXT("OutHeightMap"));
+        FRDGBufferUAVRef OutUAV = GraphBuilder.CreateUAV(FRDGBufferUAVDesc(OutBuf));
+
+        FHeightMapCS::FParameters* Params = GraphBuilder.AllocParameters<FHeightMapCS::FParameters>();
+        Params->PlatformSize = FVector2f((float)P.PlatformSize.X, (float)P.PlatformSize.Y);
+        Params->GridSize = P.GridSize;
+        Params->StateW = P.StateW;
+        Params->StateH = P.StateH;
+        Params->CellSize = P.CellSize;
+        Params->MinZ = P.MinZ;
+        Params->MaxZ = P.MaxZ;
+        Params->ColumnRadii = FVector3f((float)P.ColumnRadii.X, (float)P.ColumnRadii.Y, (float)P.ColumnRadii.Z);
+        Params->ColZBias = P.ColZBias;
+        Params->ObjZBias = P.ObjZBias;
+        Params->NumObjects = P.NumObjects;
+        Params->ColumnCenters = ColCentersSRV;
+        Params->ColumnRadiiArray = ColRadiiSRV;
+        Params->ObjCenters = ObjCentersSRV;
+        Params->ObjRadii = ObjRadiiSRV;
+        Params->OutHeightMap = OutUAV;
+
+        TShaderMapRef<FHeightMapCS> CS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+        if (!CS.IsValid())
+        {
+            UE_LOG(LogTemp, Error, TEXT("DispatchHeightMapGPU: Shader not found or invalid"));
+            return;
+        }
+
+        const FIntVector GroupCounts(FMath::DivideAndRoundUp(P.StateW, 16), FMath::DivideAndRoundUp(P.StateH, 16), 1);
+        FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("HeightMapCS"), ERDGPassFlags::Compute, CS, Params, GroupCounts);
+
+        AddEnqueueCopyPass(GraphBuilder, ReadbackPtr.Get(), OutBuf, BytesToCopy);
+        GraphBuilder.Execute();
+    });
+
+    InOutHandle.bInFlight = true;
+    return true;
+}
+
+static bool ResolveHeightMapGPU_RenderThread(FHeightMapGPUDispatchHandle& Handle, TArray<float>& OutState)
+{
+    check(IsInRenderingThread());
+
+    if (Handle.ExpectedBytes == 0 || Handle.ElementCount == 0)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("ResolveHeightMapGPU: Handle has zero-sized readback"));
+        Handle.Reset();
+        return false;
+    }
+
+    void* DataPtr = Handle.Readback->Lock(Handle.ExpectedBytes);
+    if (!DataPtr)
+    {
+        UE_LOG(LogTemp, Error, TEXT("ResolveHeightMapGPU: Failed to lock readback buffer"));
+        Handle.Reset();
+        return false;
+    }
+
+    OutState.SetNum(Handle.ElementCount, EAllowShrinking::No);
+    FMemory::Memcpy(OutState.GetData(), DataPtr, Handle.ExpectedBytes);
+    Handle.Readback->Unlock();
+    Handle.Reset();
+    return true;
+}
+
+bool ResolveHeightMapGPU(FHeightMapGPUDispatchHandle& Handle, TArray<float>& OutState)
+{
+    if (!Handle.Readback.IsValid() || !Handle.IsActive())
+    {
+        return false;
+    }
+
+    if (!Handle.Readback->IsReady())
+    {
+        return false;
+    }
+
+    if (IsInRenderingThread())
+    {
+        return ResolveHeightMapGPU_RenderThread(Handle, OutState);
+    }
+
+    bool bResolved = false;
+    FEvent* CompletionEvent = FPlatformProcess::GetSynchEventFromPool(true);
+    ENQUEUE_RENDER_COMMAND(ResolveHeightMapGPUCommand)([HandlePtr = &Handle, OutStatePtr = &OutState, CompletionEvent, &bResolved](FRHICommandListImmediate& RHICmdList)
+    {
+        bResolved = ResolveHeightMapGPU_RenderThread(*HandlePtr, *OutStatePtr);
+        CompletionEvent->Trigger();
+    });
+
+    CompletionEvent->Wait();
+    FPlatformProcess::ReturnSynchEventToPool(CompletionEvent);
+    return bResolved;
 }
 
 bool GenerateHeightMapGPU(const FHeightMapGenParams& P,
@@ -80,104 +253,55 @@ bool GenerateHeightMapGPU(const FHeightMapGenParams& P,
         return false;
     }
 
-    const int32 OutCount = P.StateW * P.StateH;
-    OutState.SetNumUninitialized(OutCount);
-    for (int32 i = 0; i < OutCount; ++i) { OutState[i] = -999.0f; }
+    FHeightMapGenParams ParamsCopy = P;
 
-    TSharedPtr<TArray<float>, ESPMode::ThreadSafe> SharedResult = MakeShared<TArray<float>, ESPMode::ThreadSafe>();
-    SharedResult->SetNumZeroed(OutCount);
-
-    ENQUEUE_RENDER_COMMAND(HeightMapDispatch)([P, ColumnCentersCopy = ColumnCentersIn, ColumnRadiiCopy = ColumnRadiiIn, ObjectsCopy = Objects, SharedResult](FRHICommandListImmediate& RHICmdList)
+    TArray<FVector3f> ColumnCenters3f;
+    ColumnCenters3f.Reserve(ColCount);
+    for (int32 i = 0; i < ColCount; ++i)
     {
-        FRDGBuilder GraphBuilder(RHICmdList);
+        const FVector& C = ColumnCentersIn[i];
+        ColumnCenters3f.Add(FVector3f((float)C.X, (float)C.Y, (float)C.Z));
+    }
 
-        // Pack columns to FVector3f
-        const int32 ColCount = P.GridSize * P.GridSize;
-        TArray<FVector3f> Centers3f; Centers3f.SetNumUninitialized(ColCount);
-        TArray<FVector3f> Radii3f;   Radii3f.SetNumUninitialized(ColCount);
-        for (int32 i = 0; i < ColCount; ++i)
-        {
-            const FVector& C = ColumnCentersCopy[i];
-            Centers3f[i] = FVector3f((float)C.X, (float)C.Y, (float)C.Z);
-            const FVector& R = ColumnRadiiCopy[i];
-            Radii3f[i] = FVector3f((float)R.X, (float)R.Y, (float)R.Z);
-        }
-        FRDGBufferRef ColCentersBuf = CreateStructuredBufferWithData(GraphBuilder, TEXT("ColumnCenters"), sizeof(FVector3f), ColCount, Centers3f.GetData());
-        FRDGBufferSRVRef ColCentersSRV = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(ColCentersBuf));
-        FRDGBufferRef ColRadiiBuf = CreateStructuredBufferWithData(GraphBuilder, TEXT("ColumnRadiiArray"), sizeof(FVector3f), ColCount, Radii3f.GetData());
-        FRDGBufferSRVRef ColRadiiSRV = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(ColRadiiBuf));
+    TArray<FVector3f> ColumnRadii3f;
+    ColumnRadii3f.Reserve(ColCount);
+    for (int32 i = 0; i < ColCount; ++i)
+    {
+        const FVector& R = ColumnRadiiIn[i];
+        ColumnRadii3f.Add(FVector3f((float)R.X, (float)R.Y, (float)R.Z));
+    }
 
-        // Pack objects
-        const int32 NumObjs = ObjectsCopy.Num();
-        TArray<FVector3f> ObjCenters3f; ObjCenters3f.Reserve(NumObjs > 0 ? NumObjs : 1);
-        TArray<FVector3f> ObjRadii3f;   ObjRadii3f.Reserve(NumObjs > 0 ? NumObjs : 1);
-        for (const FHeightMapObject& O : ObjectsCopy)
-        {
-            ObjCenters3f.Add(FVector3f((float)O.CenterLocal.X, (float)O.CenterLocal.Y, (float)O.CenterLocal.Z));
-            ObjRadii3f.Add(FVector3f((float)O.Radii.X, (float)O.Radii.Y, (float)O.Radii.Z));
-        }
-        if (NumObjs == 0)
-        {
-            ObjCenters3f.Add(FVector3f::ZeroVector);
-            ObjRadii3f.Add(FVector3f::ZeroVector);
-        }
-        FRDGBufferRef ObjCentersBuf = CreateStructuredBufferWithData(GraphBuilder, TEXT("ObjCenters"), sizeof(FVector3f), ObjCenters3f.Num(), ObjCenters3f.GetData());
-        FRDGBufferSRVRef ObjCentersSRV = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(ObjCentersBuf));
-        FRDGBufferRef ObjRadiiBuf = CreateStructuredBufferWithData(GraphBuilder, TEXT("ObjRadii"), sizeof(FVector3f), ObjRadii3f.Num(), ObjRadii3f.GetData());
-        FRDGBufferSRVRef ObjRadiiSRV = GraphBuilder.CreateSRV(FRDGBufferSRVDesc(ObjRadiiBuf));
+    TArray<FVector3f> ObjCenters3f;
+    TArray<FVector3f> ObjRadii3f;
+    ObjCenters3f.Reserve(Objects.Num());
+    ObjRadii3f.Reserve(Objects.Num());
+    for (const FHeightMapObject& O : Objects)
+    {
+        ObjCenters3f.Add(FVector3f((float)O.CenterLocal.X, (float)O.CenterLocal.Y, (float)O.CenterLocal.Z));
+        ObjRadii3f.Add(FVector3f((float)O.Radii.X, (float)O.Radii.Y, (float)O.Radii.Z));
+    }
 
-        // Output buffer
-        FRDGBufferRef OutBuf = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(float), P.StateW * P.StateH), TEXT("OutHeightMap"));
-        FRDGBufferUAVRef OutUAV = GraphBuilder.CreateUAV(FRDGBufferUAVDesc(OutBuf));
+    ParamsCopy.NumObjects = ObjCenters3f.Num();
+    if (ParamsCopy.NumObjects == 0)
+    {
+        ObjCenters3f.Add(FVector3f::ZeroVector);
+        ObjRadii3f.Add(FVector3f::ZeroVector);
+    }
 
-        FHeightMapCS::FParameters* Params = GraphBuilder.AllocParameters<FHeightMapCS::FParameters>();
-        Params->PlatformSize = FVector2f((float)P.PlatformSize.X, (float)P.PlatformSize.Y);
-        Params->GridSize = P.GridSize;
-        Params->StateW = P.StateW;
-        Params->StateH = P.StateH;
-        Params->CellSize = P.CellSize;
-        Params->MinZ = P.MinZ;
-        Params->MaxZ = P.MaxZ;
-        Params->ColumnRadii = FVector3f((float)P.ColumnRadii.X, (float)P.ColumnRadii.Y, (float)P.ColumnRadii.Z);
-        Params->ColZBias = P.ColZBias;
-        Params->ObjZBias = P.ObjZBias;
-        Params->NumObjects = NumObjs;
-        Params->ColumnCenters = ColCentersSRV;
-        Params->ColumnRadiiArray = ColRadiiSRV;
-        Params->ObjCenters = ObjCentersSRV;
-        Params->ObjRadii = ObjRadiiSRV;
-        Params->OutHeightMap = OutUAV;
-
-        TShaderMapRef<FHeightMapCS> CS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
-        if (!CS.IsValid())
-        {
-            UE_LOG(LogTemp, Error, TEXT("GenerateHeightMapGPU: Shader not found or invalid"));
-            return;
-        }
-
-        const FIntVector GroupCounts(FMath::DivideAndRoundUp(P.StateW, 16), FMath::DivideAndRoundUp(P.StateH, 16), 1);
-        FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("HeightMapCS"), ERDGPassFlags::Compute, CS, Params, GroupCounts);
-
-        // Readback
-        static FLazyName ReadbackName(TEXT("HeightMapReadback"));
-        FRHIGPUBufferReadback Readback(ReadbackName);
-        AddEnqueueCopyPass(GraphBuilder, &Readback, OutBuf, P.StateW * P.StateH * sizeof(float));
-        GraphBuilder.Execute();
-
-        void* DataPtr = Readback.Lock(P.StateW * P.StateH * sizeof(float));
-        if (DataPtr)
-        {
-            FMemory::Memcpy(SharedResult->GetData(), DataPtr, P.StateW * P.StateH * sizeof(float));
-        }
-        else
-        {
-            UE_LOG(LogTemp, Error, TEXT("GenerateHeightMapGPU: Failed to lock readback buffer"));
-            FMemory::Memzero(SharedResult->GetData(), P.StateW * P.StateH * sizeof(float));
-        }
-        Readback.Unlock();
-    });
+    FHeightMapGPUDispatchHandle Handle;
+    if (!DispatchHeightMapGPU(ParamsCopy, ColumnCenters3f, ColumnRadii3f, ObjCenters3f, ObjRadii3f, Handle))
+    {
+        return false;
+    }
 
     FlushRenderingCommands();
-    OutState = *SharedResult;
+
+    if (!ResolveHeightMapGPU(Handle, OutState))
+    {
+        UE_LOG(LogTemp, Error, TEXT("GenerateHeightMapGPU: Failed to resolve readback"));
+        return false;
+    }
+
     return true;
 }
+

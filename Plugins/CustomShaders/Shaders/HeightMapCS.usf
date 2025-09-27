@@ -82,7 +82,8 @@ void MainCS(uint3 DTid : SV_DispatchThreadID)
         float r2 = nxr*nxr + nyr*nyr;
         if (r2 <= 1.0)
         {
-            z = (zCenter + ColZBias) + rz * sqrt(max(0.0, 1.0 - r2));
+            float candidateZ = (zCenter + ColZBias) + rz * sqrt(max(0.0, 1.0 - r2));
+            z = max(z, candidateZ);
         }
     }
 
@@ -100,7 +101,8 @@ void MainCS(uint3 DTid : SV_DispatchThreadID)
         float or2 = onx*onx + ony*ony;
         if (or2 <= 1.0)
         {
-            z = (oc.z - ObjZBias) + orad.z * sqrt(max(0.0, 1.0 - or2));
+            float candidateZ = (oc.z + ObjZBias) + orad.z * sqrt(max(0.0, 1.0 - or2));
+            z = max(z, candidateZ);
         }
     }
 
