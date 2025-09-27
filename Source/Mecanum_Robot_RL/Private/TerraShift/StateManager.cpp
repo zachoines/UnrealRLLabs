@@ -1,4 +1,4 @@
-﻿// NOTICE: This file includes modifications generated with the assistance of generative AI.
+// NOTICE: This file includes modifications generated with the assistance of generative AI.
 // Original code structure and logic by the project author.
 // This version incorporates the "Fixed-Slot Reward Structure" state management system.
 
@@ -31,8 +31,9 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     MinZ = Config->GetOrDefaultNumber(TEXT("MinZ"), MinZ);
     MaxZ = Config->GetOrDefaultNumber(TEXT("MaxZ"), MaxZ);
     MarginCells = Config->GetOrDefaultInt(TEXT("MarginCells"), MarginCells);
-    ObjectScale = Config->GetOrDefaultNumber(TEXT("ObjectScale"), ObjectScale);
     ObjectMass = Config->GetOrDefaultNumber(TEXT("ObjectMass"), ObjectMass);
+    ColumnZBias = Config->GetOrDefaultNumber(TEXT("ColumnZBias"), ColumnZBias);
+    ObjectZBias = Config->GetOrDefaultNumber(TEXT("ObjectZBias"), ObjectZBias);
     MaxColumnHeight = Config->GetOrDefaultNumber(TEXT("MaxColumnHeight"), MaxColumnHeight);
     BaseRespawnDelay = Config->GetOrDefaultNumber(TEXT("BaseRespawnDelay"), BaseRespawnDelay);
 
@@ -51,6 +52,8 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     GoalRadius = Config->GetOrDefaultNumber(TEXT("GoalRadius"), GoalRadius);
     GoalCollectRadius = Config->GetOrDefaultNumber(TEXT("GoalCollectRadius"), GoalCollectRadius);
     ObjectRadius = Config->GetOrDefaultNumber(TEXT("ObjectRadius"), ObjectRadius);
+    SpawnPaddingZ = Config->GetOrDefaultNumber(TEXT("SpawnPaddingZ"), SpawnPaddingZ);
+    SpawnSeparationRadius = Config->GetOrDefaultNumber(TEXT("SpawnSeparationRadius"), SpawnSeparationRadius);
     GridSize = Config->GetOrDefaultInt(TEXT("GridSize"), GridSize);
 
     // State Representation Config
@@ -119,6 +122,10 @@ void UStateManager::SetReferences(
     Grid = InGrid;
     WaveSim = InWaveSim;
     GoalManager = InGoalManager;
+    if (ObjectMgr)
+    {
+        ObjectMgr->SetSpawnPaddingZ(SpawnPaddingZ);
+    }
 
     checkf(Platform, TEXT("StateManager::SetReferences => Platform is null!"));
     checkf(ObjectMgr, TEXT("StateManager::SetReferences => ObjectMgr is null!"));
@@ -241,7 +248,7 @@ void UStateManager::Reset(int32 NumObjects, int32 CurrentAgents)
             if (!col || !col->ColumnMesh) continue;
 
             float full = col->ColumnMesh->Bounds.BoxExtent.Z * 2.0;
-            float objWorldRadius = ObjectUnscaledSize * ObjectScale;
+            float objWorldRadius = ObjectRadius;
             FVector offset(0.f, 0.f, full + objWorldRadius);
 
             newGoalActors.Add(col);
@@ -405,7 +412,8 @@ void UStateManager::UpdateObjectStats(float DeltaTime)
         if (OccupancyGrid && CellSize > 0)
         {
             int32 cellIdx = OccupancyGrid->WorldToGrid(wPos);
-            float radiusCells = ObjectRadius / CellSize;
+            const float SepRadiusWorld = (SpawnSeparationRadius > 0.f) ? SpawnSeparationRadius : ObjectRadius;
+            float radiusCells = SepRadiusWorld / CellSize;
             OccupancyGrid->UpdateObjectPosition(i, FName("GridObjects"), cellIdx, radiusCells, TArray<FName>{ FName("Goals") });
         }
     }
@@ -431,7 +439,8 @@ void UStateManager::RespawnGridObjects()
         {
             if (OccupancyGrid) OccupancyGrid->RemoveObject(i, FName("GridObjects"));
 
-            float radiusCells = (CellSize > 0) ? (ObjectRadius / CellSize) : 1.0f;
+            const float SepRadiusWorld2 = (SpawnSeparationRadius > 0.f) ? SpawnSeparationRadius : ObjectRadius;
+            float radiusCells = (CellSize > 0) ? (SepRadiusWorld2 / CellSize) : 1.0f;
             int32 cellIdx = OccupancyGrid ? OccupancyGrid->AddObjectToGrid(i, FName("GridObjects"), radiusCells, TArray<FName>{}) : -1;
 
             if (cellIdx < 0)
@@ -444,7 +453,9 @@ void UStateManager::RespawnGridObjects()
             int32 gy = cellIdx % GridSize;
             FVector spawnLoc = GetColumnTopWorldLocation(gx, gy);
 
-            if (ObjectMgr) ObjectMgr->SpawnGridObjectAtIndex(i, spawnLoc, FVector(ObjectScale), ObjectMass);
+            // Match visual mesh radius to ObjectRadius so physics + occupancy + overlays agree
+            const float VisualScale = (ObjectUnscaledSize > KINDA_SMALL_NUMBER) ? (ObjectRadius / ObjectUnscaledSize) : 1.0f;
+            if (ObjectMgr) ObjectMgr->SpawnGridObjectAtIndex(i, spawnLoc, FVector(VisualScale), ObjectMass);
 
             AGridObject* newObj = ObjectMgr ? ObjectMgr->GetGridObject(i) : nullptr;
             if (newObj)
@@ -512,6 +523,7 @@ void UStateManager::BuildCentralState()
     if (bIncludeHeightMapInState)
     {
         FTransform GridTransform = Grid->GetActorTransform();
+        FTransform PlatformTransform = Platform->GetActorTransform();
         const float visMinZ = MinZ;
         const float visMaxZ = MaxZ;
         const float traceDistUp = FMath::Abs(visMaxZ);
@@ -523,25 +535,47 @@ void UStateManager::BuildCentralState()
             const FMatrix2D& Wave = WaveSim->GetHeightMap();
             // GPU path
             {
-                TArray<float> WaveData = Wave.GetData();
                 TArray<FHeightMapObject> Objects;
                 for (int32 i = 0; i < ObjectSlotStates.Num(); ++i)
                 {
                     const EObjectSlotState SlotState = ObjectSlotStates[i];
-                    if (!(SlotState == EObjectSlotState::Active || SlotState == EObjectSlotState::GoalReached)) continue;
+                    if (SlotState != EObjectSlotState::Active) continue;
                     AGridObject* Obj = ObjectMgr->GetGridObject(i);
-                    if (!Obj || !Obj->MeshComponent) continue;
+                    if (!Obj || !Obj->MeshComponent || !Obj->IsActive()) continue;
                     FHeightMapObject H;
+                    // Use platform-local coordinates to match shader mapping (lx, ly)
                     H.CenterLocal = GridTransform.InverseTransformPosition(Obj->GetObjectLocation());
-                    const FBoxSphereBounds B = Obj->MeshComponent->Bounds;
-                    H.Radii = FVector(B.BoxExtent.X, B.BoxExtent.Y, B.BoxExtent.Z);
+                    // Use configured ObjectRadius for overlay consistency with config and occupancy
+                    const float r = ObjectRadius;
+                    H.Radii = FVector(r, r, r);
                     Objects.Add(H);
                 }
-                FVector ColumnRadii = FVector::ZeroVector;
-                if (Grid && Grid->Columns.Num() > 0 && Grid->Columns[0] && Grid->Columns[0]->ColumnMesh)
+                // Build per-column centers and radii arrays (grid-local), y-major idx = y*N + x
+                TArray<FVector> ColumnCentersLocal;
+                TArray<FVector> ColumnRadiiLocal;
+                ColumnCentersLocal.SetNumZeroed(GridSize * GridSize);
+                ColumnRadiiLocal.SetNumZeroed(GridSize * GridSize);
+                if (Grid)
                 {
-                    const FBoxSphereBounds CB = Grid->Columns[0]->ColumnMesh->Bounds;
-                    ColumnRadii = FVector(CB.BoxExtent.X, CB.BoxExtent.Y, CB.BoxExtent.Z);
+                    for (int32 x = 0; x < GridSize; ++x)
+                    {
+                        for (int32 y = 0; y < GridSize; ++y)
+                        {
+                            const int32 idx = y * GridSize + x; // y-major flattening
+                            const int32 colIndex = x * GridSize + y; // grid storage order
+                            if (Grid->Columns.IsValidIndex(colIndex))
+                            {
+                                AColumn* Col = Grid->Columns[colIndex];
+                                if (Col && Col->ColumnMesh)
+                                {
+                                    const FVector wpos = Col->GetActorLocation();
+                                    ColumnCentersLocal[idx] = GridTransform.InverseTransformPosition(wpos);
+                                    const FBoxSphereBounds CB = Col->ColumnMesh->Bounds;
+                                    ColumnRadiiLocal[idx] = FVector(CB.BoxExtent.X, CB.BoxExtent.Y, CB.BoxExtent.Z);
+                                }
+                            }
+                        }
+                    }
                 }
                 FHeightMapGenParams GP;
                 GP.GridSize = GridSize;
@@ -551,9 +585,10 @@ void UStateManager::BuildCentralState()
                 GP.CellSize = CellSize;
                 GP.MinZ = visMinZ;
                 GP.MaxZ = visMaxZ;
-                GP.ColumnRadii = ColumnRadii;
+                GP.ColZBias = ColumnZBias;
+                GP.ObjZBias = ObjectZBias;
                 TArray<float> OutState;
-                if (GenerateHeightMapGPU(GP, WaveData, Objects, OutState) && OutState.Num() == CurrentStateMapW * CurrentStateMapH)
+                if (GenerateHeightMapGPU(GP, ColumnCentersLocal, ColumnRadiiLocal, Objects, OutState) && OutState.Num() == CurrentStateMapW * CurrentStateMapH)
                 {
                     // Copy OutState into HeightTmp and return
                     for (int32 r = 0; r < CurrentStateMapH; ++r)
@@ -638,6 +673,7 @@ void UStateManager::BuildCentralState()
                         AColumn* Col = Grid->Columns[ci];
                         if (!Col || !Col->ColumnMesh) continue;
 
+                        // Use platform-local for consistency with pixel mapping
                         const FVector colLocal = GridTransform.InverseTransformPosition(Col->GetActorLocation());
                         const float dx = lx - colLocal.X;
                         const float dy = ly - colLocal.Y;
@@ -665,17 +701,17 @@ void UStateManager::BuildCentralState()
                     for (int32 i = 0; i < nObjs; ++i)
                     {
                         const EObjectSlotState SlotState = ObjectSlotStates[i];
-                        if (!(SlotState == EObjectSlotState::Active || SlotState == EObjectSlotState::GoalReached)) continue;
+                        if (SlotState != EObjectSlotState::Active) continue;
                         AGridObject* Obj = ObjectMgr->GetGridObject(i);
-                        if (!Obj || !Obj->MeshComponent) continue;
+                        if (!Obj || !Obj->MeshComponent || !Obj->IsActive()) continue;
 
-                        // Object center in local frame and radii from world bounds
+                        // Object center in local frame and radii from config (ObjectRadius)
+                        // Use platform-local for consistency with pixel mapping
                         const FVector objLocal = GridTransform.InverseTransformPosition(Obj->GetObjectLocation());
-                        const FBoxSphereBounds ObjBounds = Obj->MeshComponent->Bounds;
-                        const float rx = ObjBounds.BoxExtent.X;
-                        const float ry = ObjBounds.BoxExtent.Y;
-                        const float rz = ObjBounds.BoxExtent.Z;
-                        if (rx <= KINDA_SMALL_NUMBER || ry <= KINDA_SMALL_NUMBER || rz <= KINDA_SMALL_NUMBER) continue;
+                        const float rx = ObjectRadius;
+                        const float ry = ObjectRadius;
+                        const float rz = ObjectRadius;
+                        if (rx <= KINDA_SMALL_NUMBER) continue;
 
                         // Compute pixel ROI bounds in state space
                         const float halfX = PlatformWorldSize.X * 0.5f;

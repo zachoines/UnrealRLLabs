@@ -2,9 +2,12 @@
 #include "/Engine/Public/Platform.ush"
 
 RWStructuredBuffer<float> OutHeightMap;
-StructuredBuffer<float>   WaveHeights;
+StructuredBuffer<float3>  ColumnCenters;
+StructuredBuffer<float3>  ColumnRadiiArray;
 StructuredBuffer<float3>  ObjCenters;
 StructuredBuffer<float3>  ObjRadii;
+float ColZBias;
+float ObjZBias;
 
 // Try removing cbuffer and use direct parameter declarations
 // cbuffer Parameters
@@ -20,25 +23,7 @@ StructuredBuffer<float3>  ObjRadii;
     int    NumObjects;
 // };
 
-// Bilinear sample wave grid in [0..GridSize-1] - RESTORED
-float SampleWave(float2 gridUV, int gridSize)
-{
-    float x = clamp(gridUV.x, 0.0, gridSize - 1.0);
-    float y = clamp(gridUV.y, 0.0, gridSize - 1.0);
-    int x0 = (int)floor(x);
-    int y0 = (int)floor(y);
-    int x1 = min(x0 + 1, gridSize - 1);
-    int y1 = min(y0 + 1, gridSize - 1);
-    float fx = x - (float)x0;
-    float fy = y - (float)y0;
-    int idx00 = y0 * gridSize + x0;
-    int idx01 = y1 * gridSize + x0;
-    int idx10 = y0 * gridSize + x1;
-    int idx11 = y1 * gridSize + x1;
-    float v0 = lerp(WaveHeights[idx00], WaveHeights[idx01], fy);
-    float v1 = lerp(WaveHeights[idx10], WaveHeights[idx11], fy);
-    return lerp(v0, v1, fx);
-}
+// No wave sampling: heights come from column and object ellipsoids directly
 
 [numthreads(16,16,1)]
 void MainCS(uint3 DTid : SV_DispatchThreadID)
@@ -52,10 +37,8 @@ void MainCS(uint3 DTid : SV_DispatchThreadID)
     float lx = (nx - 0.5) * PlatformSize.x;
     float ly = (ny - 0.5) * PlatformSize.y;
 
-    // Baseline from wave
-    float gridX = nx * (GridSize - 1);
-    float gridY = ny * (GridSize - 1);
-    float z = SampleWave(float2(gridX, gridY), GridSize);
+    // Baseline from columns/objects
+    float z = MinZ;
 
     // Column curvature overlay - Consider up to 4 nearest column centers (like CPU version)
     float halfX = PlatformSize.x * 0.5;
@@ -67,30 +50,30 @@ void MainCS(uint3 DTid : SV_DispatchThreadID)
     int ix1 = clamp(ix0 + 1, 0, GridSize - 1);
     int iy1 = clamp(iy0 + 1, 0, GridSize - 1);
 
-    // Check 4 candidate columns to create continuous surface
-    int candIdx[4] = { ix0 * GridSize + iy0, ix0 * GridSize + iy1, ix1 * GridSize + iy0, ix1 * GridSize + iy1 };
+    // Check 4 candidate columns to create continuous surface.
+    // y-major indexing: idx = y * GridSize + x
+    int candIdx[4] = { iy0 * GridSize + ix0, iy1 * GridSize + ix0, iy0 * GridSize + ix1, iy1 * GridSize + ix1 };
 
     for (int k = 0; k < 4; ++k)
     {
         int ci = candIdx[k];
         if (ci < 0 || ci >= GridSize * GridSize) continue;
 
-        float zCenter = WaveHeights[ci];
-        // Calculate correct column radii based on Grid.cpp initialization
-        // Grid.cpp line 24: FVector(1.0 / GridSize, 1.0 / GridSize, 2.0 / GridSize)
-        float rx = (1.0 / (float)GridSize) * PlatformSize.x;  // Should fill cell space
-        float ry = (1.0 / (float)GridSize) * PlatformSize.y;  // Should fill cell space
-        float rz = max(ColumnRadii.z, 1e-6);  // Keep Z scaling from ColumnRadii
+        // Column center and radii from buffers (platform-local)
+        float3 cc = ColumnCenters[ci];
+        float3 cr = ColumnRadiiArray[ci];
+        float zCenter = cc.z;
+        float rx = max(cr.x, 1e-6);
+        float ry = max(cr.y, 1e-6);
+        float rz = max(cr.z, 1e-6);
 
         // Ensure minimum radius
         rx = max(rx, 1e-6);
         ry = max(ry, 1e-6);
 
-        // Column center position for this candidate
-        int col_ix = ci / GridSize;
-        int col_iy = ci % GridSize;
-        float cx = (col_ix + 0.5) * CellSize - halfX;
-        float cy = (col_iy + 0.5) * CellSize - halfY;
+        // Column center position from buffer (platform-local)
+        float cx = cc.x;
+        float cy = cc.y;
 
         float dx = lx - cx;
         float dy = ly - cy;
@@ -99,8 +82,7 @@ void MainCS(uint3 DTid : SV_DispatchThreadID)
         float r2 = nxr*nxr + nyr*nyr;
         if (r2 <= 1.0)
         {
-            float zTop = zCenter + rz * sqrt(max(0.0, 1.0 - r2));
-            z = max(z, zTop);
+            z = (zCenter + ColZBias) + rz * sqrt(max(0.0, 1.0 - r2));
         }
     }
 
@@ -109,26 +91,25 @@ void MainCS(uint3 DTid : SV_DispatchThreadID)
     for (int i = 0; i < NumObjects; ++i)
     {
         float3 oc = ObjCenters[i];
+        float2 ocxy = oc.xy;
         float3 orad = ObjRadii[i];
-        float odx = lx - oc.x;
-        float ody = ly - oc.y;
+        float odx = lx - ocxy.x;
+        float ody = ly - ocxy.y;
         float onx = odx / max(orad.x, 1e-6);
         float ony = ody / max(orad.y, 1e-6);
         float or2 = onx*onx + ony*ony;
         if (or2 <= 1.0)
         {
-            float zTopObj = oc.z + orad.z * sqrt(max(0.0, 1.0 - or2));
-            z = max(z, zTopObj);
+            z = (oc.z - ObjZBias) + orad.z * sqrt(max(0.0, 1.0 - or2));
         }
     }
 
-    // Perspective-correct normalization
+    // Normalize Z like CPU path: (z - MinZ) / (MaxZ - MinZ) -> [-1,1]
     float zClamped = clamp(z, MinZ, MaxZ);
-    float xyRange = max(PlatformSize.x, PlatformSize.y);
-    float zNormalized = (zClamped - MinZ) / xyRange;
+    float rangeZ = max(MaxZ - MinZ, 1e-6);
+    float zNormalized = (zClamped - MinZ) / rangeZ;
     float normNegPos = clamp(zNormalized * 2.0 - 1.0, -1.0, 1.0);
 
     uint outIndex = DTid.y * StateW + DTid.x;
     OutHeightMap[outIndex] = normNegPos;
 }
-

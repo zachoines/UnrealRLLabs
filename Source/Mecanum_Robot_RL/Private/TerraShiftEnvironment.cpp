@@ -84,15 +84,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
     MaxSteps = EnvConfig->GetOrDefaultInt(TEXT("environment/params/MaxSteps"), 512);
     MaxAgents = EnvConfig->GetOrDefaultInt(TEXT("environment/params/MaxAgents"), 5);
 
-    if (EnvConfig->HasPath(TEXT("environment/params/ObjectSize")))
-    {
-        TArray<float> arr = EnvConfig->Get(TEXT("environment/params/ObjectSize"))->AsArrayOfNumbers();
-        ObjectSize = (arr.Num() == 3) ? FVector(arr[0], arr[1], arr[2]) : FVector(0.1f);
-    }
-    else
-    {
-        ObjectSize = FVector(0.1f);
-    }
+    // ObjectSize is deprecated; StateManager.ObjectRadius controls spawn size.
     ObjectMass = EnvConfig->GetOrDefaultNumber(TEXT("environment/params/ObjectMass"), 0.1f);
     GridSize = EnvConfig->GetOrDefaultInt(TEXT("environment/params/GridSize"), 50);
 
@@ -216,7 +208,6 @@ void ATerraShiftEnvironment::PreTransition()
     StateManager->UpdateGridObjectFlags();
     StateManager->UpdateObjectStats(GetWorld()->GetDeltaSeconds());
     StateManager->RespawnGridObjects();
-    // Optional optimization: toggle column collision based on proximity to grid objects
     StateManager->UpdateColumnCollisionBasedOnOccupancy();
     StateManager->UpdateGridColumnsColors();
     StateManager->BuildCentralState();
