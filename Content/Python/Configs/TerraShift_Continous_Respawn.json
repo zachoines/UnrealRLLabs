@@ -1,15 +1,14 @@
 {
   "environment": {
-    "name": "TerraShift_8A_2O_Test",
-    "id": "TerraShift_8A_2O_Test_$(date +%Y%m%d_%H%M%S)",
+    "name": "TerraShift_16A_8O_Test",
+    "id": "TerraShift_16A_8O_Test_$(date +%Y%m%d_%H%M%S)",
     "params": {
       "PlatformSize": 1.0,
-      "MaxColumnHeight": 6.0,
-      "ObjectSize": [0.15, 0.15, 0.15],
+      "MaxColumnHeight": 4.0,
       "ObjectMass": 0.1,
-      "GridSize": 15,
-      "MaxSteps": 1024,
-      "MaxAgents": 8,
+      "GridSize": 16,
+      "MaxSteps": 512,
+      "MaxAgents": 16,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
         "bUseXYDistanceImprovement": true,
@@ -17,13 +16,13 @@
         "bUsePotentialShaping": false,
         "bUseDistanceBasedReward": false,
         "bDisableEventRewards": false,
-        "PotentialShaping_Gamma": 0.99,
+        "PotentialShaping_Gamma": 0.992,
         "PotentialShaping_Scale": 1.0,
-        "VelAlign_Scale": 1.0,
-        "VelAlign_Min": 0.0,
-        "VelAlign_Max": 100.0,
+        "VelAlign_Scale": 0.5,
+        "VelAlign_Min": -50.0,
+        "VelAlign_Max": 50.0,
         "DistImprove_Scale": 100.0,
-        "DistImprove_Min": 0.0,
+        "DistImprove_Min": -1.0,
         "DistImprove_Max": 1.0,
         "ZAccel_Scale": 0.0001,
         "ZAccel_Min": 0.1,
@@ -32,39 +31,54 @@
         "EventReward_OutOfBounds": -2.5,
         "TimeStepPenalty": 0.0
       },
-      "GoalManager": {"DefaultRadius": 1.0},
+      "GoalManager": {
+        "DefaultRadius": 1.0
+      },
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 8,
-        "GridSize": 15,
-        "MinHeight": -6.0,
-        "MaxHeight": 6.0,
+        "NumAgents": 16,
+        "GridSize": 16,
+        "MinHeight": -4.0,
+        "MaxHeight": 4.0,
         "NumActions": 6,
         "bUseActionDelta": true,
         "bAccumulatedWave": false,
         "AccumulatedWaveFadeGamma": 0.95,
         "bWrapAroundEdges": true,
-        "VelMinMax": [-1, 1],
-        "AngVelRange": [-0.785, 0.785],
-        "AmpMinMax": [-6.0, 6.0],
-        "SigMinMax": [0.2, 2.0],
-        "DeltaVelScale": 1.0,
-        "DeltaAngVelScale": 0.78,
-        "DeltaAmpScale": 3.0,
-        "DeltaSigmaScale": 0.5
+        "VelMinMax": [
+          -2,
+          2
+        ],
+        "AngVelRange": [
+          -0.785,
+          0.785
+        ],
+        "AmpMinMax": [
+          -4.0,
+          4.0
+        ],
+        "SigMinMax": [
+          0.1,
+          2.0
+        ],
+        "DeltaVelScale": 2.0,
+        "DeltaAngVelScale": 0.785,
+        "DeltaAmpScale": 4.0,
+        "DeltaSigmaScale": 1.0
       },
       "StateManager": {
-        "MaxGridObjects": 4,
+        "MaxGridObjects": 8,
         "MarginXY": -1.0,
         "MinZ": 0.0,
         "MaxZ": 40.0,
-        "ObjectScale": 0.15,
+        "SpawnPaddingZ": 5.0,
+        "SpawnSeparationRadius": 7.0,
         "ObjectMass": 0.1,
-        "MaxColumnHeight": 6.0,
-        "BaseRespawnDelay": 0.2,
+        "MaxColumnHeight": 4.0,
+        "BaseRespawnDelay": 0.1,
         "OverheadCameraDistance_disabled": 1500.0,
         "OverheadCameraFOV_disabled": 90.0,
-        "OverheadCameraResX_disabled": 25,
-        "OverheadCameraResY_disabled": 25,
+        "OverheadCameraResX_disabled": 64,
+        "OverheadCameraResY_disabled": 64,
         "bUseRandomGoals": true,
         "bRespawnOnGoal": true,
         "bRespawnOnOOB": true,
@@ -72,29 +86,103 @@
         "bTerminateOnMaxSteps": true,
         "bRemoveObjectsOnGoal": true,
         "GoalRadius": 8.0,
-        "ObjectRadius": 8.0,
+        "ObjectRadius": 6.0,
         "GoalCollectRadius": 10.0,
         "GoalColors": [
-            [1.0, 0.0, 1.0],
-            [1.0, 1.0, 0.0],
-            [0.0, 1.0, 1.0],
-            [0.0, 1.0, 0.0]
+          [
+            1.0,
+            0.0,
+            1.0
+          ],
+          [
+            1.0,
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            1.0,
+            1.0
+          ],
+          [
+            0.0,
+            1.0,
+            0.0
+          ],
+          [
+            1.0,
+            0.5,
+            0.0
+          ],
+          [
+            0.5,
+            0.0,
+            1.0
+          ],
+          [
+            0.0,
+            0.5,
+            1.0
+          ],
+          [
+            0.5,
+            1.0,
+            0.0
+          ]
         ],
         "GridObjectColors": [
-            [1.0, 0.0, 1.0],
-            [1.0, 1.0, 0.0],
-            [0.0, 1.0, 1.0],
-            [0.0, 1.0, 0.0]
+          [
+            1.0,
+            0.0,
+            1.0
+          ],
+          [
+            1.0,
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            1.0,
+            1.0
+          ],
+          [
+            0.0,
+            1.0,
+            0.0
+          ],
+          [
+            1.0,
+            0.5,
+            0.0
+          ],
+          [
+            0.5,
+            0.0,
+            1.0
+          ],
+          [
+            0.0,
+            0.5,
+            1.0
+          ],
+          [
+            0.5,
+            1.0,
+            0.0
+          ]
         ],
         "bIncludeHeightMapInState": true,
-        "StateHeightMapResolutionH": 32,
-        "StateHeightMapResolutionW": 32,
+        "StateHeightMapResolutionH": 64,
+        "StateHeightMapResolutionW": 64,
         "bIncludeOverheadImageInState": false,
-        "StateOverheadImageResX": 60,
-        "StateOverheadImageResY": 60,
+        "StateOverheadImageResX": 64,
+        "StateOverheadImageResY": 64,
         "bIncludeGridObjectSequenceInState": true,
-        "MaxGridObjectsForState": 4,
-        "GridObjectFeatureSize": 9
+        "MaxGridObjectsForState": 8,
+        "GridObjectFeatureSize": 9,
+        "bEnableColumnCollisionOptimization": true,
+        "ColumnCollisionRadiusCells": 2
       }
     },
     "shape": {
@@ -104,32 +192,65 @@
             "name": "height_map",
             "enabled": true,
             "type": "matrix2d",
-            "shape": {"h": 32, "w": 32, "c": 1}
+            "shape": {
+              "h": 64,
+              "w": 64,
+              "c": 1
+            }
           },
           {
             "name": "greyscale_image",
             "enabled": false,
             "type": "matrix2d",
-            "shape": {"h": 64, "w": 64, "c": 1}
+            "shape": {
+              "h": 64,
+              "w": 64,
+              "c": 1
+            }
           },
           {
             "name": "gridobject_sequence",
             "enabled": true,
             "type": "sequence",
-            "shape": {"max_length": 4, "feature_dim": 9}
+            "shape": {
+              "max_length": 8,
+              "feature_dim": 9
+            }
           }
         ],
-        "agent": {"obs_size": 9, "min": 8, "max": 8}
+        "agent": {
+          "obs_size": 9,
+          "min": 16,
+          "max": 16
+        }
       },
       "action": {
         "agent": {
           "continuous": [
-            {"min": -1, "max": 1},
-            {"min": -1, "max": 1},
-            {"min": -1, "max": 1},
-            {"min": -1, "max": 1},
-            {"min": -1, "max": 1},
-            {"min": -1, "max": 1}
+            {
+              "min": -1,
+              "max": 1
+            },
+            {
+              "min": -1,
+              "max": 1
+            },
+            {
+              "min": -1,
+              "max": 1
+            },
+            {
+              "min": -1,
+              "max": 1
+            },
+            {
+              "min": -1,
+              "max": 1
+            },
+            {
+              "min": -1,
+              "max": 1
+            }
           ]
         }
       }
@@ -137,18 +258,28 @@
   },
   "StateRecorder": {
     "enabled": false,
-    "video_settings": {"output_path": "recordings\\TerraShift.mp4", "fps": 15, "dpi": 150},
+    "video_settings": {
+      "output_path": "Recordings\\TerraShift.mp4",
+      "fps": 32,
+      "dpi": 150
+    },
     "auto_save_every": 512,
     "components_to_record": [
-      
       {
         "enabled": true,
         "source_key": "central",
         "component_name": "height_map",
         "visualization_type": "3d_surface",
         "plot_title": "Height Map Visualization",
-        "shape_for_plot": {"h": 32, "w": 32, "c": 1},
-        "z_lim_3d": [-1, 1],
+        "shape_for_plot": {
+          "h": 64,
+          "w": 64,
+          "c": 1
+        },
+        "z_lim_3d": [
+          -1,
+          1
+        ],
         "cmap_3d": "terrain"
       }
     ]
@@ -158,14 +289,22 @@
     "params": {
       "enable_memory": true,
       "memory_type": "gru",
-      "gru": {"input_size": 128, "hidden_size": 128, "num_layers": 2, "bias": true, "dropout": 0.05},
+      "gru": {
+        "input_size": 256,
+        "hidden_size": 256,
+        "num_layers": 1,
+        "bias": true,
+        "dropout": 0.1
+      },
       "disagreement_rewards_disabled": {
         "enabled": false,
-        "reward_coeff": 0.10,
+        "reward_coeff": 0.1,
         "loss_coeff": 0.5,
         "normalize_reward": true,
         "ensemble_size": 8,
-        "network": {"hidden_size": 64}
+        "network": {
+          "hidden_size": 64
+        }
       },
       "rnd_reward_disabled": {
         "enabled": false,
@@ -173,65 +312,140 @@
         "loss_coeff": 1.0,
         "update_proportion": 0.25,
         "normalize_reward": false,
-        "network": {"output_size": 128, "hidden_size": 256}
+        "network": {
+          "output_size": 128,
+          "hidden_size": 256
+        }
       },
       "rewards_normalizer_disabled": {
         "epsilon": 1e-05,
-        "warmup_steps": 5000
+        "warmup_steps": 0
       },
       "enable_popart": false,
       "popart_beta": 0.995,
-      "popart_epsilon": 1e-04,
-      "learning_rate": 1e-04,
-      "lr_policy": 1e-04,
-      "lr_trunk": 1e-04,
-      "lr_value_path": 2e-04,
-      "lr_baseline_path": 2e-04,
-      "lr_value_quantile": 1e-04,
-      "lr_value_fraction": 2e-04,
-      "lr_value_iqn": 1e-04,
-      "lr_baseline_iqn": 1e-04,
-      "lr_rnd_predictor": 1e-04,
-      "lr_disagreement": 1e-04,
-      "optimizer_betas": {"default": [0.9, 0.999]},
-      "weight_decay": {"default": 0.0},
+      "popart_epsilon": 0.0001,
+      "learning_rate": 7.5e-05,
+      "lr_policy": 7.5e-05,
+      "lr_trunk": 7.5e-05,
+      "lr_value_path": 7.5e-05,
+      "lr_baseline_path": 7.5e-05,
+      "lr_value_quantile": 7.5e-05,
+      "lr_value_fraction": 7.5e-05,
+      "lr_value_iqn": 7.5e-05,
+      "lr_baseline_iqn": 7.5e-05,
+      "lr_rnd_predictor": 7.5e-05,
+      "lr_disagreement": 7.5e-05,
+      "optimizer_betas": {
+        "default": [
+          0.9,
+          0.999
+        ]
+      },
+      "weight_decay": {
+        "default": 0.0
+      },
       "gamma": 0.95,
       "lmbda": 0.92,
       "value_loss_coeff": 1.0,
       "baseline_loss_coeff": 0.5,
       "normalize_advantages": true,
-      "max_grad_norm": 0.5,
+      "max_grad_norm": 1.0,
       "ppo_clip_range": 0.2,
       "value_clip_range": 1000.0,
-      "entropy_coeff": 0.005,
+      "entropy_coeff": 0.01,
       "schedulers": {
-        "lr_trunk": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_policy": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_value_path": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_value_quantile": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 10000},
-        "lr_value_fraction": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 10000},
-        "lr_baseline_path": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_rnd_predictor": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_disagreement": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "entropy_coeff": {"start_value": 0.005, "end_value": 0.001, "total_iters": 10000},
-        "policy_clip": {"start_value": 0.2, "end_value": 0.1, "total_iters": 10000},
-        "value_clip_disabled": {"start_value": 1.0, "end_value": 0.1, "total_iters": 10000},
-        "max_grad_norm": {"start_value": 5.0, "end_value": 0.5, "total_iters": 10000},
-        "fqf_temperature": {"start_value": 2.0, "end_value": 1.0, "total_iters": 10000},
-        "fqf_prior_blend_alpha": {"start_value": 0.1, "end_value": 0.0, "total_iters": 10000},
-        "fraction_entropy_coeff": {"start_value": 0.01, "end_value": 0.002, "total_iters": 10000}
+        "lr_trunk": {
+          "start_factor": 1.0,
+          "end_factor": 0.1,
+          "total_iters": 12000
+        },
+        "lr_policy": {
+          "start_factor": 1.0,
+          "end_factor": 0.1,
+          "total_iters": 12000
+        },
+        "lr_value_path": {
+          "start_factor": 1.0,
+          "end_factor": 0.1,
+          "total_iters": 20000
+        },
+        "lr_value_quantile": {
+          "start_factor": 1.0,
+          "end_factor": 0.3,
+          "total_iters": 30000
+        },
+        "lr_value_fraction": {
+          "start_factor": 1.0,
+          "end_factor": 0.3,
+          "total_iters": 30000
+        },
+        "lr_baseline_path": {
+          "start_factor": 1.0,
+          "end_factor": 0.1,
+          "total_iters": 20000
+        },
+        "lr_rnd_predictor": {
+          "start_factor": 1.0,
+          "end_factor": 0.1,
+          "total_iters": 20000
+        },
+        "lr_disagreement": {
+          "start_factor": 1.0,
+          "end_factor": 0.1,
+          "total_iters": 20000
+        },
+        "entropy_coeff": {
+          "start_value": 0.01,
+          "end_value": 0.001,
+          "total_iters": 20000
+        },
+        "policy_clip": {
+          "start_value": 0.2,
+          "end_value": 0.1,
+          "total_iters": 20000
+        },
+        "value_clip_disabled": {
+          "start_value": 1.0,
+          "end_value": 0.1,
+          "total_iters": 10000
+        },
+        "max_grad_norm": {
+          "start_value": 3.0,
+          "end_value": 1.0,
+          "total_iters": 20000
+        },
+        "fqf_temperature": {
+          "start_value": 3.0,
+          "end_value": 0.5,
+          "total_iters": 30000
+        },
+        "fqf_prior_blend_alpha": {
+          "start_value": 0.2,
+          "end_value": 0.0,
+          "total_iters": 25000
+        },
+        "fraction_entropy_coeff": {
+          "start_value": 0.02,
+          "end_value": 0.001,
+          "total_iters": 30000
+        },
+        "fraction_loss_coeff": {
+          "start_value": 0.05,
+          "end_value": 0.2,
+          "total_iters": 20000
+        }
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 8,
-            "embed_dim": 128,
+            "num_agents": 16,
+            "embed_dim": 256,
             "num_heads": 8,
-            "transformer_layers": 3,
-            "dropout_rate": 0.05,
+            "transformer_layers": 2,
+            "dropout_rate": 0.1,
             "use_agent_id": true,
-            "ff_hidden_factor": 3,
+            "ff_hidden_factor": 2,
             "id_num_freqs": 8,
             "conv_init_scale": 1.0,
             "linear_init_scale": 1.0,
@@ -241,118 +455,144 @@
                 "name": "height_map",
                 "enabled": true,
                 "type": "cnn",
-                "cnn_stem_channels": [16, 32, 32],
-                "cnn_stem_kernels": [5, 3, 3],
-                "cnn_stem_strides": [2, 2, 1],
-                "cnn_stem_group_norms": [4, 8, 8],
+                "cnn_stem_channels": [
+                  24,
+                  48,
+                  96
+                ],
+                "cnn_stem_kernels": [
+                  5,
+                  3,
+                  3
+                ],
+                "cnn_stem_strides": [
+                  2,
+                  2,
+                  2
+                ],
+                "cnn_stem_group_norms": [
+                  6,
+                  12,
+                  24
+                ],
                 "target_pool_scale": 4,
                 "add_spatial_coords_to_cnn_input": true,
                 "swin_stages": [
                   {
-                    "window_size": 2,
+                    "window_size": 4,
+                    "num_heads": 4,
                     "merge": false
                   },
                   {
                     "window_size": 4,
+                    "num_heads": 8,
                     "merge": true
+                  },
+                  {
+                    "window_size": 2,
+                    "num_heads": 8,
+                    "merge": false
                   }
                 ],
-                 "adaptive_tokenizer": {
+                "adaptive_tokenizer": {
                   "base_tokens": 12,
                   "min_tokens": 8,
-                  "max_tokens": 16,
-                  "importance_hidden": 64
+                  "max_tokens": 20,
+                  "importance_hidden": 96
                 }
               },
               {
                 "name": "gridobject_sequence",
                 "enabled": true,
                 "type": "linear_sequence",
-                "linear_stem_hidden_sizes": [64, 128],
+                "linear_stem_hidden_sizes": [
+                  128,
+                  256
+                ],
                 "add_positional_encoding": true
               }
             ]
           },
           "obs_encoder": {
-            "state_dim": 128,
-            "hidden_size": 128,
-            "output_size": 128,
-            "dropout_rate": 0.05,
+            "state_dim": 256,
+            "hidden_size": 256,
+            "output_size": 256,
+            "dropout_rate": 0.1,
             "activation": true,
             "layer_norm": true
           },
           "obs_actions_encoder": {
-            "state_dim": 128,
+            "state_dim": 256,
             "action_dim": 6,
-            "hidden_size": 128,
-            "output_size": 128,
-            "dropout_rate": 0.05,
+            "hidden_size": 256,
+            "output_size": 256,
+            "dropout_rate": 0.1,
             "activation": true,
             "layer_norm": true
           }
         },
         "policy_network": {
           "type": "beta",
-          "in_features": 128,
-          "hidden_size": 192,
+          "in_features": 256,
+          "hidden_size": 256,
           "param_init_bias": 0.0,
           "min_concentration": 1.01,
           "linear_init_scale": 0.1,
-          "dropout_rate": 0.05
+          "dropout_rate": 0.1
         },
         "critic_network": {
           "baseline_head": {
-            "in_features": 128,
-            "hidden_size": 128,
+            "in_features": 256,
+            "hidden_size": 256,
             "dropout_rate": 0.0,
             "output_layer_init_gain": 1.0
           },
           "value_head": {
-            "in_features": 128,
-            "hidden_size": 128,
+            "in_features": 256,
+            "hidden_size": 256,
             "dropout_rate": 0.0,
             "output_layer_init_gain": 1.0
           },
           "value_attention": {
-            "embed_dim": 128,
+            "embed_dim": 256,
             "num_heads": 8,
-            "dropout": 0.05,
+            "dropout": 0.1,
             "self_attention": true
           },
           "baseline_attention": {
-            "embed_dim": 128,
+            "embed_dim": 256,
             "num_heads": 8,
-            "dropout": 0.05,
+            "dropout": 0.1,
             "self_attention": true
           },
-          "distributional_network_params": {
+          "distributional_network_params_disabled": {
             "iqn_network_disabled": {
-              "feature_dim": 128,
-              "hidden_size": 128,
+              "feature_dim": 256,
+              "hidden_size": 256,
               "quantile_embedding_dim": 64,
               "num_quantiles": 32,
               "use_dueling": true,
               "linear_init_scale": 1.0,
-              "dropout_rate": 0.05,
+              "dropout_rate": 0.1,
               "iqn_kappa": 1.0
             },
-            "fqf_network": {
-              "feature_dim": 128,
-              "hidden_size": 128,
+            "fqf_network_disabled": {
+              "feature_dim": 256,
+              "hidden_size": 256,
               "quantile_embedding_dim": 64,
               "num_quantiles": 32,
               "use_dueling": true,
               "linear_init_scale": 1.0,
-              "dropout_rate": 0.05,
+              "dropout_rate": 0.1,
               "iqn_kappa": 1.0,
-              "fraction_net_hidden": 64,
-              "fraction_loss_coeff": 0.1,
-              "fraction_entropy_coeff": 0.01,
-              "softmax_temperature": 2.0,
-              "prior_blend_alpha": 0.1,
-              "exploration_noise_scale": 0.01,
-              "logit_clamp_epsilon": 1e-8,
-              "monotonicity_epsilon": 1e-6
+              "fraction_net_hidden": 128,
+              "fraction_loss_coeff": 0.05,
+              "fraction_entropy_coeff": 0.02,
+              "softmax_temperature": 3.0,
+              "prior_blend_alpha": 0.2,
+              "exploration_noise_scale": 0.02,
+              "logit_clamp_epsilon": 1e-08,
+              "monotonicity_epsilon": 1e-06
             }
           }
         }
@@ -362,14 +602,17 @@
   "train": {
     "sequence_length": 32,
     "pad_trajectories": true,
-    "batch_size": 1024,
-    "buffer_size": 1024,
-    "num_environments": 4,
-    "epochs": 4,
-    "mini_batch_size": 8,
-    "ActionRepeat": 2,
+    "batch_size": 512,
+    "buffer_size": 512,
+    "num_environments": 16,
+    "epochs": 3,
+    "mini_batch_size": 16,
+    "ActionRepeat": 3,
     "saveFrequency": 9,
-    "states_normalizer_disabled": {"epsilon": 1e-08, "warmup_steps": 0}
+    "states_normalizer_disabled": {
+      "epsilon": 1e-08,
+      "warmup_steps": 0
+    }
   },
   "test": {
     "enabled": false,

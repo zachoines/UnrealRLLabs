@@ -80,6 +80,10 @@ public:
      */
     UFUNCTION(BlueprintCallable, Category = "GoalManager")
     bool IsInRadiusOf(int32 GoalIndex, const FVector& Location, float Radius) const;
+    UFUNCTION(BlueprintCallable, Category = "GoalManager")
+    int32 GetNumGoals() const;
+
+    bool IsValidGoalIndex(int32 GoalIndex) const;
 
 protected:
     virtual void BeginPlay() override;

@@ -98,3 +98,12 @@ bool AGoalManager::IsInRadiusOf(int32 GoalIndex, const FVector& Location, float 
     float dist = FVector::Dist(goalWorldLoc, Location);
     return (dist <= Radius);
 }
+int32 AGoalManager::GetNumGoals() const
+{
+    return Goals.Num();
+}
+
+bool AGoalManager::IsValidGoalIndex(int32 GoalIndex) const
+{
+    return Goals.IsValidIndex(GoalIndex);
+}

@@ -1,14 +1,14 @@
 {
   "environment": {
-    "name": "TerraShift_16A_8O_Test",
-    "id": "TerraShift_16A_8O_Test_$(date +%Y%m%d_%H%M%S)",
+    "name": "TerraShift_8A_8O_Test",
+    "id": "TerraShift_8A_8O_Test_$(date +%Y%m%d_%H%M%S)",
     "params": {
       "PlatformSize": 1.0,
       "MaxColumnHeight": 4.0,
       "ObjectMass": 0.1,
       "GridSize": 16,
       "MaxSteps": 512,
-      "MaxAgents": 16,
+      "MaxAgents": 8,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
         "bUseXYDistanceImprovement": true,
@@ -35,7 +35,7 @@
         "DefaultRadius": 1.0
       },
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 16,
+        "NumAgents": 8,
         "GridSize": 16,
         "MinHeight": -4.0,
         "MaxHeight": 4.0,
@@ -80,10 +80,10 @@
         "OverheadCameraResX_disabled": 64,
         "OverheadCameraResY_disabled": 64,
         "bUseRandomGoals": true,
-        "bRespawnOnGoal": true,
-        "bRespawnOnOOB": true,
-        "bTerminateOnAllGoalsReached": false,
-        "bTerminateOnMaxSteps": true,
+        "bRespawnOnGoal": false,
+        "bRespawnOnOOB": false,
+        "bTerminateOnAllGoalsReached": true,
+        "bTerminateOnMaxSteps": false,
         "bRemoveObjectsOnGoal": true,
         "GoalRadius": 8.0,
         "ObjectRadius": 6.0,
@@ -220,8 +220,8 @@
         ],
         "agent": {
           "obs_size": 9,
-          "min": 16,
-          "max": 16
+          "min": 8,
+          "max": 8
         }
       },
       "action": {
@@ -439,7 +439,7 @@
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 16,
+            "num_agents": 8,
             "embed_dim": 256,
             "num_heads": 8,
             "transformer_layers": 2,

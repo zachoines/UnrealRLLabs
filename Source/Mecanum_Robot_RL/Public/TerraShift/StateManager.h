@@ -160,7 +160,7 @@ public:
     bool GetShouldRespawn(int32 ObjIndex) const;
 
     UFUNCTION(BlueprintCallable)
-    int32 GetGoalIndex(int32 ObjIndex) const;
+    int32 GetGoalIndex(int32 ObjIndex);
 
     UFUNCTION(BlueprintCallable)
     FVector GetCurrentVelocity(int32 ObjIndex) const;
