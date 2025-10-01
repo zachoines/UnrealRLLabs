@@ -366,11 +366,11 @@ float ATerraShiftEnvironment::Reward()
                 }
             }
 
-            //float speed = StateManager->GetCurrentVelocity(ObjIndex).Size();
-            //if (speed < 10.0f)  // Below minimum acceptable speed
-            //{
-            //    ShapingSubReward -= 0.01f;  // Constant drain for stationary objects
-            //}
+            float speed = StateManager->GetCurrentVelocity(ObjIndex).Size();
+            if (speed < 10.0f)  // Below minimum acceptable speed
+            {
+                ShapingSubReward -= 0.01f;  // Constant drain for stationary objects
+            }
 
             AccumulatedReward += ShapingSubReward;
         }

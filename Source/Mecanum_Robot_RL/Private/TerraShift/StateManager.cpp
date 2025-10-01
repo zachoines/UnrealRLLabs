@@ -224,46 +224,96 @@ void UStateManager::Reset(int32 NumObjects, int32 CurrentAgents)
     OccupancyGrid->ResetGrid();
 
     // 5) Place random goals and gather them for GoalManager
-    TArray<AActor*>  newGoalActors;
-    TArray<FVector>  newGoalOffsets;
+    TArray<AActor*> newGoalActors;
+    TArray<FVector> newGoalOffsets;
+
+    const FName GoalsLayerName(TEXT("Goals"));
 
     if (bUseRandomGoals)
     {
-        const int32 nGoals = GoalColors.Num();
-        for (int32 g = 0; g < nGoals; g++)
+        const int32 DesiredGoalCount = GoalColors.Num();
+        if (DesiredGoalCount <= 0)
         {
-            float radiusCells = GoalRadius / CellSize;
-            int32 placedCell = OccupancyGrid->AddObjectToGrid(g, FName("Goals"), radiusCells, TArray<FName>());
-            if (placedCell < 0)
+            UE_LOG(LogTemp, Warning, TEXT("StateManager::Reset => GoalColors array is empty. No random goals will be spawned."));
+        }
+        else
+        {
+            const float OriginalGoalRadius = GoalRadius;
+            float WorkingGoalRadius = GoalRadius;
+            constexpr float MinimumGoalRadius = 1.0f;
+            bool bPlacedAllGoals = false;
+
+            auto TryPlaceGoals = [&](float RadiusToUse) -> bool
             {
-                UE_LOG(LogTemp, Warning, TEXT("Could not place random goal %d => skipping."), g);
-                continue;
+                OccupancyGrid->ResetGrid();
+                newGoalActors.Reset();
+                newGoalOffsets.Reset();
+
+                const float RadiusCells = (CellSize > 0.f) ? (RadiusToUse / CellSize) : RadiusToUse;
+
+                for (int32 GoalIdx = 0; GoalIdx < DesiredGoalCount; ++GoalIdx)
+                {
+                    int32 PlacedCell = OccupancyGrid->AddObjectToGrid(GoalIdx, GoalsLayerName, RadiusCells, TArray<FName>());
+                    if (PlacedCell < 0)
+                    {
+                        return false;
+                    }
+
+                    const int32 gx = PlacedCell / GridSize;
+                    const int32 gy = PlacedCell % GridSize;
+                    const int32 ColumnIndex = gx * GridSize + gy;
+
+                    if (!Grid->Columns.IsValidIndex(ColumnIndex))
+                    {
+                        return false;
+                    }
+
+                    AColumn* ColumnActor = Grid->Columns[ColumnIndex];
+                    if (!ColumnActor || !ColumnActor->ColumnMesh)
+                    {
+                        return false;
+                    }
+
+                    const float ColumnHeight = ColumnActor->ColumnMesh->Bounds.BoxExtent.Z * 2.0f;
+                    const float GoalOffsetZ = ColumnHeight + ObjectRadius;
+                    newGoalActors.Add(ColumnActor);
+                    newGoalOffsets.Add(FVector(0.f, 0.f, GoalOffsetZ));
+                }
+
+                return true;
+            };
+
+            while (WorkingGoalRadius >= MinimumGoalRadius && !bPlacedAllGoals)
+            {
+                if (TryPlaceGoals(WorkingGoalRadius))
+                {
+                    bPlacedAllGoals = true;
+                    GoalRadius = WorkingGoalRadius;
+
+                    if (!FMath::IsNearlyEqual(GoalRadius, OriginalGoalRadius))
+                    {
+                        UE_LOG(LogTemp, Warning, TEXT("StateManager::Reset => GoalRadius reduced from %f to %f to place all %d goals."), OriginalGoalRadius, GoalRadius, DesiredGoalCount);
+                    }
+                }
+                else
+                {
+                    WorkingGoalRadius -= 1.0f;
+                }
             }
 
-            int32 gx = placedCell / GridSize;
-            int32 gy = placedCell % GridSize;
-            int32 colIndex = gx * GridSize + gy;
-            if (!Grid->Columns.IsValidIndex(colIndex)) continue;
-
-            AColumn* col = Grid->Columns[colIndex];
-            if (!col || !col->ColumnMesh) continue;
-
-            float full = col->ColumnMesh->Bounds.BoxExtent.Z * 2.0;
-            float objWorldRadius = ObjectRadius;
-            FVector offset(0.f, 0.f, full + objWorldRadius);
-
-            newGoalActors.Add(col);
-            newGoalOffsets.Add(offset);
+            if (!bPlacedAllGoals)
+            {
+                UE_LOG(LogTemp, Fatal, TEXT("StateManager::Reset => Failed to place %d goals even after reducing GoalRadius below %f (original: %f)."), DesiredGoalCount, MinimumGoalRadius, OriginalGoalRadius);
+            }
         }
     }
 
     GoalManager->ResetGoals(newGoalActors, newGoalOffsets);
 
-    // 6) Round-robin "goal index" for each object
-    int32 numGoals = GoalColors.Num();
-    for (int32 i = 0; i < NumObjects; i++)
+    const int32 ActualGoalCount = GoalManager ? GoalManager->GetNumGoals() : 0;
+    for (int32 i = 0; i < NumObjects; ++i)
     {
-        ObjectGoalIndices[i] = (numGoals > 0) ? (i % numGoals) : -1;
+        ObjectGoalIndices[i] = (ActualGoalCount > 0) ? (i % ActualGoalCount) : -1;
     }
 }
 
@@ -290,7 +340,7 @@ void UStateManager::UpdateGridObjectFlags()
         FVector wPos = Obj->GetObjectLocation();
 
         // (1) Check goal status and handle state transitions
-        int32 gIdx = ObjectGoalIndices[i];
+        int32 gIdx = GetGoalIndex(i);
         if (gIdx >= 0)
         {
             bool bInRadius = GoalManager->IsInRadiusOf(gIdx, wPos, GoalCollectRadius);
@@ -393,7 +443,7 @@ void UStateManager::UpdateObjectStats(float DeltaTime)
 
         FVector wVel = Obj->MeshComponent->GetPhysicsLinearVelocity();
         FVector wPos = Obj->GetObjectLocation();
-        int32 gIdx = ObjectGoalIndices[i];
+        int32 gIdx = GetGoalIndex(i);
         FVector wGoal = (gIdx >= 0 && GoalManager) ? GoalManager->GetGoalLocation(gIdx) : FVector::ZeroVector;
 
         FVector locVel = Platform->GetActorTransform().InverseTransformVector(wVel);
@@ -946,7 +996,7 @@ void UStateManager::UpdateGridColumnsColors()
         float ratio = (mx > mn) ? FMath::GetMappedRangeValueClamped(FVector2D(mn, mx), FVector2D(0.f, 1.f), h) : 0.5f;
         Grid->SetColumnColor(c, FLinearColor::LerpUsingHSV(FLinearColor::Black, FLinearColor::White, ratio));
     }
-    if (GridObjectColors.Num() > 0) {
+    /*if (GridObjectColors.Num() > 0) {
         FMatrix2D objOcc = OccupancyGrid->GetOccupancyMatrix({ FName("GridObjects") }, false);
         for (int32 r = 0; r < objOcc.GetNumRows(); ++r) {
             for (int32 col = 0; col < objOcc.GetNumColumns(); ++col) {
@@ -957,7 +1007,7 @@ void UStateManager::UpdateGridColumnsColors()
                 }
             }
         }
-    }
+    }*/
     if (bUseRandomGoals && GoalColors.Num() > 0)
     {
         FMatrix2D goalOcc = OccupancyGrid->GetOccupancyMatrix({ FName("Goals") }, false);
@@ -984,7 +1034,34 @@ bool UStateManager::GetHasFallenOff(int32 ObjIndex) const { return GetObjectSlot
 bool UStateManager::GetShouldCollectReward(int32 ObjIndex) const { return bShouldCollect.IsValidIndex(ObjIndex) ? bShouldCollect[ObjIndex] : false; }
 void UStateManager::SetShouldCollectReward(int32 ObjIndex, bool bVal) { if (bShouldCollect.IsValidIndex(ObjIndex)) bShouldCollect[ObjIndex] = bVal; }
 bool UStateManager::GetShouldRespawn(int32 ObjIndex) const { return bShouldResp.IsValidIndex(ObjIndex) ? bShouldResp[ObjIndex] : false; }
-int32 UStateManager::GetGoalIndex(int32 ObjIndex) const { return ObjectGoalIndices.IsValidIndex(ObjIndex) ? ObjectGoalIndices[ObjIndex] : -1; }
+int32 UStateManager::GetGoalIndex(int32 ObjIndex)
+{
+    if (!ObjectGoalIndices.IsValidIndex(ObjIndex))
+    {
+        return -1;
+    }
+
+    int32 CurrentIndex = ObjectGoalIndices[ObjIndex];
+    if (!GoalManager)
+    {
+        return CurrentIndex;
+    }
+
+    if (!GoalManager->IsValidGoalIndex(CurrentIndex))
+    {
+        const int32 NumGoals = GoalManager->GetNumGoals();
+        if (NumGoals <= 0)
+        {
+            ObjectGoalIndices[ObjIndex] = -1;
+            return -1;
+        }
+
+        CurrentIndex = ObjIndex % NumGoals;
+        ObjectGoalIndices[ObjIndex] = CurrentIndex;
+    }
+
+    return CurrentIndex;
+}
 FVector UStateManager::GetCurrentVelocity(int32 ObjIndex) const { return CurrVel.IsValidIndex(ObjIndex) ? CurrVel[ObjIndex] : FVector::ZeroVector; }
 FVector UStateManager::GetPreviousVelocity(int32 ObjIndex) const { return PrevVel.IsValidIndex(ObjIndex) ? PrevVel[ObjIndex] : FVector::ZeroVector; }
 float UStateManager::GetCurrentDistance(int32 ObjIndex) const { return CurrDist.IsValidIndex(ObjIndex) ? CurrDist[ObjIndex] : -1.f; }

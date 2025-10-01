@@ -226,6 +226,25 @@ int32 UOccupancyGrid::FindFreeCellForRadius(float RadiusCells, const TArray<FNam
         }
     }
 
+    // Deterministic fallback: scan the grid to find a valid cell if random sampling failed.
+    for (int32 tryIndex = 0; tryIndex < totalCells; ++tryIndex)
+    {
+        int32 gx = tryIndex / GridSize;
+        int32 gy = tryIndex % GridSize;
+        int32 R = FMath::CeilToInt(RadiusCells);
+
+        if ((gx - R) < 0 || (gx + R) >= GridSize || (gy - R) < 0 || (gy + R) >= GridSize)
+        {
+            continue;
+        }
+
+        bool bOverlap = WouldOverlap(tryIndex, RadiusCells, OverlapLayers);
+        if (!bOverlap)
+        {
+            return tryIndex;
+        }
+    }
+
     return -1; // no free cell found
 }
 
