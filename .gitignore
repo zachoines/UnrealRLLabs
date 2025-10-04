@@ -61,3 +61,5 @@ Logs/
 # Uncomment the following line if you don't want to track UMG assets. 
 # Though it's generally recommended to track these.
 # *.umap
+## Python model checkpoints (large binaries)
+Content/Python/checkpoints/*.pth
