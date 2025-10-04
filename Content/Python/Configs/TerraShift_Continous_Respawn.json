@@ -16,9 +16,12 @@
         "bUsePotentialShaping": false,
         "bUseDistanceBasedReward": false,
         "bDisableEventRewards": false,
+<<<<<<< HEAD
         "bUseStationaryPenalty": false,
         "StationaryPenalty_MinSpeed": 10.0,
         "StationaryPenalty_Drain": 0.01,
+=======
+>>>>>>> e39238611e9dfaa506552808b8a7001124fa25b6
         "PotentialShaping_Gamma": 0.992,
         "PotentialShaping_Scale": 1.0,
         "VelAlign_Scale": 0.5,
@@ -622,4 +625,8 @@
     "frequency": 1,
     "steps": 128
   }
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> e39238611e9dfaa506552808b8a7001124fa25b6
