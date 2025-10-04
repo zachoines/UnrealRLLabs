@@ -203,6 +203,21 @@ class LinearValueScheduler:
         fraction = min(self.counter / float(self.total_iters), 1.0)
         return (1.0 - fraction)*self.start_value + fraction*self.end_value
 
+    # --- Checkpointing helpers ---
+    def state_dict(self) -> Dict[str, float]:
+        return {
+            "start_value": float(self.start_value),
+            "end_value": float(self.end_value),
+            "total_iters": int(self.total_iters),
+            "counter": int(self.counter),
+        }
+
+    def load_state_dict(self, state: Dict[str, float]):
+        self.start_value = float(state.get("start_value", self.start_value))
+        self.end_value = float(state.get("end_value", self.end_value))
+        self.total_iters = int(state.get("total_iters", self.total_iters))
+        self.counter = int(state.get("counter", self.counter))
+
 class RunningMeanStdNormalizer:
     """
     Dictionary-capable normalizer that tracks running mean/variance for each key's

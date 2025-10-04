@@ -1312,3 +1312,24 @@ class MAPOCAAgent(Agent):
     def load(self, location: str, load_optimizers: bool = False) -> None:
         """Load model parameters and optionally optimizer states."""
         super().load(location, load_optimizers=load_optimizers)
+        # Align schedulable scalars with scheduler current values after load
+        try:
+            if hasattr(self, "schedulers") and isinstance(self.schedulers, dict):
+                if "entropy_coeff" in self.schedulers and hasattr(self.schedulers["entropy_coeff"], "current_value"):
+                    self.entropy_coeff = float(self.schedulers["entropy_coeff"].current_value())
+                if "policy_clip" in self.schedulers and hasattr(self.schedulers["policy_clip"], "current_value"):
+                    self.ppo_clip_range = float(self.schedulers["policy_clip"].current_value())
+                if "value_clip" in self.schedulers and hasattr(self.schedulers["value_clip"], "current_value"):
+                    self.value_clip_range = float(self.schedulers["value_clip"].current_value())
+                if "max_grad_norm" in self.schedulers and hasattr(self.schedulers["max_grad_norm"], "current_value"):
+                    self.max_grad_norm = float(self.schedulers["max_grad_norm"].current_value())
+                if "fraction_entropy_coeff" in self.schedulers and hasattr(self.schedulers["fraction_entropy_coeff"], "current_value"):
+                    self.fraction_entropy_coeff = float(self.schedulers["fraction_entropy_coeff"].current_value())
+                if "fqf_temperature" in self.schedulers and hasattr(self.schedulers["fqf_temperature"], "current_value") and \
+                   self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'softmax_temperature'):
+                    self.shared_critic.value_iqn_net.softmax_temperature = float(self.schedulers["fqf_temperature"].current_value())
+                if "fqf_prior_blend_alpha" in self.schedulers and hasattr(self.schedulers["fqf_prior_blend_alpha"], "current_value") and \
+                   self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'prior_blend_alpha'):
+                    self.shared_critic.value_iqn_net.prior_blend_alpha = float(self.schedulers["fqf_prior_blend_alpha"].current_value())
+        except Exception:
+            pass
