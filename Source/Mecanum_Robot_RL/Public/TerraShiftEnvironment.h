@@ -116,6 +116,11 @@ private:
     UPROPERTY() float ZAccel_Min;
     UPROPERTY() float ZAccel_Max;
 
+    // Stationary penalty (config-gated)
+    UPROPERTY() bool bUseStationaryPenalty;
+    UPROPERTY() float StationaryPenalty_MinSpeed;
+    UPROPERTY() float StationaryPenalty_Drain;
+
     // Event-based rewards
     UPROPERTY()
     float EventReward_GoalReached;

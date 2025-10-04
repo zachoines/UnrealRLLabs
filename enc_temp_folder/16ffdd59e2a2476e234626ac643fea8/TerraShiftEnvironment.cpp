@@ -55,11 +55,6 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
     ZAccel_Min = 0.1f;
     ZAccel_Max = 2000.f;
 
-    // Stationary penalty defaults
-    bUseStationaryPenalty = false;
-    StationaryPenalty_MinSpeed = 10.0f;
-    StationaryPenalty_Drain = 0.01f;
-
     PlatformWorldSize = FVector::ZeroVector;
     PlatformCenter = FVector::ZeroVector;
     CellSize = 1.0f;
@@ -111,11 +106,6 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
         ZAccel_Scale = envSpecificCfg->GetOrDefaultNumber(TEXT("ZAccel_Scale"), 0.0001f);
         ZAccel_Min = envSpecificCfg->GetOrDefaultNumber(TEXT("ZAccel_Min"), 0.1f);
         ZAccel_Max = envSpecificCfg->GetOrDefaultNumber(TEXT("ZAccel_Max"), 2000.f);
-
-        // Stationary penalty (optional)
-        bUseStationaryPenalty = envSpecificCfg->GetOrDefaultBool(TEXT("bUseStationaryPenalty"), false);
-        StationaryPenalty_MinSpeed = envSpecificCfg->GetOrDefaultNumber(TEXT("StationaryPenalty_MinSpeed"), 10.0f);
-        StationaryPenalty_Drain = envSpecificCfg->GetOrDefaultNumber(TEXT("StationaryPenalty_Drain"), 0.01f);
 
         EventReward_GoalReached = envSpecificCfg->GetOrDefaultNumber(TEXT("EventReward_GoalReached"), 10.0f);
         EventReward_OutOfBounds = envSpecificCfg->GetOrDefaultNumber(TEXT("EventReward_OutOfBounds"), -10.0f);
@@ -376,13 +366,10 @@ float ATerraShiftEnvironment::Reward()
                 }
             }
 
-            if (bUseStationaryPenalty)
+            float speed = StateManager->GetCurrentVelocity(ObjIndex).Size();
+            if (speed < 10.0f)  // Below minimum acceptable speed
             {
-                const float speed = StateManager->GetCurrentVelocity(ObjIndex).Size();
-                if (speed < StationaryPenalty_MinSpeed)
-                {
-                    ShapingSubReward -= StationaryPenalty_Drain;
-                }
+                ShapingSubReward -= 0.01f;  // Constant drain for stationary objects
             }
 
             AccumulatedReward += ShapingSubReward;

@@ -288,11 +288,10 @@ void UStateManager::Reset(int32 NumObjects, int32 CurrentAgents)
                 if (TryPlaceGoals(WorkingGoalRadius))
                 {
                     bPlacedAllGoals = true;
-                    GoalRadius = WorkingGoalRadius;
-
-                    if (!FMath::IsNearlyEqual(GoalRadius, OriginalGoalRadius))
+                    // Do not persistently mutate GoalRadius; only report if a reduction was needed
+                    if (!FMath::IsNearlyEqual(WorkingGoalRadius, OriginalGoalRadius))
                     {
-                        UE_LOG(LogTemp, Warning, TEXT("StateManager::Reset => GoalRadius reduced from %f to %f to place all %d goals."), OriginalGoalRadius, GoalRadius, DesiredGoalCount);
+                        UE_LOG(LogTemp, Warning, TEXT("StateManager::Reset => Effective placement GoalRadius reduced from %f to %f to place all %d goals (no persistent change)."), OriginalGoalRadius, WorkingGoalRadius, DesiredGoalCount);
                     }
                 }
                 else
