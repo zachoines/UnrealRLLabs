@@ -1,4 +1,4 @@
-#pragma once
+Ôªø#pragma once
 
 #include "CoreMinimal.h"
 #include "UObject/NoExportTypes.h"
@@ -32,7 +32,7 @@
 /**
  * UStateManager:
  *
- * - Tracks a certain number of ìgrid objectsî
+ * - Tracks a certain number of ‚Äúgrid objects‚Äù
  * - Uses an OccupancyGrid to place random goals and objects without overlap
  * - Manages toggles for removing or keeping objects on goals/OOB, or "respawning" them
  * - Builds NxN height-based "central state" + optionally a goals-occupancy channel
@@ -196,6 +196,7 @@ private:
     UPROPERTY() bool bRespawnOnOOB;
     UPROPERTY() bool bTerminateOnAllGoalsReached;
     UPROPERTY() bool bTerminateOnMaxSteps;
+    UPROPERTY() bool bRemoveObjectsOnGoal;
     UPROPERTY() float GoalRadius = 1.f;
     UPROPERTY() float GoalCollectRadius = 6.f;
     UPROPERTY() float ObjectRadius = 1.f;
