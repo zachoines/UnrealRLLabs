@@ -357,9 +357,9 @@
   "train": {
     "sequence_length": 32,
     "pad_trajectories": true,
-    "batch_size": 1024,
-    "buffer_size": 1024,
-    "num_environments": 8,
+    "batch_size": 10240,
+    "buffer_size": 10240,
+    "num_environments": 1,
     "epochs": 4,
     "mini_batch_size": 32,
     "ActionRepeat": 2,
@@ -369,6 +369,6 @@
   "test": {
     "enabled": true,
     "frequency": 1,
-    "steps": 128
+    "steps": 1024
   }
 }
