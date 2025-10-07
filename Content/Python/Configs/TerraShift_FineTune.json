@@ -202,19 +202,19 @@
       "value_clip_range": 1.0,
       "entropy_coeff": 0.005,
       "schedulers": {
-        "lr_trunk": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_policy": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_value_path": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_baseline_path": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_value_iqn": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_baseline_iqn": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_rnd_predictor": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_disagreement": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "entropy_coeff": {"start_value": 0.005, "end_value": 0.001, "total_iters": 10000},
-        "policy_clip": {"start_value": 0.15, "end_value": 0.10, "total_iters": 10000},
-        "value_clip": {"start_value": 1.0, "end_value": 0.5, "total_iters": 10000},
+        "lr_trunk": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 3000},
+        "lr_policy": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 3000},
+        "lr_value_path": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 3000},
+        "lr_baseline_path": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 3000},
+        "lr_value_iqn": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 3000},
+        "lr_baseline_iqn": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 3000},
+        "lr_rnd_predictor": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 3000},
+        "lr_disagreement": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 3000},
+        "entropy_coeff": {"start_value": 0.005, "end_value": 0.001, "total_iters": 1500},
+        "policy_clip": {"start_value": 0.15, "end_value": 0.10, "total_iters": 1500},
+        "value_clip": {"start_value": 1.0, "end_value": 0.5, "total_iters": 1500},
         "value_clip_disabled": {"start_value": 1.0, "end_value": 0.1, "total_iters": 10000},
-        "max_grad_norm": {"start_value": 3.0, "end_value": 0.5, "total_iters": 10000}
+        "max_grad_norm": {"start_value": 3.0, "end_value": 0.5, "total_iters": 3000}
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
