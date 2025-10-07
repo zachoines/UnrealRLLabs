@@ -789,8 +789,9 @@ class MAPOCAAgent(Agent):
         v_clipped = old_v + (new_v - old_v).clamp(-clip_range, clip_range)
         # vf_loss1 = (new_v - target_v).pow(2)
         # vf_loss2 = (v_clipped - target_v).pow(2)
-        vf_loss1 = F.smooth_l1_loss(new_v, target_v)
-        vf_loss2 = F.smooth_l1_loss(v_clipped, target_v)
+        # Compute elementwise losses so masking is effective on padded steps.
+        vf_loss1 = F.smooth_l1_loss(new_v, target_v, reduction='none')
+        vf_loss2 = F.smooth_l1_loss(v_clipped, target_v, reduction='none')
         loss_unreduced = torch.max(vf_loss1, vf_loss2)
         # Apply mask and compute mean only over valid elements
         masked_loss = loss_unreduced * mask

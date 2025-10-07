@@ -6,7 +6,7 @@
       "PlatformSize": 1.0,
       "MaxColumnHeight": 4.0,
       "ObjectMass": 0.1,
-      "GridSize": 16,
+      "GridSize": 8,
       "MaxSteps": 512,
       "MaxAgents": 8,
       "TerraShiftEnvironment": {
@@ -16,12 +16,9 @@
         "bUsePotentialShaping": false,
         "bUseDistanceBasedReward": false,
         "bDisableEventRewards": false,
-<<<<<<< HEAD
         "bUseStationaryPenalty": false,
         "StationaryPenalty_MinSpeed": 10.0,
         "StationaryPenalty_Drain": 0.01,
-=======
->>>>>>> e39238611e9dfaa506552808b8a7001124fa25b6
         "PotentialShaping_Gamma": 0.992,
         "PotentialShaping_Scale": 1.0,
         "VelAlign_Scale": 0.5,
@@ -42,7 +39,7 @@
       },
       "MultiAgentGaussianWaveHeightMap": {
         "NumAgents": 8,
-        "GridSize": 16,
+        "GridSize": 32,
         "MinHeight": -4.0,
         "MaxHeight": 4.0,
         "NumActions": 6,
@@ -81,10 +78,17 @@
         "ObjectMass": 0.1,
         "MaxColumnHeight": 4.0,
         "BaseRespawnDelay": 0.1,
+        "bEnableColumnCollisionOptimization": true,
+        "ColumnCollisionRadiusCells": 2,
         "OverheadCameraDistance_disabled": 1500.0,
         "OverheadCameraFOV_disabled": 90.0,
         "OverheadCameraResX_disabled": 64,
         "OverheadCameraResY_disabled": 64,
+        "GridSize": 8,
+        "StateHeightMapResolutionH": 32,
+        "StateHeightMapResolutionW": 32,
+        "bIncludeHeightMapInState": true,
+        "bIncludeOverheadImageInState": false,
         "bUseRandomGoals": true,
         "bRespawnOnGoal": false,
         "bRespawnOnOOB": false,
@@ -263,7 +267,7 @@
     }
   },
   "StateRecorder": {
-    "enabled": false,
+    "enabled": true,
     "video_settings": {
       "output_path": "Recordings\\TerraShift.mp4",
       "fps": 32,
@@ -277,11 +281,7 @@
         "component_name": "height_map",
         "visualization_type": "3d_surface",
         "plot_title": "Height Map Visualization",
-        "shape_for_plot": {
-          "h": 64,
-          "w": 64,
-          "c": 1
-        },
+        "shape_for_plot": { "h": 32, "w": 32, "c": 1 },
         "z_lim_3d": [
           -1,
           1
@@ -625,8 +625,4 @@
     "frequency": 1,
     "steps": 128
   }
-<<<<<<< HEAD
 }
-=======
-}
->>>>>>> e39238611e9dfaa506552808b8a7001124fa25b6

@@ -38,7 +38,7 @@ struct CUSTOMSHADERS_API FHeightMapGenParams
     float MaxZ = 1.f;
     FVector ColumnRadii = FVector::ZeroVector; // legacy (unused when per-column radii provided)
     float ColZBias = 0.0f;  // additive Z bias for columns (world units in grid-local)
-    float ObjZBias = 7.5f;  // additive Z bias for objects (world units in grid-local)
+    float ObjZBias = -0.1f;  // additive Z bias for objects (world units in grid-local)
     int32 NumObjects = 0;
 };
 
