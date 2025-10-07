@@ -68,6 +68,7 @@
         "bRespawnOnOOB": true,
         "bTerminateOnAllGoalsReached": false,
         "bTerminateOnMaxSteps": true,
+        "bRemoveObjectsOnGoal": true,
         "GoalRadius": 8.0,
         "ObjectRadius": 8.0,
         "GoalCollectRadius": 10.0,
