@@ -192,8 +192,7 @@ class MAPOCAAgent(Agent):
         Returns the UE-flattened actions along with log-probabilities, entropies,
         predicted values, and baselines used for PPO/MA-POCA updates.
         """
-        s_mask = {"gridobject_sequence_mask": states.get("central", {}).get("gridobject_sequence_mask")}
-        emb_SBEA, _ = self.embedding_net.get_base_embedding(states, central_component_padding_masks=s_mask)
+        emb_SBEA, _ = self.embedding_net.get_base_embedding(states)
         emb_E_A_Embed = emb_SBEA.squeeze(0)
         B_env, NA_runtime, _ = emb_E_A_Embed.shape
 
@@ -324,9 +323,7 @@ class MAPOCAAgent(Agent):
                 
                 # Recompute features for the minibatch to ensure gradients flow correctly
                 mb_states_dict = {"central": {k: v[mb_idx] for k, v in padded_states_dict_seq.get("central", {}).items() if v is not None}, "agent": padded_states_dict_seq.get("agent")[mb_idx] if "agent" in padded_states_dict_seq else None}
-                s_mask_tensor = padded_states_dict_seq.get("central", {}).get("gridobject_sequence_mask")
-                mb_s_mask = {"gridobject_sequence_mask": s_mask_tensor[mb_idx]} if s_mask_tensor is not None else None
-                emb_s_mb, _ = self.embedding_net.get_base_embedding(mb_states_dict, central_component_padding_masks=mb_s_mask)
+                emb_s_mb, _ = self.embedding_net.get_base_embedding(mb_states_dict)
                 feats_s_mb = self._apply_memory_seq(emb_s_mb, mb_init_h)
 
                 # Generate the counterfactual baseline embeddings for the mini-batch
@@ -351,7 +348,9 @@ class MAPOCAAgent(Agent):
                 )
                 
                 pol_loss = self._ppo_clip_loss(new_lp_mb, mb_old_logp.detach(), mb_adv.detach(), self.ppo_clip_range, mb_mask_btna)
-                ent_loss = (-ent_mb * mb_mask_btna).sum() / mb_mask_btna.sum().clamp(min=1e-8)
+                # Robust entropy masking using boolean mask and safe denom
+                ent_mask_bool = mb_mask_btna.bool() if mb_mask_btna.dtype != torch.bool else mb_mask_btna
+                ent_loss = torch.where(ent_mask_bool, -ent_mb, torch.zeros_like(ent_mb)).sum() / ent_mask_bool.sum().clamp(min=1)
                 
                 # Value function loss (FQF/IQN or clipped depending on configuration)
                 if self.enable_iqn:
@@ -428,10 +427,8 @@ class MAPOCAAgent(Agent):
                 
                 # --- Disagreement Ensemble Update Step ---
                 if self.disagreement_cfg:
-                    ns_mask_tensor = padded_next_states_dict_seq.get("central", {}).get("gridobject_sequence_mask")
-                    mb_ns_mask = {"gridobject_sequence_mask": ns_mask_tensor[mb_idx]} if ns_mask_tensor is not None else None
                     mb_next_states_dict = {"central": {k: v[mb_idx] for k,v in padded_next_states_dict_seq.get("central", {}).items() if v is not None}, "agent": padded_next_states_dict_seq.get("agent")[mb_idx] if "agent" in padded_next_states_dict_seq else None}
-                    emb_ns_mb, _ = self.embedding_net.get_base_embedding(mb_next_states_dict, central_component_padding_masks=mb_ns_mask)
+                    emb_ns_mb, _ = self.embedding_net.get_base_embedding(mb_next_states_dict)
                     feats_ns_mb = self._apply_memory_seq(emb_ns_mb, self._get_next_hidden_state(feats_s_mb, mb_init_h))
                     
                     disagreement_loss = self._compute_disagreement_loss(feats_s_mb.detach(), mb_actions.detach(), feats_ns_mb.detach(), mb_mask_btna)
@@ -780,9 +777,11 @@ class MAPOCAAgent(Agent):
         surr1 = ratio * adv
         surr2 = torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range) * adv
         loss_unreduced = -torch.min(surr1, surr2)
-        # Apply mask and compute mean only over valid elements
-        masked_loss = loss_unreduced * mask
-        return masked_loss.sum() / mask.sum().clamp(min=1e-8)
+        # Apply boolean mask with where to avoid NaN propagation from masked entries
+        mask_bool = mask.bool() if mask.dtype != torch.bool else mask
+        loss_masked = torch.where(mask_bool, loss_unreduced, torch.zeros_like(loss_unreduced))
+        denom = mask_bool.sum().clamp(min=1)
+        return loss_masked.sum() / denom
 
     def _clipped_value_loss(self, old_v, new_v, target_v, clip_range, mask):
         """Calculates the clipped value function loss."""
@@ -793,9 +792,11 @@ class MAPOCAAgent(Agent):
         vf_loss1 = F.smooth_l1_loss(new_v, target_v, reduction='none')
         vf_loss2 = F.smooth_l1_loss(v_clipped, target_v, reduction='none')
         loss_unreduced = torch.max(vf_loss1, vf_loss2)
-        # Apply mask and compute mean only over valid elements
-        masked_loss = loss_unreduced * mask
-        return masked_loss.sum() / mask.sum().clamp(min=1e-8)
+        # Apply boolean mask with where to avoid NaN propagation from masked entries
+        mask_bool = mask.bool() if mask.dtype != torch.bool else mask
+        loss_masked = torch.where(mask_bool, loss_unreduced, torch.zeros_like(loss_unreduced))
+        denom = mask_bool.sum().clamp(min=1)
+        return loss_masked.sum() / denom
 
     # --- Auxiliary Module Helper Methods ---
     def _huber_loss(self, pred, target, delta=1.0):

@@ -187,7 +187,10 @@ class SharedMemoryInterface(EnvCommunicationInterface):
                     
                     # Generate padding mask: True where all features in the sequence are 0.
                     padding_mask = torch.all(torch.from_numpy(reshaped_component_data) == 0, dim=-1)
-                    central_components_dict[f"{name}_padding_mask"] = padding_mask.contiguous().to(self.device)
+                    # Backward-compat key and standardized key used by networks
+                    padding_mask_t = padding_mask.contiguous().to(self.device)
+                    central_components_dict[f"{name}_padding_mask"] = padding_mask_t
+                    central_components_dict[f"{name}_mask"] = padding_mask_t
                 else:
                      print(f"Warning: Shape mismatch for 'sequence' component '{name}'. Expected {max_len}x{feat_dim}={expected_comp_elements}, got size {comp_size}. Skipping reshape.")
             elif comp_type == "vector_legacy": 
