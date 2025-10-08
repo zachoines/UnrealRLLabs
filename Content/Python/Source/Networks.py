@@ -1769,7 +1769,7 @@ class CrossAttentionFeatureExtractor(nn.Module):
                 if central_component_padding_masks and (comp_name + "_mask") in central_component_padding_masks:
                     mask_tensor = central_component_padding_masks[comp_name + "_mask"]
                     if mask_tensor is not None:
-                        padding_mask_for_comp = mask_tensor.reshape(effective_batch_for_embedders, -1)
+                        padding_mask_for_comp = mask_tensor.to(dtype=torch.bool).reshape(effective_batch_for_embedders, -1)
 
                 if isinstance(embedder_module, LinearSequenceEmbedder):
                     processed_central_features[comp_name] = embedder_module(comp_data_for_embedder, padding_mask=padding_mask_for_comp)
@@ -1785,7 +1785,7 @@ class CrossAttentionFeatureExtractor(nn.Module):
                     for comp_name in self.enabled_central_component_names:
                         mask = central_component_padding_masks.get(comp_name + "_mask")
                         if mask is not None:
-                            mask_dict[comp_name] = mask.reshape(effective_batch_for_embedders, -1).to(agent_embed.device)
+                            mask_dict[comp_name] = mask.to(dtype=torch.bool).reshape(effective_batch_for_embedders, -1).to(agent_embed.device)
                 agent_embed = self.cross_attention_blocks[i](agent_embed, processed_central_features, mask_dict)
             elif self.fusion_type == "hierarchical":
                 h_tokens = processed_central_features.get("height_map")
@@ -1794,11 +1794,11 @@ class CrossAttentionFeatureExtractor(nn.Module):
                 obj_mask = None
                 if central_component_padding_masks:
                     if "height_map_mask" in central_component_padding_masks:
-                        m = central_component_padding_masks["height_map_mask"]
+                        m = central_component_padding_masks["height_map_mask"].to(dtype=torch.bool)
                         if m is not None:
                             h_mask = m.reshape(effective_batch_for_embedders, -1).to(agent_embed.device)
                     if "gridobject_sequence_mask" in central_component_padding_masks:
-                        m = central_component_padding_masks["gridobject_sequence_mask"]
+                        m = central_component_padding_masks["gridobject_sequence_mask"].to(dtype=torch.bool)
                         if m is not None:
                             obj_mask = m.reshape(effective_batch_for_embedders, -1).to(agent_embed.device)
                 agent_embed = self.cross_attention_blocks[i](agent_embed, h_tokens, obj_tokens, height_mask=h_mask, object_mask=obj_mask)
@@ -1809,7 +1809,7 @@ class CrossAttentionFeatureExtractor(nn.Module):
 
                         key_padding_mask = None
                         if central_component_padding_masks and (comp_name + "_mask") in central_component_padding_masks:
-                            mask_tensor = central_component_padding_masks[comp_name + "_mask"]
+                            mask_tensor = central_component_padding_masks[comp_name + "_mask"].to(dtype=torch.bool)
                             if mask_tensor is not None:
                                 key_padding_mask = mask_tensor.reshape(effective_batch_for_embedders, -1).to(agent_embed.device)
 
@@ -1819,6 +1819,7 @@ class CrossAttentionFeatureExtractor(nn.Module):
                             x_v=central_feature_sequence,
                             key_padding_mask=key_padding_mask
                         )
+            # Agent self-attention and FFN follow per-layer
             
             # Self-Attention: Agents attend to each other
             agent_embed, attn_weights = self.agent_self_attention_blocks[i](agent_embed)
@@ -1893,6 +1894,16 @@ class MultiAgentEmbeddingNetwork(nn.Module):
     def get_base_embedding(self, obs_dict: Dict[str, Any], 
                            central_component_padding_masks: Optional[Dict[str, torch.Tensor]] = None
                           ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        # If masks are not explicitly provided, auto-discover them from obs_dict["central"]
+        if central_component_padding_masks is None:
+            central_component_padding_masks = {}
+            central = obs_dict.get("central", {})
+            for key, tensor in central.items():
+                if isinstance(key, str) and key.endswith("_mask") and torch.is_tensor(tensor):
+                    base_name = key[:-5]  # strip suffix "_mask"
+                    central_component_padding_masks[base_name] = tensor
+            if not central_component_padding_masks:
+                central_component_padding_masks = None
         return self.base_encoder(obs_dict, central_component_padding_masks=central_component_padding_masks)
 
     def get_baseline_embeddings(self, common_emb: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
