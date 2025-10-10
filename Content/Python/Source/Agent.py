@@ -21,16 +21,33 @@ class Agent(nn.Module):
             torch.save(self.state_dict(), location)
 
     def load(self, location: str, load_optimizers: bool = False) -> None:
-        """Load model parameters and optionally optimizer states."""
+        """Load model parameters and optionally optimizer states.
+
+        Uses strict=False to allow loading checkpoints across minor architectural
+        toggles (e.g., enabling/disabling PopArt, auxiliary heads). Any missing
+        or unexpected keys are ignored and existing module parameters are kept
+        as-initialized.
+        """
         state = torch.load(location, map_location=self.device)
         if isinstance(state, dict) and "model" in state:
-            self.load_state_dict(state["model"])
+            # Allow partial load to support toggles like PopArt on/off
+            missing, unexpected = self.load_state_dict(state["model"], strict=False)
+            if (missing or unexpected):
+                try:
+                    import warnings
+                    warnings.warn(f"Partial checkpoint load. Missing keys: {missing}; Unexpected keys: {unexpected}")
+                except Exception:
+                    pass
             if load_optimizers and "optimizers" in state:
                 for name, opt_state in state["optimizers"].items():
                     if name in self.optimizers:
-                        self.optimizers[name].load_state_dict(opt_state)
+                        try:
+                            self.optimizers[name].load_state_dict(opt_state)
+                        except Exception:
+                            # Optimizer may not match if parameter groups changed; skip safely
+                            continue
         else:
-            self.load_state_dict(state)
+            self.load_state_dict(state, strict=False)
 
     def get_actions(self, states: torch.Tensor, dones=None, truncs=None, eval: bool = False, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError

@@ -675,7 +675,7 @@ class MAPOCAAgent(Agent):
 
     def _ppo_clip_loss(self, new_lp, old_lp, adv, clip_range, mask):
         """Calculates the PPO clipped surrogate objective loss."""
-        ratio = torch.exp((new_lp - old_lp).clamp(-10, 10))
+        ratio = torch.exp((new_lp - old_lp).clamp(-8, 8))
         surr1 = ratio * adv
         surr2 = torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range) * adv
         loss_unreduced = -torch.min(surr1, surr2)
