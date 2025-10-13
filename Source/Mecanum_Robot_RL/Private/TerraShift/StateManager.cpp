@@ -1065,6 +1065,8 @@ FVector UStateManager::GetCurrentVelocity(int32 ObjIndex) const { return CurrVel
 FVector UStateManager::GetPreviousVelocity(int32 ObjIndex) const { return PrevVel.IsValidIndex(ObjIndex) ? PrevVel[ObjIndex] : FVector::ZeroVector; }
 float UStateManager::GetCurrentDistance(int32 ObjIndex) const { return CurrDist.IsValidIndex(ObjIndex) ? CurrDist[ObjIndex] : -1.f; }
 float UStateManager::GetPreviousDistance(int32 ObjIndex) const { return PrevDist.IsValidIndex(ObjIndex) ? PrevDist[ObjIndex] : -1.f; }
+
+bool UStateManager::GetRemoveObjectsOnGoal() const { return bRemoveObjectsOnGoal; }
 FVector UStateManager::GetCurrentPosition(int32 ObjIndex) const { return CurrPos.IsValidIndex(ObjIndex) ? CurrPos[ObjIndex] : FVector::ZeroVector; }
 FVector UStateManager::GetPreviousPosition(int32 ObjIndex) const { return PrevPos.IsValidIndex(ObjIndex) ? PrevPos[ObjIndex] : FVector::ZeroVector; }
 

@@ -3,6 +3,7 @@
 
 #include "TerraShift/MultiAgentGaussianWaveHeightMap.h"
 #include "Math/UnrealMathUtility.h"
+#include "Async/ParallelFor.h"
 
 // Namespace for configuration helper functions (as it was in your original file)
 namespace ConfigHelpers
@@ -252,27 +253,74 @@ void UMultiAgentGaussianWaveHeightMap::Step(const TArray<float>& Actions, float 
 
 void UMultiAgentGaussianWaveHeightMap::ComputeFinalWave()
 {
-	if (GridSize <= 0) { // Ensure FinalWave is valid
-		if (FinalWave.GetNumRows() > 0 || FinalWave.GetNumColumns() > 0) FinalWave.Resize(0, 0); // Make it empty
-		return;
-	}
-	if (FinalWave.GetNumRows() != GridSize || FinalWave.GetNumColumns() != GridSize) { // Ensure correctly sized
-		FinalWave.Resize(GridSize, GridSize);
-	}
+    if (GridSize <= 0)
+    {
+        if (FinalWave.GetNumRows() > 0 || FinalWave.GetNumColumns() > 0)
+            FinalWave.Resize(0, 0);
+        return;
+    }
+    if (FinalWave.GetNumRows() != GridSize || FinalWave.GetNumColumns() != GridSize)
+    {
+        FinalWave.Resize(GridSize, GridSize);
+    }
 
-	if (bAccumulatedWave) {
-		FinalWave *= AccumulatedWaveFadeGamma;
-	}
-	else {
-		FinalWave.Init(0.f);
-	}
+    if (bAccumulatedWave)
+    {
+        FinalWave *= AccumulatedWaveFadeGamma;
+    }
+    else
+    {
+        FinalWave.Init(0.f);
+    }
 
-	for (const FGaussianWaveAgent& Agent : Agents)
-	{
-		FMatrix2D AgentWave = ComputeAgentWave(Agent);
-		FinalWave += AgentWave;
-	}
-	FinalWave.Clip(MinHeight, MaxHeight);
+    const float GridSizeF = static_cast<float>(GridSize);
+
+    // Accumulate each agent's Gaussian directly into FinalWave to avoid large temporaries
+    for (const FGaussianWaveAgent& Agent : Agents)
+    {
+        if (FMath::IsNearlyZero(Agent.Amplitude))
+        {
+            continue;
+        }
+
+        const float angleRad = -Agent.Orientation;
+        const float cosTheta = FMath::Cos(angleRad);
+        const float sinTheta = FMath::Sin(angleRad);
+        float denomX = Agent.SigmaX * Agent.SigmaX;
+        float denomY = Agent.SigmaY * Agent.SigmaY;
+        if (FMath::IsNearlyZero(denomX)) denomX = KINDA_SMALL_NUMBER;
+        if (FMath::IsNearlyZero(denomY)) denomY = KINDA_SMALL_NUMBER;
+        const float invDenomX = 1.0f / denomX;
+        const float invDenomY = 1.0f / denomY;
+
+        // Parallelize across rows for this agent
+        ParallelFor(GridSize, [&](int32 r)
+        {
+            const float rf = static_cast<float>(r);
+            for (int32 c = 0; c < GridSize; ++c)
+            {
+                const float cf = static_cast<float>(c);
+                float dr = rf - Agent.Position.X;
+                float dc = cf - Agent.Position.Y;
+
+                if (bWrapAroundEdges)
+                {
+                    // Minimal toroidal difference: d - N * round(d/N) => result in [-N/2, N/2]
+                    dr = dr - GridSizeF * static_cast<float>(FMath::RoundToInt(dr / GridSizeF));
+                    dc = dc - GridSizeF * static_cast<float>(FMath::RoundToInt(dc / GridSizeF));
+                }
+
+                const float rotX = dr * cosTheta - dc * sinTheta;
+                const float rotY = dr * sinTheta + dc * cosTheta;
+                const float quad = (rotX * rotX) * invDenomX + (rotY * rotY) * invDenomY;
+                const float val = Agent.Amplitude * FMath::Exp(-0.5f * quad);
+
+                FinalWave[r][c] += val;
+            }
+        });
+    }
+
+    FinalWave.Clip(MinHeight, MaxHeight);
 }
 
 FMatrix2D UMultiAgentGaussianWaveHeightMap::ComputeAgentWave(const FGaussianWaveAgent& Agent) const

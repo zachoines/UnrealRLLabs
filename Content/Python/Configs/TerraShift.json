@@ -19,7 +19,7 @@
         "bUseStationaryPenalty": false,
         "StationaryPenalty_MinSpeed": 10.0,
         "StationaryPenalty_Drain": 0.01,
-        "PotentialShaping_Gamma": 0.99,
+        "PotentialShaping_Gamma": 0.97,
         "PotentialShaping_Scale": 10.0,
         "VelAlign_Scale": 0.5,
         "VelAlign_Min": -50.0,
@@ -220,7 +220,7 @@
     }
   },
   "StateRecorder": {
-    "enabled": true,
+    "enabled": false,
     "video_settings": {
       "output_path": "Recordings\\TerraShift.mp4",
       "fps": 32,
@@ -374,7 +374,7 @@
         },
         "max_grad_norm": {
           "start_value": 3.0,
-          "end_value": 1.0,
+          "end_value": 0.5,
           "total_iters": 5000
         },
         "fqf_temperature": {

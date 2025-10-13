@@ -180,6 +180,10 @@ public:
     UFUNCTION(BlueprintCallable)
     FVector GetPreviousPosition(int32 ObjIndex) const;
 
+    // Config accessors
+    UFUNCTION(BlueprintCallable)
+    bool GetRemoveObjectsOnGoal() const;
+
 private:
     // ----------------------------------------------------------------
     //  Helpers

@@ -306,7 +306,7 @@ float ATerraShiftEnvironment::Reward()
             {
                 EObjectSlotState EventState = StateManager->GetObjectSlotState(ObjIndex);
                 const bool bTerminalEvent = (EventState == EObjectSlotState::OutOfBounds) ||
-                    (EventState == EObjectSlotState::GoalReached && StateManager->bRemoveObjectsOnGoal);
+                    (EventState == EObjectSlotState::GoalReached && StateManager->GetRemoveObjectsOnGoal());
 
                 if (bTerminalEvent)
                 {
