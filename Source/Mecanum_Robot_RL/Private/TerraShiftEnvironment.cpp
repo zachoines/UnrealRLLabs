@@ -299,6 +299,30 @@ float ATerraShiftEnvironment::Reward()
     // Iterate through each grid object to calculate its contribution to the reward.
     for (int32 ObjIndex = 0; ObjIndex < CurrentGridObjects; ++ObjIndex)
     {
+        // Potential shaping closing term for terminal events (always considered)
+        if (StateManager->GetShouldCollectReward(ObjIndex))
+        {
+            if (bUsePotentialShaping && PreviousPotential.IsValidIndex(ObjIndex))
+            {
+                EObjectSlotState EventState = StateManager->GetObjectSlotState(ObjIndex);
+                const bool bTerminalEvent = (EventState == EObjectSlotState::OutOfBounds) ||
+                    (EventState == EObjectSlotState::GoalReached && StateManager->bRemoveObjectsOnGoal);
+
+                if (bTerminalEvent)
+                {
+                    // Add the final term: gamma * Phi(terminal=0) - Phi(s) = -Phi(s)
+                    AccumulatedReward += PotentialShaping_Scale * (0.0f - PreviousPotential[ObjIndex]);
+                    PreviousPotential[ObjIndex] = 0.0f;
+
+                    // If event rewards are disabled, ensure the one-time flag is still cleared
+                    if (bDisableEventRewards)
+                    {
+                        StateManager->SetShouldCollectReward(ObjIndex, false);
+                    }
+                }
+            }
+        }
+
         // Check for one-time events (Goal Reached / Out of Bounds)
         if (StateManager->GetShouldCollectReward(ObjIndex) && !bDisableEventRewards)
         {
@@ -327,8 +351,16 @@ float ATerraShiftEnvironment::Reward()
                 float currentPotential = CalculatePotential(ObjIndex);
                 if (PreviousPotential.IsValidIndex(ObjIndex))
                 {
-                    ShapingSubReward += PotentialShaping_Scale * (PotentialShaping_Gamma * currentPotential - PreviousPotential[ObjIndex]);
-                    PreviousPotential[ObjIndex] = currentPotential;
+                    // Guard against a respawn boost: seed and skip shaping on the first active frame
+                    if (StateManager->GetPreviousDistance(ObjIndex) < 0.0f)
+                    {
+                        PreviousPotential[ObjIndex] = currentPotential;
+                    }
+                    else
+                    {
+                        ShapingSubReward += PotentialShaping_Scale * (PotentialShaping_Gamma * currentPotential - PreviousPotential[ObjIndex]);
+                        PreviousPotential[ObjIndex] = currentPotential;
+                    }
                 }
             }
 
@@ -448,12 +480,14 @@ AMainPlatform* ATerraShiftEnvironment::SpawnPlatform(FVector Location)
 
 float ATerraShiftEnvironment::CalculatePotential(int32 ObjIndex) const
 {
-    if (!StateManager || !(PlatformWorldSize.X > KINDA_SMALL_NUMBER)) return 0.0f;
+    // Normalize by platform XY diagonal to reduce scale drift across layouts
+    const float xyDiagonal = PlatformWorldSize.Size2D();
+    if (!StateManager || !(xyDiagonal > KINDA_SMALL_NUMBER)) return 0.0f;
     if (StateManager->GetObjectSlotState(ObjIndex) != EObjectSlotState::Active) return 0.0f;
 
-    float currentDistance = StateManager->GetCurrentDistance(ObjIndex);
+    const float currentDistance = StateManager->GetCurrentDistance(ObjIndex);
     if (currentDistance < 0.f) return 0.0f;
 
     // Potential is inversely proportional to distance (more reward for being closer)
-    return -currentDistance / PlatformWorldSize.X;
+    return -currentDistance / xyDiagonal;
 }
