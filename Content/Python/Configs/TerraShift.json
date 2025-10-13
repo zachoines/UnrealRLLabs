@@ -60,13 +60,13 @@
           4.0
         ],
         "SigMinMax": [
-          0.1,
-          1.0
+          0.2,
+          2.0
         ],
         "DeltaVelScale": 6.0,
         "DeltaAngVelScale": 1.57,
-        "DeltaAmpScale": 8.0,
-        "DeltaSigmaScale": 2.0
+        "DeltaAmpScale": 4.0,
+        "DeltaSigmaScale": 4.0
       },
       "StateManager": {
         "MaxGridObjects": 4,
@@ -320,82 +320,82 @@
         "lr_trunk": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 5000
+          "total_iters": 10000
         },
         "lr_policy": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 5000
+          "total_iters": 10000
         },
         "lr_value_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 5000
+          "total_iters": 10000
         },
         "lr_value_quantile": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 5000
+          "total_iters": 10000
         },
         "lr_value_fraction": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 5000
+          "total_iters": 10000
         },
         "lr_baseline_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 5000
+          "total_iters": 10000
         },
         "lr_rnd_predictor": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 5000
+          "total_iters": 10000
         },
         "lr_disagreement": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 5000
+          "total_iters": 10000
         },
         "entropy_coeff": {
           "start_value": 0.01,
           "end_value": 0.005,
-          "total_iters": 5000
+          "total_iters": 10000
         },
         "policy_clip": {
           "start_value": 0.2,
           "end_value": 0.1,
-          "total_iters": 5000
+          "total_iters": 10000
         },
         "value_clip_disabled": {
           "start_value": 1.0,
           "end_value": 0.1,
-          "total_iters": 5000
+          "total_iters": 10000
         },
         "max_grad_norm": {
           "start_value": 3.0,
           "end_value": 0.5,
-          "total_iters": 5000
+          "total_iters": 10000
         },
         "fqf_temperature": {
           "start_value": 3.0,
           "end_value": 0.5,
-          "total_iters": 5000
+          "total_iters": 10000
         },
         "fqf_prior_blend_alpha": {
           "start_value": 0.2,
           "end_value": 0.0,
-          "total_iters": 5000
+          "total_iters": 10000
         },
         "fraction_entropy_coeff": {
           "start_value": 0.02,
           "end_value": 0.001,
-          "total_iters": 5000
+          "total_iters": 10000
         },
         "fraction_loss_coeff": {
           "start_value": 0.05,
           "end_value": 0.2,
-          "total_iters": 5000
+          "total_iters": 10000
         }
       },
       "networks": {
@@ -528,18 +528,8 @@
             "dropout": 0.1,
             "self_attention": true
           },
-          "distributional_network_params_disabled": {
-            "iqn_network_disabled": {
-              "feature_dim": 256,
-              "hidden_size": 256,
-              "quantile_embedding_dim": 64,
-              "num_quantiles": 32,
-              "use_dueling": true,
-              "linear_init_scale": 1.0,
-              "dropout_rate": 0.1,
-              "iqn_kappa": 1.0
-            },
-            "fqf_network_disabled": {
+          "distributional_network_params": {
+            "fqf_network": {
               "feature_dim": 256,
               "hidden_size": 256,
               "quantile_embedding_dim": 64,
