@@ -61,6 +61,16 @@ class MAPOCAAgent(Agent):
         self.lr_base = a_cfg.get("learning_rate", 3e-4)
         self.epochs = t_cfg.get("epochs", 4)
         self.mini_batch_size = t_cfg.get("mini_batch_size", 64)
+
+        # --- FQF controls (optional) ---
+        # If True, include trunk params in the second (fraction-only) phase update
+        self.fqf_fraction_update_trunk = a_cfg.get("fqf_fraction_update_trunk", False)
+        # Warmup iterations during which fraction entropy reg is disabled
+        self.fraction_entropy_warmup_iters = int(a_cfg.get("fraction_entropy_warmup_iters", 0))
+        # Optional clamp on fraction entropy term to prevent spikes (None disables)
+        self.fraction_entropy_cap = a_cfg.get("fraction_entropy_cap", None)
+        # Training step counter (minibatch steps)
+        self.update_step = 0
         
         # --- Schedulable Parameters (initialized with their starting values) ---
         self.entropy_coeff = a_cfg.get("entropy_coeff", 0.01)
@@ -127,29 +137,41 @@ class MAPOCAAgent(Agent):
         
         # Store parameters for easier access based on which network is active
         if "fqf_network" in distrib_config:
-            # FQF is enabled
+            # FQF is enabled (distributional value function)
             network_config = distrib_config["fqf_network"]
             self.use_fqf = True
             self.fraction_loss_coeff = network_config.get("fraction_loss_coeff", 0.1)
             self.num_quantiles = network_config.get("num_quantiles", 32)
             self.iqn_kappa = network_config.get("iqn_kappa", 1.0)
-            self.enable_iqn = (self.num_quantiles > 0 and network_config.get("enable_iqn", True))
+            # Renamed for clarity: distributional value enabled
+            self.enable_distributional = (self.num_quantiles > 0)
+            self.enable_iqn = self.enable_distributional  # Backward compatibility alias
             # New optional controls
             self.fraction_entropy_coeff = network_config.get("fraction_entropy_coeff", 0.0)
+            # Optional FQF controls can also be provided inside fqf_network
+            self.fqf_fraction_update_trunk = network_config.get(
+                "fqf_fraction_update_trunk", self.fqf_fraction_update_trunk)
+            self.fraction_entropy_warmup_iters = int(network_config.get(
+                "fraction_entropy_warmup_iters", self.fraction_entropy_warmup_iters))
+            self.fraction_entropy_cap = network_config.get(
+                "fraction_entropy_cap", self.fraction_entropy_cap)
         elif "iqn_network" in distrib_config:
-            # IQN is enabled
+            # IQN is enabled (distributional value function)
             network_config = distrib_config["iqn_network"]
             self.use_fqf = False
             self.fraction_loss_coeff = 0.0  # Not used for IQN
             self.num_quantiles = network_config.get("num_quantiles", 32)
             self.iqn_kappa = network_config.get("iqn_kappa", 1.0)
-            self.enable_iqn = (self.num_quantiles > 0 and network_config.get("enable_iqn", True))
+            self.enable_distributional = (self.num_quantiles > 0)
+            self.enable_iqn = self.enable_distributional  # Backward compatibility alias
         else:
             # No distributional network - use traditional scalar value function
             self.use_fqf = False
             self.fraction_loss_coeff = 0.0
             self.num_quantiles = 0
             self.iqn_kappa = 1.0  # Not used, but set for consistency
+            self.enable_distributional = False
+            self.enable_iqn = False
             self.enable_iqn = False  # Traditional scalar value function
 
         # --- Auxiliary Modules Setup ---
@@ -337,7 +359,7 @@ class MAPOCAAgent(Agent):
                 # Pass both sets of features to the corrected critic
                 # If using IQN (not FQF), sample taus explicitly to align loss weighting with forward
                 taus_bt = None
-                if self.enable_iqn and not self.use_fqf:
+                if self.enable_distributional and not self.use_fqf:
                     B_mb, T_mb = feats_s_mb.shape[0], feats_s_mb.shape[1]
                     taus_bt = torch.rand(B_mb * T_mb, self.num_quantiles, 1, device=self.device)
 
@@ -353,7 +375,7 @@ class MAPOCAAgent(Agent):
                 ent_loss = torch.where(ent_mask_bool, -ent_mb, torch.zeros_like(ent_mb)).sum() / ent_mask_bool.sum().clamp(min=1)
                 
                 # Value function loss (FQF/IQN or clipped depending on configuration)
-                if self.enable_iqn:
+                if self.enable_distributional:
                     val_targets = mb_returns if not self.enable_popart else self.value_popart.normalize_targets(mb_returns)
                     # Reshape val_targets from (B, T, 1) to (B*T, 1) to match quantiles shape (B*T, num_quantiles)
                     val_targets_reshaped = val_targets.reshape(-1, val_targets.shape[-1])
@@ -361,16 +383,19 @@ class MAPOCAAgent(Agent):
                     mask_reshaped = attention_mask_batch[mb_idx].reshape(-1)
                     
                     if self.use_fqf:
-                        # FQF Loss with learned quantile fractions
+                        # FQF: compute quantile and fraction losses separately for two-phase update
                         learned_taus = self.shared_critic.last_learned_taus  # Set during forward pass
                         if learned_taus is not None:
-                            val_loss = self._compute_fqf_quantile_loss(
-                                new_val_quantiles, learned_taus, val_targets_reshaped, 
-                                mask_reshaped, self.fraction_loss_coeff
+                            q_loss, frac_loss = self._compute_fqf_losses(
+                                new_val_quantiles, learned_taus, val_targets_reshaped, mask_reshaped
                             )
+                            # Phase-1 uses only quantile loss; fraction loss handled in phase-2
+                            val_loss = q_loss
                         else:
                             # Fallback to IQN if no learned taus available
-                            val_loss = self._compute_iqn_quantile_loss(new_val_quantiles, val_targets_reshaped, mask_reshaped, taus_bt.squeeze(-1) if taus_bt is not None else None)
+                            q_loss = self._compute_iqn_quantile_loss(new_val_quantiles, val_targets_reshaped, mask_reshaped, taus_bt.squeeze(-1) if taus_bt is not None else None)
+                            frac_loss = torch.tensor(0.0, device=self.device)
+                            val_loss = q_loss
                         # Entropy regularizer + fraction diagnostics
                         with torch.no_grad():
                             val_feats_agg_ng = getattr(self.shared_critic, 'last_value_feats_agg', None)
@@ -386,16 +411,7 @@ class MAPOCAAgent(Agent):
                                 logs_acc["fraction/prob_min"].append((probs_ng.min(dim=1).values * valid_mask_float).sum().item() / denom.item())
                                 top1 = torch.topk(probs_ng, k=1, dim=1).values.squeeze(-1)
                                 logs_acc["fraction/top1_mass"].append((top1 * valid_mask_float).sum().item() / denom.item())
-                        if getattr(self, 'fraction_entropy_coeff', 0.0) > 0.0:
-                            # Apply entropy regularizer with gradients flowing to fraction net
-                            val_feats_agg_g = getattr(self.shared_critic, 'last_value_feats_agg', None)
-                            if val_feats_agg_g is not None:
-                                logits = self.shared_critic.value_iqn_net.fraction_net(val_feats_agg_g)
-                                T = getattr(self.shared_critic.value_iqn_net, 'softmax_temperature', 1.0)
-                                probs = torch.softmax(logits / max(T, 1e-8), dim=1)
-                                ent = -(probs * (probs.clamp(min=1e-8).log())).sum(dim=1)
-                                ent_mean = (ent * mask_reshaped.float()).sum() / mask_reshaped.float().sum().clamp(min=1e-8)
-                                val_loss = val_loss - self.fraction_entropy_coeff * ent_mean
+                        # Note: fraction entropy regularizer is applied in phase-2 only now
                     else:
                         # Standard IQN Quantile Regression Loss
                         val_loss = self._compute_iqn_quantile_loss(new_val_quantiles, val_targets_reshaped, mask_reshaped, taus_bt.squeeze(-1) if taus_bt is not None else None)
@@ -409,21 +425,60 @@ class MAPOCAAgent(Agent):
                 if self.enable_popart: base_targets = self.baseline_popart.normalize_targets(base_targets)
                 base_loss = self._clipped_value_loss(mb_old_base_norm.detach(), new_base_norm, base_targets.detach(), self.value_clip_range, mb_mask_btna.unsqueeze(-1))
                 
-                # --- Combined PPO Loss ---
-                ppo_total_loss = pol_loss + self.entropy_coeff * ent_loss + self.value_loss_coeff * val_loss + self.baseline_loss_coeff * base_loss
-                
-                # Optimizers to step
+                # --- Two-phase PPO step for FQF to isolate fraction updates ---
                 if self.use_fqf and "value_quantile" in self.optimizers and "value_fraction" in self.optimizers:
-                    ppo_opts = [
+                    # Phase 1: policy + trunk + quantile + baseline
+                    ppo_opts_phase1 = [
                         self.optimizers["trunk"], self.optimizers["policy"],
-                        self.optimizers["value_quantile"], self.optimizers["value_fraction"],
-                        self.optimizers["baseline_path"]
+                        self.optimizers["value_quantile"], self.optimizers["baseline_path"]
                     ]
+                    for opt in ppo_opts_phase1: opt.zero_grad()
+                    ppo_total_loss_phase1 = pol_loss + self.entropy_coeff * ent_loss + self.value_loss_coeff * val_loss + self.baseline_loss_coeff * base_loss
+                    ppo_total_loss_phase1.backward()
+                    total_grad_norm = self._clip_and_step_ppo_optimizers(ppo_opts_phase1)
+
+                    # Phase 2: fraction net only
+                    # Prepare grads for fraction phase
+                    self.optimizers["value_fraction"].zero_grad()
+                    if self.fqf_fraction_update_trunk and "trunk" in self.optimizers:
+                        self.optimizers["trunk"].zero_grad()
+                    # Compute fresh fraction loss and apply optional entropy regularizer
+                    current_quantiles_detached = new_val_quantiles.detach()
+                    # Build features for phase-2: recompute trunk if updating it, else detach to cut trunk graph
+                    if self.fqf_fraction_update_trunk:
+                        emb_s_mb_p2, _ = self.embedding_net.get_base_embedding(mb_states_dict)
+                        feats_s_mb_p2 = self._apply_memory_seq(emb_s_mb_p2, mb_init_h)
+                    else:
+                        feats_s_mb_p2 = feats_s_mb.detach()
+                    frac_loss_p2, logits_p2, probs_p2 = self._compute_fqf_fraction_loss_phase2(
+                        feats_s_mb_p2, current_quantiles_detached, mask_reshaped
+                    )
+                    eff_coeff = float(getattr(self, 'fraction_entropy_coeff', 0.0))
+                    if self.fraction_entropy_warmup_iters and (self.update_step < self.fraction_entropy_warmup_iters):
+                        eff_coeff = 0.0
+                    if eff_coeff != 0.0:
+                        ent = -(probs_p2 * (probs_p2.clamp(min=1e-8).log())).sum(dim=1)
+                        ent_mean = (ent * mask_reshaped.float()).sum() / mask_reshaped.float().sum().clamp(min=1e-8)
+                        if self.fraction_entropy_cap is not None:
+                            try:
+                                cap_val = float(self.fraction_entropy_cap)
+                                ent_mean = torch.clamp(ent_mean, max=cap_val)
+                            except Exception:
+                                pass
+                        frac_loss_p2 = frac_loss_p2 - eff_coeff * ent_mean
+
+                    (self.fraction_loss_coeff * frac_loss_p2).backward()
+                    self.optimizers["value_fraction"].step()
+                    if self.fqf_fraction_update_trunk and "trunk" in self.optimizers:
+                        # Step trunk with fraction gradients (optional co-adaptation)
+                        self.optimizers["trunk"].step()
                 else:
+                    # Single-phase (IQN or scalar value)
                     ppo_opts = [self.optimizers["trunk"], self.optimizers["policy"], self.optimizers["value_path"], self.optimizers["baseline_path"]]
-                for opt in ppo_opts: opt.zero_grad()
-                ppo_total_loss.backward()
-                total_grad_norm = self._clip_and_step_ppo_optimizers(ppo_opts)
+                    for opt in ppo_opts: opt.zero_grad()
+                    ppo_total_loss = pol_loss + self.entropy_coeff * ent_loss + self.value_loss_coeff * val_loss + self.baseline_loss_coeff * base_loss
+                    ppo_total_loss.backward()
+                    total_grad_norm = self._clip_and_step_ppo_optimizers(ppo_opts)
                 
                 # --- Disagreement Ensemble Update Step ---
                 if self.disagreement_cfg:
@@ -451,10 +506,12 @@ class MAPOCAAgent(Agent):
                 self._log_minibatch_stats(
                     logs_acc, pol_loss, val_loss, base_loss, ent_mb, new_lp_mb, 
                     mb_mask_btna, rnd_loss, disagreement_loss, feats_s_mb, 
-                    total_grad_norm, new_val_norm, new_base_norm, new_val_quantiles if self.enable_iqn else None
+                    total_grad_norm, new_val_norm, new_base_norm, new_val_quantiles if self.enable_distributional else None
                 )
                 # Step schedulers per minibatch (LR + scalar schedulers)
                 self._step_schedulers()
+                # Advance minibatch update counter
+                self.update_step += 1
         
         return self._finalize_logs(logs_acc)
    
@@ -472,7 +529,7 @@ class MAPOCAAgent(Agent):
             "grad_norm/total": [], "grad_norm/trunk": [], "grad_norm/policy": [],
             "grad_norm/value_path": [], "grad_norm/baseline_path": [],
             "grad_norm/value_quantile_net": [], "grad_norm/value_fraction_net": [], "grad_norm/value_attention": [],
-            "fqf/min_tau_diff": [], "fqf/mean_tau_diff": [],
+            "fqf/min_tau_diff": [], "fqf/mean_tau_diff": [], "fqf/max_tau_diff": [],
             "fraction/entropy": [], "fraction/prob_max": [], "fraction/prob_min": [], "fraction/top1_mass": []
         }
         if self.rnd_cfg:
@@ -509,7 +566,7 @@ class MAPOCAAgent(Agent):
     def _setup_popart(self, a_cfg):
         beta, eps = a_cfg.get("popart_beta", 0.999), a_cfg.get("popart_epsilon", 1e-5)
         
-        if self.enable_iqn:
+        if self.enable_distributional:
             # PopArt with IQN is complex since IQN outputs distributions, not scalars
             print("Warning: PopArt normalization with IQN is not fully implemented in the clean approach.")
             print("Consider using standard reward normalization instead.")
@@ -937,16 +994,16 @@ class MAPOCAAgent(Agent):
         # Normalize by number of quantiles to keep scale comparable
         return quantile_loss / max(float(num_quantiles), 1.0)
     
-    def _compute_fqf_quantile_loss(self, current_quantiles: torch.Tensor,
-                                  learned_taus: torch.Tensor,
-                                  target_values: torch.Tensor,
-                                  mask: torch.Tensor,
-                                  fraction_loss_coeff: float = 0.1) -> torch.Tensor:
+    def _compute_fqf_losses(self, current_quantiles: torch.Tensor,
+                             learned_taus: torch.Tensor,
+                             target_values: torch.Tensor,
+                             mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Paper-aligned FQF objective: quantile Huber loss at t^ midpoints + fraction loss.
+        Paper-aligned FQF objective split into two components:
+        - quantile Huber loss at tau_hat midpoints (for value/quantile net)
+        - fraction loss using gradient-of-t surrogate (for fraction net)
 
-        - Use t^ midpoints reconstructed from learned internal boundaries for weighting.
-        - Fraction loss uses gradient-of-t surrogate from the FQF paper (needs quantiles at boundaries).
+        Returns (quantile_loss, fraction_loss)
         """
         B_T, num_quantiles = current_quantiles.shape  # N quantiles
 
@@ -988,7 +1045,7 @@ class MAPOCAAgent(Agent):
         # Compute WITH gradients for fraction loss - critical for FQF optimization!
         val_feats_agg = getattr(self.shared_critic, 'last_value_feats_agg', None)
         if val_feats_agg is None:
-            return quantile_loss  # fallback
+            return quantile_loss, torch.tensor(0.0, device=self.device)  # fallback
         sa_quantiles = self.shared_critic.value_iqn_net.quantile_net(
             val_feats_agg, learned_taus_2d.unsqueeze(-1))  # Keep gradients for tau optimization!
         sa_quantile_hats = current_quantiles.detach()  # Only detach the midpoint quantiles
@@ -1003,7 +1060,44 @@ class MAPOCAAgent(Agent):
         mask_tau = mask.unsqueeze(-1).expand_as(gradient_of_taus)
         fraction_loss = ((gradient_of_taus * learned_taus_2d) * mask_tau).sum() / mask_tau.sum().clamp(min=1e-8)
 
-        return quantile_loss + fraction_loss_coeff * fraction_loss
+        return quantile_loss, fraction_loss
+
+    def _compute_fqf_fraction_loss_phase2(self,
+                                          feats_seq: torch.Tensor,
+                                          current_quantiles_detached: torch.Tensor,
+                                          mask_flat: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Recompute fraction-only loss on a fresh graph to avoid in-place/version issues
+        after phase-1 updates. Returns (fraction_loss, logits, probs).
+        """
+        B, T, NA, F = feats_seq.shape
+        # Compute aggregated value features (B*T, H)
+        # Do not accumulate grads through value-attention in phase 2 to avoid memory buildup
+        with torch.no_grad():
+            val_attn_out, _ = self.shared_critic.value_attention(feats_seq.reshape(B * T, NA, F))
+            val_feats_agg = val_attn_out.mean(dim=1)
+
+        # Fraction proposal (interval probs) and internal boundaries
+        fqf_net = self.shared_critic.value_iqn_net
+        logits = fqf_net.fraction_net(val_feats_agg)
+        Ttemp = float(getattr(fqf_net, 'softmax_temperature', 1.0))
+        probs = torch.softmax(logits / max(Ttemp, 1e-8), dim=1)
+        tau_cum = torch.cumsum(probs, dim=1)
+        taus_internal = tau_cum[:, :-1] if probs.shape[1] > 1 else tau_cum[:, :0]
+
+        # Quantiles at boundaries and gradient surrogate
+        sa_quantiles = fqf_net.quantile_net(val_feats_agg, taus_internal.unsqueeze(-1))  # (B*T, N-1)
+        sa_quantile_hats = current_quantiles_detached  # (B*T, N)
+        values_1 = sa_quantiles - sa_quantile_hats[:, :-1]
+        signs_1 = sa_quantiles > torch.cat([sa_quantile_hats[:, :1], sa_quantiles[:, :-1]], dim=1)
+        values_2 = sa_quantiles - sa_quantile_hats[:, 1:]
+        signs_2 = sa_quantiles < torch.cat([sa_quantiles[:, 1:], sa_quantile_hats[:, -1:]], dim=1)
+        gradient_of_taus = (torch.where(signs_1, values_1, -values_1)
+                            + torch.where(signs_2, values_2, -values_2))
+
+        mask_tau = mask_flat.unsqueeze(-1).expand_as(gradient_of_taus)
+        fraction_loss = ((gradient_of_taus * taus_internal) * mask_tau).sum() / mask_tau.sum().clamp(min=1e-8)
+        return fraction_loss, logits, probs
 
     def _compute_huber_quantile_loss(self, current_quantiles, target_quantiles_detached, taus_for_current):
         """
@@ -1224,7 +1318,7 @@ class MAPOCAAgent(Agent):
         logs_acc["loss/policy"].append(pol_loss.item())
         
         # Log value loss under appropriate category
-        if self.enable_iqn:
+        if self.enable_distributional:
             if self.use_fqf:
                 logs_acc["loss/fqf_value"].append(val_loss.item())
             else:
@@ -1247,7 +1341,7 @@ class MAPOCAAgent(Agent):
         if self.disagreement_cfg: logs_acc["loss/disagreement"].append(disagreement_loss.item())
         
         # Log IQN quantiles and loss (only if IQN is enabled)
-        if self.enable_iqn and new_val_quantiles is not None:
+        if self.enable_distributional and new_val_quantiles is not None:
             logs_acc["mean/value_quantiles"].append(new_val_quantiles.mean().item())
             logs_acc["std/value_quantiles"].append(new_val_quantiles.std().item())
 
@@ -1291,7 +1385,7 @@ class MAPOCAAgent(Agent):
         if self.disagreement_cfg: logs_acc["grad_norm/disagreement_ensemble"].append(_get_avg_grad_mag(self.dynamics_ensemble.parameters()))
 
         # FQF tau spacing stats
-        if self.enable_iqn and self.use_fqf and getattr(self.shared_critic, 'last_learned_taus', None) is not None:
+        if self.enable_distributional and self.use_fqf and getattr(self.shared_critic, 'last_learned_taus', None) is not None:
             with torch.no_grad():
                 taus_internal = self.shared_critic.last_learned_taus.squeeze(-1)
                 B_T = taus_internal.shape[0]
@@ -1301,6 +1395,7 @@ class MAPOCAAgent(Agent):
                 tau_diffs = tau_boundaries[:, 1:] - tau_boundaries[:, :-1]
                 logs_acc["fqf/min_tau_diff"].append(tau_diffs.min().item())
                 logs_acc["fqf/mean_tau_diff"].append(tau_diffs.mean().item())
+                logs_acc["fqf/max_tau_diff"].append(tau_diffs.max().item())
 
     def _finalize_logs(self, logs_acc: Dict) -> Dict[str, float]:
         """

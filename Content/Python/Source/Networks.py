@@ -663,9 +663,16 @@ class SharedCritic(nn.Module):
             network_config = distrib_config["fqf_network"].copy()
             if "feature_dim" not in network_config:
                 network_config["feature_dim"] = self.value_attention.embed_dim
-            network_config.pop("iqn_kappa", None)
-            network_config.pop("fraction_loss_coeff", None)
-            network_config.pop("fraction_entropy_coeff", None)
+            # Remove keys not accepted by FullyParameterizedQuantileNetwork
+            for k in [
+                "iqn_kappa",
+                "fraction_loss_coeff",
+                "fraction_entropy_coeff",
+                "fqf_fraction_update_trunk",
+                "fraction_entropy_warmup_iters",
+                "fraction_entropy_cap",
+            ]:
+                network_config.pop(k, None)
             self.value_iqn_net = FullyParameterizedQuantileNetwork(**network_config)
             self.num_quantiles = network_config.get("num_quantiles", 32)
 

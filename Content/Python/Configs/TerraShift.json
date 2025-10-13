@@ -52,8 +52,8 @@
           3
         ],
         "AngVelRange": [
-          -0.785,
-          0.785
+          -1.57,
+          1.57
         ],
         "AmpMinMax": [
           -4.0,
@@ -64,7 +64,7 @@
           2.0
         ],
         "DeltaVelScale": 6.0,
-        "DeltaAngVelScale": 1.57,
+        "DeltaAngVelScale": 3.14,
         "DeltaAmpScale": 4.0,
         "DeltaSigmaScale": 4.0
       },
@@ -293,7 +293,7 @@
       "lr_value_path": 3e-04,
       "lr_baseline_path": 3e-04,
       "lr_value_quantile": 3e-04,
-      "lr_value_fraction": 3e-04,
+      "lr_value_fraction": 1e-04,
       "lr_value_iqn": 3e-04,
       "lr_baseline_iqn": 3e-04,
       "lr_rnd_predictor": 3e-04,
@@ -533,7 +533,7 @@
               "feature_dim": 256,
               "hidden_size": 256,
               "quantile_embedding_dim": 64,
-              "num_quantiles": 32,
+              "num_quantiles": 16,
               "use_dueling": true,
               "linear_init_scale": 1.0,
               "dropout_rate": 0.1,
@@ -541,6 +541,9 @@
               "fraction_net_hidden": 128,
               "fraction_loss_coeff": 0.05,
               "fraction_entropy_coeff": 0.02,
+              "fqf_fraction_update_trunk": true,
+              "fraction_entropy_warmup_iters": 1000,
+              "fraction_entropy_cap": 0.5,
               "softmax_temperature": 3.0,
               "prior_blend_alpha": 0.2,
               "exploration_noise_scale": 0.02,
@@ -553,13 +556,13 @@
     }
   },
   "train": {
-    "sequence_length": 32,
+    "sequence_length": 16,
     "pad_trajectories": true,
     "batch_size": 1024,
     "buffer_size": 1024,
     "num_environments": 16,
     "epochs": 3,
-    "mini_batch_size": 16,
+    "mini_batch_size": 64,
     "ActionRepeat": 1,
     "saveFrequency": 9,
     "states_normalizer_disabled": {
