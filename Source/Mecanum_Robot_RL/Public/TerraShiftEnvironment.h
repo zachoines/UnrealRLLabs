@@ -103,6 +103,16 @@ private:
     UPROPERTY() bool bUsePotentialShaping;
     UPROPERTY() float PotentialShaping_Scale;
     UPROPERTY() float PotentialShaping_Gamma;
+    
+    // Positive, bounded potential shaping (optional)
+    // When enabled, CalculatePotential returns Phi in [0,1] instead of a negative distance-based value.
+    // Two forms are supported:
+    //  - Power:    Phi = pow(1 - d_hat, PositivePotential_Power)
+    //  - Exponent: Phi = exp(- (d / (PositivePotential_Sigma * XYDiagonal))^2 )
+    UPROPERTY() bool bUsePositivePotentialShaping;
+    UPROPERTY() bool bUseExponentialPotential; // if false and positive shaping on => power form
+    UPROPERTY() float PositivePotential_Power;  // > 0, typical 1.0-2.0
+    UPROPERTY() float PositivePotential_Sigma;  // fraction of XY diagonal, typical 0.3-0.7
     UPROPERTY() bool bUseVelAlignment;
     UPROPERTY() bool bUseXYDistanceImprovement;
     UPROPERTY() bool bUseZAccelerationPenalty;

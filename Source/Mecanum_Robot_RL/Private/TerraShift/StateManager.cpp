@@ -48,6 +48,7 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     bTerminateOnAllGoalsReached = Config->GetOrDefaultBool(TEXT("bTerminateOnAllGoalsReached"), false);
     bTerminateOnMaxSteps = Config->GetOrDefaultBool(TEXT("bTerminateOnMaxSteps"), true);
     bRemoveObjectsOnGoal = Config->GetOrDefaultBool(TEXT("bRemoveObjectsOnGoal"), true);
+    bSuppressPerStepGoalReward = Config->GetOrDefaultBool(TEXT("bSuppressPerStepGoalReward"), false);
 
     GoalRadius = Config->GetOrDefaultNumber(TEXT("GoalRadius"), GoalRadius);
     GoalCollectRadius = Config->GetOrDefaultNumber(TEXT("GoalCollectRadius"), GoalCollectRadius);
@@ -367,10 +368,13 @@ void UStateManager::UpdateGridObjectFlags()
                         ObjectSlotStates[i] = EObjectSlotState::GoalReached;
                     }
                 } 
-                // If already GoalReached, Keep collecting reward
+                // If already GoalReached, optionally suppress per-step event rewards
                 else if (ObjectSlotStates[i] == EObjectSlotState::GoalReached && !bRemoveObjectsOnGoal)
                 {
-                    bShouldCollect[i] = true;
+                    if (!bSuppressPerStepGoalReward)
+                    {
+                        bShouldCollect[i] = true;
+                    }
                 }
                 
             }

@@ -238,6 +238,8 @@ private:
     UPROPERTY() bool bTerminateOnAllGoalsReached;
     UPROPERTY() bool bTerminateOnMaxSteps;
     UPROPERTY() bool bRemoveObjectsOnGoal = true;
+    // If true, do not set bShouldCollect repeatedly each frame while an object remains at goal
+    UPROPERTY() bool bSuppressPerStepGoalReward = false;
     UPROPERTY() float GoalRadius = 1.f;
     UPROPERTY() float GoalCollectRadius = 6.f;
     UPROPERTY() float ObjectRadius = 1.f;

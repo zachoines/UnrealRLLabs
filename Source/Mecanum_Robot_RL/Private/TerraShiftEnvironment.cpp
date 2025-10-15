@@ -42,6 +42,10 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
     bUsePotentialShaping = false;
     PotentialShaping_Scale = 1.0f;
     PotentialShaping_Gamma = 0.99f;
+    bUsePositivePotentialShaping = false;
+    bUseExponentialPotential = false;
+    PositivePotential_Power = 1.5f;
+    PositivePotential_Sigma = 0.5f;
     bUseVelAlignment = false;
     bUseXYDistanceImprovement = false;
     bUseZAccelerationPenalty = false;
@@ -99,6 +103,10 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
         bUsePotentialShaping = envSpecificCfg->GetOrDefaultBool(TEXT("bUsePotentialShaping"), false);
         PotentialShaping_Scale = envSpecificCfg->GetOrDefaultNumber(TEXT("PotentialShaping_Scale"), 1.0f);
         PotentialShaping_Gamma = envSpecificCfg->GetOrDefaultNumber(TEXT("PotentialShaping_Gamma"), 0.99f);
+        bUsePositivePotentialShaping = envSpecificCfg->GetOrDefaultBool(TEXT("bUsePositivePotentialShaping"), false);
+        bUseExponentialPotential = envSpecificCfg->GetOrDefaultBool(TEXT("bUseExponentialPotential"), false);
+        PositivePotential_Power = envSpecificCfg->GetOrDefaultNumber(TEXT("PositivePotential_Power"), 1.5f);
+        PositivePotential_Sigma = envSpecificCfg->GetOrDefaultNumber(TEXT("PositivePotential_Sigma"), 0.5f);
         bUseVelAlignment = envSpecificCfg->GetOrDefaultBool(TEXT("bUseVelAlignment"), false);
         bUseXYDistanceImprovement = envSpecificCfg->GetOrDefaultBool(TEXT("bUseXYDistanceImprovement"), false);
         bUseZAccelerationPenalty = envSpecificCfg->GetOrDefaultBool(TEXT("bUseZAccelerationPenalty"), false);
@@ -488,6 +496,25 @@ float ATerraShiftEnvironment::CalculatePotential(int32 ObjIndex) const
     const float currentDistance = StateManager->GetCurrentDistance(ObjIndex);
     if (currentDistance < 0.f) return 0.0f;
 
-    // Potential is inversely proportional to distance (more reward for being closer)
+    if (bUsePositivePotentialShaping)
+    {
+        if (bUseExponentialPotential)
+        {
+            // Phi = exp( - (d / (sigma * XYdiag))^2 ), Phi in (0,1]
+            const float sigmaWorld = FMath::Max(PositivePotential_Sigma, 1e-3f) * xyDiagonal;
+            const float ratio = currentDistance / sigmaWorld;
+            return FMath::Exp(-0.5f * ratio * ratio * 2.0f); // equivalent to exp(-(d/sigma)^2)
+        }
+        else
+        {
+            // Phi = pow(1 - d_hat, p), where d_hat = clamp(d/XYdiag, 0, 1)
+            const float dHat = FMath::Clamp(currentDistance / xyDiagonal, 0.0f, 1.0f);
+            const float base = 1.0f - dHat;
+            const float p = FMath::Max(PositivePotential_Power, 1e-3f);
+            return FMath::Pow(base, p);
+        }
+    }
+
+    // Legacy: negative, unbounded (normalized) potential (closer -> higher, i.e., less negative)
     return -currentDistance / xyDiagonal;
 }

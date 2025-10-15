@@ -1342,8 +1342,9 @@ class MAPOCAAgent(Agent):
         
         # Log IQN quantiles and loss (only if IQN is enabled)
         if self.enable_distributional and new_val_quantiles is not None:
-            logs_acc["mean/value_quantiles"].append(new_val_quantiles.mean().item())
-            logs_acc["std/value_quantiles"].append(new_val_quantiles.std().item())
+            with torch.no_grad():
+                logs_acc["mean/value_quantiles"].append(new_val_quantiles.detach().mean().item())
+                logs_acc["std/value_quantiles"].append(new_val_quantiles.detach().std().item())
 
         # Policy-Specific Logging
         if self.action_space_type_str_from_config == "beta":

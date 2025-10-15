@@ -5,7 +5,7 @@
     "params": {
       "PlatformSize": 1.0,
       "MaxColumnHeight": 6.0,
-      "ObjectMass": 0.1,
+      "ObjectMass": 1.0,
       "GridSize": 16,
       "MaxSteps": 1024,
       "MaxAgents": 8,
@@ -14,6 +14,10 @@
         "bUseXYDistanceImprovement": false,
         "bUseZAccelerationPenalty": false,
         "bUsePotentialShaping": true,
+        "bUsePositivePotentialShaping": false,
+        "bUseExponentialPotential": false,
+        "PositivePotential_Power": 1.5,
+        "PositivePotential_Sigma": 0.5,
         "bUseDistanceBasedReward": false,
         "bDisableEventRewards": false,
         "bUseStationaryPenalty": false,
@@ -48,25 +52,25 @@
         "AccumulatedWaveFadeGamma": 0.95,
         "bWrapAroundEdges": true,
         "VelMinMax": [
-          -3,
-          3
+          -2,
+          2
         ],
         "AngVelRange": [
           -1.57,
           1.57
         ],
         "AmpMinMax": [
-          -4.0,
-          4.0
+          -6.0,
+          6.0
         ],
         "SigMinMax": [
-          0.2,
-          2.0
+          0.5,
+          4.0
         ],
-        "DeltaVelScale": 6.0,
-        "DeltaAngVelScale": 3.14,
-        "DeltaAmpScale": 4.0,
-        "DeltaSigmaScale": 4.0
+        "DeltaVelScale": 2.0,
+        "DeltaAngVelScale": 1.57,
+        "DeltaAmpScale": 3.0,
+        "DeltaSigmaScale": 2.0
       },
       "StateManager": {
         "MaxGridObjects": 4,
@@ -320,82 +324,82 @@
         "lr_trunk": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 10000
+          "total_iters": 50000
         },
         "lr_policy": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 10000
+          "total_iters": 50000
         },
         "lr_value_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 10000
+          "total_iters": 50000
         },
         "lr_value_quantile": {
           "start_factor": 1.0,
-          "end_factor": 0.5,
-          "total_iters": 10000
+          "end_factor": 0.3333,
+          "total_iters": 50000
         },
         "lr_value_fraction": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 10000
+          "total_iters": 50000
         },
         "lr_baseline_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 10000
+          "total_iters": 50000
         },
         "lr_rnd_predictor": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 10000
+          "total_iters": 50000
         },
         "lr_disagreement": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 10000
+          "total_iters": 50000
         },
         "entropy_coeff": {
           "start_value": 0.01,
           "end_value": 0.005,
-          "total_iters": 10000
+          "total_iters": 50000
         },
         "policy_clip": {
           "start_value": 0.2,
           "end_value": 0.1,
-          "total_iters": 10000
+          "total_iters": 25000
         },
         "value_clip_disabled": {
           "start_value": 1.0,
           "end_value": 0.1,
-          "total_iters": 10000
+          "total_iters": 50000
         },
         "max_grad_norm": {
           "start_value": 3.0,
-          "end_value": 0.5,
-          "total_iters": 10000
+          "end_value": 1.0,
+          "total_iters": 50000
         },
         "fqf_temperature": {
           "start_value": 3.0,
-          "end_value": 0.5,
-          "total_iters": 10000
+          "end_value": 1.0,
+          "total_iters": 30000
         },
         "fqf_prior_blend_alpha": {
           "start_value": 0.2,
-          "end_value": 0.0,
-          "total_iters": 10000
+          "end_value": 0.05,
+          "total_iters": 50000
         },
         "fraction_entropy_coeff": {
           "start_value": 0.02,
           "end_value": 0.001,
-          "total_iters": 10000
+          "total_iters": 50000
         },
         "fraction_loss_coeff": {
           "start_value": 0.05,
-          "end_value": 0.2,
-          "total_iters": 10000
+          "end_value": 0.1,
+          "total_iters": 30000
         }
       },
       "networks": {
@@ -541,8 +545,8 @@
               "fraction_net_hidden": 128,
               "fraction_loss_coeff": 0.05,
               "fraction_entropy_coeff": 0.02,
-              "fqf_fraction_update_trunk": true,
-              "fraction_entropy_warmup_iters": 1000,
+              "fqf_fraction_update_trunk": false,
+              "fraction_entropy_warmup_iters": 5000,
               "fraction_entropy_cap": 0.5,
               "softmax_temperature": 3.0,
               "prior_blend_alpha": 0.2,
@@ -556,13 +560,13 @@
     }
   },
   "train": {
-    "sequence_length": 16,
+    "sequence_length": 32,
     "pad_trajectories": true,
     "batch_size": 1024,
     "buffer_size": 1024,
-    "num_environments": 16,
+    "num_environments": 8,
     "epochs": 3,
-    "mini_batch_size": 64,
+    "mini_batch_size": 16,
     "ActionRepeat": 1,
     "saveFrequency": 9,
     "states_normalizer_disabled": {

@@ -728,8 +728,8 @@ class SharedCritic(nn.Module):
         val_input_flat = value_feats_seq.reshape(B * T, NA, F_val)
         val_attn_out, _ = self.value_attention(val_input_flat)
         val_feats_agg = val_attn_out.mean(dim=1)  # Aggregate over agents -> (B*T, H)
-        # Expose aggregated features for fraction-loss computation (FQF)
-        self.last_value_feats_agg = val_feats_agg
+        # Expose aggregated features for fraction-loss computation (FQF) - store detached to avoid holding graphs
+        self.last_value_feats_agg = val_feats_agg.detach()
 
         value_quantiles = None
         if self.value_iqn_net is not None: # Distributional Path
@@ -739,7 +739,8 @@ class SharedCritic(nn.Module):
                     value_quantiles, learned_taus = self.value_iqn_net.forward_softmax(val_feats_agg, deterministic_taus=False)
                 else:
                     value_quantiles, learned_taus = self.value_iqn_net(val_feats_agg, deterministic_taus=False)
-                self.last_learned_taus = learned_taus
+                # Store taus detached to avoid holding computation graphs across minibatches
+                self.last_learned_taus = learned_taus.detach() if learned_taus is not None else None
                 # Compute expectation using interval widths between boundaries [0, learned_taus..., 1]
                 BT = val_feats_agg.shape[0]
                 taus_sorted = learned_taus.squeeze(-1) if learned_taus.dim() == 3 else learned_taus  # (B*T, N-1)
