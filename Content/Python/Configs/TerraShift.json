@@ -7,25 +7,25 @@
       "MaxColumnHeight": 6.0,
       "ObjectMass": 1.0,
       "GridSize": 16,
-      "MaxSteps": 256,
+      "MaxSteps": 512,
       "MaxAgents": 16,
       "TerraShiftEnvironment": {
-        "bUseVelAlignment": false,
+        "bUseVelAlignment": true,
         "bUseXYDistanceImprovement": false,
         "bUseZAccelerationPenalty": false,
         "bUsePotentialShaping": true,
         "bUsePositivePotentialShaping": true,
         "bUseExponentialPotential": true,
         "PositivePotential_Power": 1.5,
-        "PositivePotential_Sigma": 0.5,
+        "PositivePotential_Sigma": 0.65,
         "bUseDistanceBasedReward": false,
         "bDisableEventRewards": true,
         "bUseStationaryPenalty": false,
         "StationaryPenalty_MinSpeed": 10.0,
         "StationaryPenalty_Drain": 0.01,
         "PotentialShaping_Gamma": 0.97,
-        "PotentialShaping_Scale": 2.0,
-        "VelAlign_Scale": 0.5,
+        "PotentialShaping_Scale": 3.0,
+        "VelAlign_Scale": 0.05,
         "VelAlign_Min": -50.0,
         "VelAlign_Max": 50.0,
         "DistImprove_Scale": 100.0,
@@ -36,7 +36,7 @@
         "ZAccel_Max": 2000.0,
         "EventReward_GoalReached": 0.0,
         "EventReward_OutOfBounds": 0.0,
-        "TimeStepPenalty": -0.001
+        "TimeStepPenalty": -0.0005
       },
       "GoalManager": {
         "DefaultRadius": 1.0
@@ -149,8 +149,10 @@
         "bIncludeGridObjectSequenceInState": true,
         "MaxGridObjectsForState": 4,
         "GridObjectFeatureSize": 9,
-        "bEnableColumnCollisionOptimization": true,
-        "ColumnCollisionRadiusCells": 2
+        "bRestrictColumnPhysicsToRadius": true,
+        "ColumnCollisionRadiusCells": 2,
+        "bEnabledShaderBasedHeightmap": true,
+        "bRestrictColumnMovementToRadius": true
       }
     },
     "shape": {
@@ -505,7 +507,7 @@
           "hidden_size": 256,
           "param_init_bias": 0.0,
           "min_concentration": 1.01,
-          "linear_init_scale": 0.1,
+          "linear_init_scale": 0.2,
           "dropout_rate": 0.1
         },
         "critic_network": {
@@ -563,12 +565,12 @@
   "train": {
     "sequence_length": 16,
     "pad_trajectories": true,
-    "batch_size": 256,
-    "buffer_size": 256,
-    "num_environments": 8,
+    "batch_size": 512,
+    "buffer_size": 512,
+    "num_environments": 32,
     "epochs": 3,
-    "mini_batch_size": 16,
-    "ActionRepeat": 1,
+    "mini_batch_size": 64,
+    "ActionRepeat": 3,
     "saveFrequency": 27,
     "states_normalizer_disabled": {
       "epsilon": 1e-08,

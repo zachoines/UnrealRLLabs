@@ -21,6 +21,9 @@ public:
     // Update the heights of the columns based on a 2D matrix of heights
     void UpdateColumnHeights(const FMatrix2D& HeightMap);
 
+    // Update/move only a restricted set of columns (by 1D indices)
+    void UpdateColumnHeightsRestricted(const FMatrix2D& HeightMap, const TSet<int32>& AllowedIndices);
+
     // Enable or disable physics for specified columns based on proximity data
     void TogglePhysicsForColumns(const TArray<int32>& ColumnIndices, const TArray<bool>& EnablePhysics);
 

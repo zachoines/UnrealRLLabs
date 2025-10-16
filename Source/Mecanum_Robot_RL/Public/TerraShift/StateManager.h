@@ -262,11 +262,16 @@ private:
     // ------------------------------
     //  Optional Optimizations
     // ------------------------------
-    // Enable/disable ROI-based collision toggling for columns
-    UPROPERTY() bool bEnableColumnCollisionOptimization = false;
-    // Radius in grid cells around each active GridObject to keep column collision enabled
+    // Enable/disable ROI-based physics/collision for columns (restricted to object radius)
+    UPROPERTY() bool bRestrictColumnPhysicsToRadius = false;
+    // Radius in grid cells around each active GridObject for ROI-based optimizations
     UPROPERTY() int32 ColumnCollisionRadiusCells = 2;
-    // Hybrid height map is enabled when bEnableColumnCollisionOptimization is true.
+
+    // Independently enable a shader/compute-based heightmap path (decoupled from collision ROI)
+    UPROPERTY() bool bEnabledShaderBasedHeightmap = false;
+
+    // If true, only update/move columns within the ROI around active objects
+    UPROPERTY() bool bRestrictColumnMovementToRadius = false;
 
     // ----------------------------------------------------------------
     //  Geometry
@@ -325,4 +330,12 @@ private:
     UPROPERTY() int32 OverheadCamResY = 50;
     UPROPERTY() class ASceneCapture2D* OverheadCaptureActor = nullptr;
     UPROPERTY() class UTextureRenderTarget2D* OverheadRenderTarget = nullptr;
+
+public:
+    // Expose ROI-based operations
+    // Compute the set of column indices inside the ROI around active/goal-reached objects
+    void ComputeColumnsInRadius(TSet<int32>& OutColumns) const;
+
+    // Toggle accessors
+    bool GetRestrictColumnMovementToRadius() const { return bRestrictColumnMovementToRadius; }
 };

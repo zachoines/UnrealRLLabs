@@ -217,7 +217,16 @@ void ATerraShiftEnvironment::Act(FAction Action)
     if (!Initialized || !WaveSimulator || !Grid) return;
     WaveSimulator->Step(Action.Values, 0.1);
     const FMatrix2D& wave = WaveSimulator->GetHeightMap();
-    Grid->UpdateColumnHeights(wave);
+    if (StateManager && StateManager->GetRestrictColumnMovementToRadius())
+    {
+        TSet<int32> ActiveCells;
+        StateManager->ComputeColumnsInRadius(ActiveCells);
+        Grid->UpdateColumnHeightsRestricted(wave, ActiveCells);
+    }
+    else
+    {
+        Grid->UpdateColumnHeights(wave);
+    }
 }
 
 void ATerraShiftEnvironment::PreTransition()

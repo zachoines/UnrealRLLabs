@@ -74,8 +74,27 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     GridObjectFeatureSize = Config->GetOrDefaultInt(TEXT("GridObjectFeatureSize"), 9);
 
     // Optional optimizations
-    bEnableColumnCollisionOptimization = Config->GetOrDefaultBool(TEXT("bEnableColumnCollisionOptimization"), false);
+    // Backwards-compat: accept legacy key bEnableColumnCollisionOptimization
+    bool CollisionROI = false;
+    if (Config->HasPath(TEXT("bRestrictColumnPhysicsToRadius")))
+    {
+        CollisionROI = Config->GetOrDefaultBool(TEXT("bRestrictColumnPhysicsToRadius"), false);
+    }
+    else
+    {
+        CollisionROI = Config->GetOrDefaultBool(TEXT("bEnableColumnCollisionOptimization"), false);
+    }
+    bRestrictColumnPhysicsToRadius = CollisionROI;
     ColumnCollisionRadiusCells = Config->GetOrDefaultInt(TEXT("ColumnCollisionRadiusCells"), 2);
+    // Decoupled shader-based heightmap toggle (defaults to collision ROI when unspecified)
+    bEnabledShaderBasedHeightmap = Config->GetOrDefaultBool(TEXT("bEnabledShaderBasedHeightmap"), bRestrictColumnPhysicsToRadius);
+    // Restrict movement/update of columns to ROI around objects
+    bRestrictColumnMovementToRadius = Config->GetOrDefaultBool(TEXT("bRestrictColumnMovementToRadius"), false);
+
+    if (bRestrictColumnPhysicsToRadius && !bEnabledShaderBasedHeightmap)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("StateManager::LoadConfig => bRestrictColumnPhysicsToRadius=true while shader heightmap disabled. Using CPU analytic heightmap (no line traces)."));
+    }
 
     if (Config->HasPath(TEXT("GoalColors")))
     {
@@ -579,8 +598,8 @@ void UStateManager::BuildCentralState()
         const float visMinZ = MinZ;
         const float visMaxZ = MaxZ;
 
-        // If optimization is enabled, try GPU heightmap generation first
-        if (bEnableColumnCollisionOptimization && WaveSim)
+        // If shader-based heightmap is enabled, try GPU heightmap generation first
+        if (bEnabledShaderBasedHeightmap && WaveSim)
         {
             FHeightMapGPUAsyncState* AsyncStatePtr = nullptr;
             if (!HeightMapGPUAsync)
@@ -866,6 +885,173 @@ void UStateManager::BuildCentralState()
                 AsyncStatePtr->bFrontValid = true;
             }
         }
+        else if (bRestrictColumnPhysicsToRadius)
+        {
+            // Analytic CPU heightmap using column/object geometry; avoids line traces
+            // Reuse GridTransform from the parent scope
+
+            FHeightMapGPUAsyncState* AsyncStatePtr = nullptr;
+            if (!HeightMapGPUAsync)
+            {
+                HeightMapGPUAsync = MakeUnique<FHeightMapGPUAsyncState>();
+            }
+            AsyncStatePtr = HeightMapGPUAsync.Get();
+            if (AsyncStatePtr)
+            {
+                AsyncStatePtr->EnsureDimensions(CurrentStateMapW, CurrentStateMapH);
+
+                const int32 ColCount = GridSize * GridSize;
+                AsyncStatePtr->ColumnCentersScratch.SetNum(ColCount);
+                AsyncStatePtr->ColumnRadiiScratch.SetNum(ColCount);
+
+                if (Grid)
+                {
+                    for (int32 x = 0; x < GridSize; ++x)
+                    {
+                        for (int32 y = 0; y < GridSize; ++y)
+                        {
+                            const int32 idx = y * GridSize + x;
+                            const int32 colIndex = x * GridSize + y;
+                            if (Grid->Columns.IsValidIndex(colIndex))
+                            {
+                                AColumn* Col = Grid->Columns[colIndex];
+                                if (Col && Col->ColumnMesh)
+                                {
+                                    const FVector wpos = Col->GetActorLocation();
+                                    const FVector local = GridTransform.InverseTransformPosition(wpos);
+                                    AsyncStatePtr->ColumnCentersScratch[idx] = FVector3f((float)local.X, (float)local.Y, (float)local.Z);
+
+                                    const FBoxSphereBounds CB = Col->ColumnMesh->Bounds;
+                                    AsyncStatePtr->ColumnRadiiScratch[idx] = FVector3f((float)CB.BoxExtent.X, (float)CB.BoxExtent.Y, (float)CB.BoxExtent.Z);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                AsyncStatePtr->ObjCentersScratch.Reset();
+                AsyncStatePtr->ObjRadiiScratch.Reset();
+                AsyncStatePtr->ObjCentersScratch.Reserve(ObjectSlotStates.Num());
+                AsyncStatePtr->ObjRadiiScratch.Reserve(ObjectSlotStates.Num());
+
+                int32 NumActiveObjects = 0;
+                if (ObjectMgr)
+                {
+                    for (int32 iObj = 0; iObj < ObjectSlotStates.Num(); ++iObj)
+                    {
+                        if (ObjectSlotStates[iObj] != EObjectSlotState::Active)
+                        {
+                            continue;
+                        }
+
+                        AGridObject* Obj = ObjectMgr->GetGridObject(iObj);
+                        if (!Obj || !Obj->MeshComponent || !Obj->IsActive())
+                        {
+                            continue;
+                        }
+
+                        const FVector objLocal = GridTransform.InverseTransformPosition(Obj->GetObjectLocation());
+                        const float radius = ObjectRadius;
+                        AsyncStatePtr->ObjCentersScratch.Add(FVector3f((float)objLocal.X, (float)objLocal.Y, (float)objLocal.Z));
+                        AsyncStatePtr->ObjRadiiScratch.Add(FVector3f(radius, radius, radius));
+                        ++NumActiveObjects;
+                    }
+                }
+
+                AsyncStatePtr->BufferedNumObjects = NumActiveObjects;
+
+                const float InvRangeZ = (visMaxZ > visMinZ) ? 1.0f / (visMaxZ - visMinZ) : 0.0f;
+                const float HalfX = PlatformWorldSize.X * 0.5f;
+                const float HalfY = PlatformWorldSize.Y * 0.5f;
+                const float SafeCellSize = (CellSize > KINDA_SMALL_NUMBER) ? CellSize : 1.f;
+
+                const int32 BufferedObjects = AsyncStatePtr ? AsyncStatePtr->BufferedNumObjects : 0;
+                const int32 ColumnScratchCount = AsyncStatePtr ? AsyncStatePtr->ColumnCentersScratch.Num() : 0;
+
+                for (int32 RowIdx = 0; RowIdx < CurrentStateMapH; ++RowIdx)
+                {
+                    const float normY = (CurrentStateMapH > 1) ? static_cast<float>(RowIdx) / static_cast<float>(CurrentStateMapH - 1) : 0.5f;
+                    const float ly = (normY - 0.5f) * PlatformWorldSize.Y;
+                    const float fy = (ly + HalfY) / SafeCellSize - 0.5f;
+                    const int iy0 = FMath::Clamp((int32)FMath::FloorToFloat(fy), 0, GridSize - 1);
+                    const int iy1 = FMath::Clamp(iy0 + 1, 0, GridSize - 1);
+
+                    for (int32 ColIdx2 = 0; ColIdx2 < CurrentStateMapW; ++ColIdx2)
+                    {
+                        const float normX = (CurrentStateMapW > 1) ? static_cast<float>(ColIdx2) / static_cast<float>(CurrentStateMapW - 1) : 0.5f;
+                        const float lx = (normX - 0.5f) * PlatformWorldSize.X;
+
+                        float zLocal = visMinZ;
+
+                        if (AsyncStatePtr && ColumnScratchCount > 0)
+                        {
+                            const float fx = (lx + HalfX) / SafeCellSize - 0.5f;
+                            const int ix0 = FMath::Clamp((int32)FMath::FloorToFloat(fx), 0, GridSize - 1);
+                            const int ix1 = FMath::Clamp(ix0 + 1, 0, GridSize - 1);
+                            const int candIdx[4] = { iy0 * GridSize + ix0, iy1 * GridSize + ix0, iy0 * GridSize + ix1, iy1 * GridSize + ix1 };
+
+                            for (int candidate = 0; candidate < 4; ++candidate)
+                            {
+                                const int ci = candIdx[candidate];
+                                if (!AsyncStatePtr->ColumnCentersScratch.IsValidIndex(ci) || !AsyncStatePtr->ColumnRadiiScratch.IsValidIndex(ci))
+                                {
+                                    continue;
+                                }
+
+                                const FVector3f& cc = AsyncStatePtr->ColumnCentersScratch[ci];
+                                const FVector3f& cr = AsyncStatePtr->ColumnRadiiScratch[ci];
+                                const float rx = FMath::Max(cr.X, KINDA_SMALL_NUMBER);
+                                const float ry = FMath::Max(cr.Y, KINDA_SMALL_NUMBER);
+                                const float rz = FMath::Max(cr.Z, KINDA_SMALL_NUMBER);
+                                const float dx = lx - cc.X;
+                                const float dy = ly - cc.Y;
+                                const float nx = dx / rx;
+                                const float ny = dy / ry;
+                                const float r2 = nx * nx + ny * ny;
+
+                                if (r2 <= 1.0f)
+                                {
+                                    const float candidateZ = (cc.Z + ColumnZBias) + rz * FMath::Sqrt(FMath::Max(0.f, 1.0f - r2));
+                                    zLocal = FMath::Max(zLocal, candidateZ);
+                                }
+                            }
+                        }
+
+                        if (AsyncStatePtr && BufferedObjects > 0)
+                        {
+                            for (int32 objIdx = 0; objIdx < BufferedObjects; ++objIdx)
+                            {
+                                if (!AsyncStatePtr->ObjCentersScratch.IsValidIndex(objIdx) || !AsyncStatePtr->ObjRadiiScratch.IsValidIndex(objIdx))
+                                {
+                                    continue;
+                                }
+
+                                const FVector3f& oc = AsyncStatePtr->ObjCentersScratch[objIdx];
+                                const FVector3f& orad = AsyncStatePtr->ObjRadiiScratch[objIdx];
+                                const float rx = FMath::Max(orad.X, KINDA_SMALL_NUMBER);
+                                const float ry = FMath::Max(orad.Y, KINDA_SMALL_NUMBER);
+                                const float rz = FMath::Max(orad.Z, KINDA_SMALL_NUMBER);
+                                const float onx = (lx - oc.X) / rx;
+                                const float ony = (ly - oc.Y) / ry;
+                                const float or2 = onx * onx + ony * ony;
+
+                                if (or2 <= 1.0f)
+                                {
+                                    const float candidateZ = (oc.Z + ObjectZBias) + rz * FMath::Sqrt(FMath::Max(0.f, 1.0f - or2));
+                                    zLocal = FMath::Max(zLocal, candidateZ);
+                                }
+                            }
+                        }
+
+                        const float zClamped = FMath::Clamp(zLocal, visMinZ, visMaxZ);
+                        const float normHeight = (zClamped - visMinZ) * InvRangeZ;
+                        HeightTmp[RowIdx][ColIdx2] = FMath::Clamp(normHeight * 2.f - 1.f, -1.f, 1.f);
+                    }
+                }
+
+                HeightTmp.Clip(-1.f, 1.f);
+            }
+        }
         else
         {
             // Original: pure line-trace height map across the full state grid
@@ -1101,6 +1287,8 @@ FVector UStateManager::GetColumnTopWorldLocation(int32 GridX, int32 GridY) const
 void UStateManager::SetupOverheadCamera()
 {
     checkf(Platform, TEXT("SetupOverheadCamera => missing platform."));
+    // Do not create the capture actor if overhead image is not part of the state
+    if (!bIncludeOverheadImageInState) return;
     UWorld* w = Platform->GetWorld();
     if (!w || OverheadCaptureActor) return;
 
@@ -1151,12 +1339,11 @@ TArray<float> UStateManager::CaptureOverheadImage() const
     return out;
 }
 
-void UStateManager::UpdateColumnCollisionBasedOnOccupancy()
+void UStateManager::ComputeColumnsInRadius(TSet<int32>& OutColumns) const
 {
-    if (!bEnableColumnCollisionOptimization) return;
+    OutColumns.Reset();
     if (!Grid || !ObjectMgr || !OccupancyGrid || GridSize <= 0) return;
 
-    TSet<int32> EnableCells;
     const int32 R = FMath::Max(0, ColumnCollisionRadiusCells);
     auto AddNeighbors = [&](int32 CenterIdx)
     {
@@ -1170,11 +1357,11 @@ void UStateManager::UpdateColumnCollisionBasedOnOccupancy()
         {
             for (int yy = minY; yy <= maxY; ++yy)
             {
-                const float dx = (float)(xx - gx);
-                const float dy = (float)(yy - gy);
-                if (dx * dx + dy * dy <= (float)(R * R))
+                const float dx = static_cast<float>(xx - gx);
+                const float dy = static_cast<float>(yy - gy);
+                if (dx * dx + dy * dy <= static_cast<float>(R * R))
                 {
-                    EnableCells.Add(xx * GridSize + yy);
+                    OutColumns.Add(xx * GridSize + yy);
                 }
             }
         }
@@ -1191,6 +1378,15 @@ void UStateManager::UpdateColumnCollisionBasedOnOccupancy()
         const int32 cell = OccupancyGrid->WorldToGrid(wPos);
         AddNeighbors(cell);
     }
+}
+
+void UStateManager::UpdateColumnCollisionBasedOnOccupancy()
+{
+    if (!bRestrictColumnPhysicsToRadius) return;
+    if (!Grid || !ObjectMgr || !OccupancyGrid || GridSize <= 0) return;
+
+    TSet<int32> EnableCells;
+    ComputeColumnsInRadius(EnableCells);
 
     // Enable/disable only where changed from previous frame
     TArray<int32> ToEnable;

@@ -43,6 +43,18 @@ void AGrid::UpdateColumnHeights(const FMatrix2D& HeightMap) {
     }
 }
 
+void AGrid::UpdateColumnHeightsRestricted(const FMatrix2D& HeightMap, const TSet<int32>& AllowedIndices) {
+    if (GridSize <= 0) return;
+    for (int32 Index : AllowedIndices) {
+        if (!Columns.IsValidIndex(Index)) continue;
+        const int32 X = Index / GridSize;
+        const int32 Y = Index % GridSize;
+        if (X >= 0 && X < HeightMap.GetNumRows() && Y >= 0 && Y < HeightMap.GetNumColumns()) {
+            Columns[Index]->SetColumnHeight(HeightMap[X][Y]);
+        }
+    }
+}
+
 void AGrid::TogglePhysicsForColumns(const TArray<int32>& ColumnIndices, const TArray<bool>& EnablePhysics) {
     if (ColumnIndices.Num() != EnablePhysics.Num()) {
         UE_LOG(LogTemp, Warning, TEXT("Mismatch in column indices and enable physics arrays."));

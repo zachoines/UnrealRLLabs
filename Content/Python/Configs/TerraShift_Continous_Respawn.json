@@ -149,8 +149,10 @@
         "bIncludeGridObjectSequenceInState": true,
         "MaxGridObjectsForState": 4,
         "GridObjectFeatureSize": 9,
-        "bEnableColumnCollisionOptimization": true,
-        "ColumnCollisionRadiusCells": 2
+        "bRestrictColumnPhysicsToRadius": true,
+        "ColumnCollisionRadiusCells": 2,
+        "bEnabledShaderBasedHeightmap": true,
+        "bRestrictColumnMovementToRadius": false
       }
     },
     "shape": {
