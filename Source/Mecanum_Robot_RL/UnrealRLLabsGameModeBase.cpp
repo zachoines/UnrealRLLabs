@@ -84,7 +84,7 @@ void AUnrealRLLabsGameModeBase::BeginPlay()
     }
 
     // 4) Generate environment spawn locations
-    TArray<FVector> Locations = CreateGridLocations(NumEnvironments, FVector(100.f, 100.f, 100.f));
+    TArray<FVector> Locations = CreateGridLocations(NumEnvironments, FVector(300.f, 300.f, 300.f));
     if (Locations.Num() != NumEnvironments)
     {
         UE_LOG(LogTemp, Error, TEXT("Could not spawn environments - mismatch in location count."));

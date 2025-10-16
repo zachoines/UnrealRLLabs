@@ -1,4 +1,4 @@
-﻿{
+{
   "environment": {
     "name": "TerraShift_16A_8O_Test",
     "id": "TerraShift_16A_8O_Test_$(date +%Y%m%d_%H%M%S)",
@@ -7,8 +7,8 @@
       "MaxColumnHeight": 6.0,
       "ObjectMass": 1.0,
       "GridSize": 16,
-      "MaxSteps": 256,
-      "MaxAgents": 16,
+      "MaxSteps": 1024,
+      "MaxAgents": 8,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
         "bUseXYDistanceImprovement": false,
@@ -42,7 +42,7 @@
         "DefaultRadius": 1.0
       },
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 16,
+        "NumAgents": 8,
         "GridSize": 16,
         "MinHeight": -6.0,
         "MaxHeight": 6.0,
@@ -52,16 +52,16 @@
         "AccumulatedWaveFadeGamma": 0.95,
         "bWrapAroundEdges": true,
         "VelMinMax": [
-          -1,
-          1
+          -2,
+          2
         ],
         "AngVelRange": [
-          -0.785,
-          0.785
+          -1.57,
+          1.57
         ],
         "AmpMinMax": [
-          -4.0,
-          4.0
+          -6.0,
+          6.0
         ],
         "SigMinMax": [
           0.5,
@@ -69,7 +69,7 @@
         ],
         "DeltaVelScale": 2.0,
         "DeltaAngVelScale": 1.57,
-        "DeltaAmpScale": 2.0,
+        "DeltaAmpScale": 3.0,
         "DeltaSigmaScale": 2.0
       },
       "StateManager": {
@@ -188,8 +188,8 @@
         ],
         "agent": {
           "obs_size": 9,
-          "min": 16,
-          "max": 16
+          "min": 8,
+          "max": 8
         }
       },
       "action": {
@@ -561,15 +561,15 @@
     }
   },
   "train": {
-    "sequence_length": 16,
+    "sequence_length": 32,
     "pad_trajectories": true,
-    "batch_size": 256,
-    "buffer_size": 256,
+    "batch_size": 1024,
+    "buffer_size": 1024,
     "num_environments": 8,
     "epochs": 3,
     "mini_batch_size": 16,
     "ActionRepeat": 1,
-    "saveFrequency": 27,
+    "saveFrequency": 9,
     "states_normalizer_disabled": {
       "epsilon": 1e-08,
       "warmup_steps": 0
@@ -577,7 +577,7 @@
   },
   "test": {
     "enabled": true,
-    "frequency": 9,
+    "frequency": 1,
     "steps": 128
   }
 }
