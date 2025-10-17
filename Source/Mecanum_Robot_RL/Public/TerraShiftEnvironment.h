@@ -53,6 +53,9 @@ public:
     virtual float Reward() override;
     virtual void Tick(float DeltaTime) override;
 
+    // React to EnvId assignment (tag relevant bodies when available)
+    virtual void OnEnvironmentIdAssigned() override;
+
     // --- Components and Core Actors ---
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraShift|Components")
     USceneComponent* TerraShiftRoot;
@@ -164,6 +167,7 @@ private:
     AMainPlatform* SpawnPlatform(FVector Location);
     float ThresholdAndClamp(float value, float minThreshold, float maxClamp);
     float CalculatePotential(int32 ObjIndex) const;
+    void TagEnvironmentForIsolation();
 
     // --- Deprecated Overrides (kept for API compatibility) ---
     virtual void PostTransition() override {};

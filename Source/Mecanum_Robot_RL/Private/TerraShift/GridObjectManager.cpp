@@ -3,6 +3,8 @@
 #include "Engine/World.h"
 #include "TimerManager.h"
 #include "UObject/NameTypes.h" // For FName
+#include "String/LexFromString.h"
+#include "Components/PrimitiveComponent.h"
 
 // Constructor
 AGridObjectManager::AGridObjectManager() {
@@ -66,6 +68,29 @@ void AGridObjectManager::SpawnGridObjectAtIndex(int32 Index, FVector InWorldLoca
     }
 
     if (GridObject) {
+        // Tag with environment id if available from the platform actor
+        auto GetEnvIdFromActorTags = [](const AActor* Actor) -> int32
+        {
+            if (!Actor) return -1;
+            for (const FName& Tag : Actor->Tags)
+            {
+                const FString S = Tag.ToString();
+                if (S.StartsWith(TEXT("EnvId=")))
+                {
+                    int32 V = -1; LexFromString(V, *S.RightChop(6)); return V;
+                }
+            }
+            return -1;
+        };
+        const int32 EnvId = GetEnvIdFromActorTags(PlatformActor);
+        if (EnvId >= 0 && GridObject->MeshComponent)
+        {
+            const FName Tag(*FString::Printf(TEXT("EnvId=%d"), EnvId));
+            if (!GridObject->MeshComponent->ComponentTags.Contains(Tag))
+            {
+                GridObject->MeshComponent->ComponentTags.Add(Tag);
+            }
+        }
         // Ensure visual scale matches requested size every spawn (for reuse cases)
         if (GridObject->MeshComponent)
         {
@@ -106,6 +131,29 @@ AGridObject* AGridObjectManager::CreateNewGridObjectAtIndex(int32 Index, FVector
         AGridObject* NewGridObject = World->SpawnActor<AGridObject>(AGridObject::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator);
         if (NewGridObject) {
             NewGridObject->InitializeGridObject(InObjectSize, InObjectMass);
+            // Tag with environment id if available
+            auto GetEnvIdFromActorTags = [](const AActor* Actor) -> int32
+            {
+                if (!Actor) return -1;
+                for (const FName& Tag : Actor->Tags)
+                {
+                    const FString S = Tag.ToString();
+                    if (S.StartsWith(TEXT("EnvId=")))
+                    {
+                        int32 V = -1; LexFromString(V, *S.RightChop(6)); return V;
+                    }
+                }
+                return -1;
+            };
+            const int32 EnvId = GetEnvIdFromActorTags(PlatformActor);
+            if (EnvId >= 0 && NewGridObject->MeshComponent)
+            {
+                const FName Tag(*FString::Printf(TEXT("EnvId=%d"), EnvId));
+                if (!NewGridObject->MeshComponent->ComponentTags.Contains(Tag))
+                {
+                    NewGridObject->MeshComponent->ComponentTags.Add(Tag);
+                }
+            }
 
             // Set the folder path of the GridObject
             FName GridObjectManagerFolderPath = GetActorFolderPath();

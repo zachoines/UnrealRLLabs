@@ -69,6 +69,7 @@ void ARLRunner::InitRunner(
     }
 
     Environments.Empty();
+    int32 EnvIndex = 0;
     for (FBaseInitParams* Param : ParamsArray)
     {
         ABaseEnvironment* Env = World->SpawnActor<ABaseEnvironment>(
@@ -78,8 +79,11 @@ void ARLRunner::InitRunner(
         );
         if (Env)
         {
+            // Assign a unique EnvironmentId generically on the base class (used for collision filtering)
+            Env->SetEnvironmentId(EnvIndex);
             Env->InitEnv(Param);
             Environments.Add(Env);
+            EnvIndex++;
         }
         else
         {

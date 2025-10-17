@@ -9,6 +9,8 @@
 #include "TerraShift/GoalManager.h"
 #include "TerraShift/GoalPlatform.h"
 #include "TerraShift/Column.h"
+#include "BaseEnvironment.h"
+#include "Components/PrimitiveComponent.h"
 #include "HeightMapGenerator.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet/GameplayStatics.h"

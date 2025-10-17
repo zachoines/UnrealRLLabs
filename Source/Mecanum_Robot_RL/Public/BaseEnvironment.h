@@ -51,4 +51,18 @@ public:
     virtual float Reward();
 
     FBaseInitParams* params;
+
+    // Generic environment instance id (used for isolation/contact filtering)
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Environment")
+    int32 EnvironmentId = -1;
+
+    // Called whenever an id is assigned; environments can override to react (e.g., tagging bodies)
+    virtual void OnEnvironmentIdAssigned() {}
+
+    // Assigns the environment id and invokes the hook
+    FORCEINLINE void SetEnvironmentId(int32 InId)
+    {
+        EnvironmentId = InId;
+        OnEnvironmentIdAssigned();
+    }
 };

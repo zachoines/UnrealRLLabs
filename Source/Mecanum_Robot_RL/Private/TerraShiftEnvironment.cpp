@@ -11,6 +11,8 @@
 #include "EnvironmentConfig.h"
 #include "TerraShift/Grid.h"
 #include "TerraShift/GridObjectManager.h"
+#include "TerraShift/Column.h"
+#include "Components/PrimitiveComponent.h"
 
 ATerraShiftEnvironment::ATerraShiftEnvironment()
 {
@@ -189,6 +191,9 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
 
     if (StateManager) StateManager->SetReferences(Platform, GridObjectManager, Grid, WaveSimulator, GoalManager);
 
+    // Tag components with environment id (if assigned) now that actors/components exist
+    TagEnvironmentForIsolation();
+
     Initialized = true;
     UE_LOG(LogTemp, Log, TEXT("TerraShiftEnvironment Initialized Successfully."));
 }
@@ -238,6 +243,66 @@ void ATerraShiftEnvironment::PreTransition()
     StateManager->UpdateColumnCollisionBasedOnOccupancy();
     StateManager->UpdateGridColumnsColors();
     StateManager->BuildCentralState();
+}
+
+void ATerraShiftEnvironment::OnEnvironmentIdAssigned()
+{
+    // We may be called before InitEnv builds actors/components; try tag if ready
+    TagEnvironmentForIsolation();
+}
+
+void ATerraShiftEnvironment::TagEnvironmentForIsolation()
+{
+    const int32 EnvIdLocal = EnvironmentId;
+    if (EnvIdLocal < 0) return;
+
+    const FName CompTag(*FString::Printf(TEXT("EnvId=%d"), EnvIdLocal));
+
+    auto TagComp = [&CompTag](UPrimitiveComponent* Comp)
+    {
+        if (!Comp) return;
+        if (!Comp->ComponentTags.Contains(CompTag))
+        {
+            Comp->ComponentTags.Add(CompTag);
+        }
+    };
+
+    auto TagActor = [&CompTag](AActor* Act)
+    {
+        if (!Act) return;
+        if (!Act->Tags.Contains(CompTag))
+        {
+            Act->Tags.Add(CompTag);
+        }
+    };
+
+    if (Platform && Platform->PlatformMeshComponent)
+    {
+        TagComp(Platform->PlatformMeshComponent);
+        TagActor(Platform);
+    }
+    if (Grid)
+    {
+        for (AColumn* Col : Grid->Columns)
+        {
+            if (Col)
+            {
+                TagActor(Col);
+                TagComp(Col->ColumnMesh);
+            }
+        }
+    }
+    if (GridObjectManager && StateManager)
+    {
+        const int32 MaxObjs = StateManager->GetMaxGridObjects();
+        for (int32 i = 0; i < MaxObjs; ++i)
+        {
+            if (AGridObject* Obj = GridObjectManager->GetGridObject(i))
+            {
+                TagComp(Obj->MeshComponent);
+            }
+        }
+    }
 }
 
 void ATerraShiftEnvironment::PostStep()

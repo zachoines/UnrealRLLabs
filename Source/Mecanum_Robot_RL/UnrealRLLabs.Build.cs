@@ -8,6 +8,7 @@ public class UnrealRLLabs : ModuleRules
     public UnrealRLLabs(ReadOnlyTargetRules Target) : base(Target)
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+        PublicDefinitions.Add("UNREALRLLABS_ENABLE_CHAOS_CONTACT_FILTER=1");
         PublicDependencyModuleNames.AddRange(new string[] {
             "Core",
             "CoreUObject",
@@ -19,7 +20,11 @@ public class UnrealRLLabs : ModuleRules
             "RHI",         // Added for GPU interface support
             "ProceduralMeshComponent",
             "Niagara",
-            "CustomShaders"
+            "CustomShaders",
+            // Physics/Chaos for contact filtering support
+            "PhysicsCore",
+            "Chaos",
+            "ChaosSolverEngine"
         });
 
         PrivateDependencyModuleNames.AddRange(new string[] { });
