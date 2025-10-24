@@ -169,10 +169,16 @@ class RLRunner:
         self.test_enabled = test_cfg.get("enabled", False)
         self.test_frequency = max(1, int(test_cfg.get("frequency", 1)))
         self.test_steps = max(1, int(test_cfg.get("steps", 1))) if self.test_enabled else 0
+        # New: allow forcing evaluation-only runs via config: test.eval_only
+        self.test_eval_only = bool(test_cfg.get("eval_only", False))
+        # Default to training mode unless eval-only is requested
         self.test_mode_active = False
         self.test_steps_remaining = 0
         self.test_segments: List[TrajectorySegment] = []
         print(f"RLRunner initialised (envs: {self.num_envs}, device: {self.device})")
+        # If eval-only is requested, immediately enter test mode
+        if self.test_enabled and self.test_eval_only:
+            self._start_test_mode()
 
     def _finalize_episode(self, env_index: int):
         """Compute returns for all segments of a finished episode."""
@@ -606,14 +612,19 @@ class RLRunner:
                 avg_r, avg_ret = self._compute_test_metrics(self.test_segments)
                 self.writer.add_scalar("test/avg_reward", avg_r, self.update_idx)
                 self.writer.add_scalar("test/avg_return", avg_ret, self.update_idx)
-                self.test_mode_active = False
+                # End the current test window
                 self.test_segments.clear()
                 self._reset_tracking_state()
                 if hasattr(self.agentComm, 'end_test_event') and self.agentComm.end_test_event:
                     win32event.SetEvent(self.agentComm.end_test_event)
-            if hasattr(self.agentComm, 'update_received_event') and self.agentComm.update_received_event:
-                win32event.SetEvent(self.agentComm.update_received_event)
-            return
+                # If eval-only, immediately start a new evaluation window; else return to training mode
+                if self.test_enabled and self.test_eval_only:
+                    self._start_test_mode()
+                else:
+                    self.test_mode_active = False
+                if hasattr(self.agentComm, 'update_received_event') and self.agentComm.update_received_event:
+                    win32event.SetEvent(self.agentComm.update_received_event)
+                return
 
         if not all_completed_segments:
             print("RLRunner: no completed segments to update with – skipping agent update.")
