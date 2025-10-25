@@ -7,9 +7,9 @@
       "MaxColumnHeight": 6.0,
       "ObjectSize": [0.15, 0.15, 0.15],
       "ObjectMass": 0.1,
-      "GridSize": 30,
+      "GridSize": 15,
       "MaxSteps": 1024,
-      "MaxAgents": 32,
+      "MaxAgents": 8,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
         "bUseXYDistanceImprovement": true,
@@ -28,12 +28,12 @@
         "ZAccel_Max": 2000.0,
         "EventReward_GoalReached": 10.0,
         "EventReward_OutOfBounds": -2.5,
-        "TimeStepPenalty": 0.0
+        "TimeStepPenalty": -0.0001
       },
       "GoalManager": {"DefaultRadius": 1.0},
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 32,
-        "GridSize": 30,
+        "NumAgents": 8,
+        "GridSize": 15,
         "MinHeight": -6.0,
         "MaxHeight": 6.0,
         "NumActions": 6,
@@ -116,7 +116,7 @@
             "shape": {"max_length": 4, "feature_dim": 9}
           }
         ],
-        "agent": {"obs_size": 9, "min": 32, "max": 32}
+        "agent": {"obs_size": 9, "min": 8, "max": 8}
       },
       "action": {
         "agent": {
@@ -177,18 +177,18 @@
         "epsilon": 1e-05,
         "warmup_steps": 5000
       },
-      "enable_popart": false,
-      "popart_beta": 0.995,
+      "enable_popart": true,
+      "popart_beta": 0.9995,
       "popart_epsilon": 1e-04,
-      "learning_rate": 1e-04,
-      "lr_policy": 1e-04,
-      "lr_trunk": 1e-04,
-      "lr_value_path": 2e-04,
-      "lr_baseline_path": 2e-04,
-      "lr_value_iqn": 1e-04,
-      "lr_baseline_iqn": 1e-04,
-      "lr_rnd_predictor": 1e-04,
-      "lr_disagreement": 1e-04,
+      "learning_rate": 1e-05,
+      "lr_policy": 1e-05,
+      "lr_trunk": 1e-05,
+      "lr_value_path": 2e-05,
+      "lr_baseline_path": 2e-05,
+      "lr_value_iqn": 1e-05,
+      "lr_baseline_iqn": 1e-05,
+      "lr_rnd_predictor": 1e-05,
+      "lr_disagreement": 1e-05,
       "optimizer_betas": {"default": [0.9, 0.999]},
       "weight_decay": {"default": 0.0},
       "gamma": 0.95,
@@ -196,29 +196,29 @@
       "value_loss_coeff": 1.0,
       "baseline_loss_coeff": 0.5,
       "normalize_advantages": true,
-      "max_grad_norm": 5,
-      "ppo_clip_range": 0.2,
-      "value_clip_range": 1000.0,
-      "entropy_coeff": 0.01,
+      "max_grad_norm": 3,
+      "ppo_clip_range": 0.1,
+      "value_clip_range": 0.3,
+      "entropy_coeff": 0.005,
       "schedulers": {
-        "lr_trunk": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_policy": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_value_path": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_baseline_path": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_value_iqn": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_baseline_iqn": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_rnd_predictor": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "lr_disagreement": {"start_factor": 1.0, "end_factor": 0.1, "total_iters": 10000},
-        "entropy_coeff": {"start_value": 0.005, "end_value": 0.001, "total_iters": 10000},
-        "policy_clip": {"start_value": 0.2, "end_value": 0.1, "total_iters": 10000},
-        "value_clip_disabled": {"start_value": 1.0, "end_value": 0.1, "total_iters": 10000},
-        "max_grad_norm": {"start_value": 3.0, "end_value": 0.5, "total_iters": 10000}
+        "lr_trunk": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 5000},
+        "lr_policy": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 5000},
+        "lr_value_path": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 5000},
+        "lr_baseline_path": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 5000},
+        "lr_value_iqn": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 5000},
+        "lr_baseline_iqn": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 5000},
+        "lr_rnd_predictor": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 5000},
+        "lr_disagreement": {"start_factor": 1.0, "end_factor": 0.5, "total_iters": 5000},
+        "entropy_coeff": {"start_value": 0.005, "end_value": 0.001, "total_iters": 5000},
+        "policy_clip": {"start_value": 0.1, "end_value": 0.05, "total_iters": 5000},
+        "value_clip": {"start_value": 0.3, "end_value": 0.1, "total_iters": 5000},
+        "max_grad_norm": {"start_value": 2.0, "end_value": 0.5, "total_iters": 5000}
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 32,
+            "num_agents": 8,
             "embed_dim": 128,
             "num_heads": 8,
             "transformer_layers": 3,
@@ -359,9 +359,9 @@
     "pad_trajectories": true,
     "batch_size": 1024,
     "buffer_size": 1024,
-    "num_environments": 1,
+    "num_environments": 8,
     "epochs": 4,
-    "mini_batch_size": 4,
+    "mini_batch_size": 16,
     "ActionRepeat": 2,
     "saveFrequency": 9,
     "states_normalizer_disabled": {"epsilon": 1e-08, "warmup_steps": 0}
@@ -369,7 +369,7 @@
   "test": {
     "enabled": true,
     "frequency": 1,
-    "steps": 1024,
-    "eval_only": true
+    "steps": 128,
+    "eval_only": false
   }
 }
