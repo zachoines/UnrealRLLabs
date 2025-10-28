@@ -166,13 +166,19 @@ class RLRunner:
         self.update_idx = 0
 
         test_cfg = cfg.get("test", {})
-        self.test_enabled = test_cfg.get("enabled", False)
+        # Support forcing evaluation-only runs via config.
+        # New key: test.eval_only (with legacy alias test.force_eval_only)
+        self.eval_only = bool(test_cfg.get("eval_only", False) or test_cfg.get("force_eval_only", False))
+        self.test_enabled = bool(test_cfg.get("enabled", False) or self.eval_only)
         self.test_frequency = max(1, int(test_cfg.get("frequency", 1)))
         self.test_steps = max(1, int(test_cfg.get("steps", 1))) if self.test_enabled else 0
         self.test_mode_active = False
         self.test_steps_remaining = 0
         self.test_segments: List[TrajectorySegment] = []
         print(f"RLRunner initialised (envs: {self.num_envs}, device: {self.device})")
+        # Enter and keep test mode active if evaluation-only is requested
+        if self.eval_only and self.test_enabled:
+            self._start_test_mode()
 
     def _finalize_episode(self, env_index: int):
         """Compute returns for all segments of a finished episode."""
@@ -606,11 +612,16 @@ class RLRunner:
                 avg_r, avg_ret = self._compute_test_metrics(self.test_segments)
                 self.writer.add_scalar("test/avg_reward", avg_r, self.update_idx)
                 self.writer.add_scalar("test/avg_return", avg_ret, self.update_idx)
-                self.test_mode_active = False
-                self.test_segments.clear()
-                self._reset_tracking_state()
-                if hasattr(self.agentComm, 'end_test_event') and self.agentComm.end_test_event:
-                    win32event.SetEvent(self.agentComm.end_test_event)
+                if self.eval_only:
+                    # Stay in test mode and continue evaluating; just roll the window
+                    self.test_segments.clear()
+                    self.test_steps_remaining = self.test_steps
+                else:
+                    self.test_mode_active = False
+                    self.test_segments.clear()
+                    self._reset_tracking_state()
+                    if hasattr(self.agentComm, 'end_test_event') and self.agentComm.end_test_event:
+                        win32event.SetEvent(self.agentComm.end_test_event)
             if hasattr(self.agentComm, 'update_received_event') and self.agentComm.update_received_event:
                 win32event.SetEvent(self.agentComm.update_received_event)
             return
@@ -709,7 +720,7 @@ class RLRunner:
         else:
             print("RLRunner Warning: agentComm.update_received_event not found or is None in _handle_update.")
 
-        if (not is_test_update) and self.test_enabled and (self.update_idx % self.test_frequency == 0):
+        if (not is_test_update) and self.test_enabled and (self.update_idx % self.test_frequency == 0) and (not self.eval_only):
             self._start_test_mode()
 
     def _collate_and_pad_sequences(self, segments: List[TrajectorySegment]) -> Tuple[
