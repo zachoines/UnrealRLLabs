@@ -126,6 +126,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
         bUseStationaryPenalty = envSpecificCfg->GetOrDefaultBool(TEXT("bUseStationaryPenalty"), false);
         StationaryPenalty_MinSpeed = envSpecificCfg->GetOrDefaultNumber(TEXT("StationaryPenalty_MinSpeed"), 10.0f);
         StationaryPenalty_Drain = envSpecificCfg->GetOrDefaultNumber(TEXT("StationaryPenalty_Drain"), 0.01f);
+        StationaryPenalty_MinConsecutiveFrames = envSpecificCfg->GetOrDefaultInt(TEXT("StationaryPenalty_MinConsecutiveFrames"), 3);
 
         EventReward_GoalReached = envSpecificCfg->GetOrDefaultNumber(TEXT("EventReward_GoalReached"), 10.0f);
         EventReward_OutOfBounds = envSpecificCfg->GetOrDefaultNumber(TEXT("EventReward_OutOfBounds"), -10.0f);
@@ -213,6 +214,9 @@ FState ATerraShiftEnvironment::ResetEnv(int NumAgents)
             PreviousPotential[i] = CalculatePotential(i);
         }
     }
+
+    // Reset stationary counters per object for the new episode
+    StationaryBelowMinFrames.Init(0, CurrentGridObjects);
 
     return State();
 }
@@ -499,7 +503,31 @@ float ATerraShiftEnvironment::Reward()
                 const float speed = StateManager->GetCurrentVelocity(ObjIndex).Size();
                 if (speed < StationaryPenalty_MinSpeed)
                 {
-                    ShapingSubReward -= StationaryPenalty_Drain;
+                    // Do not penalize if the object is directly atop its goal (position-over-goal play mode)
+                    const EObjectSlotState SlotStateNow = StateManager->GetObjectSlotState(ObjIndex);
+                    const bool bAtGoalNow = (SlotStateNow == EObjectSlotState::GoalReached);
+                    if (!bAtGoalNow)
+                    {
+                        // Count consecutive frames of low-speed off-goal
+                        if (StationaryBelowMinFrames.IsValidIndex(ObjIndex))
+                        {
+                            StationaryBelowMinFrames[ObjIndex] += 1;
+                        }
+                        // Apply penalty only after threshold frames
+                        if (StationaryBelowMinFrames.IsValidIndex(ObjIndex) &&
+                            StationaryBelowMinFrames[ObjIndex] >= StationaryPenalty_MinConsecutiveFrames)
+                        {
+                            ShapingSubReward -= StationaryPenalty_Drain;
+                        }
+                    }
+                }
+                else
+                {
+                    // Reset counter when moving sufficiently fast
+                    if (StationaryBelowMinFrames.IsValidIndex(ObjIndex))
+                    {
+                        StationaryBelowMinFrames[ObjIndex] = 0;
+                    }
                 }
             }
 

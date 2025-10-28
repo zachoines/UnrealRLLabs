@@ -133,6 +133,7 @@ private:
     UPROPERTY() bool bUseStationaryPenalty;
     UPROPERTY() float StationaryPenalty_MinSpeed;
     UPROPERTY() float StationaryPenalty_Drain;
+    UPROPERTY() int32 StationaryPenalty_MinConsecutiveFrames;
 
     // Event-based rewards
     UPROPERTY()
@@ -161,6 +162,10 @@ private:
     // --- Runtime State for Potential Shaping ---
     UPROPERTY()
     TArray<float> PreviousPotential;
+
+    // Tracks how many consecutive frames each object has been below min-speed (off-goal)
+    UPROPERTY()
+    TArray<int32> StationaryBelowMinFrames;
 
 private:
     // --- Helper Functions ---
