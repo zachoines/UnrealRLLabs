@@ -23,6 +23,7 @@
         "bUseStationaryPenalty": false,
         "StationaryPenalty_MinSpeed": 10.0,
         "StationaryPenalty_Drain": 0.01,
+        "StationaryPenalty_MinConsecutiveFrames": 3,
         "PotentialShaping_Gamma": 0.97,
         "PotentialShaping_Scale": 10.0,
         "VelAlign_Scale": 0.5,
@@ -579,6 +580,7 @@
   },
   "test": {
     "enabled": true,
+    "eval_only": false,
     "frequency": 1,
     "steps": 128
   }

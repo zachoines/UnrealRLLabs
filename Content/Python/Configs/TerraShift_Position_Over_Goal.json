@@ -7,25 +7,26 @@
       "MaxColumnHeight": 6.0,
       "ObjectMass": 1.0,
       "GridSize": 16,
-      "MaxSteps": 1024,
+      "MaxSteps": 512,
       "MaxAgents": 8,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
-        "bUseXYDistanceImprovement": false,
+        "bUseXYDistanceImprovement": true,
         "bUseZAccelerationPenalty": false,
-        "bUsePotentialShaping": true,
-        "bUsePositivePotentialShaping": true,
-        "bUseExponentialPotential": true,
+        "bUsePotentialShaping": false,
+        "bUsePositivePotentialShaping": false,
+        "bUseExponentialPotential": false,
         "PositivePotential_Power": 1.5,
-        "PositivePotential_Sigma": 0.5,
+        "PositivePotential_Sigma": 0.7,
         "bUseDistanceBasedReward": false,
         "bDisableEventRewards": true,
         "bUseStationaryPenalty": false,
         "StationaryPenalty_MinSpeed": 10.0,
         "StationaryPenalty_Drain": 0.01,
+        "StationaryPenalty_MinConsecutiveFrames": 3,
         "PotentialShaping_Gamma": 0.97,
-        "PotentialShaping_Scale": 2.0,
-        "VelAlign_Scale": 0.5,
+        "PotentialShaping_Scale": 10.0,
+        "VelAlign_Scale": 0.05,
         "VelAlign_Min": -50.0,
         "VelAlign_Max": 50.0,
         "DistImprove_Scale": 100.0,
@@ -36,7 +37,7 @@
         "ZAccel_Max": 2000.0,
         "EventReward_GoalReached": 0.0,
         "EventReward_OutOfBounds": 0.0,
-        "TimeStepPenalty": -0.001
+        "TimeStepPenalty": -0.0001
       },
       "GoalManager": {
         "DefaultRadius": 1.0
@@ -77,7 +78,7 @@
         "MarginXY": -1.0,
         "MinZ": 0.0,
         "MaxZ": 40.0,
-        "SpawnPaddingZ": 5.0,
+        "SpawnPaddingZ": 10.0,
         "SpawnSeparationRadius": 7.0,
         "ObjectMass": 0.1,
         "MaxColumnHeight": 6.0,
@@ -88,7 +89,7 @@
         "OverheadCameraResY_disabled": 64,
         "bUseRandomGoals": true,
         "bRespawnOnGoal": false,
-        "bRespawnOnOOB": true,
+        "bRespawnOnOOB": false,
         "bTerminateOnAllGoalsReached": true,
         "bTerminateOnMaxSteps": false,
         "bRemoveObjectsOnGoal": false,
@@ -152,7 +153,7 @@
         "bRestrictColumnPhysicsToRadius": true,
         "ColumnCollisionRadiusCells": 2,
         "bEnabledShaderBasedHeightmap": true,
-        "bRestrictColumnMovementToRadius": false
+        "bRestrictColumnMovementToRadius": true
       }
     },
     "shape": {
@@ -276,12 +277,12 @@
           "hidden_size": 64
         }
       },
-      "rnd_reward_disabled": {
-        "enabled": false,
-        "reward_coeff": 0.01,
+      "rnd_rewards_disabled": {
+        "enabled": true,
+        "reward_coeff": 0.005,
         "loss_coeff": 1.0,
         "update_proportion": 0.25,
-        "normalize_reward": false,
+        "normalize_reward": true,
         "network": {
           "output_size": 128,
           "hidden_size": 256
@@ -327,89 +328,94 @@
         "lr_trunk": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "lr_policy": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "lr_value_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "lr_value_quantile": {
           "start_factor": 1.0,
           "end_factor": 0.3333,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "lr_value_fraction": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "lr_baseline_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "lr_rnd_predictor": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "lr_disagreement": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "entropy_coeff": {
           "start_value": 0.01,
           "end_value": 0.005,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "policy_clip": {
           "start_value": 0.2,
           "end_value": 0.1,
-          "total_iters": 25000
+          "total_iters": 100000
         },
         "value_clip_disabled": {
           "start_value": 1.0,
           "end_value": 0.1,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "max_grad_norm": {
           "start_value": 3.0,
           "end_value": 1.0,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "fqf_temperature": {
           "start_value": 3.0,
           "end_value": 1.0,
-          "total_iters": 30000
+          "total_iters": 100000
         },
         "fqf_prior_blend_alpha": {
           "start_value": 0.2,
           "end_value": 0.05,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "fraction_entropy_coeff": {
           "start_value": 0.02,
           "end_value": 0.001,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "fraction_loss_coeff": {
           "start_value": 0.05,
           "end_value": 0.1,
-          "total_iters": 30000
+          "total_iters": 100000
+        },
+        "rnd_reward_coeff": {
+          "start_value": 0.005,
+          "end_value": 0.0,
+          "total_iters": 100000
         }
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 16,
+            "num_agents": 8,
             "embed_dim": 256,
             "num_heads": 8,
             "transformer_layers": 2,
@@ -507,7 +513,7 @@
           "hidden_size": 256,
           "param_init_bias": 0.0,
           "min_concentration": 1.01,
-          "linear_init_scale": 0.1,
+          "linear_init_scale": 0.2,
           "dropout_rate": 0.1
         },
         "critic_network": {
@@ -535,7 +541,7 @@
             "dropout": 0.1,
             "self_attention": true
           },
-          "distributional_network_params": {
+          "distributional_network_params_disabled": {
             "fqf_network": {
               "feature_dim": 256,
               "hidden_size": 256,
@@ -563,15 +569,15 @@
     }
   },
   "train": {
-    "sequence_length": 32,
+    "sequence_length": 16,
     "pad_trajectories": true,
-    "batch_size": 1024,
-    "buffer_size": 1024,
-    "num_environments": 8,
+    "batch_size": 512,
+    "buffer_size": 512,
+    "num_environments": 32,
     "epochs": 3,
-    "mini_batch_size": 16,
-    "ActionRepeat": 1,
-    "saveFrequency": 9,
+    "mini_batch_size": 64,
+    "ActionRepeat": 4,
+    "saveFrequency": 27,
     "states_normalizer_disabled": {
       "epsilon": 1e-08,
       "warmup_steps": 0
@@ -579,7 +585,8 @@
   },
   "test": {
     "enabled": true,
-    "frequency": 1,
+    "eval_only": false,
+    "frequency": 9,
     "steps": 128
   }
 }

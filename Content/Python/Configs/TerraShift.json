@@ -6,44 +6,45 @@
       "PlatformSize": 1.0,
       "MaxColumnHeight": 6.0,
       "ObjectMass": 1.0,
-      "GridSize": 16,
+      "GridSize": 32,
       "MaxSteps": 512,
       "MaxAgents": 16,
       "TerraShiftEnvironment": {
-        "bUseVelAlignment": true,
-        "bUseXYDistanceImprovement": false,
+        "bUseVelAlignment": false,
+        "bUseXYDistanceImprovement": true,
         "bUseZAccelerationPenalty": false,
-        "bUsePotentialShaping": true,
-        "bUsePositivePotentialShaping": true,
-        "bUseExponentialPotential": true,
+        "bUsePotentialShaping": false,
+        "bUsePositivePotentialShaping": false,
+        "bUseExponentialPotential": false,
         "PositivePotential_Power": 1.5,
-        "PositivePotential_Sigma": 0.65,
+        "PositivePotential_Sigma": 0.7,
         "bUseDistanceBasedReward": false,
-        "bDisableEventRewards": true,
-        "bUseStationaryPenalty": false,
+        "bDisableEventRewards": false,
+        "bUseStationaryPenalty": true,
         "StationaryPenalty_MinSpeed": 10.0,
         "StationaryPenalty_Drain": 0.01,
+        "StationaryPenalty_MinConsecutiveFrames": 3,
         "PotentialShaping_Gamma": 0.97,
-        "PotentialShaping_Scale": 3.0,
+        "PotentialShaping_Scale": 1.0,
         "VelAlign_Scale": 0.05,
         "VelAlign_Min": -50.0,
         "VelAlign_Max": 50.0,
-        "DistImprove_Scale": 100.0,
+        "DistImprove_Scale": 1000.0,
         "DistImprove_Min": -1.0,
         "DistImprove_Max": 1.0,
         "ZAccel_Scale": 0.0001,
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
-        "EventReward_GoalReached": 0.0,
-        "EventReward_OutOfBounds": 0.0,
-        "TimeStepPenalty": -0.0005
+        "EventReward_GoalReached": 10.0,
+        "EventReward_OutOfBounds": -2.5,
+        "TimeStepPenalty": 0.0
       },
       "GoalManager": {
         "DefaultRadius": 1.0
       },
       "MultiAgentGaussianWaveHeightMap": {
         "NumAgents": 16,
-        "GridSize": 16,
+        "GridSize": 32,
         "MinHeight": -6.0,
         "MaxHeight": 6.0,
         "NumActions": 6,
@@ -52,25 +53,25 @@
         "AccumulatedWaveFadeGamma": 0.95,
         "bWrapAroundEdges": true,
         "VelMinMax": [
-          -1,
-          1
+          -2,
+          2
         ],
         "AngVelRange": [
-          -0.785,
-          0.785
+          -1.57,
+          1.57
         ],
         "AmpMinMax": [
-          -4.0,
-          4.0
+          -6.0,
+          6.0
         ],
         "SigMinMax": [
           0.5,
-          4.0
+          3.0
         ],
         "DeltaVelScale": 2.0,
         "DeltaAngVelScale": 1.57,
-        "DeltaAmpScale": 2.0,
-        "DeltaSigmaScale": 2.0
+        "DeltaAmpScale": 3.0,
+        "DeltaSigmaScale": 1.0
       },
       "StateManager": {
         "MaxGridObjects": 4,
@@ -88,10 +89,10 @@
         "OverheadCameraResY_disabled": 64,
         "bUseRandomGoals": true,
         "bRespawnOnGoal": false,
-        "bRespawnOnOOB": true,
+        "bRespawnOnOOB": false,
         "bTerminateOnAllGoalsReached": true,
         "bTerminateOnMaxSteps": false,
-        "bRemoveObjectsOnGoal": false,
+        "bRemoveObjectsOnGoal": true,
         "bSuppressPerStepGoalReward": true,
         "GoalRadius": 8.0,
         "ObjectRadius": 6.0,
@@ -150,7 +151,7 @@
         "MaxGridObjectsForState": 4,
         "GridObjectFeatureSize": 9,
         "bRestrictColumnPhysicsToRadius": true,
-        "ColumnCollisionRadiusCells": 2,
+        "ColumnCollisionRadiusCells": 3,
         "bEnabledShaderBasedHeightmap": true,
         "bRestrictColumnMovementToRadius": true
       }
@@ -233,7 +234,7 @@
       "fps": 32,
       "dpi": 150
     },
-    "auto_save_every": 256,
+    "auto_save_every": 1024,
     "components_to_record": [
       {
         "enabled": true,
@@ -276,12 +277,12 @@
           "hidden_size": 64
         }
       },
-      "rnd_reward_disabled": {
-        "enabled": false,
-        "reward_coeff": 0.01,
+      "rnd_rewards_disabled": {
+        "enabled": true,
+        "reward_coeff": 0.005,
         "loss_coeff": 1.0,
         "update_proportion": 0.25,
-        "normalize_reward": false,
+        "normalize_reward": true,
         "network": {
           "output_size": 128,
           "hidden_size": 256
@@ -295,16 +296,16 @@
       "popart_beta": 0.995,
       "popart_epsilon": 0.0001,
       "learning_rate": 3e-04,
-      "lr_policy": 3e-04,
-      "lr_trunk": 3e-04,
-      "lr_value_path": 3e-04,
-      "lr_baseline_path": 3e-04,
-      "lr_value_quantile": 3e-04,
+      "lr_policy": 1e-03,
+      "lr_trunk": 1e-03,
+      "lr_value_path": 1e-03,
+      "lr_baseline_path": 1e-03,
+      "lr_value_quantile": 1e-03,
       "lr_value_fraction": 1e-04,
-      "lr_value_iqn": 3e-04,
-      "lr_baseline_iqn": 3e-04,
-      "lr_rnd_predictor": 3e-04,
-      "lr_disagreement": 3e-04,
+      "lr_value_iqn": 1e-03,
+      "lr_baseline_iqn": 1e-03,
+      "lr_rnd_predictor": 1e-03,
+      "lr_disagreement": 1e-03,
       "optimizer_betas": {
         "default": [
           0.9,
@@ -314,7 +315,7 @@
       "weight_decay": {
         "default": 0.0
       },
-      "gamma": 0.97,
+      "gamma": 0.92,
       "lmbda": 0.95,
       "value_loss_coeff": 1.0,
       "baseline_loss_coeff": 0.5,
@@ -327,82 +328,87 @@
         "lr_trunk": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "lr_policy": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "lr_value_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "lr_value_quantile": {
           "start_factor": 1.0,
           "end_factor": 0.3333,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "lr_value_fraction": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "lr_baseline_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "lr_rnd_predictor": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "lr_disagreement": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "entropy_coeff": {
-          "start_value": 0.01,
-          "end_value": 0.005,
-          "total_iters": 50000
+          "start_value": 0.005,
+          "end_value": 0.0001,
+          "total_iters": 100000
         },
         "policy_clip": {
           "start_value": 0.2,
           "end_value": 0.1,
-          "total_iters": 25000
+          "total_iters": 100000
         },
         "value_clip_disabled": {
           "start_value": 1.0,
           "end_value": 0.1,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "max_grad_norm": {
           "start_value": 3.0,
           "end_value": 1.0,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "fqf_temperature": {
           "start_value": 3.0,
           "end_value": 1.0,
-          "total_iters": 30000
+          "total_iters": 100000
         },
         "fqf_prior_blend_alpha": {
           "start_value": 0.2,
           "end_value": 0.05,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "fraction_entropy_coeff": {
           "start_value": 0.02,
           "end_value": 0.001,
-          "total_iters": 50000
+          "total_iters": 100000
         },
         "fraction_loss_coeff": {
           "start_value": 0.05,
           "end_value": 0.1,
-          "total_iters": 30000
+          "total_iters": 100000
+        },
+        "rnd_reward_coeff": {
+          "start_value": 0.005,
+          "end_value": 0.0,
+          "total_iters": 100000
         }
       },
       "networks": {
@@ -423,7 +429,7 @@
             "central_processing_configs": [
               {
                 "name": "height_map",
-                "enabled": true,
+                "enabled": false,
                 "type": "cnn",
                 "cnn_stem_channels": [
                   24,
@@ -548,7 +554,7 @@
               "fraction_net_hidden": 128,
               "fraction_loss_coeff": 0.05,
               "fraction_entropy_coeff": 0.02,
-              "fqf_fraction_update_trunk": true,
+              "fqf_fraction_update_trunk": false,
               "fraction_entropy_warmup_iters": 5000,
               "fraction_entropy_cap": 0.5,
               "softmax_temperature": 3.0,
@@ -563,14 +569,14 @@
     }
   },
   "train": {
-    "sequence_length": 16,
+    "sequence_length": 32,
     "pad_trajectories": true,
     "batch_size": 512,
     "buffer_size": 512,
     "num_environments": 32,
-    "epochs": 3,
+    "epochs": 4,
     "mini_batch_size": 64,
-    "ActionRepeat": 3,
+    "ActionRepeat": 2,
     "saveFrequency": 27,
     "states_normalizer_disabled": {
       "epsilon": 1e-08,
@@ -579,7 +585,8 @@
   },
   "test": {
     "enabled": true,
-    "frequency": 9,
-    "steps": 128
+    "eval_only": false,
+    "frequency": 27,
+    "steps": 512
   }
 }
