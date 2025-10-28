@@ -436,6 +436,12 @@ class MAPOCAAgent(Agent):
                     ppo_total_loss_phase1 = pol_loss + self.entropy_coeff * ent_loss + self.value_loss_coeff * val_loss + self.baseline_loss_coeff * base_loss
                     ppo_total_loss_phase1.backward()
                     total_grad_norm = self._clip_and_step_ppo_optimizers(ppo_opts_phase1)
+                    # Capture trunk grad stats right after phase-1 update so that
+                    # if we do not update trunk in phase-2, we can still report
+                    # meaningful trunk gradients for this minibatch.
+                    trunk_grad_phase1 = _get_avg_grad_mag(
+                        list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])
+                    )
 
                     # Phase 2: fraction net only
                     # Prepare grads for fraction phase
@@ -479,6 +485,7 @@ class MAPOCAAgent(Agent):
                     ppo_total_loss = pol_loss + self.entropy_coeff * ent_loss + self.value_loss_coeff * val_loss + self.baseline_loss_coeff * base_loss
                     ppo_total_loss.backward()
                     total_grad_norm = self._clip_and_step_ppo_optimizers(ppo_opts)
+                    trunk_grad_phase1 = None
                 
                 # --- Disagreement Ensemble Update Step ---
                 if self.disagreement_cfg:
@@ -506,7 +513,9 @@ class MAPOCAAgent(Agent):
                 self._log_minibatch_stats(
                     logs_acc, pol_loss, val_loss, base_loss, ent_mb, new_lp_mb, 
                     mb_mask_btna, rnd_loss, disagreement_loss, feats_s_mb, 
-                    total_grad_norm, new_val_norm, new_base_norm, new_val_quantiles if self.enable_distributional else None
+                    total_grad_norm, new_val_norm, new_base_norm, new_val_quantiles if self.enable_distributional else None,
+                    # When trunk is not co-adapted in phase-2, reuse phase-1 trunk grads
+                    trunk_grad_override=(trunk_grad_phase1 if (self.use_fqf and not self.fqf_fraction_update_trunk) else None)
                 )
                 # Step schedulers per minibatch (LR + scalar schedulers)
                 self._step_schedulers()
@@ -1072,10 +1081,16 @@ class MAPOCAAgent(Agent):
         """
         B, T, NA, F = feats_seq.shape
         # Compute aggregated value features (B*T, H)
-        # Do not accumulate grads through value-attention in phase 2 to avoid memory buildup
-        with torch.no_grad():
+        # If we want the fraction update to also update the trunk, we must allow
+        # gradients to flow through the attention/trunk path. Otherwise, keep it
+        # under no_grad to avoid unnecessary memory use.
+        if getattr(self, 'fqf_fraction_update_trunk', False):
             val_attn_out, _ = self.shared_critic.value_attention(feats_seq.reshape(B * T, NA, F))
             val_feats_agg = val_attn_out.mean(dim=1)
+        else:
+            with torch.no_grad():
+                val_attn_out, _ = self.shared_critic.value_attention(feats_seq.reshape(B * T, NA, F))
+                val_feats_agg = val_attn_out.mean(dim=1)
 
         # Fraction proposal (interval probs) and internal boundaries
         fqf_net = self.shared_critic.value_iqn_net
@@ -1312,7 +1327,7 @@ class MAPOCAAgent(Agent):
             new_alpha = self.schedulers["fqf_prior_blend_alpha"].step()
             self.shared_critic.value_iqn_net.prior_blend_alpha = float(new_alpha)
 
-    def _log_minibatch_stats(self, logs_acc, pol_loss, val_loss, base_loss, ent_mb, new_lp_mb, mask_mbna, rnd_loss, disagreement_loss, feats_s_mb, total_grad_norm, new_val_norm=None, new_base_norm=None, new_val_quantiles=None):
+    def _log_minibatch_stats(self, logs_acc, pol_loss, val_loss, base_loss, ent_mb, new_lp_mb, mask_mbna, rnd_loss, disagreement_loss, feats_s_mb, total_grad_norm, new_val_norm=None, new_base_norm=None, new_val_quantiles=None, trunk_grad_override: Optional[float] = None):
         """Accumulates statistics from a single minibatch into the logs dictionary."""
         # Core PPO Losses
         logs_acc["loss/policy"].append(pol_loss.item())
@@ -1359,7 +1374,10 @@ class MAPOCAAgent(Agent):
                     logs_acc["policy/beta_std"].append(beta.std().item())
 
         # Component-wise Gradient Norms
-        logs_acc["grad_norm/trunk"].append(_get_avg_grad_mag(list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])))
+        if trunk_grad_override is not None:
+            logs_acc["grad_norm/trunk"].append(float(trunk_grad_override))
+        else:
+            logs_acc["grad_norm/trunk"].append(_get_avg_grad_mag(list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])))
         logs_acc["grad_norm/policy"].append(_get_avg_grad_mag(list(self.policy_net.parameters())))
         
         # Value path gradient norms (handle scalar vs distributional)
