@@ -633,6 +633,10 @@ void UStateManager::BuildCentralState()
 
                     if (Grid)
                     {
+                        // If movement is restricted, render full map by synthesizing column center Z from the wave height
+                        const bool bUseVirtualHeights = bRestrictColumnMovementToRadius && (WaveSim != nullptr);
+                        const FMatrix2D& WaveHeights = (WaveSim != nullptr) ? WaveSim->GetHeightMap() : FMatrix2D();
+
                         for (int32 x = 0; x < GridSize; ++x)
                         {
                             for (int32 y = 0; y < GridSize; ++y)
@@ -645,7 +649,17 @@ void UStateManager::BuildCentralState()
                                     if (Col && Col->ColumnMesh)
                                     {
                                         const FVector wpos = Col->GetActorLocation();
-                                        const FVector local = GridTransform.InverseTransformPosition(wpos);
+                                        FVector local = GridTransform.InverseTransformPosition(wpos);
+
+                                        if (bUseVirtualHeights)
+                                        {
+                                            // base center Z (initial center) + target wave height
+                                            const float baseCenterZ = local.Z - Col->GetColumnHeight();
+                                            const bool bInBounds = (x < WaveHeights.GetNumRows()) && (y < WaveHeights.GetNumColumns());
+                                            const float targetHeight = bInBounds ? WaveHeights[x][y] : 0.f;
+                                            local.Z = baseCenterZ + targetHeight;
+                                        }
+
                                         AsyncStatePtr->ColumnCentersScratch[idx] = FVector3f((float)local.X, (float)local.Y, (float)local.Z);
 
                                         const FBoxSphereBounds CB = Col->ColumnMesh->Bounds;
@@ -908,6 +922,10 @@ void UStateManager::BuildCentralState()
 
                 if (Grid)
                 {
+                    // Apply the same virtual-height override for the CPU analytic path.
+                    const bool bUseVirtualHeights = bRestrictColumnMovementToRadius && (WaveSim != nullptr);
+                    const FMatrix2D& WaveHeights = (WaveSim != nullptr) ? WaveSim->GetHeightMap() : FMatrix2D();
+
                     for (int32 x = 0; x < GridSize; ++x)
                     {
                         for (int32 y = 0; y < GridSize; ++y)
@@ -920,7 +938,16 @@ void UStateManager::BuildCentralState()
                                 if (Col && Col->ColumnMesh)
                                 {
                                     const FVector wpos = Col->GetActorLocation();
-                                    const FVector local = GridTransform.InverseTransformPosition(wpos);
+                                    FVector local = GridTransform.InverseTransformPosition(wpos);
+
+                                    if (bUseVirtualHeights)
+                                    {
+                                        const float baseCenterZ = local.Z - Col->GetColumnHeight();
+                                        const bool bInBounds = (x < WaveHeights.GetNumRows()) && (y < WaveHeights.GetNumColumns());
+                                        const float targetHeight = bInBounds ? WaveHeights[x][y] : 0.f;
+                                        local.Z = baseCenterZ + targetHeight;
+                                    }
+
                                     AsyncStatePtr->ColumnCentersScratch[idx] = FVector3f((float)local.X, (float)local.Y, (float)local.Z);
 
                                     const FBoxSphereBounds CB = Col->ColumnMesh->Bounds;
