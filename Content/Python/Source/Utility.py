@@ -203,6 +203,30 @@ class LinearValueScheduler:
         fraction = min(self.counter / float(self.total_iters), 1.0)
         return (1.0 - fraction)*self.start_value + fraction*self.end_value
 
+
+class LinearLRDecay(torch.optim.lr_scheduler._LRScheduler):
+    """
+    True linear LR decay (or growth) scheduler.
+
+    Multiplies each param group's base LR by a factor that moves linearly
+    from `start_factor` to `end_factor` over `total_iters` calls to `step()`.
+
+    Unlike PyTorch's LinearLR (which warms from start_factor*base_lr to base_lr),
+    this supports arbitrary end_factor and is suitable for per‑minibatch decay.
+    """
+
+    def __init__(self, optimizer, start_factor: float = 1.0, end_factor: float = 1.0, total_iters: int = 1, last_epoch: int = -1):
+        self.start_factor = float(start_factor)
+        self.end_factor = float(end_factor)
+        self.total_iters = max(int(total_iters), 1)
+        super().__init__(optimizer, last_epoch=last_epoch, verbose=False)
+
+    def get_lr(self):
+        # last_epoch starts at 0 on first step() call
+        frac = min(max(self.last_epoch, 0) / float(self.total_iters), 1.0)
+        factor = (1.0 - frac) * self.start_factor + frac * self.end_factor
+        return [base_lr * factor for base_lr in self.base_lrs]
+
     # --- Checkpointing helpers ---
     def state_dict(self) -> Dict[str, float]:
         return {

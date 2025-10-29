@@ -299,9 +299,9 @@
       "lr_policy": 3e-04,
       "lr_trunk": 3e-04,
       "lr_value_path": 3e-04,
-      "lr_baseline_path": 3e-04,
+      "lr_baseline_path": 1e-04,
       "lr_value_quantile": 3e-04,
-      "lr_value_fraction": 3e-04,
+      "lr_value_fraction": 5e-05,
       "lr_value_iqn": 3e-04,
       "lr_baseline_iqn": 3e-04,
       "lr_rnd_predictor": 3e-04,
@@ -315,100 +315,100 @@
       "weight_decay": {
         "default": 0.0
       },
-      "gamma": 0.92,
+      "gamma": 0.985,
       "lmbda": 0.95,
       "value_loss_coeff": 1.0,
-      "baseline_loss_coeff": 0.5,
+      "baseline_loss_coeff": 0.2,
       "normalize_advantages": true,
       "max_grad_norm": 1.0,
       "ppo_clip_range": 0.2,
-      "value_clip_range": 1000.0,
+      "value_clip_range": 1.0,
       "entropy_coeff": 0.01,
       "schedulers": {
         "lr_trunk": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 100000
+          "total_iters": 20000
         },
         "lr_policy": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 100000
+          "total_iters": 20000
         },
         "lr_value_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 100000
+          "total_iters": 20000
         },
         "lr_value_quantile": {
           "start_factor": 1.0,
           "end_factor": 0.3333,
-          "total_iters": 100000
+          "total_iters": 20000
         },
         "lr_value_fraction": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 100000
+          "total_iters": 20000
         },
         "lr_baseline_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 100000
+          "total_iters": 20000
         },
         "lr_rnd_predictor": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 100000
+          "total_iters": 20000
         },
         "lr_disagreement": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 100000
+          "total_iters": 20000
         },
         "entropy_coeff": {
           "start_value": 0.005,
           "end_value": 0.0001,
-          "total_iters": 100000
+          "total_iters": 20000
         },
         "policy_clip": {
           "start_value": 0.2,
           "end_value": 0.1,
-          "total_iters": 100000
+          "total_iters": 20000
         },
-        "value_clip_disabled": {
+        "value_clip": {
           "start_value": 1.0,
           "end_value": 0.1,
-          "total_iters": 100000
+          "total_iters": 20000
         },
         "max_grad_norm": {
           "start_value": 3.0,
           "end_value": 1.0,
-          "total_iters": 100000
+          "total_iters": 20000
         },
         "fqf_temperature": {
-          "start_value": 3.0,
-          "end_value": 1.0,
-          "total_iters": 100000
+          "start_value": 6.0,
+          "end_value": 4.0,
+          "total_iters": 20000
         },
         "fqf_prior_blend_alpha": {
-          "start_value": 0.2,
-          "end_value": 0.05,
-          "total_iters": 100000
+          "start_value": 0.3,
+          "end_value": 0.15,
+          "total_iters": 20000
         },
         "fraction_entropy_coeff": {
-          "start_value": 0.02,
-          "end_value": 0.001,
-          "total_iters": 100000
+          "start_value": 0.08,
+          "end_value": 0.02,
+          "total_iters": 20000
         },
         "fraction_loss_coeff": {
-          "start_value": 0.05,
-          "end_value": 0.1,
-          "total_iters": 100000
+          "start_value": 0.03,
+          "end_value": 0.06,
+          "total_iters": 20000
         },
         "rnd_reward_coeff": {
           "start_value": 0.005,
           "end_value": 0.0,
-          "total_iters": 100000
+          "total_iters": 20000
         }
       },
       "networks": {
@@ -552,13 +552,13 @@
               "dropout_rate": 0.1,
               "iqn_kappa": 1.0,
               "fraction_net_hidden": 128,
-              "fraction_loss_coeff": 0.05,
-              "fraction_entropy_coeff": 0.02,
+              "fraction_loss_coeff": 0.03,
+              "fraction_entropy_coeff": 0.08,
               "fqf_fraction_update_trunk": false,
               "fraction_entropy_warmup_iters": 5000,
               "fraction_entropy_cap": 0.5,
-              "softmax_temperature": 3.0,
-              "prior_blend_alpha": 0.2,
+              "softmax_temperature": 6.0,
+              "prior_blend_alpha": 0.3,
               "exploration_noise_scale": 0.02,
               "logit_clamp_epsilon": 1e-08,
               "monotonicity_epsilon": 1e-06

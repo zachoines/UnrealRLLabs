@@ -8,7 +8,7 @@ from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import LinearLR
 
 from Source.Agent import Agent
-from Source.Utility import RunningMeanStdNormalizer, LinearValueScheduler, PopArtNormalizer
+from Source.Utility import RunningMeanStdNormalizer, LinearValueScheduler, PopArtNormalizer, LinearLRDecay
 from Source.Networks import (
     MultiAgentEmbeddingNetwork,
     SharedCritic,
@@ -709,7 +709,8 @@ class MAPOCAAgent(Agent):
                 lr_conf = sched_cfg.get("lr_disagreement")
             if lr_conf is None:
                 lr_conf = def_lin_sched
-            self.schedulers[name] = LinearLR(opt, **lr_conf)
+            # Use true linear decay/growth across total_iters with start/end factors
+            self.schedulers[name] = LinearLRDecay(opt, **lr_conf)
 
         # Scalar schedulers
         self.schedulers["entropy_coeff"] = LinearValueScheduler(**sched_cfg.get(
