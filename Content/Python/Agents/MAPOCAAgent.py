@@ -34,6 +34,17 @@ def _get_avg_grad_mag(params_list: List[torch.nn.Parameter]) -> float:
             num_params_with_grad += 1
     return total_abs_grad / num_params_with_grad if num_params_with_grad > 0 else 0.0
 
+def _get_l2_grad_norm(params_list: List[torch.nn.Parameter]) -> float:
+    """Computes the L2 norm of gradients across a list of parameters."""
+    total_sq = 0.0
+    if not params_list:
+        return 0.0
+    for p in params_list:
+        if p.grad is not None:
+            g = p.grad
+            total_sq += float(torch.sum(g * g).item())
+    return float(total_sq ** 0.5) if total_sq > 0.0 else 0.0
+
 class MAPOCAAgent(Agent):
     """
     Multi-Agent POCA Agent with optional auxiliary modules like RND, IQN, and Disagreement.
@@ -439,9 +450,9 @@ class MAPOCAAgent(Agent):
                     # Capture trunk grad stats right after phase-1 update so that
                     # if we do not update trunk in phase-2, we can still report
                     # meaningful trunk gradients for this minibatch.
-                    trunk_grad_phase1 = _get_avg_grad_mag(
-                        list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])
-                    )
+                    trunk_params_list = list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])
+                    trunk_grad_phase1 = _get_avg_grad_mag(trunk_params_list)
+                    trunk_grad_l2_phase1 = _get_l2_grad_norm(trunk_params_list)
 
                     # Phase 2: fraction net only
                     # Prepare grads for fraction phase
@@ -486,6 +497,7 @@ class MAPOCAAgent(Agent):
                     ppo_total_loss.backward()
                     total_grad_norm = self._clip_and_step_ppo_optimizers(ppo_opts)
                     trunk_grad_phase1 = None
+                    trunk_grad_l2_phase1 = None
                 
                 # --- Disagreement Ensemble Update Step ---
                 if self.disagreement_cfg:
@@ -515,7 +527,8 @@ class MAPOCAAgent(Agent):
                     mb_mask_btna, rnd_loss, disagreement_loss, feats_s_mb, 
                     total_grad_norm, new_val_norm, new_base_norm, new_val_quantiles if self.enable_distributional else None,
                     # When trunk is not co-adapted in phase-2, reuse phase-1 trunk grads
-                    trunk_grad_override=(trunk_grad_phase1 if (self.use_fqf and not self.fqf_fraction_update_trunk) else None)
+                    trunk_grad_override=(trunk_grad_phase1 if (self.use_fqf and not self.fqf_fraction_update_trunk) else None),
+                    trunk_grad_l2_override=(trunk_grad_l2_phase1 if (self.use_fqf and not self.fqf_fraction_update_trunk) else None)
                 )
                 # Step schedulers per minibatch (LR + scalar schedulers)
                 self._step_schedulers()
@@ -541,10 +554,16 @@ class MAPOCAAgent(Agent):
             "fqf/min_tau_diff": [], "fqf/mean_tau_diff": [], "fqf/max_tau_diff": [],
             "fraction/entropy": [], "fraction/prob_max": [], "fraction/prob_min": [], "fraction/top1_mass": []
         }
+        # L2 gradient logs live under the 'grads/' namespace
+        logs_acc.update({
+            "grads/trunk_l2": [], "grads/policy_l2": [], "grads/value_attention_l2": [],
+            "grads/value_path_l2": [], "grads/value_quantile_net_l2": [], "grads/value_fraction_net_l2": [],
+            "grads/baseline_path_l2": []
+        })
         if self.rnd_cfg:
-            logs_acc.update({"loss/rnd": [], "reward/rnd_raw_mean": [], "reward/rnd_raw_std": [], "reward/rnd_norm_mean": [], "reward/rnd_norm_std": [], "grad_norm/rnd_predictor": []})
+            logs_acc.update({"loss/rnd": [], "reward/rnd_raw_mean": [], "reward/rnd_raw_std": [], "reward/rnd_norm_mean": [], "reward/rnd_norm_std": [], "grad_norm/rnd_predictor": [], "grads/rnd_predictor_l2": []})
         if self.disagreement_cfg:
-            logs_acc.update({"loss/disagreement": [], "reward/disagreement_raw_mean": [], "reward/disagreement_raw_std": [], "reward/disagreement_norm_mean": [], "reward/disagreement_norm_std": [], "grad_norm/disagreement_ensemble": []})
+            logs_acc.update({"loss/disagreement": [], "reward/disagreement_raw_mean": [], "reward/disagreement_raw_std": [], "reward/disagreement_norm_mean": [], "reward/disagreement_norm_std": [], "grad_norm/disagreement_ensemble": [], "grads/disagreement_ensemble_l2": []})
 
         # Add distributional RL logs
         logs_acc.update({
@@ -1327,7 +1346,7 @@ class MAPOCAAgent(Agent):
             new_alpha = self.schedulers["fqf_prior_blend_alpha"].step()
             self.shared_critic.value_iqn_net.prior_blend_alpha = float(new_alpha)
 
-    def _log_minibatch_stats(self, logs_acc, pol_loss, val_loss, base_loss, ent_mb, new_lp_mb, mask_mbna, rnd_loss, disagreement_loss, feats_s_mb, total_grad_norm, new_val_norm=None, new_base_norm=None, new_val_quantiles=None, trunk_grad_override: Optional[float] = None):
+    def _log_minibatch_stats(self, logs_acc, pol_loss, val_loss, base_loss, ent_mb, new_lp_mb, mask_mbna, rnd_loss, disagreement_loss, feats_s_mb, total_grad_norm, new_val_norm=None, new_base_norm=None, new_val_quantiles=None, trunk_grad_override: Optional[float] = None, trunk_grad_l2_override: Optional[float] = None):
         """Accumulates statistics from a single minibatch into the logs dictionary."""
         # Core PPO Losses
         logs_acc["loss/policy"].append(pol_loss.item())
@@ -1374,34 +1393,58 @@ class MAPOCAAgent(Agent):
                     logs_acc["policy/beta_std"].append(beta.std().item())
 
         # Component-wise Gradient Norms
+        trunk_params_for_log = list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])
         if trunk_grad_override is not None:
             logs_acc["grad_norm/trunk"].append(float(trunk_grad_override))
         else:
-            logs_acc["grad_norm/trunk"].append(_get_avg_grad_mag(list(self.embedding_net.parameters()) + (list(self.memory_module.parameters()) if self.enable_memory else [])))
-        logs_acc["grad_norm/policy"].append(_get_avg_grad_mag(list(self.policy_net.parameters())))
+            logs_acc["grad_norm/trunk"].append(_get_avg_grad_mag(trunk_params_for_log))
+        # L2 versions under 'grads/' prefix
+        if trunk_grad_l2_override is not None:
+            logs_acc.setdefault("grads/trunk_l2", []).append(float(trunk_grad_l2_override))
+        else:
+            logs_acc.setdefault("grads/trunk_l2", []).append(_get_l2_grad_norm(trunk_params_for_log))
+        # Policy
+        policy_params_for_log = list(self.policy_net.parameters())
+        logs_acc["grad_norm/policy"].append(_get_avg_grad_mag(policy_params_for_log))
+        logs_acc.setdefault("grads/policy_l2", []).append(_get_l2_grad_norm(policy_params_for_log))
         
         # Value path gradient norms (handle scalar vs distributional)
-        logs_acc["grad_norm/value_attention"].append(_get_avg_grad_mag(list(self.shared_critic.value_attention.parameters())))
+        value_attention_params = list(self.shared_critic.value_attention.parameters())
+        logs_acc["grad_norm/value_attention"].append(_get_avg_grad_mag(value_attention_params))
+        logs_acc.setdefault("grads/value_attention_l2", []).append(_get_l2_grad_norm(value_attention_params))
         if self.shared_critic.value_iqn_net is not None:
             value_path_params = (list(self.shared_critic.value_iqn_net.parameters()) +
                                list(self.shared_critic.value_attention.parameters()))
             logs_acc["grad_norm/value_path"].append(_get_avg_grad_mag(value_path_params))
+            logs_acc.setdefault("grads/value_path_l2", []).append(_get_l2_grad_norm(value_path_params))
             if hasattr(self.shared_critic.value_iqn_net, 'quantile_net'):
-                logs_acc["grad_norm/value_quantile_net"].append(_get_avg_grad_mag(self.shared_critic.value_iqn_net.quantile_net.parameters()))
+                quantile_params = list(self.shared_critic.value_iqn_net.quantile_net.parameters())
+                logs_acc["grad_norm/value_quantile_net"].append(_get_avg_grad_mag(quantile_params))
+                logs_acc.setdefault("grads/value_quantile_net_l2", []).append(_get_l2_grad_norm(quantile_params))
             if hasattr(self.shared_critic.value_iqn_net, 'fraction_net'):
-                logs_acc["grad_norm/value_fraction_net"].append(_get_avg_grad_mag(self.shared_critic.value_iqn_net.fraction_net.parameters()))
+                fraction_params = list(self.shared_critic.value_iqn_net.fraction_net.parameters())
+                logs_acc["grad_norm/value_fraction_net"].append(_get_avg_grad_mag(fraction_params))
+                logs_acc.setdefault("grads/value_fraction_net_l2", []).append(_get_l2_grad_norm(fraction_params))
         else:
             # Scalar path: value_head + attention
             value_scalar_params = list(self.shared_critic.value_head.parameters()) + \
                                   list(self.shared_critic.value_attention.parameters())
             logs_acc["grad_norm/value_path"].append(_get_avg_grad_mag(value_scalar_params))
+            logs_acc.setdefault("grads/value_path_l2", []).append(_get_l2_grad_norm(value_scalar_params))
         
         baseline_path_params = (list(self.shared_critic.baseline_head.parameters()) + 
                               list(self.shared_critic.baseline_attention.parameters()))
         logs_acc["grad_norm/baseline_path"].append(_get_avg_grad_mag(baseline_path_params))
+        logs_acc.setdefault("grads/baseline_path_l2", []).append(_get_l2_grad_norm(baseline_path_params))
 
-        if self.rnd_cfg: logs_acc["grad_norm/rnd_predictor"].append(_get_avg_grad_mag(self.rnd_predictor_network.parameters()))
-        if self.disagreement_cfg: logs_acc["grad_norm/disagreement_ensemble"].append(_get_avg_grad_mag(self.dynamics_ensemble.parameters()))
+        if self.rnd_cfg:
+            rnd_params = list(self.rnd_predictor_network.parameters())
+            logs_acc["grad_norm/rnd_predictor"].append(_get_avg_grad_mag(rnd_params))
+            logs_acc.setdefault("grads/rnd_predictor_l2", []).append(_get_l2_grad_norm(rnd_params))
+        if self.disagreement_cfg:
+            dis_params = list(self.dynamics_ensemble.parameters())
+            logs_acc["grad_norm/disagreement_ensemble"].append(_get_avg_grad_mag(dis_params))
+            logs_acc.setdefault("grads/disagreement_ensemble_l2", []).append(_get_l2_grad_norm(dis_params))
 
         # FQF tau spacing stats
         if self.enable_distributional and self.use_fqf and getattr(self.shared_critic, 'last_learned_taus', None) is not None:

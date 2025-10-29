@@ -7,7 +7,7 @@ def main():
     parser = argparse.ArgumentParser(description='Train MA-POCA Agent')
     parser.add_argument('--config', type=str, default='Configs/TerraShift.json',
                         help='Path to JSON config file.')
-    parser.add_argument('--resume_from_checkpoint', type=str, default="checkpoints\\model_update_27.pth"),
+    parser.add_argument('--resume_from_checkpoint', type=str, default="checkpoints\\test.pth"),
     args = parser.parse_args()
     # Load config from JSON
     with open(args.config, 'r', encoding='utf-8-sig') as f:

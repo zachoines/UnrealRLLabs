@@ -380,7 +380,7 @@ float ATerraShiftEnvironment::Reward()
     float totalAlignmentReward = 0;
 
     // Start with the global, constant penalty applied at each time step.
-    float AccumulatedReward = TimeStepPenalty;
+    float AccumulatedReward = -TimeStepPenalty;
 
     // Iterate through each grid object to calculate its contribution to the reward.
     for (int32 ObjIndex = 0; ObjIndex < CurrentGridObjects; ++ObjIndex)
