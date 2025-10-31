@@ -418,7 +418,7 @@ float ATerraShiftEnvironment::Reward()
             }
             else if (StateManager->GetHasFallenOff(ObjIndex))
             {
-                AccumulatedReward += EventReward_OutOfBounds;
+                AccumulatedReward -= EventReward_OutOfBounds;
             }
             // Reset the flag to ensure this event reward is only given once.
             StateManager->SetShouldCollectReward(ObjIndex, false);

@@ -1400,12 +1400,20 @@ void UStateManager::ComputeColumnsInRadius(TSet<int32>& OutColumns) const
     for (int32 i = 0; i < ObjectSlotStates.Num(); ++i)
     {
         const EObjectSlotState SlotState = ObjectSlotStates[i];
-        if (!(SlotState == EObjectSlotState::Active || SlotState == EObjectSlotState::GoalReached)) continue;
+        const bool bConsider =
+            (SlotState == EObjectSlotState::Active) ||
+            (SlotState == EObjectSlotState::GoalReached && !bRemoveObjectsOnGoal);
+        if (!bConsider) continue;
+
         AGridObject* Obj = ObjectMgr->GetGridObject(i);
-        if (!Obj) continue;
+        if (!Obj || !Obj->IsActive()) continue;
+
         const FVector wPos = Obj->GetObjectLocation();
         const int32 cell = OccupancyGrid->WorldToGrid(wPos);
-        AddNeighbors(cell);
+        if (cell >= 0)
+        {
+            AddNeighbors(cell);
+        }
     }
 }
 
