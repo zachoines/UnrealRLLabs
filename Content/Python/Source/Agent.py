@@ -1,3 +1,4 @@
+import copy
 import torch
 import torch.nn as nn
 from typing import Dict, Tuple
@@ -8,6 +9,7 @@ class Agent(nn.Module):
         self.config = config
         self.device = device
         self.optimizers = {}
+        self._initial_scheduler_states = {}
 
     def save(self, location: str, include_optimizers: bool = False) -> None:
         """Save model parameters and optionally optimizer + scheduler states.
@@ -46,7 +48,13 @@ class Agent(nn.Module):
         else:
             torch.save(self.state_dict(), location)
 
-    def load(self, location: str, load_optimizers: bool = False) -> None:
+    def load(
+        self,
+        location: str,
+        load_optimizers: bool = False,
+        load_schedulers: bool = True,
+        reset_schedulers: bool = False,
+    ) -> None:
         """Load model parameters and optionally optimizer + scheduler states.
 
         If no scheduler states are present, heuristically initialize scheduler steps
@@ -54,8 +62,11 @@ class Agent(nn.Module):
         """
         state = torch.load(location, map_location=self.device)
         inferred_steps = None
-        checkpoint_had_schedulers = False
         checkpoint_update_meta = None
+        scheduler_msgs = []
+        load_schedulers = bool(load_schedulers)
+        reset_requested = reset_schedulers or (not load_schedulers)
+
         if isinstance(state, dict) and "model" in state:
             self.load_state_dict(state["model"])
             if load_optimizers and "optimizers" in state:
@@ -63,11 +74,9 @@ class Agent(nn.Module):
                     if name in self.optimizers:
                         self.optimizers[name].load_state_dict(opt_state)
 
-            # Restore schedulers when available
             if hasattr(self, "schedulers") and isinstance(self.schedulers, dict):
-                sched_state = state.get("schedulers", None)
-                if isinstance(sched_state, dict):
-                    checkpoint_had_schedulers = True
+                sched_state = state.get("schedulers", None) if load_schedulers else None
+                if load_schedulers and isinstance(sched_state, dict):
                     for name, sstate in sched_state.items():
                         if name in self.schedulers:
                             sched = self.schedulers[name]
@@ -76,48 +85,46 @@ class Agent(nn.Module):
                                     sched.load_state_dict(sstate)
                                 except Exception:
                                     pass
-                else:
-                    # Heuristic: derive step from filename if possible
+                    scheduler_msgs.append("loaded state from checkpoint")
+                elif load_schedulers:
                     import re
                     m = re.search(r"update_(\d+)", str(location))
                     if m:
                         inferred_steps = int(m.group(1))
-                        # Clamp to each scheduler's horizon where applicable
-                        from torch.optim.lr_scheduler import _LRScheduler as _LS
                         for sched in self.schedulers.values():
                             try:
-                                # Pytorch LR schedulers
                                 if hasattr(sched, "last_epoch"):
                                     sched.last_epoch = inferred_steps
-                                # Our LinearValueScheduler
                                 if hasattr(sched, "counter") and hasattr(sched, "total_iters"):
                                     sched.counter = min(inferred_steps, getattr(sched, "total_iters", inferred_steps))
                             except Exception:
                                 continue
-                    checkpoint_had_schedulers = False
+                        scheduler_msgs.append(f"inferred steps from filename => {inferred_steps}")
+                    else:
+                        scheduler_msgs.append("no scheduler state found; reset to init")
+                else:
+                    scheduler_msgs.append("skipped per configuration")
                 checkpoint_update_meta = (state.get("meta", {}) or {}).get("update_num")
         else:
             self.load_state_dict(state)
 
-        # QoL: print a concise summary of what was restored/inferred
+        if reset_requested and hasattr(self, "schedulers") and isinstance(self.schedulers, dict):
+            self._reset_schedulers()
+            scheduler_msgs.append("reset to defaults")
+
         try:
             print("[Agent.load] Restored checkpoint:")
             print(f"  file: {location}")
             if checkpoint_update_meta is not None:
                 print(f"  meta.update_num (saved): {checkpoint_update_meta}")
-            if hasattr(self, "schedulers") and isinstance(self.schedulers, dict):
-                if checkpoint_had_schedulers:
-                    print("  schedulers: loaded state from checkpoint")
+            if hasattr(self, "schedulers") and isinstance(self.schedulers, dict) and self.schedulers:
+                if scheduler_msgs:
+                    print(f"  schedulers: {'; '.join(scheduler_msgs)}")
                 else:
-                    if inferred_steps is not None:
-                        print(f"  schedulers: inferred steps from filename => {inferred_steps}")
-                    else:
-                        print("  schedulers: no state found; no inferred steps (reset to init)")
-                # Print per-scheduler status
+                    print("  schedulers: no scheduler updates applied")
                 for name, sched in self.schedulers.items():
                     try:
                         if hasattr(sched, "counter") and hasattr(sched, "total_iters"):
-                            # LinearValueScheduler-like
                             cv = sched.current_value() if hasattr(sched, "current_value") else None
                             print(f"    - {name}: counter={sched.counter}/{sched.total_iters} value={cv}")
                         elif hasattr(sched, "last_epoch"):
@@ -130,7 +137,6 @@ class Agent(nn.Module):
                             print(f"    - {name}: last_epoch={sched.last_epoch} last_lr={lr_str}")
                     except Exception:
                         continue
-            # Print per-optimizer LR snapshot
             if hasattr(self, "optimizers") and isinstance(self.optimizers, dict) and self.optimizers:
                 print("  optimizers: current LRs")
                 for oname, opt in self.optimizers.items():
@@ -142,6 +148,32 @@ class Agent(nn.Module):
                         continue
         except Exception:
             pass
+
+    def _reset_schedulers(self) -> None:
+        if not hasattr(self, "schedulers") or not isinstance(self.schedulers, dict):
+            return
+        initial_states = getattr(self, "_initial_scheduler_states", None)
+        for name, sched in self.schedulers.items():
+            if sched is None:
+                continue
+            state_loaded = False
+            if initial_states and name in initial_states:
+                snapshot = initial_states[name]
+                if snapshot is not None and hasattr(sched, "load_state_dict"):
+                    try:
+                        sched.load_state_dict(copy.deepcopy(snapshot))
+                        state_loaded = True
+                    except Exception:
+                        state_loaded = False
+            if not state_loaded:
+                if hasattr(sched, "last_epoch"):
+                    sched.last_epoch = -1
+                if hasattr(sched, "_step_count"):
+                    sched._step_count = 0  # type: ignore[attr-defined]
+                if hasattr(sched, "counter"):
+                    sched.counter = 0  # type: ignore[attr-defined]
+                if hasattr(sched, "t"):
+                    sched.t = 0  # type: ignore[attr-defined]
 
     def get_actions(self, states: torch.Tensor, dones=None, truncs=None, eval: bool = False, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError

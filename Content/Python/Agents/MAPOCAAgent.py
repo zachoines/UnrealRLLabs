@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Dict, Tuple, Optional, List, Any
+import copy
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -411,6 +412,8 @@ class MAPOCAAgent(Agent):
                         with torch.no_grad():
                             val_feats_agg_ng = getattr(self.shared_critic, 'last_value_feats_agg', None)
                             if val_feats_agg_ng is not None:
+                                if val_feats_agg_ng.device != self.device:
+                                    val_feats_agg_ng = val_feats_agg_ng.to(self.device, non_blocking=True)
                                 T = getattr(self.shared_critic.value_iqn_net, 'softmax_temperature', 1.0)
                                 logits_ng = self.shared_critic.value_iqn_net.fraction_net(val_feats_agg_ng)
                                 probs_ng = torch.softmax(logits_ng / max(T, 1e-8), dim=1)
@@ -699,49 +702,55 @@ class MAPOCAAgent(Agent):
         sched_cfg = a_cfg.get("schedulers", {})
         def_lin_sched = {"start_factor": 1.0, "end_factor": 1.0, "total_iters": 1}
 
-        # Build LR schedulers with alias support for disagreement optimizer
         self.schedulers = {}
+        self._initial_scheduler_states = {}
+
         for name, opt in self.optimizers.items():
             key_primary = f"lr_{name}"
             lr_conf = sched_cfg.get(key_primary)
-            # Alias: allow legacy/config key 'lr_disagreement' for 'disagreement_ensemble'
             if lr_conf is None and name == "disagreement_ensemble":
                 lr_conf = sched_cfg.get("lr_disagreement")
             if lr_conf is None:
                 lr_conf = def_lin_sched
-            # Use true linear decay/growth across total_iters with start/end factors
             self.schedulers[name] = LinearLRDecay(opt, **lr_conf)
+            self._record_initial_scheduler_state(name)
 
-        # Scalar schedulers
         self.schedulers["entropy_coeff"] = LinearValueScheduler(**sched_cfg.get(
             "entropy_coeff",
             {"start_value": self.entropy_coeff, "end_value": self.entropy_coeff, "total_iters": 1}
         ))
+        self._record_initial_scheduler_state("entropy_coeff")
+
         self.schedulers["policy_clip"] = LinearValueScheduler(**sched_cfg.get(
             "policy_clip",
             {"start_value": self.ppo_clip_range, "end_value": self.ppo_clip_range, "total_iters": 1}
         ))
+        self._record_initial_scheduler_state("policy_clip")
+
         self.schedulers["value_clip"] = LinearValueScheduler(**sched_cfg.get(
             "value_clip",
             {"start_value": self.value_clip_range, "end_value": self.value_clip_range, "total_iters": 1}
         ))
+        self._record_initial_scheduler_state("value_clip")
+
         self.schedulers["max_grad_norm"] = LinearValueScheduler(**sched_cfg.get(
             "max_grad_norm",
             {"start_value": self.max_grad_norm, "end_value": self.max_grad_norm, "total_iters": 1}
         ))
+        self._record_initial_scheduler_state("max_grad_norm")
 
-        # FQF-related schedulers
         self.schedulers["fraction_entropy_coeff"] = LinearValueScheduler(**sched_cfg.get(
             "fraction_entropy_coeff",
             {"start_value": getattr(self, 'fraction_entropy_coeff', 0.0), "end_value": getattr(self, 'fraction_entropy_coeff', 0.0), "total_iters": 1}
         ))
-        # New: fraction_loss_coeff can be scheduled (used when FQF is enabled)
+        self._record_initial_scheduler_state("fraction_entropy_coeff")
+
         self.schedulers["fraction_loss_coeff"] = LinearValueScheduler(**sched_cfg.get(
             "fraction_loss_coeff",
             {"start_value": getattr(self, 'fraction_loss_coeff', 0.0), "end_value": getattr(self, 'fraction_loss_coeff', 0.0), "total_iters": 1}
         ))
+        self._record_initial_scheduler_state("fraction_loss_coeff")
 
-        # Temperature scheduler controls the FQF network's softmax temperature
         init_temp = 1.0
         if self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'softmax_temperature'):
             init_temp = float(self.shared_critic.value_iqn_net.softmax_temperature)
@@ -749,7 +758,8 @@ class MAPOCAAgent(Agent):
             "fqf_temperature",
             {"start_value": init_temp, "end_value": init_temp, "total_iters": 1}
         ))
-        # Prior blend alpha scheduler
+        self._record_initial_scheduler_state("fqf_temperature")
+
         init_alpha = 0.0
         if self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'prior_blend_alpha'):
             init_alpha = float(self.shared_critic.value_iqn_net.prior_blend_alpha)
@@ -757,7 +767,45 @@ class MAPOCAAgent(Agent):
             "fqf_prior_blend_alpha",
             {"start_value": init_alpha, "end_value": init_alpha, "total_iters": 1}
         ))
-    
+        self._record_initial_scheduler_state("fqf_prior_blend_alpha")
+        self._sync_schedulable_scalars()
+
+    def _record_initial_scheduler_state(self, name: str) -> None:
+        if not hasattr(self, "_initial_scheduler_states"):
+            self._initial_scheduler_states = {}
+        sched = self.schedulers.get(name)
+        snapshot = None
+        if sched is not None and hasattr(sched, "state_dict"):
+            try:
+                snapshot = copy.deepcopy(sched.state_dict())
+            except Exception:
+                snapshot = None
+        self._initial_scheduler_states[name] = snapshot
+
+    def _sync_schedulable_scalars(self) -> None:
+        try:
+            if hasattr(self, "schedulers") and isinstance(self.schedulers, dict):
+                if "entropy_coeff" in self.schedulers and hasattr(self.schedulers["entropy_coeff"], "current_value"):
+                    self.entropy_coeff = float(self.schedulers["entropy_coeff"].current_value())
+                if "policy_clip" in self.schedulers and hasattr(self.schedulers["policy_clip"], "current_value"):
+                    self.ppo_clip_range = float(self.schedulers["policy_clip"].current_value())
+                if "value_clip" in self.schedulers and hasattr(self.schedulers["value_clip"], "current_value"):
+                    self.value_clip_range = float(self.schedulers["value_clip"].current_value())
+                if "max_grad_norm" in self.schedulers and hasattr(self.schedulers["max_grad_norm"], "current_value"):
+                    self.max_grad_norm = float(self.schedulers["max_grad_norm"].current_value())
+                if "fraction_entropy_coeff" in self.schedulers and hasattr(self.schedulers["fraction_entropy_coeff"], "current_value"):
+                    self.fraction_entropy_coeff = float(self.schedulers["fraction_entropy_coeff"].current_value())
+                if "fraction_loss_coeff" in self.schedulers and hasattr(self.schedulers["fraction_loss_coeff"], "current_value"):
+                    self.fraction_loss_coeff = float(self.schedulers["fraction_loss_coeff"].current_value())
+                if self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'softmax_temperature') and \
+                   "fqf_temperature" in self.schedulers and hasattr(self.schedulers["fqf_temperature"], "current_value"):
+                    self.shared_critic.value_iqn_net.softmax_temperature = float(self.schedulers["fqf_temperature"].current_value())
+                if self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'prior_blend_alpha') and \
+                   "fqf_prior_blend_alpha" in self.schedulers and hasattr(self.schedulers["fqf_prior_blend_alpha"], "current_value"):
+                    self.shared_critic.value_iqn_net.prior_blend_alpha = float(self.schedulers["fqf_prior_blend_alpha"].current_value())
+        except Exception:
+            pass
+
     def _calculate_advantages(self, returns_seq: torch.Tensor, baseline_seq: torch.Tensor, mask: torch.Tensor, logs_acc: Dict[str, List[float]]) -> torch.Tensor:
         """
         Calculates the advantages, logs stats for the unnormalized advantages,
@@ -1036,6 +1084,9 @@ class MAPOCAAgent(Agent):
         """
         B_T, num_quantiles = current_quantiles.shape  # N quantiles
 
+        if learned_taus is not None and learned_taus.device != current_quantiles.device:
+            learned_taus = learned_taus.to(current_quantiles.device, non_blocking=True)
+
         # Expand targets to match quantiles
         if target_values.dim() == 1:
             target_values = target_values.unsqueeze(-1)
@@ -1075,6 +1126,8 @@ class MAPOCAAgent(Agent):
         val_feats_agg = getattr(self.shared_critic, 'last_value_feats_agg', None)
         if val_feats_agg is None:
             return quantile_loss, torch.tensor(0.0, device=self.device)  # fallback
+        if val_feats_agg.device != current_quantiles.device:
+            val_feats_agg = val_feats_agg.to(current_quantiles.device, non_blocking=True)
         sa_quantiles = self.shared_critic.value_iqn_net.quantile_net(
             val_feats_agg, learned_taus_2d.unsqueeze(-1))  # Keep gradients for tau optimization!
         sa_quantile_hats = current_quantiles.detach()  # Only detach the midpoint quantiles
@@ -1347,6 +1400,13 @@ class MAPOCAAgent(Agent):
             new_alpha = self.schedulers["fqf_prior_blend_alpha"].step()
             self.shared_critic.value_iqn_net.prior_blend_alpha = float(new_alpha)
 
+    def _clear_fqf_cache(self) -> None:
+        """Release cached tensors used for FQF auxiliary losses/logging."""
+        if hasattr(self.shared_critic, "last_value_feats_agg"):
+            self.shared_critic.last_value_feats_agg = None
+        if hasattr(self.shared_critic, "last_learned_taus"):
+            self.shared_critic.last_learned_taus = None
+
     def _log_minibatch_stats(self, logs_acc, pol_loss, val_loss, base_loss, ent_mb, new_lp_mb, mask_mbna, rnd_loss, disagreement_loss, feats_s_mb, total_grad_norm, new_val_norm=None, new_base_norm=None, new_val_quantiles=None, trunk_grad_override: Optional[float] = None, trunk_grad_l2_override: Optional[float] = None):
         """Accumulates statistics from a single minibatch into the logs dictionary."""
         # Core PPO Losses
@@ -1460,6 +1520,8 @@ class MAPOCAAgent(Agent):
                 logs_acc["fqf/mean_tau_diff"].append(tau_diffs.mean().item())
                 logs_acc["fqf/max_tau_diff"].append(tau_diffs.max().item())
 
+        self._clear_fqf_cache()
+
     def _finalize_logs(self, logs_acc: Dict) -> Dict[str, float]:
         """
         Calculates the mean of all accumulated log values for the entire update step.
@@ -1528,29 +1590,18 @@ class MAPOCAAgent(Agent):
         """Save model parameters and optionally optimizer states."""
         super().save(location, include_optimizers=include_optimizers)
 
-    def load(self, location: str, load_optimizers: bool = False) -> None:
-        """Load model parameters and optionally optimizer states."""
-        super().load(location, load_optimizers=load_optimizers)
-        # Align schedulable scalars with scheduler current values after load
-        try:
-            if hasattr(self, "schedulers") and isinstance(self.schedulers, dict):
-                if "entropy_coeff" in self.schedulers and hasattr(self.schedulers["entropy_coeff"], "current_value"):
-                    self.entropy_coeff = float(self.schedulers["entropy_coeff"].current_value())
-                if "policy_clip" in self.schedulers and hasattr(self.schedulers["policy_clip"], "current_value"):
-                    self.ppo_clip_range = float(self.schedulers["policy_clip"].current_value())
-                if "value_clip" in self.schedulers and hasattr(self.schedulers["value_clip"], "current_value"):
-                    self.value_clip_range = float(self.schedulers["value_clip"].current_value())
-                if "max_grad_norm" in self.schedulers and hasattr(self.schedulers["max_grad_norm"], "current_value"):
-                    self.max_grad_norm = float(self.schedulers["max_grad_norm"].current_value())
-                if "fraction_entropy_coeff" in self.schedulers and hasattr(self.schedulers["fraction_entropy_coeff"], "current_value"):
-                    self.fraction_entropy_coeff = float(self.schedulers["fraction_entropy_coeff"].current_value())
-                if "fraction_loss_coeff" in self.schedulers and hasattr(self.schedulers["fraction_loss_coeff"], "current_value"):
-                    self.fraction_loss_coeff = float(self.schedulers["fraction_loss_coeff"].current_value())
-                if "fqf_temperature" in self.schedulers and hasattr(self.schedulers["fqf_temperature"], "current_value") and \
-                   self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'softmax_temperature'):
-                    self.shared_critic.value_iqn_net.softmax_temperature = float(self.schedulers["fqf_temperature"].current_value())
-                if "fqf_prior_blend_alpha" in self.schedulers and hasattr(self.schedulers["fqf_prior_blend_alpha"], "current_value") and \
-                   self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'prior_blend_alpha'):
-                    self.shared_critic.value_iqn_net.prior_blend_alpha = float(self.schedulers["fqf_prior_blend_alpha"].current_value())
-        except Exception:
-            pass
+    def load(
+        self,
+        location: str,
+        load_optimizers: bool = False,
+        load_schedulers: bool = True,
+        reset_schedulers: bool = False,
+    ) -> None:
+        """Load model parameters and optionally optimizer/scheduler states."""
+        super().load(
+            location,
+            load_optimizers=load_optimizers,
+            load_schedulers=load_schedulers,
+            reset_schedulers=reset_schedulers,
+        )
+        self._sync_schedulable_scalars()

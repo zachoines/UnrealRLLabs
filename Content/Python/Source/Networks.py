@@ -657,6 +657,7 @@ class SharedCritic(nn.Module):
         self.value_head = None
         self.num_quantiles = 0
         self.last_learned_taus = None # For FQF loss calculation
+        self.last_value_feats_agg = None
 
         if "fqf_network" in distrib_config:
             self.use_fqf = True
@@ -728,8 +729,13 @@ class SharedCritic(nn.Module):
         val_input_flat = value_feats_seq.reshape(B * T, NA, F_val)
         val_attn_out, _ = self.value_attention(val_input_flat)
         val_feats_agg = val_attn_out.mean(dim=1)  # Aggregate over agents -> (B*T, H)
-        # Expose aggregated features for fraction-loss computation (FQF) - store detached to avoid holding graphs
-        self.last_value_feats_agg = val_feats_agg.detach()
+        if self.use_fqf:
+            cached_feats = val_feats_agg.detach()
+            if cached_feats.is_cuda:
+                cached_feats = cached_feats.cpu()
+            self.last_value_feats_agg = cached_feats
+        else:
+            self.last_value_feats_agg = None
 
         value_quantiles = None
         if self.value_iqn_net is not None: # Distributional Path
@@ -740,7 +746,13 @@ class SharedCritic(nn.Module):
                 else:
                     value_quantiles, learned_taus = self.value_iqn_net(val_feats_agg, deterministic_taus=False)
                 # Store taus detached to avoid holding computation graphs across minibatches
-                self.last_learned_taus = learned_taus.detach() if learned_taus is not None else None
+                if learned_taus is not None:
+                    cached_taus = learned_taus.detach()
+                    if cached_taus.is_cuda:
+                        cached_taus = cached_taus.cpu()
+                    self.last_learned_taus = cached_taus
+                else:
+                    self.last_learned_taus = None
                 # Compute expectation using interval widths between boundaries [0, learned_taus..., 1]
                 BT = val_feats_agg.shape[0]
                 taus_sorted = learned_taus.squeeze(-1) if learned_taus.dim() == 3 else learned_taus  # (B*T, N-1)
