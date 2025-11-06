@@ -1,7 +1,3 @@
-// NOTICE: This file includes modifications generated with the assistance of generative AI.
-// Original code structure and logic by the project author.
-// This version incorporates the "Fixed-Slot Reward Structure" parameters.
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -41,7 +37,7 @@ public:
     ATerraShiftEnvironment();
     virtual ~ATerraShiftEnvironment() override;
 
-    // --- Overrides from ABaseEnvironment ---
+    // Overrides from ABaseEnvironment.
     virtual void InitEnv(FBaseInitParams* Params) override;
     virtual FState ResetEnv(int NumAgents) override;
     virtual void Act(FAction Action) override;
@@ -53,7 +49,7 @@ public:
     virtual float Reward() override;
     virtual void Tick(float DeltaTime) override;
 
-    // --- Components and Core Actors ---
+    // Components and core actors.
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "TerraShift|Components")
     USceneComponent* TerraShiftRoot;
 
@@ -83,7 +79,7 @@ private:
     int CurrentGridObjects;
     FString EnvironmentFolderPath;
 
-    // --- Configuration-Derived Settings ---
+    // Configuration-derived settings.
     float PlatformSize;
     float MaxColumnHeight;
     FVector ObjectSize;
@@ -92,14 +88,14 @@ private:
     int MaxSteps;
     int MaxAgents;
 
-    // --- Derived Geometry ---
+    // Derived geometry.
     float CellSize;
     FVector PlatformWorldSize;
     FVector PlatformCenter;
 
-    // --- Reward Configuration (Loaded in InitEnv) ---
+    // Reward configuration (loaded in InitEnv).
 
-    // Dense Shaping Rewards
+    // Dense shaping rewards.
     UPROPERTY() bool bUsePotentialShaping;
     UPROPERTY() float PotentialShaping_Scale;
     UPROPERTY() float PotentialShaping_Gamma;
@@ -116,7 +112,7 @@ private:
     UPROPERTY() float ZAccel_Min;
     UPROPERTY() float ZAccel_Max;
 
-    // Event-based rewards
+    // Event-based rewards.
     UPROPERTY()
     float EventReward_GoalReached;
 
@@ -126,24 +122,24 @@ private:
     UPROPERTY()
     float TimeStepPenalty;
 
-    // Termination toggles
+    // Termination toggles.
     UPROPERTY()
     bool bTerminateOnAllGoalsReached;
 
     UPROPERTY()
     bool bTerminateOnMaxSteps;
 
-    // --- Runtime State for Potential Shaping ---
+    // Runtime state for potential shaping.
     UPROPERTY()
     TArray<float> PreviousPotential;
 
 private:
-    // --- Helper Functions ---
+    // Helpers.
     AMainPlatform* SpawnPlatform(FVector Location);
     float ThresholdAndClamp(float value, float minThreshold, float maxClamp);
     float CalculatePotential(int32 ObjIndex) const;
 
-    // --- Deprecated Overrides (kept for API compatibility) ---
+    // Deprecated overrides retained for API compatibility.
     virtual void PostTransition() override {};
     virtual void PreStep() override {};
 };

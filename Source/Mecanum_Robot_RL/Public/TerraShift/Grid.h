@@ -15,78 +15,71 @@ class UNREALRLLABS_API AGrid : public AActor {
 public:
     AGrid();
 
-    // Initialize the grid with specified parameters
+    /** Initializes the grid with the specified size, platform radius, and world location. */
     void InitializeGrid(int32 InGridSize, float InPlatformSize, FVector Location);
 
-    // Update the heights of the columns based on a 2D matrix of heights
+    /** Updates column heights from a height map. */
     void UpdateColumnHeights(const FMatrix2D& HeightMap);
 
-    // Enable or disable physics for specified columns based on proximity data
+    /** Enables or disables physics on each column index according to EnablePhysics. */
     void TogglePhysicsForColumns(const TArray<int32>& ColumnIndices, const TArray<bool>& EnablePhysics);
 
-    // Reset the grid to its initial state
+    /** Resets the grid to its initial state. */
     void ResetGrid();
 
-    // Get the world location of the column at a specific index
+    /** Returns the world location of a column by flattened index. */
     FVector GetColumnWorldLocation(int32 ColumnIndex) const;
 
-    // Get the center positions of all columns
+    /** Returns world-space centers for all columns. */
     TArray<FVector> GetColumnCenters() const;
 
-    // Gets column local space offsets
+    /** Returns local-space offsets for a column coordinate. */
     FVector GetColumnOffsets(int32 X, int32 Y) const;
 
-    // Helper function to calculate the world position of a column based on grid indices
+    /** Computes the world position for a column at (X, Y) and height. */
     FVector CalculateColumnLocation(int32 X, int32 Y, float Height) const;
 
-    // Function to set the local space min/max Z movement of columns 
+    /** Sets the local-space movement bounds for all columns. */
     void SetColumnMovementBounds(float Min, float Max);
 
-    // Calculate corrective offsets for edge columns
+    /** Computes corrective offsets applied to edge columns. */
     FVector2D CalculateEdgeCorrectiveOffsets(int32 X, int32 Y) const;
 
-    // Get the total number of columns
+    /** Returns the total number of columns. */
     int32 GetTotalColumns() const;
 
-    // Get the height of a specific column
+    /** Returns the current height of a column by index. */
     float GetColumnHeight(int32 ColumnIndex) const;
 
-    // Set the color of a specific column
+    /** Sets the color of a column. */
     void SetColumnColor(int32 ColumnIndex, const FLinearColor& Color);
 
-    // Get the minimum column height
+    /** Returns the minimum allowed column height. */
     float GetMinHeight() const;
 
-    // Get the maximum column height
+    /** Returns the maximum allowed column height. */
     float GetMaxHeight() const;
 
-    // Array of column actors
     UPROPERTY()
     TArray<AColumn*> Columns;
 
 private:
-
-    // Min local space movement of columns
     float MinHeight;
 
-    // Max local space movement of columns
     float MaxHeight;
 
-    // Number of cells along one side of the grid
     int32 GridSize;
 
-    // Size of each grid cell
     float CellSize;
 
-    // Platform size
     float PlatformSize;
 
-    // Helper function to convert a 1D index to a 2D grid point
+    /** Converts a flattened index into an (X, Y) grid coordinate. */
     FIntPoint Get2DIndexFrom1D(int32 Index) const;
 
-    // Helper function to set the physics state of a column
+    /** Sets the physics state of a column. */
     void SetColumnPhysics(int32 ColumnIndex, bool bEnablePhysics);
 
-    // Map a value from one range to another
+    /** Maps a value from one range to another. */
     float Map(float x, float in_min, float in_max, float out_min, float out_max);
 };

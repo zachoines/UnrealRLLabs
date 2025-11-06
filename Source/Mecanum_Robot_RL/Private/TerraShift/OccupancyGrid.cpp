@@ -30,10 +30,10 @@ int32 UOccupancyGrid::AddObjectToGrid(
 )
 {
     // 1) find a free cell index => for example:
-    //    int32 chosenCell = FindFreeCellForRadius(Radius, OverlapLayers);
-    //    if (chosenCell == -1) => fail
+    //  int32 chosenCell = FindFreeCellForRadius(Radius, OverlapLayers);
+    //  if (chosenCell == -1) => fail
     // 2) Then compute the OccupiedCells
-    //    TSet<int32> occ = ComputeOccupiedCells(chosenCell, RadiusCells)
+    //  TSet<int32> occ = ComputeOccupiedCells(chosenCell, RadiusCells)
     // 3) Store in the layer => create layer if needed
 
     if (!Layers.Contains(LayerName))
@@ -78,11 +78,11 @@ void UOccupancyGrid::UpdateObject(int32 ObjectId, FName LayerName, float NewRadi
     FOccupancyLayer& layer = Layers[LayerName];
     if (!layer.Objects.Contains(ObjectId)) return;
 
-    // 1) Remove old occupied cells from our data structure
+    // Step 1: remove old occupied cells from the data structure.
     FOccupancyNode& node = layer.Objects[ObjectId];
     node.OccupiedCells.Empty();
 
-    // 2) find a new cell (maybe we do a location param or some logic)
+    // Step 2: find a new free cell for the updated radius.
     int32 chosenCell = FindFreeCellForRadius(NewRadius, OverlapLayers);
     if (chosenCell < 0)
     {
@@ -99,13 +99,13 @@ FMatrix2D UOccupancyGrid::GetOccupancyMatrix(const TArray<FName>& LayersToUse, b
 {
     FMatrix2D mat(GridSize, GridSize, -1.f); // -1 => free
 
-    // For each layer in LayersToUse => fill
+    // Populate the matrix for each selected layer.
     for (FName layerName : LayersToUse)
     {
         if (!Layers.Contains(layerName)) continue;
         const FOccupancyLayer& layer = Layers[layerName];
 
-        // for each object => for each cell => fill
+        // Mark every occupied cell for each object.
         for (auto& kv : layer.Objects)
         {
             const FOccupancyNode& node = kv.Value;
@@ -339,7 +339,7 @@ void UOccupancyGrid::UpdateObjectPosition(
     TSet<int32> newOcc = ComputeOccupiedCells(DesiredCellIndex, RadiusCells);
 
     // 5) If you want to forbid overlaps with other layers, do a quick check 
-    //    but typically you'd allow it or do that outside this function
+    //  but typically you'd allow it or do that outside this function
 
     node.OccupiedCells = newOcc;
 }

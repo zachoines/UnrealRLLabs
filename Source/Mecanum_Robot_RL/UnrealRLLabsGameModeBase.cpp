@@ -70,7 +70,7 @@ void AUnrealRLLabsGameModeBase::BeginPlay()
     }
 
     // 2) Retrieve the number of environments from the config
-    //    e.g. "train/num_environments" => int
+    //  e.g. "train/num_environments" => int
     int32 NumEnvironments = EnvConfig
         ->Get(TEXT("train/num_environments"))
         ->AsInt();

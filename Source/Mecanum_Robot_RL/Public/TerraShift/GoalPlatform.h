@@ -12,32 +12,30 @@ class UNREALRLLABS_API AGoalPlatform : public AActor
     GENERATED_BODY()
 
 public:
-    // Sets default values for this actor's properties
+    /** Sets default values for this actor's properties. */
     AGoalPlatform();
 
-    // The Static Mesh Component for the Goal Platform
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
     UStaticMeshComponent* MeshComponent;
 
-    // Initializes the Goal Platform with specified parameters
+    /** Initializes the goal platform mesh, scale, color, and parent. */
     void InitializeGoalPlatform(FVector Location, FVector Scale, FLinearColor Color, AActor* ParentPlatform);
 
-    // Returns the relative location of the Goal Platform
-    FVector GetRelativeLocation() const;
+    /** Returns the relative location of the goal platform. */
+   FVector GetRelativeLocation() const;
 
-    // Sets the Goal Platform's active state
+    /** Enables or disables the goal platform. */
     void SetGoalPlatformActive(bool bIsActive);
 
-    // Checks if the Goal Platform is active
+    /** Returns true when the goal platform is active. */
     bool IsGoalPlatformActive() const;
 
-    // Returns material color
+    /** Returns the current material color. */
     FLinearColor GetGoalColor() const;
 
 private:
     bool IsActive;
 
-    // Dynamic material instance for changing colors
     UMaterialInstanceDynamic* DynMaterial;
 
     FLinearColor CurrentColor;

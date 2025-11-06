@@ -11,38 +11,35 @@ class UNREALRLLABS_API AGridObject : public AActor {
 public:
     AGridObject();
 
-    // Initializes the grid object with the specified size
+    /** Initializes the grid object with the specified size. */
     void InitializeGridObject(FVector InObjectSize, float InObjectMass);
 
-    // Sets the grid object to be active or inactive
+    /** Enables or disables the grid object. */
     void SetGridObjectActive(bool bIsActive);
 
-    // Gets the world bounds of the grid object
+    /** Returns the world-space extent of the object. */
     FVector GetObjectExtent() const;
 
-    // Gets the world location of the grid object
+    /** Returns the object's world-space location. */
     FVector GetObjectLocation() const;
 
-    // Checks if the grid object is active
+    /** Returns true when the grid object is active. */
     bool IsActive() const;
 
-    // Enables or disables physics simulation for the grid object
+    /** Enables or disables physics simulation. */
     void SetSimulatePhysics(bool bEnablePhysics);
 
-    // Sets the color of the grid object
+    /** Applies a color tint to the object material. */
     void SetGridObjectColor(FLinearColor Color);
 
-    // Reset the GridObject
+    /** Resets the grid object to its default state. */
     void ResetGridObject();
 
-    // Static mesh component for visualization (now the root component)
     UPROPERTY(VisibleAnywhere, Category = "Components")
     UStaticMeshComponent* MeshComponent;
 
 private:
-    // Whether the grid object is active
     bool bIsActive;
 
-    // Dynamic material instance for changing colors
     UMaterialInstanceDynamic* DynMaterial;
 };

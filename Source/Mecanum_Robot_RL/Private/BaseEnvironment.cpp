@@ -12,7 +12,6 @@ void ABaseEnvironment::PostInitializeComponents()
 
 void ABaseEnvironment::InitEnv(FBaseInitParams* Params)
 {
-    // Setup actors...
 }
 
 FState ABaseEnvironment::ResetEnv(int NumAgents)
@@ -22,7 +21,6 @@ FState ABaseEnvironment::ResetEnv(int NumAgents)
 
 void ABaseEnvironment::Act(FAction Action)
 {
-    // Move actors...
 }
 
 void ABaseEnvironment::PostStep()

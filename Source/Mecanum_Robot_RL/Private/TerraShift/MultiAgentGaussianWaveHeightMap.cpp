@@ -9,7 +9,7 @@ namespace ConfigHelpers
 {
 	static float GetOrDefaultNumber(UEnvironmentConfig* Cfg, const FString& Path, float DefaultValue)
 	{
-		if (!Cfg || !Cfg->IsValid() || !Cfg->HasPath(Path)) // Removed TEXT macro around Path
+		if (!Cfg || !Cfg->IsValid() || !Cfg->HasPath(Path))
 		{
 			if (Cfg && Cfg->IsValid()) UE_LOG(LogTemp, Warning, TEXT("Config path '%s' not found, using default: %f"), *Path, DefaultValue);
 			return DefaultValue;
@@ -216,7 +216,7 @@ void UMultiAgentGaussianWaveHeightMap::Step(const TArray<float>& Actions, float 
 	{
 		AgentState.Position += AgentState.Velocity * DeltaTime;
                 AgentState.Orientation += AgentState.AngularVelocity * DeltaTime;
-                // Keep orientation within [0, 2π) to avoid drift of large values
+                // Keep orientation within [0, 2pi) to avoid drift of large values
                 AgentState.Orientation = FMath::Fmod(AgentState.Orientation, 2.f * PI);
                 if (AgentState.Orientation < 0.f)
                 {

@@ -4,9 +4,7 @@
 #include "Math/UnrealMathUtility.h"
 #include <random>
 
-// -------------------------------------
 //  Initialization from Config
-// -------------------------------------
 void UMultiAgentFractalWave3D::InitializeFromConfig(UEnvironmentConfig* Config)
 {
     if (!Config || !Config->IsValid())
@@ -32,7 +30,7 @@ void UMultiAgentFractalWave3D::InitializeFromConfig(UEnvironmentConfig* Config)
     bWrapSampleDist = Config->GetOrDefaultBool(TEXT("wrap_sampledist"), false);
     bWrapFOV = Config->GetOrDefaultBool(TEXT("wrap_fov"), false);
 
-    // --- Ranges for fractal / camera init ---
+    // Ranges for fractal / camera init
     UEnvironmentConfig* FInit = Config->Get(TEXT("fractal_init"));
     if (FInit && FInit->IsValid())
     {
@@ -67,7 +65,7 @@ void UMultiAgentFractalWave3D::InitializeFromConfig(UEnvironmentConfig* Config)
         FOVRange = FVector2D(30.f, 120.f);
     }
 
-    // --- Action Ranges for the 9D Action ---
+    // Action Ranges for the 9D Action
     UEnvironmentConfig* ActCfg = Config->Get(TEXT("action_ranges"));
     if (ActCfg && ActCfg->IsValid())
     {
@@ -102,9 +100,7 @@ void UMultiAgentFractalWave3D::InitializeFromConfig(UEnvironmentConfig* Config)
     InitializeAgents();
 }
 
-// -------------------------------------
 //  Reset
-// -------------------------------------
 void UMultiAgentFractalWave3D::Reset(int32 NewNumAgents)
 {
     NumAgents = NewNumAgents;
@@ -112,9 +108,7 @@ void UMultiAgentFractalWave3D::Reset(int32 NewNumAgents)
     InitializeAgents();
 }
 
-// -------------------------------------
 //  InitializeAgents
-// -------------------------------------
 void UMultiAgentFractalWave3D::InitializeAgents()
 {
     Agents.Reset();
@@ -166,9 +160,7 @@ void UMultiAgentFractalWave3D::InitializeAgents()
     }
 }
 
-// -------------------------------------
 //  Step
-// -------------------------------------
 void UMultiAgentFractalWave3D::Step(const TArray<FFractalAgentAction>& Actions, float DeltaTime)
 {
     // Apply each agent's actions to the state
@@ -272,9 +264,7 @@ void UMultiAgentFractalWave3D::Step(const TArray<FFractalAgentAction>& Actions, 
     }
 }
 
-// -------------------------------------
 //  GetAgentFractalImage
-// -------------------------------------
 TArray<float> UMultiAgentFractalWave3D::GetAgentFractalImage(int32 AgentIndex) const
 {
     if (!Agents.IsValidIndex(AgentIndex))
@@ -299,7 +289,7 @@ TArray<float> UMultiAgentFractalWave3D::GetAgentStateVariables(int32 AgentIndex)
     float fovNorm = NormalizeValue(S.FOVDegrees, FOVRange);
 
     // 2) Add fractal/camera params to result
-    //    e.g. { freqNorm, lacNorm, gainNorm, bwNorm, distNorm, fovNorm }
+    //  e.g. { freqNorm, lacNorm, gainNorm, bwNorm, distNorm, fovNorm }
     Result.Add(freqNorm);
     Result.Add(lacNorm);
     Result.Add(gainNorm);
@@ -317,9 +307,7 @@ TArray<float> UMultiAgentFractalWave3D::GetAgentStateVariables(int32 AgentIndex)
     return Result;
 }
 
-// -------------------------------------
 //  RenderFractalForAgent
-// -------------------------------------
 void UMultiAgentFractalWave3D::RenderFractalForAgent(FFractalAgentState& Agent)
 {
     const int32 N = Agent.ImageSize;
@@ -367,9 +355,7 @@ void UMultiAgentFractalWave3D::RenderFractalForAgent(FFractalAgentState& Agent)
     }
 }
 
-// -------------------------------------
 //  BuildDeltaOrientation
-// -------------------------------------
 FQuat UMultiAgentFractalWave3D::BuildDeltaOrientation(float dPitch, float dYaw, float dRoll) const
 {
     // Each delta is in radians. If your action was intended in degrees,
@@ -383,9 +369,7 @@ FQuat UMultiAgentFractalWave3D::BuildDeltaOrientation(float dPitch, float dYaw, 
     return RotDelta.Quaternion();
 }
 
-// -------------------------------------
 //  FractalSample3D
-// -------------------------------------
 float UMultiAgentFractalWave3D::FractalSample3D(
     float X, float Y, float Z,
     float BaseFreq, int32 Octs,
@@ -409,9 +393,7 @@ float UMultiAgentFractalWave3D::FractalSample3D(
     , -1.f, 1.f);*/
 }
 
-// -------------------------------------
 //  RNG Helpers
-// -------------------------------------
 std::mt19937& UMultiAgentFractalWave3D::GetGenerator()
 {
     static std::random_device rd;
@@ -425,9 +407,7 @@ float UMultiAgentFractalWave3D::UniformInRange(const FVector2D& Range)
     return dist(GetGenerator());
 }
 
-// -------------------------------------
 //  Helper: scale [-1..1] action into some minmax range
-// -------------------------------------
 float UMultiAgentFractalWave3D::ActionScaled(float InputN11, const FVector2D& MinMax) const
 {
     float t = FMath::Clamp(InputN11, -1.f, 1.f);
@@ -437,9 +417,7 @@ float UMultiAgentFractalWave3D::ActionScaled(float InputN11, const FVector2D& Mi
     return MinMax.X + ((t + 1.f) / inSpan) * outSpan;
 }
 
-// -------------------------------------
 //  Helper: wrap value in [MinVal, MaxVal]
-// -------------------------------------
 float UMultiAgentFractalWave3D::WrapValue(float val, float MinVal, float MaxVal) const
 {
     float range = MaxVal - MinVal;
@@ -450,17 +428,13 @@ float UMultiAgentFractalWave3D::WrapValue(float val, float MinVal, float MaxVal)
     return val + MinVal;
 }
 
-// -------------------------------------
 //  Helper: clamp value in [range.X..range.Y]
-// -------------------------------------
 float UMultiAgentFractalWave3D::ClampInRange(float val, const FVector2D& range) const
 {
     return FMath::Clamp(val, range.X, range.Y);
 }
 
-// -------------------------------------
 //  Helper: normalize value to [-1..1] given the range
-// -------------------------------------
 float UMultiAgentFractalWave3D::NormalizeValue(float val, const FVector2D& range) const
 {
     float mn = range.X;

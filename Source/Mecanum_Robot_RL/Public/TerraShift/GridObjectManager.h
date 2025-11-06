@@ -7,10 +7,9 @@
 #include "TimerManager.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "Engine/Engine.h"
-#include "UObject/NameTypes.h" // For FName
+#include "UObject/NameTypes.h"
 #include "GridObjectManager.generated.h"
 
-// Declare a delegate for when a GridObject is spawned
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnGridObjectSpawned, int32, Index, AGridObject*, NewGridObject);
 
 UCLASS()
@@ -20,52 +19,46 @@ class UNREALRLLABS_API AGridObjectManager : public AActor {
 public:
     AGridObjectManager();
 
-    // Set the platform actor reference
+    /** Sets the platform actor reference. */
     void SetPlatformActor(AActor* InPlatform);
 
-    // Spawn grid objects at specified locations with a spawn delay
+    /** Spawns grid objects at the provided locations with an optional spawn delay. */
     void SpawnGridObjects(const TArray<FVector>& Locations, FVector InObjectSize, float InObjectMass, float SpawnDelay);
 
-    // Reset all grid objects to their inactive states
+    /** Resets all managed grid objects to their inactive state. */
     void ResetGridObjects();
 
-    // Get the world location of a specified grid object
+    /** Returns the world location of the grid object at Index. */
     FVector GetGridObjectWorldLocation(int32 Index) const;
 
-    // Get active columns in proximity to grid objects
+    /** Returns the set of column indices that overlap any active grid object. */
     TSet<int32> GetActiveColumnsInProximity(int32 GridSize, const TArray<FVector>& ColumnCenters, const FVector& PlatformCenter, float PlatformSize, float CellSize) const;
 
-    // Deactivate a GridObject at a specific index
+    /** Deactivates the grid object at Index. */
     void DisableGridObject(int32 Index);
 
-    // Get a GridObject by index
+    /** Returns the grid object at Index, if any. */
     AGridObject* GetGridObject(int32 Index) const;
 
-    // Spawns or reuses a GridObject at the specified index and location
+    /** Spawns or reuses a grid object at Index and places it at the requested location. */
     void SpawnGridObjectAtIndex(int32 Index, FVector InWorldLocation, FVector InObjectSize, float InObjectMass);
     
-    // Event triggered when a GridObject is spawned
     UPROPERTY(BlueprintAssignable, Category = "Events")
     FOnGridObjectSpawned OnGridObjectSpawned;
 
-    // Get the actor's folder path
+    /** Returns the folder path used for spawned actors. */
     FName GetActorFolderPath() const;
 
 private:
-
-    // Array of grid objects managed by this class
     UPROPERTY()
     TArray<AGridObject*> GridObjects;
 
-    // Size of GridObjects to be spawned
     FVector ObjectSize;
 
-    // Mass of GridObjects to be spawned
     float ObjectMass;
 
-    // The platform actor reference
     AActor* PlatformActor;
 
-    // Helper function to create a new GridObject
+    /** Helper that spawns and configures a new grid object. */
     AGridObject* CreateNewGridObjectAtIndex(int32 Index, FVector InObjectSize, float InObjectMass);
 };

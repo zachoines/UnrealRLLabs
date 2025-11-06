@@ -38,11 +38,12 @@ public:
     UPROPERTY(BlueprintReadWrite, Category = "Discrete Action")
     TArray<FDiscreteActionSpec> DiscreteActions;
 
-    // Initialize the action space with arrays of continuous and discrete actions
+    /** Initializes the action space with continuous and discrete specifications. */
     void Init(
         const TArray<FContinuousActionSpec>& InContinuousActions,
         const TArray<FDiscreteActionSpec>& InDiscreteActions
     );
 
+    /** Returns the total number of action branches. */
     int TotalActions();
 };

@@ -29,10 +29,8 @@ void UExperienceBuffer::AddExperience(int32 EnvIndex, const FExperience& Exp)
         return;
     }
 
-    // Append
     EnvDeques[EnvIndex].Add(Exp);
 
-    // If over capacity => remove oldest
     while (EnvDeques[EnvIndex].Num() > BufferCapacity)
     {
         EnvDeques[EnvIndex].RemoveAt(0, 1, false);
@@ -64,15 +62,12 @@ TArray<FExperienceBatch> UExperienceBuffer::SampleEnvironmentTrajectories(int32 
 
         if (EnvDeques[e].Num() < batchSize)
         {
-            // Not enough data => return empty
-            // or you can handle partial
             UE_LOG(LogTemp, Warning, TEXT("Env=%d has only %d experiences < batchSize=%d"), e, EnvDeques[e].Num(), batchSize);
             return TArray<FExperienceBatch>();
         }
 
         if (bRandomSample)
         {
-            // sample random indices
             for (int32 i = 0; i < batchSize; i++)
             {
                 int32 idx = FMath::RandRange(0, EnvDeques[e].Num() - 1);
@@ -86,7 +81,6 @@ TArray<FExperienceBatch> UExperienceBuffer::SampleEnvironmentTrajectories(int32 
         }
         else
         {
-            // chronological => from front of the deque
             for (int32 i = 0; i < batchSize; i++)
             {
                 batch.Experiences.Add(EnvDeques[e][0]);

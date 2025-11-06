@@ -1,4 +1,4 @@
-﻿#include "EnvironmentConfig.h"
+#include "EnvironmentConfig.h"
 
 bool UEnvironmentConfig::LoadFromFile(const FString& FilePath)
 {
@@ -224,7 +224,7 @@ TSharedPtr<FJsonValue> UEnvironmentConfig::ResolvePath(
     }
     if (CurrentValue->Type != EJson::Object)
     {
-        // The current node is not an object, but we still have keys left → path invalid
+        // The current node is not an object, but we still have keys left -> path invalid
         return nullptr;
     }
 

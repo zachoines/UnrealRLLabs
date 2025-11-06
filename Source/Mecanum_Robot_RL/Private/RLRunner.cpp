@@ -1,6 +1,5 @@
 // NOTICE: This file includes modifications generated with the assistance of generative AI.
 // Original code structure and logic by the project author.
-// Fix applied based on discussion to correctly handle PrevState after episode termination.
 
 #include "RLRunner.h"
 #include "Kismet/GameplayStatics.h"
@@ -90,11 +89,12 @@ void ARLRunner::InitRunner(
     ExperienceBufferInstance = NewObject<UExperienceBuffer>(this);
     if (ExperienceBufferInstance)
     {
+        // PPO uses chronological, non-replacement sampling.
         ExperienceBufferInstance->Initialize(
             Environments.Num(),
             BufferSize,
-            false, // sample_with_replacement (for PPO => false)
-            false  // random-sample => false (for PPO => chronological)
+            false,
+            false
         );
     }
 
@@ -116,8 +116,7 @@ void ARLRunner::InitRunner(
     Pending.SetNum(Environments.Num());
     for (int32 i = 0; i < Environments.Num(); i++)
     {
-        FState st = GetEnvState(Environments[i]);
-        StartNewBlock(i, st); // Initialize pending transitions with the initial state
+        StartNewBlock(i, GetEnvState(Environments[i]));
     }
 
     CurrentStep = 0;
@@ -158,12 +157,11 @@ void ARLRunner::CollectTransitions()
     for (int32 i = 0; i < Environments.Num(); i++)
     {
         ABaseEnvironment* Env = Environments[i];
-        Env->PreTransition(); // Environment updates its internal state based on the last action
+        Env->PreTransition();
 
-        // Get results of the last action
         float stepReward = Env->Reward();
-        bool  bDone = Env->Done();
-        bool  bTrunc = Env->Trunc();
+        bool bDone = Env->Done();
+        bool bTrunc = Env->Trunc();
 
         Pending[i].AccumulatedReward += stepReward;
         Pending[i].RepeatCounter++;
@@ -172,34 +170,22 @@ void ARLRunner::CollectTransitions()
 
         if (bDone || bTrunc || bActionRepeatFinished)
         {
-            FState nextStateForExperience; // This will be S_t+1 (if continuing) or S'_0 (if episode just ended)
-            FState stateForNextBlockStart; // This is S_t+1 (if continuing) or S'_0 (if episode just ended)
+            FState nextStateForExperience;
+            FState stateForNextBlockStart;
 
             if (bDone || bTrunc)
             {
-                // Episode terminated. Env[i] is currently in the state that caused termination (S_t+1).
-                // For the experience being finalized, PrevState = S_t (from Pending[i]), Action = A_t (from Pending[i]),
-                // Reward = R_accumulated (from Pending[i]).
-                // The NextState for this *terminating experience* should be the initial state of the new episode (S'_0).
-                ResetEnvironment(i); // Env[i] is now reset and in state S'_0
-                nextStateForExperience = GetEnvState(Environments[i]); // This is S'_0
-                stateForNextBlockStart = nextStateForExperience;       // The new block will also start with S'_0
+                ResetEnvironment(i);
+                nextStateForExperience = GetEnvState(Environments[i]);
+                stateForNextBlockStart = nextStateForExperience;
             }
             else
             {
-                // Action repeat finished, but episode continues. Env[i] is in S_t+1.
-                // The NextState for this experience is the current state S_t+1.
-                nextStateForExperience = GetEnvState(Environments[i]); // This is S_t+1
-                stateForNextBlockStart = nextStateForExperience;       // The new block will also start with S_t+1
+                nextStateForExperience = GetEnvState(Environments[i]);
+                stateForNextBlockStart = nextStateForExperience;
             }
 
-            // Finalize the current transition using Pending[i].PrevState, Pending[i].Action,
-            // Pending[i].AccumulatedReward, and the determined nextStateForExperience.
             FinalizeTransition(i, nextStateForExperience, bDone, bTrunc);
-
-            // After finalizing, always set up the Pending struct for the next segment.
-            // stateForNextBlockStart will be S'_0 if terminated, or S_t+1 if action repeat finished and episode continues.
-            // This correctly sets Pending[i].PrevState for the *next* transition to be formed.
             StartNewBlock(i, stateForNextBlockStart);
         }
         Env->PostTransition();
@@ -220,7 +206,7 @@ void ARLRunner::DecideActions()
 
     if (!anyNeedNewAction)
     {
-        return; // All environments are in the middle of an action-repeat cycle
+        return; // All environments are in the middle of an action-repeat cycle.
     }
 
     TArray<FState> EnvStates;
@@ -234,12 +220,8 @@ void ARLRunner::DecideActions()
 
     for (int32 i = 0; i < Environments.Num(); i++)
     {
-        // The state used for action decision should be the current state of the environment,
-        // which is also Pending[i].PrevState if RepeatCounter is 0.
-        EnvStates[i] = GetEnvState(Environments[i]); // Or Pending[i].PrevState if RepeatCounter is 0
+        EnvStates[i] = GetEnvState(Environments[i]);
 
-        // Done/Trunc should reflect the current status before taking a new action.
-        // If an environment just reset, Done/Trunc will be false.
         bool bCurrentDone = Environments[i]->Done();
         bool bCurrentTrunc = Environments[i]->Trunc();
         if (Pending[i].bDoneOrTrunc && Pending[i].RepeatCounter == 0)
@@ -259,7 +241,7 @@ void ARLRunner::DecideActions()
 
     for (int32 i = 0; i < Environments.Num(); i++)
     {
-        if (Pending[i].RepeatCounter == 0) // Only update action if it's the start of a new block
+        if (Pending[i].RepeatCounter == 0)
         {
             Pending[i].Action = newActions[i];
             Pending[i].bDoneOrTrunc = false;
@@ -272,22 +254,13 @@ void ARLRunner::StepEnvironments()
     for (int32 i = 0; i < Environments.Num(); i++)
     {
         ABaseEnvironment* Env = Environments[i];
-        // If an environment was just reset (bDone or bTrunc was true in the previous CollectTransitions),
-        // it's now ready for a new action. Don't skip.
-        // The original Done()/Trunc() check here was to skip stepping if an env *is currently* done.
-        // This check is still valid.
         if (Env->Done() || Env->Trunc())
         {
-            // This case should ideally not happen if an env that is done/trunc
-            // was correctly reset and its pending block started.
-            // If it is done/trunc here, it means it became so without a corresponding reset,
-            // or ResetEnv() didn't clear the flags.
-            // However, if ResetEnv clears flags, this is fine.
             continue;
         }
 
         Env->PreStep();
-        Env->Act(Pending[i].Action); // Apply the action decided for this block
+        Env->Act(Pending[i].Action);
         Env->PostStep();
     }
 }
@@ -311,7 +284,6 @@ void ARLRunner::FinalizeTransition(int EnvIndex, const FState& NextState, bool b
 
     Pending[EnvIndex].bDoneOrTrunc = bDone || bTrunc;
 
-    // Note: StartNewBlock is now called by CollectTransitions after this function returns.
     MaybeTrainUpdate();
 }
 
@@ -319,15 +291,12 @@ void ARLRunner::StartNewBlock(int EnvIndex, const FState& State)
 {
     FPendingTransition& p = Pending[EnvIndex];
     p.PrevState = State;
-    // Action will be filled by DecideActions if RepeatCounter is 0
-    // p.Action = FAction(); // No need to clear here, DecideActions overwrites if necessary
     p.AccumulatedReward = 0.f;
-    p.RepeatCounter = 0; // Reset for the new block
+    p.RepeatCounter = 0;
 }
 
 void ARLRunner::ResetEnvironment(int EnvIndex)
 {
-    // Determine CurrentAgents before reset, as it can change.
     CurrentAgents = (bIsMultiAgent) ? FMath::RandRange(MinAgents, MaxAgents) : 1;
     Environments[EnvIndex]->ResetEnv(CurrentAgents);
 }
@@ -341,10 +310,6 @@ void ARLRunner::MaybeTrainUpdate()
     {
         CurrentUpdate++;
         TArray<FExperienceBatch> Batches = ExperienceBufferInstance->SampleEnvironmentTrajectories(BatchSize);
-        // Ensure CurrentAgents reflects the agent count for the majority of collected experiences
-        // or the agent count used for the last reset if it's consistent.
-        // For simplicity, we use the globally tracked CurrentAgents. This assumes it's
-        // reasonably consistent or that the Python side can handle variability if needed.
         AgentComm->Update(Batches, CurrentAgents);
     }
 }
@@ -355,7 +320,6 @@ void ARLRunner::ParseActionSpaceFromConfig()
     ContinuousActionRanges.Empty();
     if (!EnvConfig) return;
 
-    // Path adjusted to be more generic, assuming either "agent" or "central" exists under "action"
     FString ActionBasePath = TEXT("environment/shape/action/");
     if (EnvConfig->HasPath(ActionBasePath + TEXT("agent")))
     {
@@ -377,7 +341,7 @@ void ARLRunner::ParseActionSpaceFromConfig()
         auto Arr = Node->AsArrayOfConfigs();
         for (auto* c : Arr)
         {
-            if (c->HasPath(TEXT("num_choices"))) // Check if "num_choices" key exists
+            if (c->HasPath(TEXT("num_choices")))
             {
                 int32 n = c->Get(TEXT("num_choices"))->AsInt();
                 DiscreteActionSizes.Add(n);
@@ -388,10 +352,10 @@ void ARLRunner::ParseActionSpaceFromConfig()
     if (EnvConfig->HasPath(ActionBasePath + TEXT("continuous")))
     {
         auto Node = EnvConfig->Get(ActionBasePath + TEXT("continuous"));
-        auto Arr = Node->AsArrayOfConfigs(); // Each element is a config object like {"min": -1, "max": 1}
+        auto Arr = Node->AsArrayOfConfigs();
         for (auto* r : Arr)
         {
-            if (r->HasPath(TEXT("min")) && r->HasPath(TEXT("max"))) // Check for keys
+            if (r->HasPath(TEXT("min")) && r->HasPath(TEXT("max")))
             {
                 float mn = r->Get(TEXT("min"))->AsNumber();
                 float mx = r->Get(TEXT("max"))->AsNumber();
@@ -401,12 +365,9 @@ void ARLRunner::ParseActionSpaceFromConfig()
     }
 }
 
-FAction ARLRunner::EnvSample(int EnvIndex) // EnvIndex not used, samples generically
+FAction ARLRunner::EnvSample(int EnvIndex)
 {
     FAction act;
-    // For multi-agent, actions need to be generated per agent up to CurrentAgents
-    // This simple sampler assumes the action spec is per-agent if multi-agent.
-    // If the action spec is global, this needs adjustment. Assuming per-agent for now.
     int32 numAgentsToSampleFor = bIsMultiAgent ? CurrentAgents : 1;
 
     for (int32 agentIdx = 0; agentIdx < numAgentsToSampleFor; agentIdx++)

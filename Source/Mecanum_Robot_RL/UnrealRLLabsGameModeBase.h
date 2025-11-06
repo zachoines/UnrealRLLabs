@@ -3,14 +3,14 @@
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
 
-// JSON / File utilities
+// JSON and file utilities.
 #include "Misc/FileHelper.h"
 #include "Dom/JsonValue.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 
-// Local classes
+// Local classes.
 #include "BaseEnvironment.h"
 #include "RLRunner.h"
 #include "TerraShiftEnvironment.h"

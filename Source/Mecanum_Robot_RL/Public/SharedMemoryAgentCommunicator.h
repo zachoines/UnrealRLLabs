@@ -1,6 +1,3 @@
-// NOTICE: This file includes modifications generated with the assistance of generative AI.
-// Original code structure and logic by the project author.
-
 #pragma once
 
 #include "CoreMinimal.h"
@@ -60,17 +57,17 @@ public:
     void WriteTransitionsToFile(const TArray<FExperienceBatch>& experiences, const FString& FilePath);
 
 private:
-    // ------------------- SHARED MEMORY HANDLES -------------------
+    // Shared memory handles.
     void* StatesSharedMemoryHandle;
     void* ActionsSharedMemoryHandle;
     void* UpdateSharedMemoryHandle;
 
-    // ------------------- MAPPED POINTERS -------------------------
+    // Mapped pointers.
     float* MappedStatesSharedData;
     float* MappedActionsSharedData;
     float* MappedUpdateSharedData;
 
-    // ------------------- SYNCHRONIZATION -------------------------
+    // Synchronization handles.
     void* ActionsMutexHandle;
     void* UpdateMutexHandle;
     void* StatesMutexHandle;
@@ -82,7 +79,7 @@ private:
     void* BeginTestEventHandle;
     void* EndTestEventHandle;
 
-    // ------------------- CONFIG / SIZING -------------------------
+    // Configuration and sizing.
     UPROPERTY()
     UEnvironmentConfig* LocalEnvConfig;
 
@@ -101,22 +98,22 @@ private:
      */
     int32 TotalActionCount;
 
-    // Alloc sizes in bytes
+    // Allocation sizes in bytes.
     int32 ActionMAXSize;
     int32 StatesMAXSize;
     int32 UpdateMAXSize;
 
 private:
-    // Helper: check if config has "environment/shape/state/agent"
+    // Helper: check if config has "environment/shape/state/agent".
     bool IsMultiAgent() const;
 
-    // Helper: check if config has "environment/shape/state/central"
+    // Helper: check if config has "environment/shape/state/central".
     bool HasCentralState() const;
 
-    // Helper: sum central + agent obs_size for a given agent count
+    // Helper: sum central + agent obs_size for a given agent count.
     int32 ComputeSingleEnvStateSize(int32 NumAgents) const;
 
-    // Helper: read discrete + continuous action arrays from config, sum them up
+    // Helper: read discrete + continuous action arrays from config and sum them.
     int32 ComputeSingleEnvActionSize(int32 NumAgents) const;
 
 public:

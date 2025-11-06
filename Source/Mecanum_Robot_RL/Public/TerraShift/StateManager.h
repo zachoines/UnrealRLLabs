@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "UObject/NoExportTypes.h"
@@ -17,22 +17,20 @@
 #include "Kismet/KismetRenderingLibrary.h"
 #include "StateManager.generated.h"
 
-/**
- * NEW: Enum to track the persistent state of each object slot throughout an episode.
- */
-    UENUM(BlueprintType)
-    enum class EObjectSlotState : uint8
+/** Tracks the persistent state of each object slot throughout an episode. */
+UENUM(BlueprintType)
+enum class EObjectSlotState : uint8
 {
-    Empty,        // Slot is inactive, waiting for an object to be spawned
-    Active,       // Object is currently active and in play
-    GoalReached,  // Object successfully reached its goal this episode
-    OutOfBounds   // Object fell out of bounds this episode
+    Empty,        // Slot is inactive and waiting for spawn.
+    Active,       // Object is currently active and in play.
+    GoalReached,  // Object successfully reached its goal this episode.
+    OutOfBounds   // Object fell out of bounds this episode.
 };
 
 /**
  * UStateManager:
  *
- * - Tracks a certain number of “grid objects”
+ * - Tracks a certain number of "grid objects"
  * - Uses an OccupancyGrid to place random goals and objects without overlap
  * - Manages toggles for removing or keeping objects on goals/OOB, or "respawning" them
  * - Builds NxN height-based "central state" + optionally a goals-occupancy channel
@@ -44,10 +42,7 @@ class UNREALRLLABS_API UStateManager : public UObject
     GENERATED_BODY()
 
 public:
-    // ----------------------------------------------------------------
-    //  Configuration & References
-    // ----------------------------------------------------------------
-
+    // Configuration and references.
     UFUNCTION(BlueprintCallable)
     void LoadConfig(UEnvironmentConfig* Config);
 
@@ -60,10 +55,7 @@ public:
         AGoalManager* InGoalManager
     );
 
-    // ----------------------------------------------------------------
-    //  Main Lifecycle
-    // ----------------------------------------------------------------
-
+    // Main lifecycle.
     UFUNCTION(BlueprintCallable)
     void Reset(int32 NumObjects, int32 CurrentAgents);
 
@@ -79,10 +71,7 @@ public:
     UFUNCTION(BlueprintCallable)
     bool AllGridObjectsHandled() const;
 
-    // ----------------------------------------------------------------
-    //  Build Central State
-    // ----------------------------------------------------------------
-
+    // Central state generation.
     UFUNCTION(BlueprintCallable)
     void BuildCentralState();
 
@@ -95,18 +84,16 @@ public:
     UFUNCTION(BlueprintCallable)
     void UpdateGridColumnsColors();
 
-    // ----------------------------------------------------------------
-    //  Accessors: data for environment's reward or logic
-    // ----------------------------------------------------------------
+    // Accessors.
 
     UFUNCTION(BlueprintCallable)
     int32 GetMaxGridObjects() const;
 
-    // NEW Accessor for the persistent slot state
+    // Accessor for the persistent slot state.
     UFUNCTION(BlueprintCallable)
     EObjectSlotState GetObjectSlotState(int32 ObjIndex) const;
 
-    // Legacy accessors now derive from the new state enum
+    // Legacy-style accessors derived from the slot state.
     UFUNCTION(BlueprintCallable)
     bool GetHasActive(int32 ObjIndex) const;
 
@@ -147,19 +134,13 @@ public:
     FVector GetPreviousPosition(int32 ObjIndex) const;
 
 private:
-    // ----------------------------------------------------------------
-    //  Helpers
-    // ----------------------------------------------------------------
-
+    // Helpers.
     FVector GetColumnTopWorldLocation(int32 GridX, int32 GridY) const;
     void SetupOverheadCamera();
     TArray<float> CaptureOverheadImage() const;
 
 private:
-    // ----------------------------------------------------------------
-    //  References
-    // ----------------------------------------------------------------
-
+    // References.
     UPROPERTY()
     AMainPlatform* Platform = nullptr;
 
@@ -178,9 +159,7 @@ private:
     UPROPERTY()
     UOccupancyGrid* OccupancyGrid = nullptr;
 
-    // ----------------------------------------------------------------
-    //  Config & Toggles
-    // ----------------------------------------------------------------
+    // Configuration and toggles.
     // (All config properties remain the same)
     UPROPERTY() int32 MaxGridObjects = 8;
     UPROPERTY() float MarginXY = 1.5f;
@@ -213,26 +192,20 @@ private:
     UPROPERTY() int32 MaxGridObjectsForState;
     UPROPERTY() int32 GridObjectFeatureSize;
 
-    // ----------------------------------------------------------------
-    //  Geometry
-    // ----------------------------------------------------------------
+    // Geometry.
     UPROPERTY() int32 GridSize = 50;
     UPROPERTY() float CellSize = 1.f;
     UPROPERTY() FVector PlatformWorldSize;
     UPROPERTY() FVector PlatformCenter;
 
-    // ----------------------------------------------------------------
-    //  NxN Height State
-    // ----------------------------------------------------------------
+    // NxN height state.
     UPROPERTY() FMatrix2D PreviousHeight;
     UPROPERTY() FMatrix2D CurrentHeight;
     unsigned long Step = 0;
 
-    // ----------------------------------------------------------------
-    //  Object States
-    // ----------------------------------------------------------------
+    // Object states.
 
-    /** UPDATED: Tracks the persistent state of each object slot for the entire episode. */
+    /** Tracks the persistent state of each object slot for the entire episode. */
     UPROPERTY()
     TArray<EObjectSlotState> ObjectSlotStates;
 
@@ -257,9 +230,7 @@ private:
     UPROPERTY() TArray<float> RespawnTimer;
     UPROPERTY() TArray<float> RespawnDelays;
 
-    // ----------------------------------------------------------------
-    //  Overhead Camera
-    // ----------------------------------------------------------------
+    // Overhead camera.
     UPROPERTY() float OverheadCamDistance = 100.f;
     UPROPERTY() float OverheadCamFOV = 70.f;
     UPROPERTY() int32 OverheadCamResX = 50;

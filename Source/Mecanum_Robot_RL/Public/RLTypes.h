@@ -31,11 +31,6 @@ struct UNREALRLLABS_API FBaseInitParams
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Environment Params")
     FVector Location;
 
-    // Add a pointer/reference to the config
     UPROPERTY()
     UEnvironmentConfig* EnvConfig = nullptr;
 };
-
-
-
-

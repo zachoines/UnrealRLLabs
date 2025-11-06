@@ -1,11 +1,10 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
 // NOTICE: This file includes modifications generated with the assistance of generative AI.
 // Original code structure and logic by the project author.
 
 #include "SharedMemoryAgentCommunicator.h"
 #include "Misc/FileHelper.h"
 #include "Serialization/JsonSerializer.h"
-#include "Serialization/JsonWriter.h" // Required for FJsonValueObject if used directly, but UEnvironmentConfig abstracts it
+#include "Serialization/JsonWriter.h"
 
 USharedMemoryAgentCommunicator::USharedMemoryAgentCommunicator()
     : StatesSharedMemoryHandle(nullptr)
@@ -233,7 +232,7 @@ TArray<FAction> USharedMemoryAgentCommunicator::GetActions(
     {
         if (st.Values.Num() != CurrentStepEnvStateSize) {
             UE_LOG(LogTemp, Error, TEXT("GetActions - State size mismatch for an environment! Expected: %d, Got: %d. Check UStateManager and JSON config consistency."), CurrentStepEnvStateSize, st.Values.Num());
-            // Handle error: skip this state, return empty, or use a default? For now, we'll continue writing but this is problematic.
+            // Writing failed; continue to fill the buffer but log for future handling.
         }
         FMemory::Memcpy(p, st.Values.GetData(), st.Values.Num() * sizeof(float));
         p += st.Values.Num();
@@ -360,9 +359,7 @@ void USharedMemoryAgentCommunicator::WriteTransitionsToFile(
     else { UE_LOG(LogTemp, Log, TEXT("WriteTransitionsToFile - Wrote transitions to file: %s"), *FilePath); }
 }
 
-// -----------------------------------
 // Private Helpers
-// -----------------------------------
 
 bool USharedMemoryAgentCommunicator::IsMultiAgent() const
 {

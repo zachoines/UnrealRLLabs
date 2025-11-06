@@ -1,5 +1,3 @@
-// ActionSpace.cpp
-
 #include "ActionSpace.h"
 
 UActionSpace::UActionSpace()

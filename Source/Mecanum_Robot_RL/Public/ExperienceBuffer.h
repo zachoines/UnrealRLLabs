@@ -32,10 +32,7 @@ struct FExperience
     bool Done;
 };
 
-/**
- * A batch of experiences. Typically from 1 environment if using the
- * 'SampleEnvironmentTrajectories()' approach.
- */
+/** Batch of experiences sampled from a single environment. */
 USTRUCT(BlueprintType)
 struct FExperienceBatch
 {
@@ -45,15 +42,7 @@ struct FExperienceBatch
     TArray<FExperience> Experiences;
 };
 
-/**
- * UExperienceBuffer stores experiences per-environment in separate "deques".
- *
- * For on-policy PPO, we typically:
- *  - Add experiences per environment step
- *  - Once each environment has at least 'batchSize' experiences, we sample
- *    exactly 'batchSize' from each env => building TArray<FExperienceBatch>
- *    => pass to training.
- */
+/** Per-environment experience storage used for on-policy training loops. */
 UCLASS(Blueprintable, BlueprintType)
 class UNREALRLLABS_API UExperienceBuffer : public UObject
 {
@@ -62,10 +51,7 @@ class UNREALRLLABS_API UExperienceBuffer : public UObject
 public:
     UExperienceBuffer();
 
-    /**
-     * Initialize the buffer with `NumEnvironments`, capacity,
-     * plus sampling policy flags (withReplacement, randomSample).
-     */
+    /** Initializes the buffer and sampling policy. */
     UFUNCTION(BlueprintCallable)
     void Initialize(int32 InNumEnvs,
         int32 InBufferCapacity,
@@ -76,19 +62,11 @@ public:
     UFUNCTION(BlueprintCallable)
     void AddExperience(int32 EnvIndex, const FExperience& Exp);
 
-    /**
-     * Return how many experiences the environment with the *fewest* experiences has.
-     * We use this to see if we can sample a batch from *all* environments.
-     */
+    /** Returns the minimum experience count over all environments. */
     UFUNCTION(BlueprintCallable)
     int32 MinSizeAcrossEnvs() const;
 
-    /**
-     * Sample exactly `batchSize` experiences from each environment
-     * => returns TArray<FExperienceBatch> of size = #envs.
-     * If randomSample => pick random items; else pick from front (FIFO).
-     * If sampleWithReplacement => do not remove them from the buffer; else remove them.
-     */
+    /** Samples `batchSize` experiences per environment, respecting the configured policy. */
     UFUNCTION(BlueprintCallable)
     TArray<FExperienceBatch> SampleEnvironmentTrajectories(int32 batchSize);
 
@@ -106,6 +84,6 @@ private:
     bool bSampleWithReplacement;
     bool bRandomSample;
 
-    /** For each environment => we store experiences in a TArray (like a deque). */
+    /** Per-environment experience queues. */
     TArray<TArray<FExperience>> EnvDeques;
 };

@@ -53,9 +53,7 @@ public:
 	/** Enum defining how Resize initializes new elements or handles existing ones. */
 	enum class EInitialization { None, Zero, Uninitialized }; // Moved declaration before usage
 
-	//--------------------------------------------------------------------------
 	// Constructors & Initialization
-	//--------------------------------------------------------------------------
 
 	/** Default constructor: Creates an empty 0x0 matrix. */
 	FMatrix2D();
@@ -69,18 +67,14 @@ public:
 	/** Constructor: Creates a matrix from a 2D TArray. Input must be rectangular. */
 	explicit FMatrix2D(const TArray<TArray<float>>& InData);
 
-	//--------------------------------------------------------------------------
 	// Copy/Move Semantics
-	//--------------------------------------------------------------------------
 
 	FMatrix2D(const FMatrix2D& Other);
 	FMatrix2D& operator=(const FMatrix2D& Other);
 	FMatrix2D(FMatrix2D&& Other) noexcept;
 	FMatrix2D& operator=(FMatrix2D&& Other) noexcept;
 
-	//--------------------------------------------------------------------------
 	// Element-wise Operators (Matrix-Matrix)
-	//--------------------------------------------------------------------------
 
 	[[nodiscard]] FMatrix2D operator+(const FMatrix2D& Other) const;
 	FMatrix2D& operator+=(const FMatrix2D& Other);
@@ -93,9 +87,7 @@ public:
 	[[nodiscard]] FMatrix2D operator/(const FMatrix2D& Other) const;
 	FMatrix2D& operator/=(const FMatrix2D& Other);
 
-	//--------------------------------------------------------------------------
 	// Scalar Operators
-	//--------------------------------------------------------------------------
 
 	[[nodiscard]] FMatrix2D operator+(float Scalar) const;
 	FMatrix2D& operator+=(float Scalar);
@@ -113,9 +105,7 @@ public:
 	friend FMatrix2D operator*(float Scalar, const FMatrix2D& Matrix);
 	friend FMatrix2D operator/(float Scalar, const FMatrix2D& Matrix);
 
-	//--------------------------------------------------------------------------
 	// Accessors & Indexing
-	//--------------------------------------------------------------------------
 
 	/** Non-const row indexing: returns a proxy object for M[row][col] access. */
 	FFMatrix2DRowProxy operator[](int32 RowIndex);
@@ -134,9 +124,7 @@ public:
 	/** Get read/write access to the underlying flat data array. Use with extreme caution, as direct modification can break invariants. Prefer using matrix methods. */
 	TArray<float>& GetData_Unsafe() { return Data; }
 
-	//--------------------------------------------------------------------------
 	// Matrix Operations & Manipulation
-	//--------------------------------------------------------------------------
 
 	/** Extracts a sub-matrix. Indices are inclusive. Negative indices count from the end. */
 	[[nodiscard]] FMatrix2D Sub(int32 RowStart, int32 RowEnd, int32 ColStart, int32 ColEnd) const;

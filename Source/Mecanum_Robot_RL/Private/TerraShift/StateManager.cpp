@@ -1,6 +1,5 @@
 ﻿// NOTICE: This file includes modifications generated with the assistance of generative AI.
 // Original code structure and logic by the project author.
-// This version incorporates the "Fixed-Slot Reward Structure" state management system.
 
 #include "TerraShift/StateManager.h"
 #include "TerraShift/OccupancyGrid.h"
@@ -14,9 +13,7 @@
 #include "Engine/World.h"
 #include "DrawDebugHelpers.h"
 
-// ------------------------------------------
-//   LoadConfig
-// ------------------------------------------
+// LoadConfig
 void UStateManager::LoadConfig(UEnvironmentConfig* Config)
 {
     if (!Config)
@@ -98,9 +95,7 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     }
 }
 
-// ------------------------------------------
-//   SetReferences
-// ------------------------------------------
+// SetReferences
 void UStateManager::SetReferences(
     AMainPlatform* InPlatform,
     AGridObjectManager* InObjMgr,
@@ -141,9 +136,7 @@ void UStateManager::SetReferences(
     SetupOverheadCamera();
 }
 
-// ------------------------------------------
-//   Reset
-// ------------------------------------------
+// Reset
 void UStateManager::Reset(int32 NumObjects, int32 CurrentAgents)
 {
     checkf(Platform, TEXT("StateManager::Reset => Platform is null!"));
@@ -252,9 +245,7 @@ void UStateManager::Reset(int32 NumObjects, int32 CurrentAgents)
     }
 }
 
-// ------------------------------------------
-//   UpdateGridObjectFlags
-// ------------------------------------------
+// UpdateGridObjectFlags
 void UStateManager::UpdateGridObjectFlags()
 {
     float halfX = PlatformWorldSize.X * 0.5f;
@@ -342,9 +333,7 @@ void UStateManager::UpdateGridObjectFlags()
     }
 }
 
-// ------------------------------------------
-//   UpdateObjectStats
-// ------------------------------------------
+// UpdateObjectStats
 void UStateManager::UpdateObjectStats(float DeltaTime)
 {
     for (int32 i = 0; i < MaxGridObjects; i++)
@@ -399,9 +388,7 @@ void UStateManager::UpdateObjectStats(float DeltaTime)
     }
 }
 
-// ------------------------------------------
-//   RespawnGridObjects
-// ------------------------------------------
+// RespawnGridObjects
 void UStateManager::RespawnGridObjects()
 {
     int32 nObjColors = GridObjectColors.Num();
@@ -458,9 +445,7 @@ void UStateManager::RespawnGridObjects()
     }
 }
 
-// ------------------------------------------
-//   AllGridObjectsHandled
-// ------------------------------------------
+// AllGridObjectsHandled
 bool UStateManager::AllGridObjectsHandled() const
 {
     for (int32 i = 0; i < MaxGridObjects; ++i)
@@ -474,9 +459,7 @@ bool UStateManager::AllGridObjectsHandled() const
 }
 
 
-// ------------------------------------------
-//   BuildCentralState
-// ------------------------------------------
+// BuildCentralState
 void UStateManager::BuildCentralState()
 {
     UWorld* w = Grid ? Grid->GetWorld() : nullptr;
@@ -531,9 +514,7 @@ void UStateManager::BuildCentralState()
     Step++;
 }
 
-// ------------------------------------------
-//   GetCentralState
-// ------------------------------------------
+// GetCentralState
 TArray<float> UStateManager::GetCentralState()
 {
     TArray<float> outArr;
@@ -597,17 +578,13 @@ TArray<float> UStateManager::GetCentralState()
     return outArr;
 }
 
-// ------------------------------------------
-//   GetAgentState
-// ------------------------------------------
+// GetAgentState
 TArray<float> UStateManager::GetAgentState(int32 AgentIndex) const
 {
     return WaveSim ? WaveSim->GetAgentState(AgentIndex) : TArray<float>();
 }
 
-// ------------------------------------------
-//   UpdateGridColumnsColors
-// ------------------------------------------
+// UpdateGridColumnsColors
 void UStateManager::UpdateGridColumnsColors()
 {
     if (!Grid || !OccupancyGrid) return;
@@ -645,9 +622,7 @@ void UStateManager::UpdateGridColumnsColors()
     }
 }
 
-// ------------------------------------------
-//   Accessors
-// ------------------------------------------
+// Accessors
 int32 UStateManager::GetMaxGridObjects() const { return MaxGridObjects; }
 EObjectSlotState UStateManager::GetObjectSlotState(int32 ObjIndex) const { return ObjectSlotStates.IsValidIndex(ObjIndex) ? ObjectSlotStates[ObjIndex] : EObjectSlotState::Empty; }
 bool UStateManager::GetHasActive(int32 ObjIndex) const { return GetObjectSlotState(ObjIndex) == EObjectSlotState::Active; }
@@ -664,9 +639,7 @@ float UStateManager::GetPreviousDistance(int32 ObjIndex) const { return PrevDist
 FVector UStateManager::GetCurrentPosition(int32 ObjIndex) const { return CurrPos.IsValidIndex(ObjIndex) ? CurrPos[ObjIndex] : FVector::ZeroVector; }
 FVector UStateManager::GetPreviousPosition(int32 ObjIndex) const { return PrevPos.IsValidIndex(ObjIndex) ? PrevPos[ObjIndex] : FVector::ZeroVector; }
 
-// ------------------------------------------
-//   Helper: column top
-// ------------------------------------------
+// Helper: column top
 FVector UStateManager::GetColumnTopWorldLocation(int32 GridX, int32 GridY) const
 {
     if (!Grid) return PlatformCenter + FVector(0, 0, 100.f);
@@ -684,9 +657,7 @@ FVector UStateManager::GetColumnTopWorldLocation(int32 GridX, int32 GridY) const
     return PlatformCenter + FVector(0, 0, 100.f);
 }
 
-// ------------------------------------------
-//   SetupOverheadCamera
-// ------------------------------------------
+// SetupOverheadCamera
 void UStateManager::SetupOverheadCamera()
 {
     checkf(Platform, TEXT("SetupOverheadCamera => missing platform."));

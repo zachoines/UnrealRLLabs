@@ -1,6 +1,5 @@
-﻿// NOTICE: This file includes modifications generated with the assistance of generative AI.
+// NOTICE: This file includes modifications generated with the assistance of generative AI.
 // Original code structure and logic by the project author.
-// This version incorporates the "Fixed-Slot Reward Structure" and preserves existing dense shaping logic.
 
 #include "TerraShiftEnvironment.h"
 #include "TerraShift/GoalManager.h"
@@ -266,7 +265,7 @@ bool ATerraShiftEnvironment::Trunc()
 
 float ATerraShiftEnvironment::Reward()
 {
-    // --- Initial Safety Checks ---
+    // Initial Safety Checks
     if (!Initialized || !StateManager)
     {
         return 0.f;
@@ -278,7 +277,7 @@ float ATerraShiftEnvironment::Reward()
         return 0.f;
     }
 
-    // --- Reward Calculation ---
+    // Reward Calculation
 
     float activeObjectCount = 0;
     float totalAlignmentReward = 0;
@@ -304,7 +303,7 @@ float ATerraShiftEnvironment::Reward()
             StateManager->SetShouldCollectReward(ObjIndex, false);
         }
 
-        // --- Dense Shaping Rewards (only for active objects) ---
+        // Dense Shaping Rewards (only for active objects)
         EObjectSlotState SlotState = StateManager->GetObjectSlotState(ObjIndex);
         if (SlotState == EObjectSlotState::Active)
         {

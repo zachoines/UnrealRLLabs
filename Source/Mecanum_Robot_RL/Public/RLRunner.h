@@ -11,13 +11,7 @@
 #include "RLTypes.h"
 #include "RLRunner.generated.h"
 
-/**
- * Holds “pending” data for each environment with action-repeat:
- *   - The last state from the beginning of the repeated-block
- *   - The chosen action
- *   - Accumulated reward
- *   - Action repeat counter
- */
+/** Pending transition data used while action repeat is in effect. */
 USTRUCT()
 struct FPendingTransition
 {
@@ -36,14 +30,7 @@ struct FPendingTransition
     {}
 };
 
-/**
- * The RLRunner orchestrates multiple environment instances for TerraShift,
- * each with asynchronous action repeat, bridging states & actions
- * with the Python RL side (SharedMemory).
- *
- * It adds transitions to the new UExperienceBuffer,
- * then triggers `AgentComm->Update()` once each environment has at least `batch_size` transitions.
- */
+/** Actor responsible for running TerraShift environments and bridging to Python. */
 UCLASS(Blueprintable, BlueprintType)
 class UNREALRLLABS_API ARLRunner : public AActor
 {
@@ -62,63 +49,41 @@ public:
     );
 
 private:
-    // --------------------------
-    //   MAIN FLOW
-    // --------------------------
-
-    /**
-     * Called AFTER the environment has stepped at least once.
-     * Gathers (reward, done, trunc) => finalizes transitions if needed,
-     * and resets environment if done/trunc.
-     */
+    /** Finalizes transitions once environments report new rewards and termination flags. */
     void CollectTransitions();
 
-    /**
-     * For environment that needs new actions (repeatCounter==0),
-     * gather new actions from Python or random fallback.
-     */
+    /** Requests actions from Python for environments whose repeat counters expired. */
     void DecideActions();
 
-    /**
-     * Actually apply the current pending actions to each environment => PreStep->Act->PostStep
-     */
+    /** Applies pending actions to each environment and advances them one step. */
     void StepEnvironments();
 
-    // Each environment is stored in this array
     UPROPERTY()
     TArray<ABaseEnvironment*> Environments;
 
-    // For multi-agent
     bool bIsMultiAgent;
     int32 MinAgents;
     int32 MaxAgents;
     int32 CurrentAgents;
 
-    // Shared buffer
     UPROPERTY()
     UExperienceBuffer* ExperienceBufferInstance;
 
-    // Communicator to Python
     UPROPERTY()
     USharedMemoryAgentCommunicator* AgentComm;
 
-    // Config
     UPROPERTY()
     UEnvironmentConfig* EnvConfig;
 
-    // Training hyperparams
     int32 BufferSize;
     int32 BatchSize;
     int32 ActionRepeat;
 
-    // For building fallback random actions
     TArray<int32> DiscreteActionSizes;
     TArray<FVector2D> ContinuousActionRanges;
 
-    // Per-environment pending transitions
     TArray<FPendingTransition> Pending;
 
-    // Counters
     uint64 CurrentStep;
     uint64 CurrentUpdate;
 
@@ -128,28 +93,25 @@ private:
     void EndTestMode();
 
 private:
-    // --------------------------
-    //   Internal Helpers
-    // --------------------------
     void ParseActionSpaceFromConfig();
     FAction EnvSample(int EnvIndex);
 
-    /** Return environment's current state (multi-agent combined or single). */
+    /** Returns the current state for an environment (multi-agent combined or single). */
     FState GetEnvState(ABaseEnvironment* Env);
 
-    /** Reset environment i => store new state in the pending struct */
+    /** Resets an environment and seeds its pending transition. */
     void ResetEnvironment(int EnvIndex);
 
-    /** Start a new block for environment i after finishing old. */
+    /** Starts a new transition block for an environment. */
     void StartNewBlock(int EnvIndex, const FState& State);
 
-    /** Finalize the pending block => create an FExperience => add to buffer => maybe train update. */
+    /** Finalizes the pending block and adds it to the experience buffer. */
     void FinalizeTransition(int EnvIndex, const FState& NextState, bool bDone, bool bTrunc);
 
-    /** Possibly do a training update => if all envs have at least BatchSize experiences. */
+    /** Triggers a training update when each environment has enough transitions buffered. */
     void MaybeTrainUpdate();
 
-    /** Gather actions from Python or fallback random. */
+    /** Pulls actions from Python or samples fallbacks when communication fails. */
     TArray<FAction> GetActionsFromPython(const TArray<FState>& EnvStates, const TArray<float>& EnvDones, const TArray<float>& EnvTruncs, const TArray<float>& NeedsAction);
     TArray<FAction> SampleAllEnvActions();
 };

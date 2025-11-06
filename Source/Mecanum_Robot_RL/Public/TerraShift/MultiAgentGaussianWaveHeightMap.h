@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 #include "UObject/NoExportTypes.h"
 #include "EnvironmentConfig.h"
-#include "TerraShift/Matrix2D.h" // Assuming this path is correct
+#include "TerraShift/Matrix2D.h"
 #include "MultiAgentGaussianWaveHeightMap.generated.h"
 
 /**
@@ -18,7 +18,7 @@ struct FGaussianWaveAgent
 	FVector2D Position;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	float Orientation;    // Radians
+	float Orientation; // Radians
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float Amplitude;
@@ -58,7 +58,7 @@ class UNREALRLLABS_API UMultiAgentGaussianWaveHeightMap : public UObject
 	GENERATED_BODY()
 
 public:
-	UMultiAgentGaussianWaveHeightMap(); // Added constructor for default initialization
+	UMultiAgentGaussianWaveHeightMap();
 
 	/**
 	 * Initialize from environment/params/MultiAgentGaussianWaveHeightMap config block.
@@ -80,7 +80,7 @@ public:
 
 	/** Returns the final NxN wave matrix. */
 	UFUNCTION(BlueprintCallable)
-	const FMatrix2D& GetHeightMap() const; // Return const reference
+	const FMatrix2D& GetHeightMap() const;
 
 	/** Number of wave agents. */
 	UFUNCTION(BlueprintCallable)
@@ -95,18 +95,17 @@ protected:
 	void ComputeFinalWave();
 
 	/** Creates an NxN matrix for the given agent's Gaussian wave via matrix ops. */
-	[[nodiscard]] FMatrix2D ComputeAgentWave(const FGaussianWaveAgent& Agent) const; // Mark nodiscard
+	[[nodiscard]] FMatrix2D ComputeAgentWave(const FGaussianWaveAgent& Agent) const;
 
 	/** Initialize default agent positions, orientations, etc. */
 	void InitializeAgents();
 
-	// Utility for normalizing in agent state
+	/** Utility functions for normalizing values in the agent state. */
 	float MapRange(float x, float inMin, float inMax, float outMin, float outMax) const;
 	float MapToN11(float x, float mn, float mx) const;
 
 private:
 
-	// from config
 	UPROPERTY()
 	int32 NumAgents;
 

@@ -11,43 +11,42 @@ class UNREALRLLABS_API ABaseEnvironment : public AActor
     GENERATED_BODY()
 
 public:
-
-    // Sets default values for this actor's properties
+    /** Sets default values for this actor's properties. */
     ABaseEnvironment();
 
-    // Initialize the environment using the FBaseInitParams struct
+    /** Initializes the environment with the provided init parameters. */
     virtual void InitEnv(FBaseInitParams* Params);
 
-    // Reset the environment and return the initial state
+    /** Resets the environment and returns the initial state. */
     virtual FState ResetEnv(int NumAgents);
 
     virtual void PostInitializeComponents() override;
 
-    // Update environment with actions
+    /** Applies an action to the environment. */
     virtual void Act(FAction Action);
   
-    // Optional convenience function. Called after Step() in VectorEnvironment.
+    /** Optional hook invoked after Step() in VectorEnvironment. */
     virtual void PostStep();
 
-    // Optional convenience function. Called after Transition() in VectorEnvironment.
+    /** Optional hook invoked after Transition() in VectorEnvironment. */
     virtual void PostTransition();
 
-    // Optional convenience function. Called before Step() in VectorEnvironment.
+    /** Optional hook invoked before Step() in VectorEnvironment. */
     virtual void PreStep();
 
-    // Optional convenience function. Called before Transition() in VectorEnvironment.
+    /** Optional hook invoked before Transition() in VectorEnvironment. */
     virtual void PreTransition();
 
-    // Returns the public view of the state. Called after Update 
+    /** Returns the public view of the current state. */
     virtual FState State();
 
-    // Returns done conditon
+    /** Returns true when the current episode should end. */
     virtual bool Done();
 
-    // Returns truncation conditon
+    /** Returns true when the episode is truncated. */
     virtual bool Trunc();
 
-    // Calculate the reward for the current state
+    /** Computes the reward for the current state. */
     virtual float Reward();
 
     FBaseInitParams* params;

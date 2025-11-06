@@ -1,9 +1,9 @@
+// NOTICE: This file includes modifications generated with the assistance of generative AI.
+// Original code structure and logic by the project author.
 #include "TerraShift/Matrix2D.h"
-#include "Templates/UnrealTemplate.h" // For MoveTemp
+#include "Templates/UnrealTemplate.h"
 
-//============================================================================
 // Constructors & Destructor
-//============================================================================
 
 FMatrix2D::FMatrix2D()
 	: Rows(0)
@@ -52,9 +52,7 @@ FMatrix2D::FMatrix2D(const TArray<TArray<float>>& InData)
 	CheckInvariants(TEXT("2D Array Constructor"));
 }
 
-//============================================================================
 // Copy/Move Semantics
-//============================================================================
 
 FMatrix2D::FMatrix2D(const FMatrix2D& Other)
 	: Rows(Other.Rows)
@@ -118,11 +116,9 @@ FMatrix2D& FMatrix2D::operator=(FMatrix2D&& Other) noexcept
 	return *this;
 }
 
-//============================================================================
 // Core Operations
-//============================================================================
 
-// Use FMatrix2D::EInitialization for the enum type
+
 void FMatrix2D::Resize(int32 NewRows, int32 NewCols, FMatrix2D::EInitialization InitMethod)
 {
 	checkf(NewRows >= 0 && NewCols >= 0, TEXT("Cannot resize matrix to negative dimensions (%d, %d)"), NewRows, NewCols);
@@ -157,9 +153,7 @@ void FMatrix2D::Resize(int32 NewRows, int32 NewCols, FMatrix2D::EInitialization 
 }
 
 
-//============================================================================
 // Element-wise Operators (Matrix-Matrix)
-//============================================================================
 
 FMatrix2D FMatrix2D::operator+(const FMatrix2D& Other) const
 {
@@ -282,9 +276,7 @@ FMatrix2D& FMatrix2D::operator/=(const FMatrix2D& Other)
 	return *this;
 }
 
-//============================================================================
 // Scalar Operators
-//============================================================================
 
 FMatrix2D FMatrix2D::operator+(float Scalar) const
 {
@@ -382,9 +374,7 @@ FMatrix2D& FMatrix2D::operator/=(float Scalar)
 	return *this;
 }
 
-//============================================================================
 // Friend Scalar Operators (Scalar on Left)
-//============================================================================
 
 FMatrix2D operator+(float Scalar, const FMatrix2D& Matrix)
 {
@@ -423,9 +413,7 @@ FMatrix2D operator/(float Scalar, const FMatrix2D& Matrix)
 	return Result;
 }
 
-//============================================================================
 // Indexing Operators
-//============================================================================
 
 FFMatrix2DRowProxy FMatrix2D::operator[](int32 RowIndex)
 {
@@ -458,9 +446,7 @@ const FFMatrix2DConstRowProxy FMatrix2D::operator[](int32 RowIndex) const
 	return FFMatrix2DConstRowProxy(&Data[LinearIndex(RowIndex, 0)], Columns);
 }
 
-//============================================================================
 // Sub-Matrix Extraction
-//============================================================================
 
 FMatrix2D FMatrix2D::Sub(int32 RowStart, int32 RowEnd, int32 ColStart, int32 ColEnd) const
 {
@@ -492,9 +478,7 @@ FMatrix2D FMatrix2D::Sub(int32 RowStart, int32 RowEnd, int32 ColStart, int32 Col
 	return Result;
 }
 
-//============================================================================
 // Mathematical Functions (Element-wise)
-//============================================================================
 
 FMatrix2D FMatrix2D::Random(float Min, float Max) const
 {
@@ -568,9 +552,7 @@ FMatrix2D FMatrix2D::Abs() const
 	return Result;
 }
 
-//============================================================================
 // Matrix Reduction Functions
-//============================================================================
 
 // Calculates the element-wise dot product (sum of the Hadamard product).
 float FMatrix2D::Dot(const FMatrix2D& Other) const
@@ -678,9 +660,7 @@ float FMatrix2D::Max() const
 	return CurrentMax;
 }
 
-//============================================================================
 // Utility Functions
-//============================================================================
 
 FString FMatrix2D::ToString() const
 {
@@ -705,9 +685,7 @@ FString FMatrix2D::ToString() const
 	return Out;
 }
 
-//============================================================================
 // Matrix Operations
-//============================================================================
 
 FMatrix2D FMatrix2D::T() const
 {

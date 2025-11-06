@@ -18,7 +18,6 @@ class UNREALRLLABS_API UEnvironmentConfig : public UObject
     GENERATED_BODY()
 
 public:
-    // Existing API (same as your code)
     UFUNCTION(BlueprintCallable, Category = "Config")
     bool LoadFromFile(const FString& FilePath);
 
@@ -51,9 +50,6 @@ public:
 
     bool IsValid() const { return InternalJsonValue.IsValid(); }
 
-    // -----------------------------
-    // "GetOrDefault" Methods
-    // -----------------------------
     UFUNCTION(BlueprintCallable, Category = "Config")
     float GetOrDefaultNumber(const FString& Path, float DefaultVal);
 
@@ -79,10 +75,8 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Config")
     FVector2D GetVector2DOrDefault(const FString& Path, const FVector2D& DefaultVal);
 
-    // Called internally to wrap a sub-value in a new UEnvironmentConfig object.
     void Initialize(const TSharedPtr<FJsonValue>& InValue);
 
-    // Internal JSON node we represent
     TSharedPtr<FJsonValue> InternalJsonValue;
 
 private:

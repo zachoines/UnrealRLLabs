@@ -20,11 +20,10 @@ void AGoalManager::InitializeFromConfig(UEnvironmentConfig* GMConfig)
 {
     if (!GMConfig || !GMConfig->IsValid())
     {
-        UE_LOG(LogTemp, Error, TEXT("GoalManager::InitializeFromConfig => null or invalid config!"));
-        return;
-    }
+    UE_LOG(LogTemp, Error, TEXT("GoalManager::InitializeFromConfig => null or invalid config!"));
+    return;
+}
 
-    // Example: read a "DefaultRadius" param from the JSON.
     if (GMConfig->HasPath(TEXT("DefaultRadius")))
     {
         DefaultRadius = GMConfig->Get(TEXT("DefaultRadius"))->AsNumber();
@@ -38,7 +37,6 @@ void AGoalManager::InitializeFromConfig(UEnvironmentConfig* GMConfig)
 void AGoalManager::ResetGoals(const TArray<AActor*>& InGoalActors,
     const TArray<FVector>& InOffsets)
 {
-    // Check that arrays match
     if (InGoalActors.Num() != InOffsets.Num())
     {
         UE_LOG(LogTemp, Error, TEXT("GoalManager::ResetGoals => array size mismatch! Actors=%d, Offsets=%d"),
@@ -46,10 +44,8 @@ void AGoalManager::ResetGoals(const TArray<AActor*>& InGoalActors,
         return;
     }
 
-    // Clear out existing
     Goals.Empty();
 
-    // Rebuild
     for (int32 i = 0; i < InGoalActors.Num(); i++)
     {
         FGoalData data;

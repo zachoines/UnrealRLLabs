@@ -13,42 +13,37 @@ class UNREALRLLABS_API AColumn : public AActor {
 public:
     AColumn();
 
-    // Initializes the column with a given scale and location
+    /** Initializes the column with the given scale and location. */
     void InitColumn(FVector Scale, FVector Location);
 
-    // Sets the column's height and updates its position
+    /** Sets the column height and updates its position. */
     bool SetColumnHeight(float NewHeight);
 
-    // Resets the column to its initial state
+    /** Resets the column to its initial state. */
     void ResetColumn(float height);
 
-    // Retrieves the current height of the column
+    /** Returns the current column height. */
     float GetColumnHeight() const;
 
-    // Enables or disables physics simulation for the column
+    /** Enables or disables physics simulation for the column. */
     void SetSimulatePhysics(bool bEnablePhysics);
 
-    // Sets the color of the column
+    /** Sets the column color. */
     void SetColumnColor(FLinearColor Color);
 
-    // The root component for the column (non-simulating)
     UPROPERTY(VisibleAnywhere, Category = "Components")
     USceneComponent* ColumnRoot;
 
-    // The static mesh component representing the column
     UPROPERTY(VisibleAnywhere, Category = "Components")
     UStaticMeshComponent* ColumnMesh;
 
 private:
-    // The current height of the column
     float CurrentHeight;
 
-    // The starting position of the column
     FVector StartingPosition;
 
-    // Dynamic material instance for changing colors
     UMaterialInstanceDynamic* DynMaterial;
 
-    // Updates the column's position based on its height
+    /** Recomputes the column's world-space position based on height. */
     void UpdateColumnPosition(float NewHeight);
 };

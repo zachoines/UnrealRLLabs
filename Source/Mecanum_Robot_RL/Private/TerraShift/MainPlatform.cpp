@@ -4,17 +4,14 @@ AMainPlatform::AMainPlatform()
 {
     PrimaryActorTick.bCanEverTick = false;
 
-    // Create the root component
     RootSceneComponent = CreateDefaultSubobject<USceneComponent>(TEXT("RootSceneComponent"));
     RootComponent = RootSceneComponent;
     RootSceneComponent->SetMobility(EComponentMobility::Movable);
 
-    // Create the platform mesh component and attach it to the root
     PlatformMeshComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("PlatformMeshComponent"));
     PlatformMeshComponent->SetupAttachment(RootComponent);
     PlatformMeshComponent->SetMobility(EComponentMobility::Movable);
 
-    // Set up collision and physics settings
     PlatformMeshComponent->SetSimulatePhysics(false);
     PlatformMeshComponent->SetEnableGravity(false);
     PlatformMeshComponent->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);

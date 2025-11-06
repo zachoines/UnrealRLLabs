@@ -2,27 +2,25 @@
 
 #include "CoreMinimal.h"
 #include "UObject/NoExportTypes.h"
-#include "Matrix2D.h"          // your custom 2D matrix, or you can store TArrays
+#include "Matrix2D.h"
 #include "Containers/Map.h"
 #include "Containers/Set.h"
-#include "Engine/DataTable.h"  // optional, if you want structured data?
+#include "Engine/DataTable.h"
 
 #include "OccupancyGrid.generated.h"
 
+/** Metadata describing the cells occupied by a single object. */
 USTRUCT()
 struct FOccupancyNode
 {
     GENERATED_BODY()
 
-    // For simplicity, store the set of "cells" this node occupies (2D grid indices)
     UPROPERTY()
     TSet<int32> OccupiedCells;
 
-    // Optionally store other info about the object:
     UPROPERTY()
     int32 ObjectId;
 
-    // Possibly store radius, bounding box, or other metadata
     float Radius;
 
     FOccupancyNode()
@@ -32,105 +30,59 @@ struct FOccupancyNode
     }
 };
 
-/**
- * A single layer of occupancy data:
- *   - TMap<ObjectId, FOccupancyNode> so we can track which cells each object occupies
- */
+/** Map of object ids to their occupancy metadata for a single layer. */
 USTRUCT()
 struct FOccupancyLayer
 {
     GENERATED_BODY()
 
-    // For each object => store an occupancy node
     UPROPERTY()
     TMap<int32, FOccupancyNode> Objects;
 };
 
-/**
- * UOccupancyGrid:
- *  - Manages multiple "layers" of occupancy (like "Goals", "GridObjects", etc.)
- *  - Tracks which cells each object occupies
- *  - Allows overlap or disallows overlap between layers
- */
+/** UObject wrapper that tracks per-layer cell occupancy for TerraShift actors. */
 UCLASS(BlueprintType)
 class UNREALRLLABS_API UOccupancyGrid : public UObject
 {
     GENERATED_BODY()
 
 public:
-    // -------------------------------------------
-    // Initialization
-    // -------------------------------------------
     UFUNCTION(BlueprintCallable)
     void InitGrid(int32 InGridSize, float InPlatformSize, FVector InPlatformCenter);
 
     UFUNCTION(BlueprintCallable)
     void ResetGrid();
 
-    // -------------------------------------------
-    //  Adding & Removing
-    // -------------------------------------------
-    /**
-     * Add an object with a given "radius" or bounding shape.
-     * We'll find a free location (or we accept a location param if you want),
-     * store its OccupiedCells, etc.
-     *
-     * @param ObjectId => A unique ID for the object
-     * @param LayerName => e.g. "Goals", "GridObjects"
-     * @param OverlapLayers => which layers we can overlap. If empty => no overlap allowed.
-     * @return 2D "cell index" or -1 if fails
-     */
+    /** Adds an object to a layer and reserves cells based on its radius. */
     UFUNCTION(BlueprintCallable)
     int32 AddObjectToGrid(
         int32 ObjectId,
         FName LayerName,
         float Radius,
         const TArray<FName>& OverlapLayers
-        // Possibly pass "desired location" if you want
     );
 
-    /**
-     * Removes an object from a specific layer => frees up its OccupiedCells
-     */
+    /** Removes an object from a layer and frees its occupied cells. */
     UFUNCTION(BlueprintCallable)
     void RemoveObject(int32 ObjectId, FName LayerName);
 
-    /**
-     * Re-positions or updates an existing object =>
-     * changes its OccupiedCells accordingly
-     */
+    /** Updates a tracked object, recomputing its occupied cells. */
     UFUNCTION(BlueprintCallable)
     void UpdateObject(int32 ObjectId, FName LayerName, float NewRadius, const TArray<FName>& OverlapLayers);
 
-    // -------------------------------------------
-    //  Queries
-    // -------------------------------------------
-    /**
-     * Renders the occupancy from the given set of layers into an NxN matrix:
-     *  - 0 => free
-     *  - 1 => occupied
-     * Or possibly store object Id in the cell
-     */
+    /** Returns a matrix view for the provided layers (binary or object-id encoded). */
     UFUNCTION(BlueprintCallable)
     FMatrix2D GetOccupancyMatrix(const TArray<FName>& Layers, bool bUseBinary) const;
 
-    /**
-     * Helper: convert grid coords => world location (top of column or same plane),
-     * or possibly uses your own "CellSize" logic.
-     */
+    /** Converts a grid cell index to world space. */
     UFUNCTION(BlueprintCallable)
     FVector GridToWorld(int32 GridIndex) const;
 
-    /**
-     * Helper: convert world location => nearest grid cell index
-     */
+    /** Converts a world-space location to the nearest grid cell index. */
     UFUNCTION(BlueprintCallable)
     int32 WorldToGrid(const FVector& WorldLocation) const;
 
-    /**
-     * Check if a circle at CellIndex with radius "RadiusCells" would overlap the existing layers
-     * that do NOT appear in OverlapLayers
-     */
+    /** Checks whether a placement would overlap disallowed layers. */
     bool WouldOverlap(int32 ProposedCellIndex, float RadiusCells, const TArray<FName>& OverlapLayers) const;
 
     UFUNCTION(BlueprintCallable)
@@ -147,26 +99,15 @@ public:
     );
 
 private:
-    /**
-     * Internal function that tries to find a free cell index
-     * that doesn't conflict with any "no-overlap" layers
-     * or existing objects in the same layer if you want unique space.
-     */
+    /** Finds a free cell index that respects the provided overlap policy. */
     int32 FindFreeCellForRadius(float RadiusCells, const TArray<FName>& OverlapLayers);
 
-    // Possibly a function that calculates which cells a circle of radius "RadiusCells"
-    // will occupy if placed at "CellIndex"
+    /** Computes the set of cells covered by a disc placed at the given index. */
     TSet<int32> ComputeOccupiedCells(int32 CellIndex, float RadiusCells) const;
 
-    // -------------------------------------------
-    //  Data
-    // -------------------------------------------
-
-    // For each layer => the TMap of objectId => node info
     UPROPERTY()
     TMap<FName, FOccupancyLayer> Layers;
 
-    // dimension
     UPROPERTY()
     int32 GridSize;
 

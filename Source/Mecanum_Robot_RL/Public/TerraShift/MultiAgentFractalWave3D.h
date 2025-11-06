@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include <random>
@@ -158,12 +158,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "FractalWave")
     TArray<float> GetAgentFractalImage(int32 AgentIndex) const;
 
-    /**
-     * Returns agent's state variables in [-1..1].
-     * The orientation is omitted from this example;
-     * we just return fractal parameters & possibly
-     * a converted "pitch/yaw/roll" if you wish.
-     */
+    /** Returns agent state variables in [-1..1], including fractal parameters and optional orientation deltas. */
     UFUNCTION(BlueprintCallable, Category = "FractalWave")
     TArray<float> GetAgentStateVariables(int32 AgentIndex) const;
 
