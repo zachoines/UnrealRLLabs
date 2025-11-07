@@ -180,6 +180,16 @@ class RLRunner:
         if self.eval_only and self.test_enabled:
             self._start_test_mode()
 
+    def restore_checkpoint_extras(self, extras: Optional[Dict[str, Any]]) -> None:
+        if not extras:
+            return
+        normalizer_state = extras.get("state_normalizer")
+        if normalizer_state and self.state_normalizer:
+            self.state_normalizer.load_state_dict(normalizer_state)
+            print("State normalizer restored from checkpoint.")
+        elif normalizer_state and not self.state_normalizer:
+            print("Warning: checkpoint provided a state normalizer, but current run has normalization disabled; ignoring state.")
+
     def _finalize_episode(self, env_index: int):
         """Compute returns for all segments of a finished episode."""
         episode_segments = self.current_episode_segments[env_index]
@@ -709,9 +719,13 @@ class RLRunner:
         self._log_step(logs)
 
         if (self.update_idx % self.save_freq) == 0:
+            extra_state: Dict[str, Any] = {}
+            if self.state_normalizer:
+                extra_state["state_normalizer"] = self.state_normalizer.state_dict()
             self.agent.save(
                 f"./checkpoints/model_update_{self.update_idx}.pth",
                 include_optimizers=True,
+                extra_state=extra_state if extra_state else None,
             )
             print("Model checkpoint saved.")
         

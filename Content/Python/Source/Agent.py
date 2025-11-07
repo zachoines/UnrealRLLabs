@@ -1,7 +1,7 @@
 import copy
 import torch
 import torch.nn as nn
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple
 
 class Agent(nn.Module):
     def __init__(self, config: dict, device: torch.device):
@@ -11,8 +11,8 @@ class Agent(nn.Module):
         self.optimizers = {}
         self._initial_scheduler_states = {}
 
-    def save(self, location: str, include_optimizers: bool = False) -> None:
-        """Save model parameters and optionally optimizer + scheduler states.
+    def save(self, location: str, include_optimizers: bool = False, extra_state: Dict[str, Any] = None) -> None:
+        """Save model parameters and optionally optimizer + scheduler states, plus extra metadata.
 
         Backward-compatible: older checkpoints without 'schedulers' will still load.
         """
@@ -21,6 +21,8 @@ class Agent(nn.Module):
                 "model": self.state_dict(),
                 "optimizers": {name: opt.state_dict() for name, opt in self.optimizers.items()},
             }
+            if extra_state:
+                checkpoint["extras"] = extra_state
             # Save schedulers if present
             if hasattr(self, "schedulers") and isinstance(self.schedulers, dict):
                 sched_state = {}
@@ -46,7 +48,10 @@ class Agent(nn.Module):
                 checkpoint.setdefault("meta", {})["update_num"] = int(m.group(1))
             torch.save(checkpoint, location)
         else:
-            torch.save(self.state_dict(), location)
+            checkpoint = {"model": self.state_dict()}
+            if extra_state:
+                checkpoint["extras"] = extra_state
+            torch.save(checkpoint, location)
 
     def load(
         self,
@@ -67,12 +72,15 @@ class Agent(nn.Module):
         load_schedulers = bool(load_schedulers)
         reset_requested = reset_schedulers or (not load_schedulers)
 
+        extras = None
+
         if isinstance(state, dict) and "model" in state:
             self.load_state_dict(state["model"])
             if load_optimizers and "optimizers" in state:
                 for name, opt_state in state["optimizers"].items():
                     if name in self.optimizers:
                         self.optimizers[name].load_state_dict(opt_state)
+            extras = state.get("extras")
 
             if hasattr(self, "schedulers") and isinstance(self.schedulers, dict):
                 sched_state = state.get("schedulers", None) if load_schedulers else None
@@ -148,6 +156,8 @@ class Agent(nn.Module):
                         continue
         except Exception:
             pass
+
+        return extras
 
     def _reset_schedulers(self) -> None:
         if not hasattr(self, "schedulers") or not isinstance(self.schedulers, dict):

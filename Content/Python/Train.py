@@ -25,6 +25,7 @@ def main():
     restore_schedulers = checkpoint_cfg.get("restore_schedulers", True)
 
     resume_path = args.resume_from_checkpoint or cfg_checkpoint_path
+    checkpoint_extras = None
     if resume_path:
         expanded_path = os.path.expandvars(os.path.expanduser(resume_path))
         if os.path.exists(expanded_path):
@@ -33,7 +34,7 @@ def main():
                 print("  - Optimizer state will NOT be restored (per configuration).")
             if not restore_schedulers:
                 print("  - Scheduler state will NOT be restored and will be reset to defaults (per configuration).")
-            agent.load(
+            checkpoint_extras = agent.load(
                 expanded_path,
                 load_optimizers=restore_optimizers,
                 load_schedulers=restore_schedulers,
@@ -43,6 +44,8 @@ def main():
             print(f"Warning: Checkpoint file not found at {expanded_path}. Starting from scratch.")
 
     runner = factory.create_runner(agent, agentComm)
+    if checkpoint_extras:
+        runner.restore_checkpoint_extras(checkpoint_extras)
 
     try:
         runner.start()

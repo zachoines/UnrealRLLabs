@@ -4,11 +4,11 @@
     "id": "TerraShift_8A_32x32_Test_$(date +%Y%m%d_%H%M%S)",
     "params": {
       "PlatformSize": 1.0,
-      "MaxColumnHeight": 6.0,
+      "MaxColumnHeight": 10,
       "ObjectMass": 1.0,
       "GridSize": 32,
       "MaxSteps": 512,
-      "MaxAgents": 8,
+      "MaxAgents": 16,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
         "bUseXYDistanceImprovement": true,
@@ -22,66 +22,66 @@
         "bDisableEventRewards": false,
         "bUseStationaryPenalty": true,
         "StationaryPenalty_MinSpeed": 5.0,
-        "StationaryPenalty_Drain": 0.01,
+        "StationaryPenalty_Drain": 0.0001,
         "StationaryPenalty_MinConsecutiveFrames": 1,
         "PotentialShaping_Gamma": 0.97,
         "PotentialShaping_Scale": 1.0,
         "VelAlign_Scale": 0.05,
         "VelAlign_Min": -50.0,
         "VelAlign_Max": 50.0,
-        "DistImprove_Scale": 100.0,
+        "DistImprove_Scale": 1.0,
         "DistImprove_Min": -1.0,
         "DistImprove_Max": 1.0,
         "ZAccel_Scale": 0.0001,
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
-        "EventReward_GoalReached": 100.0,
-        "EventReward_OutOfBounds": 25.0,
-        "TimeStepPenalty": 0.01
+        "EventReward_GoalReached": 1.0,
+        "EventReward_OutOfBounds": 0.25,
+        "TimeStepPenalty": 0.0001
       },
       "GoalManager": {
         "DefaultRadius": 1.0
       },
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 8,
+        "NumAgents": 16,
         "GridSize": 32,
-        "MinHeight": -6.0,
-        "MaxHeight": 6.0,
+        "MinHeight": -10,
+        "MaxHeight": 10,
         "NumActions": 6,
         "bUseActionDelta": true,
         "bAccumulatedWave": false,
         "AccumulatedWaveFadeGamma": 0.95,
         "bWrapAroundEdges": true,
         "VelMinMax": [
-          -2,
-          2
+          -1,
+          1
         ],
         "AngVelRange": [
-          -1.57,
-          1.57
+          -0.785,
+          0.785
         ],
         "AmpMinMax": [
-          -6.0,
-          6.0
+          -5,
+          5
         ],
         "SigMinMax": [
           0.5,
-          3.0
+          6.0
         ],
         "DeltaVelScale": 2.0,
         "DeltaAngVelScale": 1.57,
-        "DeltaAmpScale": 3.0,
-        "DeltaSigmaScale": 1.0
+        "DeltaAmpScale": 0.5,
+        "DeltaSigmaScale": 2.0
       },
       "StateManager": {
-        "MaxGridObjects": 4,
+        "MaxGridObjects": 8,
         "MarginXY": -1.0,
         "MinZ": 0.0,
         "MaxZ": 40.0,
-        "SpawnPaddingZ": 3.0,
+        "SpawnPaddingZ": 10.0,
         "SpawnSeparationRadius": 7.0,
-        "ObjectMass": 0.1,
-        "MaxColumnHeight": 6.0,
+        "ObjectMass": 1.0,
+        "MaxColumnHeight": 10,
         "BaseRespawnDelay": 0.1,
         "OverheadCameraDistance_disabled": 1500.0,
         "OverheadCameraFOV_disabled": 90.0,
@@ -94,9 +94,9 @@
         "bTerminateOnMaxSteps": false,
         "bRemoveObjectsOnGoal": true,
         "bSuppressPerStepGoalReward": true,
-        "GoalRadius": 8.0,
-        "ObjectRadius": 6.0,
-        "GoalCollectRadius": 10.0,
+        "GoalRadius": 4.0,
+        "ObjectRadius": 3.0,
+        "GoalCollectRadius": 5.0,
         "GoalColors": [
           [
             1.0,
@@ -148,10 +148,10 @@
         "StateOverheadImageResX": 64,
         "StateOverheadImageResY": 64,
         "bIncludeGridObjectSequenceInState": true,
-        "MaxGridObjectsForState": 4,
+        "MaxGridObjectsForState": 8,
         "GridObjectFeatureSize": 9,
         "bRestrictColumnPhysicsToRadius": true,
-        "ColumnCollisionRadiusCells": 3,
+        "ColumnCollisionRadiusCells": 2,
         "bEnabledShaderBasedHeightmap": true,
         "bRestrictColumnMovementToRadius": true
       }
@@ -184,15 +184,15 @@
             "enabled": true,
             "type": "sequence",
             "shape": {
-              "max_length": 4,
+              "max_length": 8,
               "feature_dim": 9
             }
           }
         ],
         "agent": {
           "obs_size": 9,
-          "min": 8,
-          "max": 8
+          "min": 16,
+          "max": 16
         }
       },
       "action": {
@@ -234,7 +234,7 @@
       "fps": 32,
       "dpi": 150
     },
-    "auto_save_every": 1024,
+    "auto_save_every": 512,
     "components_to_record": [
       {
         "enabled": true,
@@ -415,7 +415,7 @@
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 8,
+            "num_agents": 16,
             "embed_dim": 256,
             "num_heads": 8,
             "transformer_layers": 2,
@@ -571,16 +571,16 @@
   "train": {
     "sequence_length": 32,
     "pad_trajectories": true,
-    "batch_size": 256,
-    "buffer_size": 256,
-    "num_environments": 64,
+    "batch_size": 512,
+    "buffer_size": 512,
+    "num_environments": 32,
     "epochs": 4,
-    "mini_batch_size": 64,
+    "mini_batch_size": 32,
     "ActionRepeat": 2,
     "saveFrequency": 27,
-    "states_normalizer_disabled": {
+    "states_normalizer": {
       "epsilon": 1e-08,
-      "warmup_steps": 0
+      "warmup_steps": 10000
     },
     "checkpoint": {
       "path": "checkpoints\\model_test.pth",

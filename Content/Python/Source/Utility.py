@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.init as init
 import torch.nn.functional as F
 import numpy as np
-from typing import Union, Dict, Tuple
+from typing import Union, Dict, Tuple, Any
 
 def create_2d_sin_cos_pos_emb(h: int, w: int, embed_dim: int, device: torch.device):
     """
@@ -408,6 +408,41 @@ class RunningMeanStdNormalizer:
 
         # Use the stored variance, which should be clamped >= 1e-8 from _update_single
         return ((tensor_on_device - mean_reshaped) / torch.sqrt(var_reshaped + 1e-8)).to(self.dtype)
+
+    def state_dict(self) -> Dict[str, Any]:
+        stats_serialized: Dict[str, Dict[str, torch.Tensor]] = {}
+        for key, (mean, var, count) in self.stats.items():
+            stats_serialized[key] = {
+                "mean": mean.detach().cpu(),
+                "var": var.detach().cpu(),
+                "count": count.detach().cpu(),
+            }
+        return {
+            "epsilon": self.epsilon,
+            "warmup_steps": self.warmup_steps,
+            "update_calls_count": self.update_calls_count,
+            "stats": stats_serialized,
+        }
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        if state is None:
+            return
+        self.epsilon = state.get("epsilon", self.epsilon)
+        self.warmup_steps = state.get("warmup_steps", self.warmup_steps)
+        self.update_calls_count = state.get("update_calls_count", 0)
+        stats_in = state.get("stats", {})
+        restored_stats: Dict[str, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
+        for key, entry in stats_in.items():
+            mean = entry.get("mean", None)
+            var = entry.get("var", None)
+            count = entry.get("count", None)
+            if mean is None or var is None or count is None:
+                continue
+            mean_t = mean.to(self.device, dtype=self.dtype)
+            var_t = var.to(self.device, dtype=self.dtype)
+            count_t = count.to(self.device, dtype=torch.float64)
+            restored_stats[key] = (mean_t, var_t, count_t)
+        self.stats = restored_stats
 
 class PopArtNormalizer(nn.Module):
     def __init__(self, output_layer: nn.Linear, beta: float = 0.999, epsilon: float = 1e-5, device: torch.device = torch.device("cpu")):

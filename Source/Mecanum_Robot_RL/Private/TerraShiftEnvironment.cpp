@@ -563,7 +563,7 @@ float ATerraShiftEnvironment::Reward()
         }
     }
 
-    return AccumulatedReward / CurrentGridObjects;
+    return AccumulatedReward;
 }
 
 float ATerraShiftEnvironment::ThresholdAndClamp(float value, float minThreshold, float maxClamp)

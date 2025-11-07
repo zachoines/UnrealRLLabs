@@ -1586,9 +1586,9 @@ class MAPOCAAgent(Agent):
         
     # --- Save/Load ---
 
-    def save(self, location: str, include_optimizers: bool = False) -> None:
+    def save(self, location: str, include_optimizers: bool = False, extra_state: Optional[Dict[str, Any]] = None) -> None:
         """Save model parameters and optionally optimizer states."""
-        super().save(location, include_optimizers=include_optimizers)
+        super().save(location, include_optimizers=include_optimizers, extra_state=extra_state)
 
     def load(
         self,
