@@ -1,7 +1,6 @@
 # NOTICE: This file includes modifications generated with the assistance of generative AI (VSCode Copilot Assistant).
 # Original code structure and logic by the project author.
-# The modifications are intended to enhance the functionality and performance of the code.
-# The author has reviewed all changes for correctness.
+
 import win32event
 import win32api
 import numpy as np
@@ -23,14 +22,14 @@ class EnvCommunicationInterface:
     def __init__(self) -> None:
         pass
 
-    def get_states(self) -> Tuple[Dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor]:  # Return Dict[str, Any]
+    def get_states(self) -> Tuple[Dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor]:
         pass
 
     def send_actions(self, actions: torch.Tensor) -> None:
         pass
 
     def get_experiences(self) -> Tuple[
-        Dict[str, Any], Dict[str, Any], # Return Dict[str, Any]
+        Dict[str, Any], Dict[str, Any],
         torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
     ]:
         pass

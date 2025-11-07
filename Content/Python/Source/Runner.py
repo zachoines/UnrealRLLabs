@@ -14,9 +14,8 @@ from Source.Environment import EnvCommunicationInterface, EventType
 # Assuming StateRecorder is in the same directory or accessible via Source.
 from Source.StateRecorder import StateRecorder 
 
-# -----------------------------------------------------------------------------
 class TrajectorySegment:
-    """Accumulates one variable‑length segment until cut or padded."""
+    """Accumulates a variable-length trajectory segment."""
 
     def __init__(self, num_agents_cfg: int, device: torch.device, pad: bool, max_len: int):
         self.device = device
@@ -89,9 +88,8 @@ class TrajectorySegment:
             self.true_sequence_length,
         )
 
-# -----------------------------------------------------------------------------
 class RLRunner:
-    """Handles UE→Python experience pipeline and agent updates."""
+    """Coordinates experience collection between Unreal Engine and the Python trainer."""
 
     def __init__(self, agent: Agent, agentComm: EnvCommunicationInterface, cfg: Dict):
         self.agent, self.agentComm, self.config = agent, agentComm, cfg
@@ -307,7 +305,6 @@ class RLRunner:
         if not (has_central_state or has_agent_state):
             # This can happen if initial shared memory read is empty or parsing fails in agentComm
             print("RLRunner: Received empty or invalid states_from_comm in _handle_get_actions. Skipping.")
-            # Still need to signal UE to avoid deadlock if it's waiting for actions
             # Assuming a dummy action send might be needed or a more robust error signal to UE
             # For now, let's try to send zero actions if action_dim is known from Agent
             if hasattr(self.agent, 'total_action_dim_per_agent') and self.agent.total_action_dim_per_agent > 0:
@@ -474,7 +471,6 @@ class RLRunner:
         
         if not rewards_tensor.numel(): # No experiences received
             print("RLRunner: no experiences received in update. Skipping.")
-            # Still need to signal UE that Python is done with this "empty" update cycle.
             if hasattr(self.agentComm, 'update_received_event') and self.agentComm.update_received_event:
                  win32event.SetEvent(self.agentComm.update_received_event)
             return
@@ -627,7 +623,7 @@ class RLRunner:
                 return
 
         if not all_completed_segments:
-            print("RLRunner: no completed segments to update with – skipping agent update.")
+            print("RLRunner: no completed segments to update with - skipping agent update.")
             if hasattr(self.agentComm, 'update_received_event') and self.agentComm.update_received_event:
                  win32event.SetEvent(self.agentComm.update_received_event) # Corrected call
             return

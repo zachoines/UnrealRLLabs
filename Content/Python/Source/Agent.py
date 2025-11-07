@@ -56,7 +56,7 @@ class Agent(nn.Module):
         raise NotImplementedError
     
     def total_grad_norm(self, params):
-        # compute the global L2 norm across all param grads
+        """Compute the global L2 norm across parameter gradients."""
         total = 0.0
         for p in params:
             if p.grad is not None:

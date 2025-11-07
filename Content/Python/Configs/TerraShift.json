@@ -64,10 +64,10 @@
         "OverheadCameraResX_disabled": 25,
         "OverheadCameraResY_disabled": 25,
         "bUseRandomGoals": true,
-        "bRespawnOnGoal": true,
-        "bRespawnOnOOB": true,
-        "bTerminateOnAllGoalsReached": false,
-        "bTerminateOnMaxSteps": true,
+        "bRespawnOnGoal": false,
+        "bRespawnOnOOB": false,
+        "bTerminateOnAllGoalsReached": true,
+        "bTerminateOnMaxSteps": false,
         "GoalRadius": 8.0,
         "ObjectRadius": 8.0,
         "GoalCollectRadius": 10.0,
@@ -359,7 +359,7 @@
     "pad_trajectories": true,
     "batch_size": 1024,
     "buffer_size": 1024,
-    "num_environments": 8,
+    "num_environments": 1,
     "epochs": 4,
     "mini_batch_size": 16,
     "ActionRepeat": 2,
@@ -369,7 +369,7 @@
   "test": {
     "enabled": true,
     "frequency": 1,
-    "steps": 128,
-    "eval_only": false
+    "steps": 1024,
+    "eval_only": true
   }
 }

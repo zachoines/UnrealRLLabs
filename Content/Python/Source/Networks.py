@@ -1,7 +1,6 @@
 # NOTICE: This file includes modifications generated with the assistance of generative AI (VSCode Copilot Assistant).
 # Original code structure and logic by the project author.
-# The modifications are intended to enhance the functionality and performance of the code.
-# The author has reviewed all changes for correctness.
+
 import math
 import torch
 import numpy as np
@@ -13,7 +12,6 @@ from torch.distributions import Beta, AffineTransform, Normal, TransformedDistri
 from torch.distributions.transforms import TanhTransform
 from abc import ABC, abstractmethod
 
-# Assuming Utility functions are correctly imported from your project structure
 from .Utility import (
     init_weights_leaky_relu, 
     init_weights_gelu_linear, 
@@ -22,53 +20,37 @@ from .Utility import (
 )
 
 class BasePolicyNetwork(nn.Module, ABC):
-    """Abstract base class for policy networks (discrete or continuous)."""
+    """Abstract base class for policy heads."""
     def __init__(self):
         super().__init__()
 
     @abstractmethod
     def get_actions(self, emb: torch.Tensor, eval: bool = False):
-        """
-        Given embeddings, compute actions, log probabilities, and entropies.
-
-        Args:
-            emb (torch.Tensor): Input embeddings (Batch, ..., Features).
-            eval (bool): If True, return deterministic actions (e.g., mean or mode).
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: actions, log_probs, entropies.
-        """
+        """Return sampled (or greedy) actions plus log-probs/entropies."""
         raise NotImplementedError
 
     @abstractmethod
     def recompute_log_probs(self, emb: torch.Tensor, actions: torch.Tensor):
-        """
-        Recompute log probabilities and entropies for given actions and embeddings,
-        using the current network parameters. Useful for PPO updates.
-
-        Args:
-            emb (torch.Tensor): Input embeddings (Batch, ..., Features).
-            actions (torch.Tensor): Actions previously taken (Batch, ..., ActionDim).
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: log_probs, entropies.
-        """
+        """Recompute log-probs/entropies for PPO-style updates."""
         raise NotImplementedError
 
 
 class DiscretePolicyNetwork(BasePolicyNetwork):
-    """
-    Policy network for discrete or multi-discrete action spaces using Categorical distributions.
-    Accepts dropout_rate via **kwargs for shared layers.
-    """
-    def __init__(self, in_features: int, out_features: Union[int, List[int]], hidden_size: int, linear_init_scale: float = 1.0, **kwargs):
+    """Categorical policy for single or multi-discrete action spaces."""
+    def __init__(
+        self,
+        in_features: int,
+        out_features: Union[int, List[int]],
+        hidden_size: int,
+        linear_init_scale: float = 1.0,
+        **kwargs,
+    ):
         super().__init__()
         self.in_features  = in_features
         self.hidden_size  = hidden_size
         self.out_is_multi = isinstance(out_features, list)
-        dropout_rate = kwargs.get('dropout_rate', 0.0) # Extract dropout rate
+        dropout_rate = kwargs.get('dropout_rate', 0.0)
 
-        # Shared MLP layers with optional dropout
         self.shared = nn.Sequential(
             nn.Linear(in_features, hidden_size),
             nn.GELU(),
@@ -78,40 +60,33 @@ class DiscretePolicyNetwork(BasePolicyNetwork):
             nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
         )
 
-        # Output head(s) for logits
         if not self.out_is_multi:
-            # Single discrete action space
             self.head = nn.Linear(hidden_size, out_features)
         else:
-            # Multi-discrete action space (one head per branch)
             self.branch_heads = nn.ModuleList([
                 nn.Linear(hidden_size, branch_sz)
                 for branch_sz in out_features
             ])
 
-        # Initialize linear layers using GELU assumption
         self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
 
     def forward(self, x: torch.Tensor):
-        """Computes logits for the Categorical distribution(s)."""
         feats = self.shared(x)
         if not self.out_is_multi:
-            return self.head(feats) # Returns tensor (Batch, num_actions)
+            return self.head(feats)
         else:
-            # Returns list of tensors [(Batch, branch1_size), (Batch, branch2_size), ...]
             return [bh(feats) for bh in self.branch_heads]
 
     def get_actions(self, emb: torch.Tensor, eval: bool = False):
-        """Samples actions or takes argmax, returns actions, log_probs, entropies."""
         logits_output = self.forward(emb)
-        B = emb.shape[0] # Assumes Batch dim is the first dim
+        B = emb.shape[0]
 
         if not self.out_is_multi:
             logits_tensor = logits_output
             dist = torch.distributions.Categorical(logits=logits_tensor)
             actions = torch.argmax(logits_tensor, dim=-1) if eval else dist.sample()
-            log_probs = dist.log_prob(actions) # Shape (B,)
-            entropies = dist.entropy() # Shape (B,)
+            log_probs = dist.log_prob(actions)
+            entropies = dist.entropy()
             return actions, log_probs, entropies
         else:
             logits_list = logits_output
@@ -125,21 +100,18 @@ class DiscretePolicyNetwork(BasePolicyNetwork):
                 lp_list.append(lp_b)
                 ent_list.append(ent_b)
 
-            # Stack actions, sum log_probs and entropies across branches
-            acts_stacked = torch.stack(actions_list, dim=-1) # Shape (B, num_branches)
-            lp_stacked   = torch.stack(lp_list, dim=-1).sum(dim=-1) # Shape (B,)
-            ent_stacked  = torch.stack(ent_list, dim=-1).sum(dim=-1) # Shape (B,)
+            acts_stacked = torch.stack(actions_list, dim=-1)
+            lp_stacked   = torch.stack(lp_list, dim=-1).sum(dim=-1)
+            ent_stacked  = torch.stack(ent_list, dim=-1).sum(dim=-1)
             return acts_stacked, lp_stacked, ent_stacked
 
     def recompute_log_probs(self, emb: torch.Tensor, actions: torch.Tensor):
-        """Recomputes log_probs and entropies for given actions."""
         logits_output = self.forward(emb)
         B = emb.shape[0]
 
         if not self.out_is_multi:
             logits_tensor = logits_output
             dist = torch.distributions.Categorical(logits=logits_tensor)
-            # Ensure actions are Long type and remove trailing dim if present (e.g., from (B, 1))
             log_probs = dist.log_prob(actions.long().squeeze(-1))
             entropies = dist.entropy()
             return log_probs, entropies
@@ -161,13 +133,17 @@ class DiscretePolicyNetwork(BasePolicyNetwork):
 
 
 class ValueNetwork(nn.Module):
-    """MLP predicting a scalar value from input features, with optional dropout."""
-    def __init__(self, in_features: int, hidden_size: int, dropout_rate: float = 0.0,
-                 linear_init_scale: float = 1.0, # General scale for hidden layers
-                 output_layer_init_gain: Optional[float] = None): # Specific gain for the output layer
+    """MLP value head with optional dropout per layer."""
+    def __init__(
+        self,
+        in_features: int,
+        hidden_size: int,
+        dropout_rate: float = 0.0,
+        linear_init_scale: float = 1.0,
+        output_layer_init_gain: Optional[float] = None,
+    ):
         super().__init__()
         
-        # Define layers individually for more control over initialization
         self.fc1 = nn.Linear(in_features, hidden_size)
         self.act1 = nn.GELU()
         self.dropout1 = nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity()
@@ -176,20 +152,16 @@ class ValueNetwork(nn.Module):
         self.act2 = nn.GELU()
         self.dropout2 = nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity()
         
-        self.output_layer = nn.Linear(hidden_size, 1) # Outputs a single scalar value
+        self.output_layer = nn.Linear(hidden_size, 1)
 
-        # Initialize hidden layers using the general linear_init_scale
-        # Assuming init_weights_gelu_linear is available in the scope
         init_weights_gelu_linear(self.fc1, scale=linear_init_scale)
         init_weights_gelu_linear(self.fc2, scale=linear_init_scale)
 
-        # Specific initialization for the output layer
         if output_layer_init_gain is not None:
             init.orthogonal_(self.output_layer.weight, gain=output_layer_init_gain)
             if self.output_layer.bias is not None:
                 init.zeros_(self.output_layer.bias)
         else:
-            # Fallback to the general init scale if specific gain is not provided for the output layer
             init_weights_gelu_linear(self.output_layer, scale=linear_init_scale)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -206,10 +178,7 @@ class ValueNetwork(nn.Module):
 
 
 class TanhContinuousPolicyNetwork(BasePolicyNetwork):
-    """
-    Continuous policy network using a Tanh-squashed Normal distribution.
-    Features state-dependent variance computed via softplus activation.
-    """
+    """Tanh-squashed Normal policy with state-dependent variance."""
     def __init__(
         self,
         in_features: int,
@@ -221,7 +190,7 @@ class TanhContinuousPolicyNetwork(BasePolicyNetwork):
         entropy_method: str = "analytic",
         n_entropy_samples: int = 5,
         linear_init_scale: float = 1.0,
-        dropout_rate: float = 0.0 # Added dropout_rate argument
+        dropout_rate: float = 0.0
     ):
         super().__init__()
         self.mean_scale = mean_scale
@@ -230,7 +199,6 @@ class TanhContinuousPolicyNetwork(BasePolicyNetwork):
         self.n_entropy_samples = n_entropy_samples
         self.std_init_bias = std_init_bias
 
-        # Shared MLP backbone with optional dropout
         self.shared = nn.Sequential(
             nn.Linear(in_features, hidden_size),
             nn.GELU(),
@@ -240,138 +208,96 @@ class TanhContinuousPolicyNetwork(BasePolicyNetwork):
             nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
         )
 
-        # Head for predicting the mean, squashed by tanh
         self.mean_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.GELU(),
             nn.Linear(hidden_size, out_features),
         )
 
-        # Head for predicting parameters used to compute standard deviation
         self.std_param_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.GELU(),
             nn.Linear(hidden_size, out_features)
         )
 
-        # Initialize linear layers
         self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
 
-        # Override the bias initialization for the final layer of std_param_head
         if hasattr(self.std_param_head[-1], 'bias'):
              nn.init.constant_(self.std_param_head[-1].bias, self.std_init_bias)
 
     def forward(self, x: torch.Tensor):
-        """Computes mean and log_std for the underlying Normal distribution."""
         feats = self.shared(x)
-
-        # Mean calculation with tanh squashing and scaling
         raw_mean = self.mean_head(feats)
         mean = self.mean_scale * torch.tanh(raw_mean)
 
-        # Standard deviation calculation using softplus activation + minimum floor
         std_params = self.std_param_head(feats)
-        # softplus ensures positivity, min_std prevents collapse
         std = F.softplus(std_params) + self.min_std
-        # log_std is required for the Normal distribution
         log_std = torch.log(std)
 
         return mean, log_std
 
     def get_actions(self, emb: torch.Tensor, eval: bool=False):
-        """Samples actions or returns mean, computes log_probs and entropy."""
         mean, log_std = self.forward(emb)
         std = torch.exp(log_std)
 
-        # Define the base Normal and the Tanh transformation
         base_dist = Normal(mean, std)
-        # Caching the inverse Tanh transformation can speed up log_prob calculation
         transform = TanhTransform(cache_size=1)
         tanh_dist = TransformedDistribution(base_dist, transform)
 
-        # Get action: mean for eval, sample for training
         actions = tanh_dist.mean if eval else tanh_dist.rsample()
-
-        # Clamp actions slightly inside [-1, 1] for numerical stability of log_prob
         action_clamped = actions.clamp(-1+1e-6, 1-1e-6)
-
-        # Calculate log probability (sum across action dimensions)
-        # log_prob automatically accounts for the Tanh transformation Jacobian
         log_probs = tanh_dist.log_prob(action_clamped).sum(dim=-1)
-
-        # Calculate entropy
         entropies = self._compute_entropy(tanh_dist)
 
         return action_clamped, log_probs, entropies
 
     def recompute_log_probs(self, emb: torch.Tensor, stored_actions: torch.Tensor):
-        """Recomputes log_probs and entropy for given actions and current policy."""
         mean, log_std = self.forward(emb)
         std = torch.exp(log_std)
 
-        # Recreate the distribution with current parameters
         base_dist = Normal(mean, std)
         transform = TanhTransform(cache_size=1)
         tanh_dist = TransformedDistribution(base_dist, transform)
 
-        # Clamp stored actions for stability before calculating log_prob
         stored_actions_clamped = stored_actions.clamp(-1+1e-6, 1-1e-6)
         log_probs = tanh_dist.log_prob(stored_actions_clamped).sum(dim=-1)
-
-        # Calculate entropy of the current distribution
         entropies = self._compute_entropy(tanh_dist)
 
         return log_probs, entropies
 
     def _compute_entropy(self, tanh_dist: TransformedDistribution) -> torch.Tensor:
-        """Computes entropy using the specified method (analytic approx or MC)."""
         if self.entropy_method == "analytic":
-            # Analytic entropy for TanhNormal is complex.
-            # A common approximation is to use the entropy of the base Normal distribution.
-            # Note: This is an approximation and doesn't account for the volume change from Tanh.
             try:
-                # Attempt to use the base distribution's entropy
                 ent = tanh_dist.base_dist.entropy()
-                # Sum across action dimensions if entropy is per-dimension
                 if ent.shape == tanh_dist.base_dist.mean.shape:
                     ent = ent.sum(dim=-1)
                 return ent
             except NotImplementedError:
-                 # If base entropy fails or isn't implemented, fall back to MC
                  return self._mc_entropy(tanh_dist)
         elif self.entropy_method == "mc":
-            # Use Monte Carlo estimation
             return self._mc_entropy(tanh_dist)
         else:
             raise ValueError(f"Unknown entropy_method: {self.entropy_method}")
 
     def _mc_entropy(self, tanh_dist: TransformedDistribution) -> torch.Tensor:
-        """Estimates entropy using Monte Carlo sampling."""
-        with torch.no_grad(): # Disable gradients for sampling
-            # Sample actions from the Tanh-squashed distribution
-            action_samples = tanh_dist.rsample((self.n_entropy_samples,)) # Shape: (n_samples, ..., action_dim)
-        # Calculate log probabilities of the samples
-        log_probs = tanh_dist.log_prob(action_samples).sum(dim=-1) # Shape: (n_samples, ...)
-        # Estimate entropy as the negative mean log probability
+        with torch.no_grad():
+            action_samples = tanh_dist.rsample((self.n_entropy_samples,))
+        log_probs = tanh_dist.log_prob(action_samples).sum(dim=-1)
         entropy_estimate = -log_probs.mean(dim=0)
         return entropy_estimate
 
 
 class GaussianPolicyNetwork(BasePolicyNetwork):
-    """
-    Continuous policy network using an unbounded Normal (Gaussian) distribution.
-    Predicts state-dependent mean and standard deviation.
-    """
+    """Unbounded Gaussian policy with learned mean and variance."""
     def __init__(
         self,
         in_features: int,
-        out_features: int, # This is the action dimension
+        out_features: int,
         hidden_size: int,
-        std_init_bias: float = 0.0, # Controls initial standard deviation
-        min_std: float = 1e-4,      # Minimum standard deviation to prevent collapse
-        # Optional: Clipping log_std can help stabilize variance
-        log_std_min: float = -20.0, # Lower bound for log_std output
-        log_std_max: float = 2.0,   # Upper bound for log_std output
+        std_init_bias: float = 0.0,
+        min_std: float = 1e-4,
+        log_std_min: float = -20.0,
+        log_std_max: float = 2.0,
         linear_init_scale: float = 1.0,
         dropout_rate: float = 0.0
     ):
@@ -381,7 +307,6 @@ class GaussianPolicyNetwork(BasePolicyNetwork):
         self.log_std_max = log_std_max
         self.std_init_bias = std_init_bias
 
-        # Shared MLP backbone
         self.shared = nn.Sequential(
             nn.Linear(in_features, hidden_size),
             nn.GELU(),
@@ -391,45 +316,30 @@ class GaussianPolicyNetwork(BasePolicyNetwork):
             nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
         )
 
-        # Head for predicting the mean of the Gaussian
         self.mean_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.GELU(),
-            nn.Linear(hidden_size, out_features), # Outputs action_dim means
+            nn.Linear(hidden_size, out_features),
         )
 
-        # Head for predicting parameters used to compute standard deviation
         self.std_param_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.GELU(),
-            nn.Linear(hidden_size, out_features) # Outputs action_dim std parameters
+            nn.Linear(hidden_size, out_features)
         )
 
-        # Initialize linear layers
         self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
 
-        # Override the bias initialization for the final layer of std_param_head
         if hasattr(self.std_param_head[-1], 'bias'):
              nn.init.constant_(self.std_param_head[-1].bias, self.std_init_bias)
 
     def forward(self, x: torch.Tensor):
         """Computes mean and log_std for the Normal distribution."""
         feats = self.shared(x)
-
-        # --- Mean Calculation ---
-        # Direct output, no tanh squash or scaling needed for unbounded Gaussian
         mean = self.mean_head(feats)
-
-        # --- Standard Deviation Calculation ---
-        std_params = self.std_param_head(feats)
-
-        # Optional: Clip the raw log_std parameters before applying softplus
-        # This can prevent extreme variance values if the network outputs large numbers
-        std_params_clipped = torch.clamp(std_params, self.log_std_min, self.log_std_max)
-
-        # Use softplus to ensure positivity, add min_std floor
-        std = F.softplus(std_params_clipped) + self.min_std
-        log_std = torch.log(std) # Normal distribution uses log_std
+        std_params = torch.clamp(self.std_param_head(feats), self.log_std_min, self.log_std_max)
+        std = F.softplus(std_params) + self.min_std
+        log_std = torch.log(std)
 
         return mean, log_std
 
@@ -437,49 +347,25 @@ class GaussianPolicyNetwork(BasePolicyNetwork):
         """Samples actions or returns mean, computes log_probs and entropy."""
         mean, log_std = self.forward(emb)
         std = torch.exp(log_std)
-
-        # Define the base Normal distribution
         dist = Normal(mean, std)
-
-        # Get action: mean for eval, sample for training
-        # Use rsample for differentiable sampling during training
         actions = dist.mean if eval else dist.rsample()
-
-        # --- IMPORTANT: Do NOT clamp actions here for a pure Gaussian policy ---
-        # The environment (C++ code) will handle the clamping/bounding
-        # action_clamped = actions # No clamping
-
-        # Calculate log probability (sum across action dimensions)
         log_probs = dist.log_prob(actions).sum(dim=-1)
-
-        # Calculate entropy (sum across action dimensions)
         entropies = dist.entropy().sum(dim=-1)
-
-        return actions, log_probs, entropies # Return unclamped actions
+        return actions, log_probs, entropies
 
     def recompute_log_probs(self, emb: torch.Tensor, stored_actions: torch.Tensor):
         """Recomputes log_probs and entropy for given actions and current policy."""
         mean, log_std = self.forward(emb)
         std = torch.exp(log_std)
-
-        # Recreate the distribution with current parameters
         dist = Normal(mean, std)
-
-        # Calculate log_prob of the potentially unbounded actions that were stored
         log_probs = dist.log_prob(stored_actions).sum(dim=-1)
-
-        # Calculate entropy of the current distribution
         entropies = dist.entropy().sum(dim=-1)
 
         return log_probs, entropies
 
 
 class BetaPolicyNetwork(BasePolicyNetwork):
-    """
-    Continuous policy network using a Beta distribution, scaled to [-1, 1].
-    Outputs alpha and beta parameters for the Beta distribution.
-    Handles entropy calculation for the transformed distribution manually.
-    """
+    """Beta policy mapped to [-1, 1] via an affine transform."""
     def __init__(
         self,
         in_features: int,
@@ -494,7 +380,6 @@ class BetaPolicyNetwork(BasePolicyNetwork):
         self.action_dim = out_features
         self.min_concentration = min_concentration
 
-        # Shared MLP backbone with LayerNorm and Dropout
         self.shared = nn.Sequential(
             nn.Linear(in_features, hidden_size),
             nn.LayerNorm(hidden_size),
@@ -506,7 +391,6 @@ class BetaPolicyNetwork(BasePolicyNetwork):
             nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
         )
 
-        # Head for predicting raw alpha parameters
         self.alpha_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.LayerNorm(hidden_size),
@@ -514,7 +398,6 @@ class BetaPolicyNetwork(BasePolicyNetwork):
             nn.Linear(hidden_size, out_features)
         )
 
-        # Head for predicting raw beta parameters
         self.beta_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.LayerNorm(hidden_size),
@@ -522,20 +405,17 @@ class BetaPolicyNetwork(BasePolicyNetwork):
             nn.Linear(hidden_size, out_features)
         )
 
-        # Initialize linear layers
         self.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale))
 
-        # Apply specific bias initialization to the output layers for alpha/beta params
         if hasattr(self.alpha_head[-1], 'bias'):
              nn.init.constant_(self.alpha_head[-1].bias, param_init_bias)
         if hasattr(self.beta_head[-1], 'bias'):
              nn.init.constant_(self.beta_head[-1].bias, param_init_bias)
 
-        # Precompute log(scale) for entropy calculation
-        self.register_buffer('log_scale', torch.log(torch.tensor(2.0))) # From AffineTransform(loc=-1, scale=2)
+        self.register_buffer('log_scale', torch.log(torch.tensor(2.0)))
 
     def _get_transformed_distribution(self, emb: torch.Tensor):
-        """ Helper to create the Beta distribution scaled to [-1, 1]. """
+        """Return a Beta distribution scaled to [-1, 1]."""
         feats = self.shared(emb)
         raw_alpha = self.alpha_head(feats)
         raw_beta = self.beta_head(feats)
@@ -544,13 +424,12 @@ class BetaPolicyNetwork(BasePolicyNetwork):
         beta = self.min_concentration + F.softplus(raw_beta)
 
         base_dist = Beta(alpha, beta)
-        # loc=-1, scale=2 maps (0,1) to (-1,1)
         transform = AffineTransform(loc=-1.0, scale=2.0, cache_size=1)
         scaled_beta_dist = TransformedDistribution(base_dist, transform)
         return scaled_beta_dist
 
     def forward(self, x: torch.Tensor):
-        """ Computes alpha and beta parameters. """
+        """Return alpha and beta parameters."""
         feats = self.shared(x)
         raw_alpha = self.alpha_head(feats)
         raw_beta = self.beta_head(feats)
@@ -568,69 +447,49 @@ class BetaPolicyNetwork(BasePolicyNetwork):
             # Beta distribution may lack rsample; use non-reparameterized sample when needed
             actions = dist.rsample() if getattr(dist, "has_rsample", False) else dist.sample()
 
-        # --- Calculate Log Probability ---
-        # TransformedDistribution correctly handles the Jacobian for log_prob
         log_probs = dist.log_prob(actions).sum(dim=-1)
-
-        # --- Calculate Entropy (Manual Workaround) ---
-        # H[Transformed] = H[Base] + log|scale|
-        base_entropy = dist.base_dist.entropy() # Entropy of Beta(alpha, beta)
-        # Add log|scale| for each action dimension
+        base_entropy = dist.base_dist.entropy()
         entropies = (base_entropy + self.log_scale).sum(dim=-1)
 
         return actions, log_probs, entropies
 
     def recompute_log_probs(self, emb: torch.Tensor, stored_actions: torch.Tensor):
-        """ Recomputes log_probs and entropy for given actions and current policy. """
+        """Recomputes log_probs and entropy for stored actions."""
         dist = self._get_transformed_distribution(emb)
 
-        # Clamp stored actions slightly for log_prob stability as Beta is undefined at boundaries 0, 1
-        # (corresponding to -1, 1 in the transformed space)
         stored_actions_clamped = stored_actions.clamp(-1.0 + 1e-6, 1.0 - 1e-6)
-
-        # --- Calculate Log Probability ---
         log_probs = dist.log_prob(stored_actions_clamped).sum(dim=-1)
-
-        # --- Calculate Entropy (Manual Workaround) ---
-        # H[Transformed] = H[Base] + log|scale|
         base_entropy = dist.base_dist.entropy()
         entropies = (base_entropy + self.log_scale).sum(dim=-1)
 
         return log_probs, entropies
     
 class FeedForwardBlock(nn.Module):
-    """Transformer FFN sublayer: LN -> Linear -> GELU -> Dropout -> Linear -> Dropout + Residual"""
+    """Transformer FFN with pre-LN, dropout, and residual."""
     def __init__(self, embed_dim: int, hidden_dim: int = None, dropout: float = 0.0):
         super().__init__()
         if hidden_dim is None:
-            # Default hidden dimension is often 4x embedding dimension
             hidden_dim = 4 * embed_dim
         self.norm = nn.LayerNorm(embed_dim)
         self.linear1 = nn.Linear(embed_dim, hidden_dim)
         self.linear2 = nn.Linear(hidden_dim, embed_dim)
-        # Dropout applied after activation and after second linear layer
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
         self.act = nn.GELU()
 
     def forward(self, x):
         residual = x
-        out = self.norm(x)      # Pre-LN
+        out = self.norm(x)
         out = self.linear1(out)
         out = self.act(out)
-        out = self.dropout1(out) # Dropout after activation
+        out = self.dropout1(out)
         out = self.linear2(out)
-        out = self.dropout2(out) # Dropout after second linear layer
-        return residual + out    # Add residual connection
+        out = self.dropout2(out)
+        return residual + out
 
 
 class SharedCritic(nn.Module):
-    """
-    Shared critic architecture.
-    MODIFIED to integrate IQN and Distillation networks for value and baseline.
-    It now expects its main config (net_cfg) to contain sub-configs for
-    iqn_params and distillation_params, and feature_dim for IQNs.
-    """
+    """Shared critic that augments PPO heads with IQN and distillation blocks."""
     def __init__(self, net_cfg: Dict[str, Any]):
         super().__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -669,16 +528,7 @@ class SharedCritic(nn.Module):
         self.baseline_attention.apply(lambda m: init_weights_gelu_linear(m, scale=init_scale) if isinstance(m, nn.Linear) and not isinstance(m, nn.LayerNorm) else None)
 
     def values(self, x: torch.Tensor, taus: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Computes the centralized state value V(s) using IQN and Distillation.
-        Input x shape: (..., A, H_input_to_attention)
-        taus shape: (B_flat, num_quantiles_for_IQN_input, 1) or (B_flat * num_quantiles, 1)
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]:
-                - v_distilled: Distilled scalar state value. Shape: (..., 1)
-                - value_quantiles: Quantile values from IQN. Shape: (B_flat, num_quantiles)
-        """
+        """Return distilled scalar values and IQN quantiles for centralized inputs."""
         input_shape = x.shape
         # H_attention_out is the output dim of attention, which is feature_dim for IQN
         H_attention_out = self.value_attention.embed_dim
@@ -698,16 +548,7 @@ class SharedCritic(nn.Module):
         return v_distilled_reshaped, value_quantiles
 
     def baselines(self, x: torch.Tensor, taus: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Computes the per-agent counterfactual baseline B(s, a_j) using IQN and Distillation.
-        Input x shape: (..., A, SeqLen, H_input_to_attention)
-        taus shape: (B_flat*A, num_quantiles_for_IQN_input, 1) or (B_flat*A * num_quantiles, 1)
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]:
-                - b_distilled: Distilled scalar baseline values. Shape: (..., A, 1)
-                - baseline_quantiles: Quantile values from IQN. Shape: (B_flat*A, num_quantiles)
-        """
+        """Return per-agent counterfactual baselines and corresponding quantiles."""
         input_shape = x.shape
         H_attention_out = self.baseline_attention.embed_dim
         SeqLen = input_shape[-2]
@@ -728,10 +569,7 @@ class SharedCritic(nn.Module):
 
 
 class RNDTargetNetwork(nn.Module):
-    """
-    Random Network Distillation (RND) Target Network.
-    Its weights are fixed after random initialization.
-    """
+    """Random Network Distillation target with frozen parameters."""
     def __init__(self, input_size: int, output_size: int, hidden_size: int = 256):
         super().__init__()
         self.net = nn.Sequential(
@@ -741,30 +579,18 @@ class RNDTargetNetwork(nn.Module):
             nn.GELU(),
             nn.Linear(hidden_size, output_size)
         )
-        # Initialize weights (e.g., LeakyReLU-appropriate Kaiming normal)
-        # The specific initialization can be tuned.
         self.apply(lambda m: init_weights_leaky_relu(m, negative_slope=0.01) if isinstance(m, nn.Linear) else None)
 
-        # Target network weights are fixed after random initialization
         for param in self.parameters():
             param.requires_grad = False
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass for the RND target network.
-        Args:
-            x (torch.Tensor): Input tensor (e.g., state/feature embeddings).
-        Returns:
-            torch.Tensor: Output random features.
-        """
+        """Return fixed random features."""
         return self.net(x)
 
 
 class RNDPredictorNetwork(nn.Module):
-    """
-    Random Network Distillation (RND) Predictor Network.
-    This network is trained to predict the output of the RNDTargetNetwork.
-    """
+    """Trainable head that predicts the target RND features."""
     def __init__(self, input_size, output_size, hidden_size=256, dropout_rate=0.1):
         super().__init__()
         self.net = nn.Sequential(
@@ -778,26 +604,15 @@ class RNDPredictorNetwork(nn.Module):
             nn.Dropout(dropout_rate),
             nn.Linear(hidden_size, output_size)
         )
-        # Initialize weights (e.g., LeakyReLU-appropriate Kaiming normal)
-        # The specific initialization can be tuned.
         self.apply(lambda m: init_weights_leaky_relu(m, negative_slope=0.01) if isinstance(m, nn.Linear) else None)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass for the RND predictor network.
-        Args:
-            x (torch.Tensor): Input tensor (e.g., state/feature embeddings).
-        Returns:
-            torch.Tensor: Predicted random features.
-        """
+        """Return predicted random features."""
         return self.net(x)
     
 
 class ImplicitQuantileNetwork(nn.Module):
-    """
-    Implicit Quantile Network (IQN) for distributional reinforcement learning.
-    It predicts the quantile values of a state (or state-action) value distribution.
-    """
+    """Implicit Quantile Network head for distributional estimates."""
     def __init__(self,
             feature_dim: int,
             hidden_size: int = 128,
@@ -818,14 +633,13 @@ class ImplicitQuantileNetwork(nn.Module):
         self.cosine_embedding_layer = nn.Linear(self.quantile_embedding_dim, self.feature_dim)
         # Pre-calculate i * pi for cosine embeddings for efficiency
         # self.i_pi = nn.Parameter(torch.arange(1, self.quantile_embedding_dim + 1, dtype=torch.float32) * math.pi, requires_grad=False)
-        # A common way is to pre-calculate a range of i:
         self.register_buffer('i_pi_values', torch.arange(0, self.quantile_embedding_dim, dtype=torch.float32) * math.pi)
 
 
         # MLP to process the merged state and quantile embeddings
         self.merge_mlp = nn.Sequential(
             nn.Linear(self.feature_dim, self.hidden_size),
-            nn.GELU(), # Or GELU, consistent with your other networks
+            nn.GELU(),
             nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity()
         )
 
@@ -840,16 +654,7 @@ class ImplicitQuantileNetwork(nn.Module):
 
 
     def embed_quantiles(self, taus: torch.Tensor) -> torch.Tensor:
-        """
-        Embeds quantile fractions τ using cosine basis functions.
-        Args:
-            taus (torch.Tensor): Tensor of quantile fractions τ, shape (BatchSize, NumQuantilesToEmbed, 1)
-                                 or (BatchSize * NumQuantilesToEmbed, 1).
-                                 The τ values should be in [0, 1].
-        Returns:
-            torch.Tensor: Embedded quantile fractions, shape (BatchSize, NumQuantilesToEmbed, feature_dim)
-                          or (BatchSize * NumQuantilesToEmbed, feature_dim).
-        """
+        """Cosine embed quantile fractions into the feature_dim space."""
         # Ensure taus has a trailing dimension if it's flat
         if taus.dim() == 1: # (BatchSize * NumQuantilesToEmbed)
             taus_unsqueezed = taus.unsqueeze(-1)
@@ -870,21 +675,7 @@ class ImplicitQuantileNetwork(nn.Module):
         return quantile_embeddings
 
     def forward(self, state_features: torch.Tensor, taus: torch.Tensor) -> torch.Tensor:
-        """
-        Predicts quantile values for the given state features and quantile fractions.
-
-        Args:
-            state_features (torch.Tensor): State or feature embeddings from the main network.
-                                           Shape: (BatchSize, feature_dim).
-            taus (torch.Tensor): Quantile fractions τ to sample.
-                                 Shape: (BatchSize, num_quantiles_to_sample_for_this_forward_pass, 1)
-                                 or (BatchSize * num_quantiles_to_sample_for_this_forward_pass, 1).
-                                 The `num_quantiles_to_sample_for_this_forward_pass` is typically `self.num_quantiles`
-                                 during training for loss calculation, or a different number (e.g., for evaluation if needed).
-
-        Returns:
-            torch.Tensor: Predicted quantile values. Shape: (BatchSize, num_quantiles_to_sample_for_this_forward_pass).
-        """
+        """Predict quantile values for state_features given sampled taus."""
         batch_size = state_features.shape[0]
         
         # Embed quantile fractions
@@ -920,10 +711,7 @@ class ImplicitQuantileNetwork(nn.Module):
     
 
 class DistillationNetwork(nn.Module):
-    """
-    Distills information from a scalar PPO-style value/baseline (V_ppo)
-    and a set of quantile values (Z_tau) from an IQN into a single scalar output.
-    """
+    """Distill PPO scalars and IQN quantiles into a single value."""
     def __init__(self,
                  num_quantiles: int,
                  hidden_size: int = 128, 
@@ -951,10 +739,10 @@ class DistillationNetwork(nn.Module):
 
         self.mlp = nn.Sequential(
             nn.Linear(self.input_dim_to_mlp, self.hidden_size),
-            nn.GELU(), # Or GELU
+            nn.GELU(),
             nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
             nn.Linear(self.hidden_size, self.hidden_size),
-            nn.GELU(), # Or GELU
+            nn.GELU(),
             nn.Dropout(dropout_rate) if dropout_rate > 0.0 else nn.Identity(),
             nn.Linear(self.hidden_size, 1) # Outputs a single distilled scalar value
         )
@@ -963,18 +751,7 @@ class DistillationNetwork(nn.Module):
         self.mlp.apply(lambda m: init_weights_gelu_linear(m, scale=linear_init_scale) if isinstance(m, nn.Linear) else None)
 
     def forward(self, v_ppo: torch.Tensor, quantile_values: torch.Tensor) -> torch.Tensor:
-        """
-        Combines V_ppo and quantile_values and processes them to output a distilled scalar value.
-
-        Args:
-            v_ppo (torch.Tensor): Scalar value output from the original PPO-style head.
-                                  Shape: (BatchSize, 1).
-            quantile_values (torch.Tensor): Quantile values from the IQN.
-                                            Shape: (BatchSize, num_quantiles).
-
-        Returns:
-            torch.Tensor: The distilled scalar value. Shape: (BatchSize, 1).
-        """
+        """Fuse V_ppo with IQN quantiles and output a distilled scalar."""
         batch_size = v_ppo.shape[0]
         if v_ppo.shape != (batch_size, 1):
             raise ValueError(f"Expected v_ppo shape ({batch_size}, 1), got {v_ppo.shape}")
@@ -1076,10 +853,7 @@ class StatesActionsEncoder(nn.Module):
 
 
 class ResidualAttention(nn.Module):
-    """
-    Multi-Head Attention block with residual connection and pre-LayerNorm.
-    Supports both self-attention and cross-attention.
-    """
+    """Pre-LN multi-head attention block for self- or cross-attention."""
     def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0, self_attention: bool = False):
         super().__init__()
         self.embed_dim = embed_dim
@@ -1107,10 +881,7 @@ class ResidualAttention(nn.Module):
 
     def forward(self, x_q, x_k=None, x_v=None, key_padding_mask: Optional[torch.Tensor] = None,
                 return_attention_only: bool = False):
-        """
-        Forward pass for the attention block.
-        Accepts an optional key_padding_mask to ignore padded elements in the key/value sequences.
-        """
+        """Apply attention with optional padding masks and return weights if requested."""
         # Determine Key and Value inputs. For self-attention, they are the same as the Query.
         if self.self_attention:
             key_input = x_q if x_k is None else x_k
@@ -1166,7 +937,7 @@ class LinearSequenceEmbedder(nn.Module):
         for h_dim in linear_stem_hidden_sizes:
             layers.extend([
                 nn.Linear(prev_dim, h_dim),
-                nn.LayerNorm(h_dim), # LayerNorm on hidden features
+                nn.LayerNorm(h_dim),
                 nn.GELU(),
                 nn.Dropout(dropout_rate) if dropout_rate > 0 else nn.Identity()
             ])
@@ -1350,15 +1121,7 @@ class AdaptiveSpatialTokenizer(nn.Module):
         self.max_tokens = max_tokens
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return selected tokens and their indices.
-
-        Args:
-            x: Tensor of shape (B, N, C) representing N spatial tokens.
-
-        Returns:
-            (selected_tokens, indices) where ``selected_tokens`` has shape
-            (B, K, C) and ``indices`` has shape (B, K).
-        """
+        """Return the top-k tokens (B, K, C) and their indices (B, K)."""
         B, N, C = x.shape
         k = min(max(self.min_tokens, self.base_tokens), min(self.max_tokens, N))
         scores = self.importance_net(x).squeeze(-1)  # (B, N)
@@ -1457,11 +1220,7 @@ class HierarchicalCrossAttention(nn.Module):
 
 
 class CNNSpatialEmbedder(nn.Module):
-    """
-    Processes a single image-like central input (e.g., height map, grayscale image)
-    through a CNN stem, flattens it into a patch sequence, adds positional embeddings,
-    and projects to the main embedding dimension.
-    """
+    """CNN + optional Swin stack that tokenizes central image-like inputs."""
     def __init__(self, name: str,
                  input_channels_data: int,
                  initial_h: int, initial_w: int,
@@ -1597,9 +1356,7 @@ class CNNSpatialEmbedder(nn.Module):
 
 
 class CrossAttentionFeatureExtractor(nn.Module):
-    """Embeds agent observations and a set of central inputs for transformer
-    processing. Image-like components are converted into patch sequences via
-    :class:`CNNSpatialEmbedder` so they can participate in cross-attention."""
+    """Embed agent observations plus central tokens for downstream transformers."""
     def __init__(
         self,
         agent_obs_size: int,
@@ -1846,13 +1603,7 @@ class CrossAttentionFeatureExtractor(nn.Module):
 
 class MultiAgentEmbeddingNetwork(nn.Module):
     def __init__(self, net_cfg: Dict[str, Any], environment_config_for_shapes: Dict[str, Any]):
-        """
-        Args:
-            net_cfg (Dict[str, Any]): Configuration specific to this network and its submodules,
-                                      typically from agent_config["networks"]["MultiAgentEmbeddingNetwork"].
-            environment_config_for_shapes (Dict[str, Any]): The top-level "environment" block from the main JSON config,
-                                                            used to pass global shape information.
-        """
+        """Factory wrapper that builds the cross-attention encoders plus baseline heads."""
         super(MultiAgentEmbeddingNetwork, self).__init__()
         
         ca_config = net_cfg["cross_attention_feature_extractor"]
@@ -1961,7 +1712,7 @@ class MultiAgentEmbeddingNetwork(nn.Module):
             return baseline_input_final_flat.view(B_orig, A, A, H_baseline_feat)
 
 
-class AgentIDPosEnc(nn.Module):  # Included for completeness
+class AgentIDPosEnc(nn.Module):
     """Sinusoidal positional encoder for integer agent IDs."""
 
     def __init__(self, num_freqs: int = 8, id_embed_dim: int = 32):
@@ -1996,16 +1747,8 @@ class AgentIDPosEnc(nn.Module):  # Included for completeness
     
 
 class ForwardDynamicsModel(nn.Module):
-    """A simple MLP to predict the next state's feature embedding."""
+    """MLP that predicts the next state embedding from (state, action)."""
     def __init__(self, embed_dim: int, action_dim: int, hidden_size: int = 256, dropout_rate=0.1):
-        """
-        Initializes the forward dynamics model.
-
-        Args:
-            embed_dim (int): The dimension of the input state and output predicted state embeddings.
-            action_dim (int): The dimension of the action vector.
-            hidden_size (int): The size of the hidden layers in the MLP.
-        """
         super().__init__()
         # The network takes a concatenated state embedding and action vector as input.
         self.net = nn.Sequential(
@@ -2023,16 +1766,7 @@ class ForwardDynamicsModel(nn.Module):
         self.apply(lambda m: init_weights_leaky_relu(m) if isinstance(m, nn.Linear) else None)
 
     def forward(self, state_embed: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
-        """
-        Predicts the embedding of the next state.
-
-        Args:
-            state_embed (torch.Tensor): The feature embedding of the current state.
-            action (torch.Tensor): The action taken in the current state.
-
-        Returns:
-            torch.Tensor: The predicted feature embedding of the next state.
-        """
+        """Predict the next-state embedding."""
         # Concatenate the state embedding and action to form the input.
         x = torch.cat([state_embed, action], dim=-1)
         return self.net(x)

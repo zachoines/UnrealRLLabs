@@ -1,7 +1,6 @@
 # NOTICE: This file includes modifications generated with the assistance of generative AI (VSCode Copilot Assistant).
 # Original code structure and logic by the project author.
-# The modifications are intended to enhance the functionality and performance of the code.
-# The author has reviewed all changes for correctness.
+
 import shutil
 import os
 import numpy as np

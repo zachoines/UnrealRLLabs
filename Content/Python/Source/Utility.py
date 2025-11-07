@@ -1,7 +1,6 @@
 # NOTICE: This file includes modifications generated with the assistance of generative AI (VSCode Copilot Assistant).
 # Original code structure and logic by the project author.
-# The modifications are intended to enhance the functionality and performance of the code.
-# The author has reviewed all changes for correctness.
+
 import torch
 import torch.nn as nn
 import torch.nn.init as init
@@ -14,7 +13,7 @@ def create_2d_sin_cos_pos_emb(h: int, w: int, embed_dim: int, device: torch.devi
     Create a 2D sine-cosine positional encoding => shape (h*w, embed_dim),
     splitting embed_dim in half for row, half for col.
     """
-    half_dim = embed_dim // 2  # We'll use half for row, half for col
+    half_dim = embed_dim // 2
 
     def position_encoding_1d(n: int, half_d: int):
         """
