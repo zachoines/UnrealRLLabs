@@ -328,6 +328,102 @@ void UStateManager::Reset(int32 NumObjects, int32 CurrentAgents)
             }
         }
     }
+    else
+    {
+        const int32 DesiredGoalCount = GoalColors.Num();
+        if (DesiredGoalCount <= 0)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("StateManager::Reset => GoalColors array is empty. Deterministic goal placement skipped."));
+        }
+        else if (GridSize <= 0 || !Grid)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("StateManager::Reset => Invalid grid configuration (GridSize=%d) for deterministic goals."), GridSize);
+        }
+        else
+        {
+            const int32 ExpectedColumns = GridSize * GridSize;
+            if (Grid->Columns.Num() < ExpectedColumns)
+            {
+                UE_LOG(LogTemp, Warning, TEXT("StateManager::Reset => Grid column count (%d) smaller than expected (%d). Deterministic goals disabled."), Grid->Columns.Num(), ExpectedColumns);
+            }
+            else
+            {
+                int32 GoalsToPlace = FMath::Min(DesiredGoalCount, ExpectedColumns);
+                if (GoalsToPlace < DesiredGoalCount)
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("StateManager::Reset => Requested %d goals but grid can only host %d. Truncating list."), DesiredGoalCount, GoalsToPlace);
+                }
+
+                newGoalActors.Reserve(GoalsToPlace);
+                newGoalOffsets.Reserve(GoalsToPlace);
+
+                const float RadiusCells = (CellSize > 0.f) ? (GoalRadius / CellSize) : GoalRadius;
+                const int32 ColSlots = FMath::Max(1, FMath::CeilToInt(FMath::Sqrt(static_cast<float>(GoalsToPlace))));
+                const int32 RowSlots = FMath::Max(1, FMath::CeilToInt(static_cast<float>(GoalsToPlace) / ColSlots));
+                TSet<int32> UsedCells;
+                UsedCells.Reserve(GoalsToPlace);
+
+                for (int32 GoalIdx = 0; GoalIdx < GoalsToPlace; ++GoalIdx)
+                {
+                    const int32 RowIdx = GoalIdx / ColSlots;
+                    const int32 ColIdx = GoalIdx % ColSlots;
+
+                    const float NormRow = (static_cast<float>(RowIdx) + 0.5f) / static_cast<float>(RowSlots);
+                    const float NormCol = (static_cast<float>(ColIdx) + 0.5f) / static_cast<float>(ColSlots);
+
+                    const int32 gx = (GridSize > 1) ? FMath::Clamp(FMath::RoundToInt(NormRow * (GridSize - 1)), 0, GridSize - 1) : 0;
+                    const int32 gy = (GridSize > 1) ? FMath::Clamp(FMath::RoundToInt(NormCol * (GridSize - 1)), 0, GridSize - 1) : 0;
+                    int32 ColumnIndex = gx * GridSize + gy;
+
+                    if (!Grid->Columns.IsValidIndex(ColumnIndex))
+                    {
+                        UE_LOG(LogTemp, Warning, TEXT("StateManager::Reset => Computed deterministic goal cell (%d,%d)->%d is invalid."), gx, gy, ColumnIndex);
+                        continue;
+                    }
+
+                    if (UsedCells.Contains(ColumnIndex))
+                    {
+                        bool bFoundAlternate = false;
+                        for (int32 delta = 0; delta < ExpectedColumns; ++delta)
+                        {
+                            const int32 Candidate = (ColumnIndex + delta) % ExpectedColumns;
+                            if (!UsedCells.Contains(Candidate) && Grid->Columns.IsValidIndex(Candidate))
+                            {
+                                ColumnIndex = Candidate;
+                                bFoundAlternate = true;
+                                break;
+                            }
+                        }
+
+                        if (!bFoundAlternate)
+                        {
+                            UE_LOG(LogTemp, Warning, TEXT("StateManager::Reset => Unable to find free column for deterministic goal %d."), GoalIdx);
+                            continue;
+                        }
+                    }
+
+                    AColumn* ColumnActor = Grid->Columns[ColumnIndex];
+                    if (!ColumnActor || !ColumnActor->ColumnMesh)
+                    {
+                        UE_LOG(LogTemp, Warning, TEXT("StateManager::Reset => Column actor invalid for deterministic goal index %d (column %d)."), GoalIdx, ColumnIndex);
+                        continue;
+                    }
+
+                    UsedCells.Add(ColumnIndex);
+
+                    const float ColumnHeight = ColumnActor->ColumnMesh->Bounds.BoxExtent.Z * 2.0f;
+                    const float GoalOffsetZ = ColumnHeight + ObjectRadius;
+                    newGoalActors.Add(ColumnActor);
+                    newGoalOffsets.Add(FVector(0.f, 0.f, GoalOffsetZ));
+
+                    if (OccupancyGrid)
+                    {
+                        OccupancyGrid->UpdateObjectPosition(GoalIdx, GoalsLayerName, ColumnIndex, RadiusCells, TArray<FName>());
+                    }
+                }
+            }
+        }
+    }
 
     GoalManager->ResetGoals(newGoalActors, newGoalOffsets);
 
@@ -573,6 +669,39 @@ bool UStateManager::AllGridObjectsHandled() const
         }
     }
     return true;
+}
+
+// ------------------------------------------
+//   AllGridObjectsOutOfBounds
+// ------------------------------------------
+bool UStateManager::AllGridObjectsOutOfBounds() const
+{
+    bool bHasAnyTrackedObject = false;
+    for (int32 i = 0; i < MaxGridObjects; ++i)
+    {
+        EObjectSlotState state = GetObjectSlotState(i);
+
+        if (state == EObjectSlotState::Empty)
+        {
+            continue;
+        }
+
+        if (state == EObjectSlotState::OutOfBounds)
+        {
+            bHasAnyTrackedObject = true;
+            continue;
+        }
+
+        // Any active object or goal-held object means we are not fully out-of-bounds.
+        if (state == EObjectSlotState::Active ||
+            (state == EObjectSlotState::GoalReached && !bRemoveObjectsOnGoal))
+        {
+            return false;
+        }
+    }
+
+    // Only consider it a terminal condition if we actually spawned something.
+    return bHasAnyTrackedObject;
 }
 
 // ------------------------------------------
@@ -1226,7 +1355,7 @@ void UStateManager::UpdateGridColumnsColors()
             }
         }
     }*/
-    if (bUseRandomGoals && GoalColors.Num() > 0)
+    if (GoalColors.Num() > 0)
     {
         FMatrix2D goalOcc = OccupancyGrid->GetOccupancyMatrix({ FName("Goals") }, false);
         for (int32 r = 0; r < goalOcc.GetNumRows(); ++r) {

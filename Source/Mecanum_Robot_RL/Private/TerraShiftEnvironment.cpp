@@ -66,6 +66,10 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
     StationaryPenalty_MinSpeed = 10.0f;
     StationaryPenalty_Drain = 0.01f;
 
+    bTerminateOnAllGoalsReached = false;
+    bTerminateOnMaxSteps = true;
+    bTerminateOnAllObjectsOutOfBounds = false;
+
     PlatformWorldSize = FVector::ZeroVector;
     PlatformCenter = FVector::ZeroVector;
     CellSize = 1.0f;
@@ -179,6 +183,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
     {
         bTerminateOnAllGoalsReached = smCfg->GetOrDefaultBool(TEXT("bTerminateOnAllGoalsReached"), false);
         bTerminateOnMaxSteps = smCfg->GetOrDefaultBool(TEXT("bTerminateOnMaxSteps"), true);
+        bTerminateOnAllObjectsOutOfBounds = smCfg->GetOrDefaultBool(TEXT("bTerminateOnAllObjectsOutOfBounds"), false);
     }
 
     UEnvironmentConfig* gmCfg = EnvConfig->Get(TEXT("environment/params/GoalManager"));
@@ -340,6 +345,11 @@ bool ATerraShiftEnvironment::Done()
         return true;
     }
 
+    if (bTerminateOnAllObjectsOutOfBounds && StateManager->AllGridObjectsOutOfBounds())
+    {
+        return true;
+    }
+
     if (bTerminateOnMaxSteps && CurrentStep >= MaxSteps)
     {
         return true;
@@ -426,7 +436,11 @@ float ATerraShiftEnvironment::Reward()
 
         // --- Dense Shaping Rewards (only for active objects) ---
         EObjectSlotState SlotState = StateManager->GetObjectSlotState(ObjIndex);
-        if (SlotState == EObjectSlotState::Active)
+        const bool bKeepGoalObjectsActive =
+            (SlotState == EObjectSlotState::GoalReached) &&
+            StateManager &&
+            !StateManager->GetRemoveObjectsOnGoal();
+        if (SlotState == EObjectSlotState::Active || bKeepGoalObjectsActive)
         {
             float ShapingSubReward = 0.f;
             activeObjectCount += 1.0;
@@ -593,7 +607,10 @@ float ATerraShiftEnvironment::CalculatePotential(int32 ObjIndex) const
     // Normalize by platform XY diagonal to reduce scale drift across layouts
     const float xyDiagonal = PlatformWorldSize.Size2D();
     if (!StateManager || !(xyDiagonal > KINDA_SMALL_NUMBER)) return 0.0f;
-    if (StateManager->GetObjectSlotState(ObjIndex) != EObjectSlotState::Active) return 0.0f;
+    EObjectSlotState slotState = StateManager->GetObjectSlotState(ObjIndex);
+    const bool bTreatGoalAsActive =
+        (slotState == EObjectSlotState::GoalReached) && !StateManager->GetRemoveObjectsOnGoal();
+    if (slotState != EObjectSlotState::Active && !bTreatGoalAsActive) return 0.0f;
 
     const float currentDistance = StateManager->GetCurrentDistance(ObjIndex);
     if (currentDistance < 0.f) return 0.0f;

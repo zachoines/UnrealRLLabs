@@ -109,6 +109,9 @@ public:
     UFUNCTION(BlueprintCallable)
     bool AllGridObjectsHandled() const;
 
+    UFUNCTION(BlueprintCallable)
+    bool AllGridObjectsOutOfBounds() const;
+
     // ----------------------------------------------------------------
     //  Build Central State
     // ----------------------------------------------------------------

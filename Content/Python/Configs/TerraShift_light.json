@@ -1,102 +1,103 @@
 {
   "environment": {
-    "name": "TerraShift_16A_8O_Test",
-    "id": "TerraShift_16A_8O_Test_$(date +%Y%m%d_%H%M%S)",
+    "name": "TerraShift_8A_32x32_Test",
+    "id": "TerraShift_8A_32x32_Test_$(date +%Y%m%d_%H%M%S)",
     "params": {
       "PlatformSize": 1.0,
-      "MaxColumnHeight": 6.0,
+      "MaxColumnHeight": 6,
       "ObjectMass": 1.0,
       "GridSize": 16,
-      "MaxSteps": 1024,
-      "MaxAgents": 8,
+      "MaxSteps": 512,
+      "MaxAgents": 4,
       "TerraShiftEnvironment": {
         "bUseVelAlignment": false,
         "bUseXYDistanceImprovement": true,
         "bUseZAccelerationPenalty": false,
-        "bUsePotentialShaping": false,
+        "bUsePotentialShaping": true,
         "bUsePositivePotentialShaping": false,
         "bUseExponentialPotential": false,
-        "PositivePotential_Power": 1.5,
-        "PositivePotential_Sigma": 0.5,
+        "PositivePotential_Power": 1.0,
+        "PositivePotential_Sigma": 0.4,
         "bUseDistanceBasedReward": false,
         "bDisableEventRewards": false,
-        "bUseStationaryPenalty": false,
-        "StationaryPenalty_MinSpeed": 10.0,
-        "StationaryPenalty_Drain": 0.01,
+        "bUseStationaryPenalty": true,
+        "StationaryPenalty_MinSpeed": 5.0,
+        "StationaryPenalty_Drain": 0.0001,
         "StationaryPenalty_MinConsecutiveFrames": 3,
-        "PotentialShaping_Gamma": 0.97,
-        "PotentialShaping_Scale": 10.0,
-        "VelAlign_Scale": 0.5,
-        "VelAlign_Min": -50.0,
-        "VelAlign_Max": 50.0,
-        "DistImprove_Scale": 100.0,
+        "PotentialShaping_Gamma": 0.995,
+        "PotentialShaping_Scale": 0.6,
+        "VelAlign_Scale": 0.0,
+        "VelAlign_Min": -25.0,
+        "VelAlign_Max": 25.0,
+        "DistImprove_Scale": 1.0,
         "DistImprove_Min": -1.0,
         "DistImprove_Max": 1.0,
-        "ZAccel_Scale": 0.0001,
+        "ZAccel_Scale": 0.0,
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
-        "EventReward_GoalReached": 10.0,
-        "EventReward_OutOfBounds": -10.0,
-        "TimeStepPenalty": 0.0
+        "EventReward_GoalReached": 2.0,
+        "EventReward_OutOfBounds": 1.0,
+        "TimeStepPenalty": 0.001
       },
       "GoalManager": {
         "DefaultRadius": 1.0
       },
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 8,
+        "NumAgents": 4,
         "GridSize": 16,
-        "MinHeight": -6.0,
-        "MaxHeight": 6.0,
+        "MinHeight": -6,
+        "MaxHeight": 6,
         "NumActions": 6,
         "bUseActionDelta": true,
         "bAccumulatedWave": false,
         "AccumulatedWaveFadeGamma": 0.95,
         "bWrapAroundEdges": true,
         "VelMinMax": [
-          -2,
-          2
+          -1.0,
+          1.0
         ],
         "AngVelRange": [
-          -1.57,
-          1.57
+          -0.785,
+          0.785
         ],
         "AmpMinMax": [
-          -6.0,
-          6.0
+          -4.0,
+          4.0
         ],
         "SigMinMax": [
           0.5,
           4.0
         ],
-        "DeltaVelScale": 2.0,
-        "DeltaAngVelScale": 1.57,
-        "DeltaAmpScale": 3.0,
-        "DeltaSigmaScale": 2.0
+        "DeltaVelScale": 2,
+        "DeltaAngVelScale": 2,
+        "DeltaAmpScale": 1,
+        "DeltaSigmaScale": 0.5
       },
       "StateManager": {
-        "MaxGridObjects": 4,
+        "MaxGridObjects": 2,
         "MarginXY": -1.0,
         "MinZ": 0.0,
-        "MaxZ": 40.0,
-        "SpawnPaddingZ": 5.0,
-        "SpawnSeparationRadius": 7.0,
-        "ObjectMass": 0.1,
-        "MaxColumnHeight": 6.0,
+        "MaxZ": 50.0,
+        "SpawnPaddingZ": 10.0,
+        "SpawnSeparationRadius": 8.0,
+        "ObjectMass": 1.0,
+        "MaxColumnHeight": 6,
         "BaseRespawnDelay": 0.1,
         "OverheadCameraDistance_disabled": 1500.0,
         "OverheadCameraFOV_disabled": 90.0,
         "OverheadCameraResX_disabled": 64,
         "OverheadCameraResY_disabled": 64,
         "bUseRandomGoals": true,
-        "bRespawnOnGoal": true,
-        "bRespawnOnOOB": true,
-        "bTerminateOnAllGoalsReached": false,
-        "bTerminateOnMaxSteps": true,
+        "bRespawnOnGoal": false,
+        "bRespawnOnOOB": false,
+        "bTerminateOnAllGoalsReached": true,
+        "bTerminateOnAllObjectsOutOfBounds": true,
+        "bTerminateOnMaxSteps": false,
         "bRemoveObjectsOnGoal": true,
-        "bSuppressPerStepGoalReward": false,
-        "GoalRadius": 8.0,
-        "ObjectRadius": 6.0,
-        "GoalCollectRadius": 10.0,
+        "bSuppressPerStepGoalReward": true,
+        "GoalRadius": 6.0,
+        "ObjectRadius": 8.0,
+        "GoalCollectRadius": 6.0,
         "GoalColors": [
           [
             1.0,
@@ -105,16 +106,6 @@
           ],
           [
             1.0,
-            1.0,
-            0.0
-          ],
-          [
-            0.0,
-            1.0,
-            1.0
-          ],
-          [
-            0.0,
             1.0,
             0.0
           ]
@@ -129,31 +120,21 @@
             1.0,
             1.0,
             0.0
-          ],
-          [
-            0.0,
-            1.0,
-            1.0
-          ],
-          [
-            0.0,
-            1.0,
-            0.0
           ]
         ],
         "bIncludeHeightMapInState": true,
-        "StateHeightMapResolutionH": 64,
-        "StateHeightMapResolutionW": 64,
+        "StateHeightMapResolutionH": 32,
+        "StateHeightMapResolutionW": 32,
         "bIncludeOverheadImageInState": false,
         "StateOverheadImageResX": 64,
         "StateOverheadImageResY": 64,
         "bIncludeGridObjectSequenceInState": true,
-        "MaxGridObjectsForState": 4,
+        "MaxGridObjectsForState": 2,
         "GridObjectFeatureSize": 9,
         "bRestrictColumnPhysicsToRadius": true,
-        "ColumnCollisionRadiusCells": 2,
+        "ColumnCollisionRadiusCells": 1,
         "bEnabledShaderBasedHeightmap": true,
-        "bRestrictColumnMovementToRadius": false
+        "bRestrictColumnMovementToRadius": true
       }
     },
     "shape": {
@@ -164,8 +145,8 @@
             "enabled": true,
             "type": "matrix2d",
             "shape": {
-              "h": 64,
-              "w": 64,
+              "h": 32,
+              "w": 32,
               "c": 1
             }
           },
@@ -184,15 +165,15 @@
             "enabled": true,
             "type": "sequence",
             "shape": {
-              "max_length": 4,
+              "max_length": 2,
               "feature_dim": 9
             }
           }
         ],
         "agent": {
           "obs_size": 9,
-          "min": 8,
-          "max": 8
+          "min": 4,
+          "max": 4
         }
       },
       "action": {
@@ -243,8 +224,8 @@
         "visualization_type": "3d_surface",
         "plot_title": "Height Map Visualization",
         "shape_for_plot": {
-          "h": 64,
-          "w": 64,
+          "h": 32,
+          "w": 32,
           "c": 1
         },
         "z_lim_3d": [
@@ -261,11 +242,11 @@
       "enable_memory": true,
       "memory_type": "gru",
       "gru": {
-        "input_size": 256,
-        "hidden_size": 256,
+        "input_size": 128,
+        "hidden_size": 128,
         "num_layers": 1,
         "bias": true,
-        "dropout": 0.1
+        "dropout": 0.05
       },
       "disagreement_rewards_disabled": {
         "enabled": false,
@@ -277,12 +258,12 @@
           "hidden_size": 64
         }
       },
-      "rnd_reward_disabled": {
+      "rnd_rewards_disabled": {
         "enabled": false,
-        "reward_coeff": 0.01,
+        "reward_coeff": 0.005,
         "loss_coeff": 1.0,
         "update_proportion": 0.25,
-        "normalize_reward": false,
+        "normalize_reward": true,
         "network": {
           "output_size": 128,
           "hidden_size": 256
@@ -295,17 +276,17 @@
       "enable_popart": false,
       "popart_beta": 0.995,
       "popart_epsilon": 0.0001,
-      "learning_rate": 3e-04,
-      "lr_policy": 3e-04,
-      "lr_trunk": 3e-04,
-      "lr_value_path": 3e-04,
-      "lr_baseline_path": 3e-04,
-      "lr_value_quantile": 3e-04,
-      "lr_value_fraction": 1e-04,
-      "lr_value_iqn": 3e-04,
-      "lr_baseline_iqn": 3e-04,
-      "lr_rnd_predictor": 3e-04,
-      "lr_disagreement": 3e-04,
+      "learning_rate": 0.00025,
+      "lr_policy": 0.00025,
+      "lr_trunk": 0.00025,
+      "lr_value_path": 0.00025,
+      "lr_baseline_path": 0.00025,
+      "lr_value_quantile": 0.0003,
+      "lr_value_fraction": 5e-05,
+      "lr_value_iqn": 0.0003,
+      "lr_baseline_iqn": 0.0003,
+      "lr_rnd_predictor": 0.0003,
+      "lr_disagreement": 0.0003,
       "optimizer_betas": {
         "default": [
           0.9,
@@ -315,106 +296,111 @@
       "weight_decay": {
         "default": 0.0
       },
-      "gamma": 0.97,
-      "lmbda": 0.95,
-      "value_loss_coeff": 1.0,
-      "baseline_loss_coeff": 0.5,
+      "gamma": 0.985,
+      "lmbda": 0.97,
+      "value_loss_coeff": 0.6,
+      "baseline_loss_coeff": 0.3,
       "normalize_advantages": true,
-      "max_grad_norm": 1.0,
-      "ppo_clip_range": 0.2,
-      "value_clip_range": 1000.0,
-      "entropy_coeff": 0.01,
+      "max_grad_norm": 0.7,
+      "ppo_clip_range": 0.18,
+      "value_clip_range": 0.5,
+      "entropy_coeff": 0.015,
       "schedulers": {
         "lr_trunk": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 200000
         },
         "lr_policy": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 200000
         },
         "lr_value_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 200000
         },
         "lr_value_quantile": {
           "start_factor": 1.0,
           "end_factor": 0.3333,
-          "total_iters": 50000
+          "total_iters": 200000
         },
         "lr_value_fraction": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 200000
         },
         "lr_baseline_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 200000
         },
         "lr_rnd_predictor": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 200000
         },
         "lr_disagreement": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 50000
+          "total_iters": 200000
         },
         "entropy_coeff": {
-          "start_value": 0.01,
-          "end_value": 0.005,
-          "total_iters": 50000
+          "start_value": 0.015,
+          "end_value": 0.001,
+          "total_iters": 200000
         },
         "policy_clip": {
-          "start_value": 0.2,
+          "start_value": 0.18,
           "end_value": 0.1,
-          "total_iters": 25000
+          "total_iters": 200000
         },
-        "value_clip_disabled": {
-          "start_value": 1.0,
+        "value_clip": {
+          "start_value": 0.5,
           "end_value": 0.1,
-          "total_iters": 50000
+          "total_iters": 200000
         },
         "max_grad_norm": {
           "start_value": 3.0,
           "end_value": 1.0,
-          "total_iters": 50000
+          "total_iters": 200000
         },
         "fqf_temperature": {
-          "start_value": 3.0,
-          "end_value": 1.0,
-          "total_iters": 30000
+          "start_value": 6.0,
+          "end_value": 4.0,
+          "total_iters": 200000
         },
         "fqf_prior_blend_alpha": {
-          "start_value": 0.2,
-          "end_value": 0.05,
-          "total_iters": 50000
+          "start_value": 0.3,
+          "end_value": 0.15,
+          "total_iters": 200000
         },
         "fraction_entropy_coeff": {
-          "start_value": 0.02,
-          "end_value": 0.001,
-          "total_iters": 50000
+          "start_value": 0.08,
+          "end_value": 0.02,
+          "total_iters": 200000
         },
         "fraction_loss_coeff": {
-          "start_value": 0.05,
-          "end_value": 0.1,
-          "total_iters": 30000
+          "start_value": 0.03,
+          "end_value": 0.06,
+          "total_iters": 200000
+        },
+        "rnd_reward_coeff": {
+          "start_value": 0.005,
+          "end_value": 0.0,
+          "total_iters": 200000
         }
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
             "agent_obs_size": 9,
-            "num_agents": 16,
-            "embed_dim": 256,
-            "num_heads": 8,
-            "transformer_layers": 2,
-            "dropout_rate": 0.1,
+            "num_agents": 4,
+            "embed_dim": 128,
+            "num_heads": 4,
+            "transformer_layers": 1,
+            "dropout_rate": 0.05,
             "use_agent_id": true,
             "ff_hidden_factor": 2,
             "id_num_freqs": 8,
@@ -427,49 +413,35 @@
                 "enabled": true,
                 "type": "cnn",
                 "cnn_stem_channels": [
-                  24,
-                  48,
-                  96
+                  16,
+                  32
                 ],
                 "cnn_stem_kernels": [
-                  5,
                   3,
                   3
                 ],
                 "cnn_stem_strides": [
                   2,
-                  2,
                   2
                 ],
                 "cnn_stem_group_norms": [
-                  6,
-                  12,
-                  24
+                  4,
+                  8
                 ],
-                "target_pool_scale": 4,
+                "target_pool_scale": 2,
                 "add_spatial_coords_to_cnn_input": true,
                 "swin_stages": [
                   {
-                    "window_size": 4,
-                    "num_heads": 4,
-                    "merge": false
-                  },
-                  {
-                    "window_size": 4,
-                    "num_heads": 8,
-                    "merge": true
-                  },
-                  {
                     "window_size": 2,
-                    "num_heads": 8,
+                    "num_heads": 4,
                     "merge": false
                   }
                 ],
                 "adaptive_tokenizer": {
-                  "base_tokens": 12,
-                  "min_tokens": 8,
-                  "max_tokens": 20,
-                  "importance_hidden": 96
+                  "base_tokens": 6,
+                  "min_tokens": 4,
+                  "max_tokens": 10,
+                  "importance_hidden": 64
                 }
               },
               {
@@ -477,111 +449,94 @@
                 "enabled": true,
                 "type": "linear_sequence",
                 "linear_stem_hidden_sizes": [
-                  128,
-                  256
+                  96,
+                  128
                 ],
                 "add_positional_encoding": true
               }
             ]
           },
           "obs_encoder": {
-            "state_dim": 256,
-            "hidden_size": 256,
-            "output_size": 256,
-            "dropout_rate": 0.1,
+            "state_dim": 128,
+            "hidden_size": 128,
+            "output_size": 128,
+            "dropout_rate": 0.05,
             "activation": true,
             "layer_norm": true
           },
           "obs_actions_encoder": {
-            "state_dim": 256,
+            "state_dim": 128,
             "action_dim": 6,
-            "hidden_size": 256,
-            "output_size": 256,
-            "dropout_rate": 0.1,
+            "hidden_size": 128,
+            "output_size": 128,
+            "dropout_rate": 0.05,
             "activation": true,
             "layer_norm": true
           }
         },
         "policy_network": {
           "type": "beta",
-          "in_features": 256,
-          "hidden_size": 256,
+          "in_features": 128,
+          "hidden_size": 128,
           "param_init_bias": 0.0,
           "min_concentration": 1.01,
-          "linear_init_scale": 0.1,
-          "dropout_rate": 0.1
+          "linear_init_scale": 0.2,
+          "dropout_rate": 0.05
         },
         "critic_network": {
           "baseline_head": {
-            "in_features": 256,
-            "hidden_size": 256,
+            "in_features": 128,
+            "hidden_size": 128,
             "dropout_rate": 0.0,
             "output_layer_init_gain": 1.0
           },
           "value_head": {
-            "in_features": 256,
-            "hidden_size": 256,
+            "in_features": 128,
+            "hidden_size": 128,
             "dropout_rate": 0.0,
             "output_layer_init_gain": 1.0
           },
           "value_attention": {
-            "embed_dim": 256,
-            "num_heads": 8,
-            "dropout": 0.1,
+            "embed_dim": 128,
+            "num_heads": 4,
+            "dropout": 0.05,
             "self_attention": true
           },
           "baseline_attention": {
-            "embed_dim": 256,
-            "num_heads": 8,
-            "dropout": 0.1,
+            "embed_dim": 128,
+            "num_heads": 4,
+            "dropout": 0.05,
             "self_attention": true
           },
-          "distributional_network_params": {
-            "fqf_network": {
-              "feature_dim": 256,
-              "hidden_size": 256,
-              "quantile_embedding_dim": 64,
-              "num_quantiles": 16,
-              "use_dueling": true,
-              "linear_init_scale": 1.0,
-              "dropout_rate": 0.1,
-              "iqn_kappa": 1.0,
-              "fraction_net_hidden": 128,
-              "fraction_loss_coeff": 0.05,
-              "fraction_entropy_coeff": 0.02,
-              "fqf_fraction_update_trunk": false,
-              "fraction_entropy_warmup_iters": 5000,
-              "fraction_entropy_cap": 0.5,
-              "softmax_temperature": 3.0,
-              "prior_blend_alpha": 0.2,
-              "exploration_noise_scale": 0.02,
-              "logit_clamp_epsilon": 1e-08,
-              "monotonicity_epsilon": 1e-06
-            }
-          }
+          "distributional_network_params_disabled": {}
         }
       }
     }
   },
   "train": {
-    "sequence_length": 32,
+    "sequence_length": 16,
     "pad_trajectories": true,
-    "batch_size": 1024,
-    "buffer_size": 1024,
-    "num_environments": 8,
-    "epochs": 3,
-    "mini_batch_size": 16,
+    "batch_size": 512,
+    "buffer_size": 512,
+    "num_environments": 64,
+    "epochs": 4,
+    "mini_batch_size": 32,
     "ActionRepeat": 1,
-    "saveFrequency": 9,
-    "states_normalizer_disabled": {
+    "saveFrequency": 40,
+    "states_normalizer": {
       "epsilon": 1e-08,
       "warmup_steps": 0
+    },
+    "checkpoint": {
+      "path": "checkpoints//test.pth",
+      "restore_optimizers": false,
+      "restore_schedulers": false
     }
   },
   "test": {
     "enabled": true,
     "eval_only": false,
-    "frequency": 1,
-    "steps": 128
+    "frequency": 40,
+    "steps": 320
   }
 }

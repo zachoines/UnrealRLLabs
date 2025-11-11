@@ -152,6 +152,9 @@ private:
     UPROPERTY()
     bool bTerminateOnMaxSteps;
 
+    UPROPERTY()
+    bool bTerminateOnAllObjectsOutOfBounds;
+
     // Play mode toggles
     UPROPERTY()
     bool bUseDistanceBasedReward;
