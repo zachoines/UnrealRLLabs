@@ -219,7 +219,7 @@ class LinearLRDecay(torch.optim.lr_scheduler._LRScheduler):
         self.start_factor = float(start_factor)
         self.end_factor = float(end_factor)
         self.total_iters = max(int(total_iters), 1)
-        super().__init__(optimizer, last_epoch=last_epoch, verbose=False)
+        super().__init__(optimizer, last_epoch=last_epoch)
 
     def get_lr(self):
         # last_epoch starts at 0 on first step() call

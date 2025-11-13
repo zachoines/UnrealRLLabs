@@ -47,9 +47,7 @@ class SharedMemoryInterface(EnvCommunicationInterface):
         super().__init__()
         self.config = config
         self.device: torch.device = torch.device(
-            "mps" if (hasattr(torch, 'has_mps') and torch.has_mps) else (
-                "cuda" if torch.cuda.is_available() else "cpu"
-            )
+            "cuda" if torch.cuda.is_available() else "cpu"
         )
 
         shape_cfg = config.get("environment", {}).get("shape", {})
