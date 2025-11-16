@@ -252,7 +252,7 @@
         "reward_coeff": 0.01,
         "loss_coeff": 1.0,
         "update_proportion": 0.5,
-        "normalize_reward": true,
+        "normalize_reward": false,
         "network": {
           "output_size": 128,
           "hidden_size": 256
@@ -293,7 +293,7 @@
       "max_grad_norm": 0.7,
       "ppo_clip_range": 0.18,
       "value_clip_range": 0.5,
-      "entropy_coeff": 0.015,
+      "entropy_coeff": 0.01,
       "schedulers": {
         "lr_trunk": {
           "start_factor": 1.0,
@@ -336,7 +336,7 @@
           "total_iters": 1000000
         },
         "entropy_coeff": {
-          "start_value": 0.001,
+          "start_value": 0.01,
           "end_value": 0.0005,
           "total_iters": 1000000
         },
@@ -503,14 +503,14 @@
     }
   },
   "train": {
-    "sequence_length": 16,
+    "sequence_length": 8,
     "pad_trajectories": true,
     "batch_size": 256,
     "buffer_size": 256,
     "num_environments": 128,
     "epochs": 2,
     "mini_batch_size": 128,
-    "ActionRepeat": 1,
+    "ActionRepeat": 2,
     "saveFrequency": 40,
     "states_normalizer": {
       "epsilon": 1e-08,
