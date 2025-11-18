@@ -258,10 +258,6 @@
           "hidden_size": 256
         }
       },
-      "rewards_normalizer": {
-        "epsilon": 1e-05,
-        "warmup_steps": 0
-      },
       "enable_popart": false,
       "popart_beta": 0.995,
       "popart_epsilon": 0.0001,
@@ -517,9 +513,9 @@
       "warmup_steps": 0
     },
     "checkpoint": {
-      "path": "checkpoints//test.pth",
-      "restore_optimizers": false,
-      "restore_schedulers": false
+      "path": "checkpoints\\model_update_3000.pth",
+      "restore_optimizers": true,
+      "restore_schedulers": true
     }
   },
   "test": {
