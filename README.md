@@ -61,8 +61,9 @@ On the modeling side, the project contributes a multi-stream, attention-based po
 - **Debugging and data capture**: Toggle the `StateRecorder` section to dump trajectory visualizations into `Content/Python/recordings/`.
 
 ## Research Artifacts
-- **Capstone report**: `Report/TerraShift Report.pdf` documents the motivation, system design, and experimental campaign. It frames TerraShift as a cooperative terrain-control benchmark, details the UnrealRLLabs infrastructure, and explains MARL algorithm.
+- **Capstone report**: `Report/TerraShift Report.pdf` documents the motivation, system design, and experimental campaign. It frames TerraShift as a cooperative terrain-control benchmark, details the UnrealRLLabs infrastructure, and explains the MARL algorithm.
 - **Pretrain -> finetune regime**: Training begins on an 8-agent, 15x15 grid curriculum (`Content/Python/Configs/TerraShift_PreTrain_8Agents_15Grid.json`) for roughly 96M environment steps, then resumes from the saved checkpoint in `Content/Python/checkpoints/` to scale up to the 16-agent, 30x30 task (`Content/Python/Configs/TerraShift_Finetune_16Agents_30Grid.json`). Learning curves (`Report/Results/reward_mean_pretrain.png`, `Report/Results/reward_mean_finetune.png`) show sustained improvement and rapid reacquisition after transfer.
+- **Evaluation video (learned policy)**: [▶️ TerraShift evaluation rollouts (Google Drive)](https://drive.google.com/file/d/1vM9TWfqG4Cn1ZovsxPjEoqxDBAhBX_Qq/view?usp=drive_link) — a short in-editor capture of trained policies reshaping the terrain to sort color-coded objects into their goal regions.
 - **Emergent behaviors**: Qualitative analysis highlights coordinated basin formation, cluster breaking, and ball-to-ball avoidance. `Report/Results/behavior_basin.png` captures one such emergent pattern where agents sculpt a shared basin that shuttles an object to its goal.
 - **Reproducibility assets**: Checkpoints in `Content/Python/checkpoints/` pair with their respective configs so readers can replay the behaviors in-editor or continue training to explore alternate reward schedules or curriculum stages.
 
