@@ -768,6 +768,12 @@ class MAPOCAAgent(Agent):
             {"start_value": init_alpha, "end_value": init_alpha, "total_iters": 1}
         ))
         self._record_initial_scheduler_state("fqf_prior_blend_alpha")
+        if self.rnd_cfg:
+            self.schedulers["rnd_reward_coeff"] = LinearValueScheduler(**sched_cfg.get(
+                "rnd_reward_coeff",
+                {"start_value": self.rnd_reward_coeff, "end_value": self.rnd_reward_coeff, "total_iters": 1}
+            ))
+            self._record_initial_scheduler_state("rnd_reward_coeff")
         self._sync_schedulable_scalars()
 
     def _record_initial_scheduler_state(self, name: str) -> None:
@@ -803,6 +809,8 @@ class MAPOCAAgent(Agent):
                 if self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'prior_blend_alpha') and \
                    "fqf_prior_blend_alpha" in self.schedulers and hasattr(self.schedulers["fqf_prior_blend_alpha"], "current_value"):
                     self.shared_critic.value_iqn_net.prior_blend_alpha = float(self.schedulers["fqf_prior_blend_alpha"].current_value())
+                if self.rnd_cfg and "rnd_reward_coeff" in self.schedulers and hasattr(self.schedulers["rnd_reward_coeff"], "current_value"):
+                    self.rnd_reward_coeff = float(self.schedulers["rnd_reward_coeff"].current_value())
         except Exception:
             pass
 
@@ -1399,6 +1407,8 @@ class MAPOCAAgent(Agent):
         if self.use_fqf and hasattr(self.shared_critic.value_iqn_net, 'prior_blend_alpha'):
             new_alpha = self.schedulers["fqf_prior_blend_alpha"].step()
             self.shared_critic.value_iqn_net.prior_blend_alpha = float(new_alpha)
+        if self.rnd_cfg and "rnd_reward_coeff" in self.schedulers:
+            self.rnd_reward_coeff = self.schedulers["rnd_reward_coeff"].step()
 
     def _clear_fqf_cache(self) -> None:
         """Release cached tensors used for FQF auxiliary losses/logging."""

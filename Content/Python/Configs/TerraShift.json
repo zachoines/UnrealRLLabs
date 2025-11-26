@@ -29,14 +29,14 @@
         "VelAlign_Scale": 0.0,
         "VelAlign_Min": -25.0,
         "VelAlign_Max": 25.0,
-        "DistImprove_Scale": 1.0,
+        "DistImprove_Scale": 4.0,
         "DistImprove_Min": -1.0,
         "DistImprove_Max": 1.0,
         "ZAccel_Scale": 0.0,
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
-        "EventReward_GoalReached": 1.0,
-        "EventReward_OutOfBounds": 0.25,
+        "EventReward_GoalReached": 4.0,
+        "EventReward_OutOfBounds": 1.0,
         "TimeStepPenalty": 0.0005
       },
       "GoalManager": {
@@ -249,7 +249,7 @@
         "dropout": 0.05
       },
       "rnd_rewards": {
-        "reward_coeff": 0.01,
+        "reward_coeff": 0.005,
         "loss_coeff": 1.0,
         "update_proportion": 0.5,
         "normalize_reward": false,
@@ -263,14 +263,14 @@
       "popart_epsilon": 0.0001,
       "learning_rate": 0.00035,
       "lr_policy": 0.00035,
-      "lr_trunk": 0.00035,
-      "lr_value_path": 0.00035,
-      "lr_baseline_path": 0.00035,
-      "lr_value_quantile": 0.0004,
-      "lr_value_fraction": 7e-05,
-      "lr_value_iqn": 0.0004,
-      "lr_baseline_iqn": 0.0004,
-      "lr_rnd_predictor": 0.0004,
+      "lr_trunk": 0.00025,
+      "lr_value_path": 0.00042,
+      "lr_baseline_path": 0.00042,
+      "lr_value_quantile": 0.00045,
+      "lr_value_fraction": 0.00018,
+      "lr_value_iqn": 0.00045,
+      "lr_baseline_iqn": 0.00045,
+      "lr_rnd_predictor": 0.00014,
       "lr_disagreement": 0.0003,
       "optimizer_betas": {
         "default": [
@@ -294,87 +294,87 @@
         "lr_trunk": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 1000000
+          "total_iters": 100000
         },
         "lr_policy": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 1000000
+          "total_iters": 100000
         },
         "lr_value_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 1000000
+          "total_iters": 100000
         },
         "lr_value_quantile": {
           "start_factor": 1.0,
           "end_factor": 0.3333,
-          "total_iters": 1000000
+          "total_iters": 100000
         },
         "lr_value_fraction": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 1000000
+          "total_iters": 100000
         },
         "lr_baseline_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 1000000
+          "total_iters": 100000
         },
         "lr_rnd_predictor": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 1000000
+          "total_iters": 100000
         },
         "lr_disagreement": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 1000000
+          "total_iters": 100000
         },
         "entropy_coeff": {
           "start_value": 0.01,
           "end_value": 0.0005,
-          "total_iters": 1000000
+          "total_iters": 100000
         },
         "policy_clip": {
           "start_value": 0.2,
           "end_value": 0.1,
-          "total_iters": 1000000
+          "total_iters": 100000
         },
         "value_clip": {
           "start_value": 0.5,
           "end_value": 0.1,
-          "total_iters": 1000000
+          "total_iters": 100000
         },
         "max_grad_norm": {
           "start_value": 3.0,
           "end_value": 1.0,
-          "total_iters": 1000000
+          "total_iters": 100000
         },
         "fqf_temperature": {
           "start_value": 6.0,
           "end_value": 4.0,
-          "total_iters": 1000000
+          "total_iters": 100000
         },
         "fqf_prior_blend_alpha": {
           "start_value": 0.3,
           "end_value": 0.15,
-          "total_iters": 1000000
+          "total_iters": 100000
         },
         "fraction_entropy_coeff": {
           "start_value": 0.08,
           "end_value": 0.02,
-          "total_iters": 1000000
+          "total_iters": 100000
         },
         "fraction_loss_coeff": {
           "start_value": 0.03,
           "end_value": 0.06,
-          "total_iters": 1000000
+          "total_iters": 100000
         },
         "rnd_reward_coeff": {
           "start_value": 0.005,
           "end_value": 0.0,
-          "total_iters": 1000000
+          "total_iters": 60000
         }
       },
       "networks": {
@@ -499,13 +499,13 @@
     }
   },
   "train": {
-    "sequence_length": 8,
+    "sequence_length": 16,
     "pad_trajectories": true,
     "batch_size": 256,
     "buffer_size": 256,
-    "num_environments": 128,
+    "num_environments": 64,
     "epochs": 2,
-    "mini_batch_size": 128,
+    "mini_batch_size": 64,
     "ActionRepeat": 2,
     "saveFrequency": 40,
     "states_normalizer": {
@@ -513,9 +513,9 @@
       "warmup_steps": 0
     },
     "checkpoint": {
-      "path": "checkpoints\\model_update_3000.pth",
-      "restore_optimizers": true,
-      "restore_schedulers": true
+      "path": "checkpoints\\model_update_2000.pth",
+      "restore_optimizers": false,
+      "restore_schedulers": false
     }
   },
   "test": {

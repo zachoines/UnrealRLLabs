@@ -203,6 +203,23 @@ class LinearValueScheduler:
         fraction = min(self.counter / float(self.total_iters), 1.0)
         return (1.0 - fraction)*self.start_value + fraction*self.end_value
 
+    def state_dict(self) -> Dict[str, float]:
+        """Serialize scheduler state so checkpoints can resume mid-run."""
+        return {
+            "start_value": float(self.start_value),
+            "end_value": float(self.end_value),
+            "total_iters": int(self.total_iters),
+            "counter": int(self.counter),
+        }
+
+    def load_state_dict(self, state: Dict[str, float]) -> None:
+        """Restore scheduler state saved by `state_dict`."""
+        self.start_value = float(state.get("start_value", self.start_value))
+        self.end_value = float(state.get("end_value", self.end_value))
+        self.total_iters = max(1, int(state.get("total_iters", self.total_iters)))
+        counter = int(state.get("counter", self.counter))
+        # Clamp the counter to a valid range to avoid corrupted checkpoints.
+        self.counter = max(0, min(counter, self.total_iters))
 
 class LinearLRDecay(torch.optim.lr_scheduler._LRScheduler):
     """
@@ -228,19 +245,21 @@ class LinearLRDecay(torch.optim.lr_scheduler._LRScheduler):
         return [base_lr * factor for base_lr in self.base_lrs]
 
     # --- Checkpointing helpers ---
-    def state_dict(self) -> Dict[str, float]:
-        return {
-            "start_value": float(self.start_value),
-            "end_value": float(self.end_value),
+    def state_dict(self) -> Dict[str, Any]:
+        state = super().state_dict()
+        state.update({
+            "start_factor": float(self.start_factor),
+            "end_factor": float(self.end_factor),
             "total_iters": int(self.total_iters),
-            "counter": int(self.counter),
-        }
+        })
+        return state
 
-    def load_state_dict(self, state: Dict[str, float]):
-        self.start_value = float(state.get("start_value", self.start_value))
-        self.end_value = float(state.get("end_value", self.end_value))
-        self.total_iters = int(state.get("total_iters", self.total_iters))
-        self.counter = int(state.get("counter", self.counter))
+    def load_state_dict(self, state: Dict[str, Any]):
+        state = dict(state)
+        self.start_factor = float(state.pop("start_factor", self.start_factor))
+        self.end_factor = float(state.pop("end_factor", self.end_factor))
+        self.total_iters = max(1, int(state.pop("total_iters", self.total_iters)))
+        super().load_state_dict(state)
 
 class RunningMeanStdNormalizer:
     """
