@@ -195,6 +195,16 @@ class MAPOCAAgent(Agent):
 
         if self.rnd_cfg:
             self._setup_rnd(self.rnd_cfg, trunk_dim)
+
+        # Variance matching configuration (MA-POCA baseline regularizer)
+        self.variance_matching_cfg = a_cfg.get("variance_matching", {})
+        self.variance_matching_enabled = bool(self.variance_matching_cfg.get("enabled", False))
+        self.variance_target_ratio = float(self.variance_matching_cfg.get("target_ratio", 0.6))
+        self.variance_penalty_scale = float(self.variance_matching_cfg.get("penalty_scale", 0.1))
+        self.variance_min_samples = int(self.variance_matching_cfg.get("min_samples", 512))
+        self.variance_ema_beta = float(self.variance_matching_cfg.get("ema_beta", 0.99))
+        self._variance_with_running: Optional[float] = None
+        self._variance_without_running: Optional[float] = None
         
         # --- Normalization Setup ---
         self.enable_popart = a_cfg.get("enable_popart", False)
@@ -336,7 +346,17 @@ class MAPOCAAgent(Agent):
             else old_baselines_seq
         )
         baseline_denorm = baseline_denorm.squeeze(-1)
-        advantages_seq = self._calculate_advantages(padded_returns_seq, baseline_denorm, mask_btna, logs_acc)
+        advantages_seq, raw_advantages_seq = self._calculate_advantages(
+            padded_returns_seq, baseline_denorm, mask_btna, logs_acc
+        )
+
+        variance_penalty_factor = 0.0
+        if self.variance_matching_enabled:
+            variance_penalty_factor, variance_logs = self._variance_matching_update(
+                raw_advantages_seq, padded_returns_seq, old_values_seq, mask_btna
+            )
+            for k, v in variance_logs.items():
+                logs_acc[k].append(v)
 
         idx = np.arange(B)
         for _epoch in range(self.epochs):
@@ -438,6 +458,8 @@ class MAPOCAAgent(Agent):
                 base_targets = mb_returns.unsqueeze(2).expand_as(new_base_norm)
                 if self.enable_popart: base_targets = self.baseline_popart.normalize_targets(base_targets)
                 base_loss = self._clipped_value_loss(mb_old_base_norm.detach(), new_base_norm, base_targets.detach(), self.value_clip_range, mb_mask_btna.unsqueeze(-1))
+                if self.variance_matching_enabled and variance_penalty_factor > 0.0:
+                    base_loss = base_loss * (1.0 + variance_penalty_factor)
                 
                 # --- Two-phase PPO step for FQF to isolate fraction updates ---
                 if self.use_fqf and "value_quantile" in self.optimizers and "value_fraction" in self.optimizers:
@@ -555,7 +577,8 @@ class MAPOCAAgent(Agent):
             "grad_norm/value_path": [], "grad_norm/baseline_path": [],
             "grad_norm/value_quantile_net": [], "grad_norm/value_fraction_net": [], "grad_norm/value_attention": [],
             "fqf/min_tau_diff": [], "fqf/mean_tau_diff": [], "fqf/max_tau_diff": [],
-            "fraction/entropy": [], "fraction/prob_max": [], "fraction/prob_min": [], "fraction/top1_mass": []
+            "fraction/entropy": [], "fraction/prob_max": [], "fraction/prob_min": [], "fraction/top1_mass": [],
+            "variance/with_baseline": [], "variance/no_baseline": [], "variance/ratio": [], "variance/penalty": []
         }
         # L2 gradient logs live under the 'grads/' namespace
         logs_acc.update({
@@ -814,7 +837,7 @@ class MAPOCAAgent(Agent):
         except Exception:
             pass
 
-    def _calculate_advantages(self, returns_seq: torch.Tensor, baseline_seq: torch.Tensor, mask: torch.Tensor, logs_acc: Dict[str, List[float]]) -> torch.Tensor:
+    def _calculate_advantages(self, returns_seq: torch.Tensor, baseline_seq: torch.Tensor, mask: torch.Tensor, logs_acc: Dict[str, List[float]]) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Calculates the advantages, logs stats for the unnormalized advantages,
         and then returns the optionally normalized advantages.
@@ -827,6 +850,7 @@ class MAPOCAAgent(Agent):
 
         # The baseline is already denormalized if PopArt is used.
         advantages = returns_seq.unsqueeze(2).expand_as(baseline_seq) - baseline_seq
+        raw_advantages = advantages.clone()
         
         # Log stats of unnormalized advantages
         valid_mask = mask.bool()
@@ -844,7 +868,64 @@ class MAPOCAAgent(Agent):
                 std = valid_advantages.std() + 1e-8
                 advantages[valid_mask] = (valid_advantages - mean) / std
 
-        return advantages
+        return advantages, raw_advantages
+    
+    def _variance_matching_update(
+        self,
+        advantages_seq: torch.Tensor,
+        returns_seq: torch.Tensor,
+        old_values_seq: torch.Tensor,
+        mask_btna: torch.Tensor,
+    ) -> Tuple[float, Dict[str, float]]:
+        """Computes the variance penalty term that keeps the baseline informative."""
+        logs: Dict[str, float] = {}
+        if not mask_btna.numel():
+            return 0.0, logs
+
+        mask_bool = mask_btna.bool()
+        valid_count = int(mask_bool.sum().item())
+        if valid_count < max(self.variance_min_samples, 2):
+            return 0.0, logs
+
+        adv_with = advantages_seq[mask_bool]
+        if adv_with.numel() < 2:
+            return 0.0, logs
+        var_with = torch.var(adv_with, unbiased=False)
+
+        value_denorm = (
+            self.value_popart.denormalize_outputs(old_values_seq)
+            if self.enable_popart
+            else old_values_seq
+        )
+        adv_no_baseline = (returns_seq - value_denorm).expand(-1, -1, self.num_agents)
+        adv_no_valid = adv_no_baseline[mask_bool]
+        if adv_no_valid.numel() < 2:
+            return 0.0, logs
+        var_no = torch.var(adv_no_valid, unbiased=False)
+
+        eps = 1e-8
+        var_with_val = float(var_with.item())
+        var_no_val = float(var_no.item())
+        var_no_val = max(var_no_val, eps)
+
+        self._variance_with_running = self._variance_ema(self._variance_with_running, var_with_val)
+        self._variance_without_running = self._variance_ema(self._variance_without_running, var_no_val)
+
+        ratio = float((var_with_val + eps) / var_no_val)
+        penalty = max(ratio - self.variance_target_ratio, 0.0) * self.variance_penalty_scale
+
+        logs["variance/with_baseline"] = self._variance_with_running if self._variance_with_running is not None else var_with_val
+        logs["variance/no_baseline"] = self._variance_without_running if self._variance_without_running is not None else var_no_val
+        logs["variance/ratio"] = ratio
+        logs["variance/penalty"] = penalty
+        return penalty, logs
+
+    def _variance_ema(self, running_value: Optional[float], new_value: float) -> float:
+        """Exponential moving average helper for variance tracking."""
+        if running_value is None:
+            return new_value
+        beta = self.variance_ema_beta
+        return beta * running_value + (1.0 - beta) * new_value
     
     def _compute_gae_with_padding(
         self,
