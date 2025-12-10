@@ -7,10 +7,10 @@
       "MaxColumnHeight": 6,
       "ObjectMass": 1.0,
       "GridSize": 16,
-      "MaxSteps": 256,
-      "MaxAgents": 4,
+      "MaxSteps": 512,
+      "MaxAgents": 8,
       "TerraShiftEnvironment": {
-        "bUseVelAlignment": false,
+        "bUseVelAlignment": true,
         "bUseXYDistanceImprovement": true,
         "bUseZAccelerationPenalty": false,
         "bUsePotentialShaping": false,
@@ -21,57 +21,58 @@
         "bUseDistanceBasedReward": false,
         "bDisableEventRewards": false,
         "bUseStationaryPenalty": false,
-        "StationaryPenalty_MinSpeed": 10.0,
-        "StationaryPenalty_Drain": 0.0001,
+        "StationaryPenalty_MinSpeed": 20.0,
+        "StationaryPenalty_Drain": 0.01,
+        "StationaryPenalty_FalloffExponent": 2.0,
         "StationaryPenalty_MinConsecutiveFrames": 1,
         "PotentialShaping_Gamma": 0.995,
         "PotentialShaping_Scale": 0.6,
-        "VelAlign_Scale": 0.0,
+        "VelAlign_Scale": 0.01,
         "VelAlign_Min": -25.0,
         "VelAlign_Max": 25.0,
-        "DistImprove_Scale": 4.0,
-        "DistImprove_Min": -1.0,
+        "DistImprove_Scale": 10.0,
+        "DistImprove_Min": 0.01,
         "DistImprove_Max": 1.0,
         "ZAccel_Scale": 0.0,
         "ZAccel_Min": 0.1,
         "ZAccel_Max": 2000.0,
-        "EventReward_GoalReached": 4.0,
-        "EventReward_OutOfBounds": 1.0,
-        "TimeStepPenalty": 0.0005
+        "EventReward_GoalReached": 10.0,
+        "EventReward_OutOfBounds": 2.5,
+        "TimeStepPenalty": 0.0
       },
       "GoalManager": {
         "DefaultRadius": 1.0
       },
       "MultiAgentGaussianWaveHeightMap": {
-        "NumAgents": 4,
+        "NumAgents": 8,
         "GridSize": 16,
         "MinHeight": -6,
         "MaxHeight": 6,
         "NumActions": 6,
         "bUseActionDelta": true,
         "bAccumulatedWave": false,
-        "AccumulatedWaveFadeGamma": 0.9,
+        "AccumulatedWaveFadeGamma": 1.0,
         "bWrapAroundEdges": true,
         "VelMinMax": [
-          -1.0,
-          1.0
+          -2.0,
+          2.0
         ],
         "AngVelRange": [
           -0.785,
           0.785
         ],
         "AmpMinMax": [
-          -8.0,
-          8.0
+          0.5,
+          6.0
         ],
         "SigMinMax": [
-          0.0,
-          8.0
+          0.5,
+          3.0
         ],
-        "DeltaVelScale": 2,
-        "DeltaAngVelScale": 2,
-        "DeltaAmpScale": 1.0,
-        "DeltaSigmaScale": 1.0
+        "DeltaVelScale": 4,
+        "DeltaAngVelScale": 4,
+        "DeltaAmpScale": 4,
+        "DeltaSigmaScale": 4
       },
       "StateManager": {
         "MaxGridObjects": 2,
@@ -172,8 +173,8 @@
         ],
         "agent": {
           "obs_size": 9,
-          "min": 4,
-          "max": 4
+          "min": 8,
+          "max": 8
         }
       },
       "action": {
@@ -215,7 +216,7 @@
       "fps": 32,
       "dpi": 150
     },
-    "auto_save_every": 256,
+    "auto_save_every": 512,
     "components_to_record": [
       {
         "enabled": true,
@@ -242,24 +243,28 @@
       "enable_memory": true,
       "memory_type": "gru",
       "gru": {
-        "input_size": 64,
-        "hidden_size": 64,
+        "input_size": 128,
+        "hidden_size": 128,
         "num_layers": 1,
         "bias": true,
         "dropout": 0.02
       },
-      "rnd_rewards_disabled": {
-        "reward_coeff": 0.005,
+      "rnd_rewards": {
+        "reward_coeff": 0.01,
         "loss_coeff": 1.0,
         "update_proportion": 0.5,
         "normalize_reward": false,
         "network": {
           "output_size": 128,
-          "hidden_size": 256
+          "hidden_size": 256,
+          "use_attention_pool": true,
+          "attn_num_heads": 4,
+          "attn_dropout": 0.05,
+          "attn_ff_hidden_factor": 2.0
         }
       },
       "variance_matching": {
-        "enabled": true,
+        "enabled": false,
         "target_ratio": 0.6,
         "penalty_scale": 0.1,
         "ema_beta": 0.99,
@@ -293,105 +298,105 @@
       "value_loss_coeff": 0.6,
       "baseline_loss_coeff": 0.3,
       "normalize_advantages": true,
-      "max_grad_norm": 0.7,
-      "ppo_clip_range": 0.18,
+      "max_grad_norm": 1.0,
+      "ppo_clip_range": 0.2,
       "value_clip_range": 0.5,
       "entropy_coeff": 0.01,
       "schedulers": {
         "lr_trunk": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 100000
+          "total_iters": 200000
         },
         "lr_policy": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 100000
+          "total_iters": 200000
         },
         "lr_value_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 100000
+          "total_iters": 200000
         },
         "lr_value_quantile": {
           "start_factor": 1.0,
           "end_factor": 0.3333,
-          "total_iters": 100000
+          "total_iters": 200000
         },
         "lr_value_fraction": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 100000
+          "total_iters": 200000
         },
         "lr_baseline_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 100000
+          "total_iters": 200000
         },
-        "lr_rnd_predictor_disabled": {
+        "lr_rnd_predictor": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 100000
+          "total_iters": 200000
         },
         "lr_disagreement_disabled": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 100000
+          "total_iters": 200000
         },
         "entropy_coeff": {
           "start_value": 0.01,
           "end_value": 0.0005,
-          "total_iters": 100000
+          "total_iters": 200000
         },
         "policy_clip": {
           "start_value": 0.2,
           "end_value": 0.1,
-          "total_iters": 100000
+          "total_iters": 200000
         },
         "value_clip": {
           "start_value": 0.5,
           "end_value": 0.1,
-          "total_iters": 100000
+          "total_iters": 200000
         },
         "max_grad_norm": {
           "start_value": 3.0,
           "end_value": 1.0,
-          "total_iters": 100000
+          "total_iters": 200000
         },
         "fqf_temperature_disabled": {
           "start_value": 6.0,
           "end_value": 4.0,
-          "total_iters": 100000
+          "total_iters": 200000
         },
         "fqf_prior_blend_alpha_disabled": {
           "start_value": 0.3,
           "end_value": 0.15,
-          "total_iters": 100000
+          "total_iters": 200000
         },
         "fraction_entropy_coeff_disabled": {
           "start_value": 0.08,
           "end_value": 0.02,
-          "total_iters": 100000
+          "total_iters": 200000
         },
         "fraction_loss_coeff_disabled": {
           "start_value": 0.03,
           "end_value": 0.06,
-          "total_iters": 100000
+          "total_iters": 200000
         },
-        "rnd_reward_coeff_disabled": {
-          "start_value": 0.005,
+        "rnd_reward_coeff": {
+          "start_value": 0.01,
           "end_value": 0.0,
-          "total_iters": 60000
+          "total_iters": 100000
         }
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
           "cross_attention_feature_extractor": {
               "agent_obs_size": 9,
-              "num_agents": 4,
-              "embed_dim": 64,
-              "num_heads": 2,
-              "transformer_layers": 2,
+              "num_agents": 8,
+              "embed_dim": 128,
+              "num_heads": 4,
+              "transformer_layers": 3,
               "dropout_rate": 0.025,
               "use_agent_id": true,
               "ff_hidden_factor": 2,
@@ -405,8 +410,8 @@
                   "enabled": true,
                   "type": "cnn",
                   "cnn_stem_channels": [
-                    8,
-                    16
+                    12,
+                    24
                   ],
                   "cnn_stem_kernels": [
                     3,
@@ -425,15 +430,15 @@
                   "swin_stages": [
                     {
                       "window_size": 2,
-                      "num_heads": 2,
+                      "num_heads": 4,
                       "merge": true
                     }
                   ],
                   "adaptive_tokenizer": {
-                    "base_tokens": 4,
+                    "base_tokens": 6,
                     "min_tokens": 3,
-                    "max_tokens": 6,
-                    "importance_hidden": 48
+                    "max_tokens": 8,
+                    "importance_hidden": 96
                   }
                 },
                 {
@@ -441,26 +446,26 @@
                   "enabled": true,
                   "type": "linear_sequence",
                   "linear_stem_hidden_sizes": [
-                    64,
-                    64
+                    96,
+                    96
                   ],
                   "add_positional_encoding": true
                 }
               ]
             },
             "obs_encoder": {
-              "state_dim": 64,
-              "hidden_size": 96,
-              "output_size": 64,
+              "state_dim": 128,
+              "hidden_size": 160,
+              "output_size": 128,
               "dropout_rate": 0.025,
               "activation": true,
               "layer_norm": true
             },
             "obs_actions_encoder": {
-              "state_dim": 64,
+              "state_dim": 128,
               "action_dim": 6,
-              "hidden_size": 96,
-              "output_size": 64,
+              "hidden_size": 160,
+              "output_size": 128,
               "dropout_rate": 0.025,
               "activation": true,
               "layer_norm": true
@@ -468,8 +473,8 @@
         },
         "policy_network": {
           "type": "beta",
-          "in_features": 64,
-          "hidden_size": 96,
+          "in_features": 128,
+          "hidden_size": 128,
           "param_init_bias": 0.0,
           "min_concentration": 1.01,
           "linear_init_scale": 0.2,
@@ -477,26 +482,26 @@
         },
         "critic_network": {
           "baseline_head": {
-            "in_features": 64,
-            "hidden_size": 96,
+            "in_features": 128,
+            "hidden_size": 128,
             "dropout_rate": 0.0,
             "output_layer_init_gain": 1.0
           },
           "value_head": {
-            "in_features": 64,
-            "hidden_size": 96,
+            "in_features": 128,
+            "hidden_size": 128,
             "dropout_rate": 0.0,
             "output_layer_init_gain": 1.0
           },
           "value_attention": {
-            "embed_dim": 64,
-            "num_heads": 2,
+            "embed_dim": 128,
+            "num_heads": 4,
             "dropout": 0.03,
             "self_attention": true
           },
           "baseline_attention": {
-            "embed_dim": 64,
-            "num_heads": 2,
+            "embed_dim": 128,
+            "num_heads": 4,
             "dropout": 0.03,
             "self_attention": true
           },
@@ -506,12 +511,13 @@
     }
   },
   "train": {
+    "tensorboard_logdir": "runs/terrasift_resume_2",
     "sequence_length": 16,
     "pad_trajectories": true,
     "batch_size": 512,
     "buffer_size": 512,
     "num_environments": 64,
-    "epochs": 2,
+    "epochs": 3,
     "mini_batch_size": 128,
     "ActionRepeat": 1,
     "saveFrequency": 40,
@@ -520,7 +526,7 @@
       "warmup_steps": 0
     },
     "checkpoint": {
-      "path": "checkpoints\\model_update_test.pth",
+      "path": "checkpoints\\model_update_240.pth",
       "restore_optimizers": true,
       "restore_schedulers": true
     }

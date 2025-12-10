@@ -162,7 +162,8 @@ class RLRunner:
         norm_cfg = trn_cfg.get("states_normalizer", None)
         self.state_normalizer = RunningMeanStdNormalizer(**norm_cfg, device=self.device, dtype=torch.float32) if norm_cfg else None
 
-        self.writer = SummaryWriter()
+        tb_logdir = trn_cfg.get("tensorboard_logdir", None)
+        self.writer = SummaryWriter(log_dir=tb_logdir)
         self.update_idx = 0
 
         test_cfg = cfg.get("test", {})

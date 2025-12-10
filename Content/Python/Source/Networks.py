@@ -837,15 +837,53 @@ class RNDTargetNetwork(nn.Module):
     """
     Random Network Distillation (RND) Target Network.
     Its weights are fixed after random initialization.
+
+    Optional attention+mean pooling lets the network consume a set of agent
+    embeddings with shape (B, NA, F). The agent dimension is attended over,
+    then mean-pooled before the MLP head.
     """
-    def __init__(self, input_size: int, output_size: int, hidden_size: int = 256):
+    def __init__(
+        self,
+        input_size: int,
+        output_size: int,
+        hidden_size: int = 256,
+        use_attention_pool: bool = False,
+        attn_num_heads: int = 2,
+        attn_dropout: float = 0.0,
+        attn_ff_hidden_factor: float = 2.0,
+        attn_embed_dim: Optional[int] = None,
+    ):
         super().__init__()
+        self.use_attention_pool = use_attention_pool
+        self.attn_embed_dim = attn_embed_dim or input_size
+
+        # Attention pooling stack (optional)
+        self.attn_proj = None
+        self.attn_block = None
+        self.attn_ff = None
+        self.pool_norm = None
+        mlp_in_dim = input_size
+
+        if self.use_attention_pool:
+            if self.attn_embed_dim != input_size:
+                self.attn_proj = nn.Linear(input_size, self.attn_embed_dim)
+            self.attn_block = ResidualAttention(
+                embed_dim=self.attn_embed_dim,
+                num_heads=attn_num_heads,
+                dropout=attn_dropout,
+                self_attention=True,
+            )
+            ff_hidden = int(attn_ff_hidden_factor * self.attn_embed_dim)
+            self.attn_ff = FeedForwardBlock(self.attn_embed_dim, hidden_dim=ff_hidden, dropout=attn_dropout)
+            self.pool_norm = nn.LayerNorm(self.attn_embed_dim)
+            mlp_in_dim = self.attn_embed_dim
+
         self.net = nn.Sequential(
-            nn.Linear(input_size, hidden_size),
+            nn.Linear(mlp_in_dim, hidden_size),
             nn.GELU(),
             nn.Linear(hidden_size, hidden_size),
             nn.GELU(),
-            nn.Linear(hidden_size, output_size)
+            nn.Linear(hidden_size, output_size),
         )
         # Initialize weights (e.g., LeakyReLU-appropriate Kaiming normal)
         # The specific initialization can be tuned.
@@ -855,15 +893,36 @@ class RNDTargetNetwork(nn.Module):
         for param in self.parameters():
             param.requires_grad = False
 
+    def _pool_agents(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, NA, F_in)
+        if self.attn_proj is not None:
+            x = self.attn_proj(x)
+        if self.attn_block is not None:
+            x, _ = self.attn_block(x)
+        if self.attn_ff is not None:
+            x = self.attn_ff(x)
+        pooled = x.mean(dim=1)  # (B, F_attn)
+        if self.pool_norm is not None:
+            pooled = self.pool_norm(pooled)
+        return pooled
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass for the RND target network.
         Args:
-            x (torch.Tensor): Input tensor (e.g., state/feature embeddings).
+            x (torch.Tensor): Input tensor.
+                - (B, F) for per-entity inputs
+                - (B, NA, F) for set inputs (attention+mean pooling if enabled)
         Returns:
             torch.Tensor: Output random features.
         """
-        return self.net(x)
+        if x.dim() == 3:
+            feats = self._pool_agents(x) if self.use_attention_pool else x.mean(dim=1)
+        elif x.dim() == 2:
+            feats = x
+        else:
+            raise ValueError(f"RNDTargetNetwork expected 2D or 3D input, got shape {x.shape}")
+        return self.net(feats)
 
 
 class RNDPredictorNetwork(nn.Module):
@@ -871,10 +930,44 @@ class RNDPredictorNetwork(nn.Module):
     Random Network Distillation (RND) Predictor Network.
     This network is trained to predict the output of the RNDTargetNetwork.
     """
-    def __init__(self, input_size, output_size, hidden_size=256, dropout_rate=0.1):
+    def __init__(
+        self,
+        input_size: int,
+        output_size: int,
+        hidden_size: int = 256,
+        dropout_rate: float = 0.1,
+        use_attention_pool: bool = False,
+        attn_num_heads: int = 2,
+        attn_dropout: float = 0.0,
+        attn_ff_hidden_factor: float = 2.0,
+        attn_embed_dim: Optional[int] = None,
+    ):
         super().__init__()
+        self.use_attention_pool = use_attention_pool
+        self.attn_embed_dim = attn_embed_dim or input_size
+
+        self.attn_proj = None
+        self.attn_block = None
+        self.attn_ff = None
+        self.pool_norm = None
+        mlp_in_dim = input_size
+
+        if self.use_attention_pool:
+            if self.attn_embed_dim != input_size:
+                self.attn_proj = nn.Linear(input_size, self.attn_embed_dim)
+            self.attn_block = ResidualAttention(
+                embed_dim=self.attn_embed_dim,
+                num_heads=attn_num_heads,
+                dropout=attn_dropout,
+                self_attention=True,
+            )
+            ff_hidden = int(attn_ff_hidden_factor * self.attn_embed_dim)
+            self.attn_ff = FeedForwardBlock(self.attn_embed_dim, hidden_dim=ff_hidden, dropout=attn_dropout)
+            self.pool_norm = nn.LayerNorm(self.attn_embed_dim)
+            mlp_in_dim = self.attn_embed_dim
+
         self.net = nn.Sequential(
-            nn.Linear(input_size, hidden_size),
+            nn.Linear(mlp_in_dim, hidden_size),
             nn.LayerNorm(hidden_size),
             nn.ReLU(),
             nn.Dropout(dropout_rate),
@@ -882,21 +975,42 @@ class RNDPredictorNetwork(nn.Module):
             nn.LayerNorm(hidden_size),
             nn.ReLU(),
             nn.Dropout(dropout_rate),
-            nn.Linear(hidden_size, output_size)
+            nn.Linear(hidden_size, output_size),
         )
         # Initialize weights (e.g., LeakyReLU-appropriate Kaiming normal)
         # The specific initialization can be tuned.
         self.apply(lambda m: init_weights_leaky_relu(m, negative_slope=0.01) if isinstance(m, nn.Linear) else None)
+
+    def _pool_agents(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, NA, F_in)
+        if self.attn_proj is not None:
+            x = self.attn_proj(x)
+        if self.attn_block is not None:
+            x, _ = self.attn_block(x)
+        if self.attn_ff is not None:
+            x = self.attn_ff(x)
+        pooled = x.mean(dim=1)  # (B, F_attn)
+        if self.pool_norm is not None:
+            pooled = self.pool_norm(pooled)
+        return pooled
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass for the RND predictor network.
         Args:
             x (torch.Tensor): Input tensor (e.g., state/feature embeddings).
+                - (B, F) for per-entity inputs
+                - (B, NA, F) for set inputs (attention+mean pooling if enabled)
         Returns:
             torch.Tensor: Predicted random features.
         """
-        return self.net(x)
+        if x.dim() == 3:
+            feats = self._pool_agents(x) if self.use_attention_pool else x.mean(dim=1)
+        elif x.dim() == 2:
+            feats = x
+        else:
+            raise ValueError(f"RNDPredictorNetwork expected 2D or 3D input, got shape {x.shape}")
+        return self.net(feats)
     
 
 class ImplicitQuantileNetwork(nn.Module):

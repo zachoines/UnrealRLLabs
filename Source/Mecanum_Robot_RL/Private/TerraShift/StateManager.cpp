@@ -1277,7 +1277,7 @@ TArray<float> UStateManager::GetCentralState()
         const float HalfPlatformSizeX = (PlatformWorldSize.X > KINDA_SMALL_NUMBER) ? (PlatformWorldSize.X / 2.0f) : 1.0f;
         const float HalfPlatformSizeY = (PlatformWorldSize.Y > KINDA_SMALL_NUMBER) ? (PlatformWorldSize.Y / 2.0f) : 1.0f;
         const float ObjectZNormRange = MaxZ - MinZ;
-        const float MaxVelocityClip = 100.0f;
+        const float MaxVelocityClip = 200.0f;
 
         for (int32 i = 0; i < MaxGridObjectsForState; ++i)
         {

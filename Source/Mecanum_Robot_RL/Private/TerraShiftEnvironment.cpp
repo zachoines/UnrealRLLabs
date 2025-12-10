@@ -65,6 +65,7 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
     bUseStationaryPenalty = false;
     StationaryPenalty_MinSpeed = 10.0f;
     StationaryPenalty_Drain = 0.01f;
+    StationaryPenalty_FalloffExponent = 2.0f;
 
     bTerminateOnAllGoalsReached = false;
     bTerminateOnMaxSteps = true;
@@ -130,6 +131,7 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
         bUseStationaryPenalty = envSpecificCfg->GetOrDefaultBool(TEXT("bUseStationaryPenalty"), false);
         StationaryPenalty_MinSpeed = envSpecificCfg->GetOrDefaultNumber(TEXT("StationaryPenalty_MinSpeed"), 10.0f);
         StationaryPenalty_Drain = envSpecificCfg->GetOrDefaultNumber(TEXT("StationaryPenalty_Drain"), 0.01f);
+        StationaryPenalty_FalloffExponent = envSpecificCfg->GetOrDefaultNumber(TEXT("StationaryPenalty_FalloffExponent"), 2.0f);
         StationaryPenalty_MinConsecutiveFrames = envSpecificCfg->GetOrDefaultInt(TEXT("StationaryPenalty_MinConsecutiveFrames"), 3);
 
         EventReward_GoalReached = envSpecificCfg->GetOrDefaultNumber(TEXT("EventReward_GoalReached"), 10.0f);
@@ -445,6 +447,13 @@ float ATerraShiftEnvironment::Reward()
             float ShapingSubReward = 0.f;
             activeObjectCount += 1.0;
 
+            // Cache current/goal positions in platform-local space for reuse
+            FVector ObjPosLocal = StateManager ? StateManager->GetCurrentPosition(ObjIndex) : FVector::ZeroVector;
+            int32 GoalIdxLocal = StateManager ? StateManager->GetGoalIndex(ObjIndex) : -1;
+            FVector GoalPosLocal = (GoalIdxLocal >= 0 && GoalManager)
+                ? Platform->GetActorTransform().InverseTransformPosition(GoalManager->GetGoalLocation(GoalIdxLocal))
+                : FVector::ZeroVector;
+
             // 1. Potential-based shaping to encourage progress towards the goal.
             if (bUsePotentialShaping)
             {
@@ -467,12 +476,30 @@ float ATerraShiftEnvironment::Reward()
             // 2. Reward for decreasing the XY-distance to the goal.
             if (bUseXYDistanceImprovement)
             {
-                float previousDistance = StateManager->GetPreviousDistance(ObjIndex);
-                float currentDistanceValue = StateManager->GetCurrentDistance(ObjIndex);
-                if (previousDistance > 0.f && currentDistanceValue > 0.f)
+                const float xyDiagonal = PlatformWorldSize.Size2D();
+                if (xyDiagonal > KINDA_SMALL_NUMBER && StateManager)
                 {
-                    float deltaDistance = (previousDistance - currentDistanceValue) / PlatformWorldSize.X;
-                    ShapingSubReward += DistImprove_Scale * ThresholdAndClamp(deltaDistance, DistImprove_Min, DistImprove_Max);
+                    const FVector2D ObjPosXY(ObjPosLocal.X, ObjPosLocal.Y);
+                    const FVector2D GoalPosXY(GoalPosLocal.X, GoalPosLocal.Y);
+                    const FVector2D PrevPosXY(StateManager->GetPreviousPosition(ObjIndex).X, StateManager->GetPreviousPosition(ObjIndex).Y);
+
+                    const float currentDistanceXY = FVector2D::Distance(ObjPosXY, GoalPosXY);
+                    const float previousDistanceXY = FVector2D::Distance(PrevPosXY, GoalPosXY);
+
+                    if (previousDistanceXY > 0.f && currentDistanceXY > 0.f)
+                    {
+                        float deltaDistance = (previousDistanceXY - currentDistanceXY) / xyDiagonal;
+                        const float deadzone = FMath::Max(0.0f, DistImprove_Min);
+                        if (FMath::Abs(deltaDistance) < deadzone)
+                        {
+                            deltaDistance = 0.0f;
+                        }
+                        else
+                        {
+                            deltaDistance = FMath::Clamp(deltaDistance, -DistImprove_Max, DistImprove_Max);
+                        }
+                        ShapingSubReward += DistImprove_Scale * deltaDistance;
+                    }
                 }
             }
 
@@ -531,7 +558,9 @@ float ATerraShiftEnvironment::Reward()
                         if (StationaryBelowMinFrames.IsValidIndex(ObjIndex) &&
                             StationaryBelowMinFrames[ObjIndex] >= StationaryPenalty_MinConsecutiveFrames)
                         {
-                            ShapingSubReward -= StationaryPenalty_Drain;
+                            const float ratio = FMath::Clamp(speed / FMath::Max(StationaryPenalty_MinSpeed, KINDA_SMALL_NUMBER), 0.0f, 1.0f);
+                            const float falloff = FMath::Pow(1.0f - ratio, StationaryPenalty_FalloffExponent);
+                            ShapingSubReward -= StationaryPenalty_Drain * falloff;
                         }
                     }
                 }

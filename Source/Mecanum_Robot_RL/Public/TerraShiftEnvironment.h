@@ -133,6 +133,8 @@ private:
     UPROPERTY() bool bUseStationaryPenalty;
     UPROPERTY() float StationaryPenalty_MinSpeed;
     UPROPERTY() float StationaryPenalty_Drain;
+    // Controls how quickly the stationary penalty decays as speed approaches the threshold (higher = faster falloff).
+    UPROPERTY() float StationaryPenalty_FalloffExponent;
     UPROPERTY() int32 StationaryPenalty_MinConsecutiveFrames;
 
     // Event-based rewards

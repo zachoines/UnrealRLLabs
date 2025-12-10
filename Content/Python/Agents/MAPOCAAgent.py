@@ -587,7 +587,16 @@ class MAPOCAAgent(Agent):
             "grads/baseline_path_l2": []
         })
         if self.rnd_cfg:
-            logs_acc.update({"loss/rnd": [], "reward/rnd_raw_mean": [], "reward/rnd_raw_std": [], "reward/rnd_norm_mean": [], "reward/rnd_norm_std": [], "grad_norm/rnd_predictor": [], "grads/rnd_predictor_l2": []})
+            logs_acc.update({
+                "loss/rnd": [],
+                "reward/rnd_raw_mean": [],
+                "reward/rnd_raw_std": [],
+                "reward/rnd_norm_mean": [],
+                "reward/rnd_norm_std": [],
+                "grad_norm/rnd_predictor": [],
+                "grads/rnd_predictor_l2": [],
+                "sched/rnd_reward_coeff": []
+            })
         if self.disagreement_cfg:
             logs_acc.update({"loss/disagreement": [], "reward/disagreement_raw_mean": [], "reward/disagreement_raw_std": [], "reward/disagreement_norm_mean": [], "reward/disagreement_norm_std": [], "grad_norm/disagreement_ensemble": [], "grads/disagreement_ensemble_l2": []})
 
@@ -650,10 +659,18 @@ class MAPOCAAgent(Agent):
         network_cfg = rnd_cfg.get("network", {})
         output_size = network_cfg.get("output_size", 128)
         hidden_size = network_cfg.get("hidden_size", 256)
+        self.rnd_use_attention_pool = bool(network_cfg.get("use_attention_pool", False))
+        attn_kwargs = {
+            "use_attention_pool": self.rnd_use_attention_pool,
+            "attn_num_heads": network_cfg.get("attn_num_heads", 2),
+            "attn_dropout": network_cfg.get("attn_dropout", 0.0),
+            "attn_ff_hidden_factor": network_cfg.get("attn_ff_hidden_factor", 2.0),
+            "attn_embed_dim": network_cfg.get("attn_embed_dim", None),
+        }
         
-        self.rnd_target_network = RNDTargetNetwork(trunk_dim, output_size, hidden_size).to(self.device)
+        self.rnd_target_network = RNDTargetNetwork(trunk_dim, output_size, hidden_size, **attn_kwargs).to(self.device)
         for p in self.rnd_target_network.parameters(): p.requires_grad = False
-        self.rnd_predictor_network = RNDPredictorNetwork(trunk_dim, output_size, hidden_size).to(self.device)
+        self.rnd_predictor_network = RNDPredictorNetwork(trunk_dim, output_size, hidden_size, **attn_kwargs).to(self.device)
 
     def _setup_disagreement(self, disagreement_cfg: Dict, trunk_dim: int):
         """Sets up the disagreement module from its dedicated configuration dictionary."""
@@ -1067,9 +1084,14 @@ class MAPOCAAgent(Agent):
         """Computes the loss for the RND predictor network."""
         if not self.rnd_cfg: return torch.tensor(0.0, device=self.device)
 
-        valid_mask_flat = mask_btna.reshape(-1).bool()
-        flat_feats = feats_seq.reshape(-1, feats_seq.shape[-1])
-        valid_feats = flat_feats[valid_mask_flat]
+        if getattr(self, "rnd_use_attention_pool", False):
+            mask_bt = mask_btna.any(dim=2).reshape(-1).bool()
+            flat_feats = feats_seq.reshape(-1, feats_seq.shape[2], feats_seq.shape[-1])
+            valid_feats = flat_feats[mask_bt]
+        else:
+            valid_mask_flat = mask_btna.reshape(-1).bool()
+            flat_feats = feats_seq.reshape(-1, feats_seq.shape[-1])
+            valid_feats = flat_feats[valid_mask_flat]
 
         if valid_feats.numel() == 0: return torch.tensor(0.0, device=self.device)
 
@@ -1324,29 +1346,55 @@ class MAPOCAAgent(Agent):
 
         # --- RND Reward Calculation ---
         if self.rnd_cfg:
-            flat_feats = feats_seq.reshape(B * T * NA, -1)
-            with torch.no_grad():
-                target_features = self.rnd_target_network(flat_feats)
-                predictor_features = self.rnd_predictor_network(flat_feats)
-            
-            rnd_errors = F.mse_loss(predictor_features, target_features, reduction="none").mean(dim=-1)
-            rnd_rewards = rnd_errors.reshape(B, T, NA)
-            
-            valid_mask = mask_btna.bool()
-            if valid_mask.any():
-                valid_rewards = rnd_rewards[valid_mask]
-                intrinsic_stats['rnd_raw_mean'] = valid_rewards.mean().item()
-                intrinsic_stats['rnd_raw_std'] = valid_rewards.std().item()
+            if getattr(self, "rnd_use_attention_pool", False):
+                flat_feats = feats_seq.reshape(B * T, NA, -1)
+                with torch.no_grad():
+                    target_features = self.rnd_target_network(flat_feats)
+                    predictor_features = self.rnd_predictor_network(flat_feats)
+                rnd_errors = F.mse_loss(predictor_features, target_features, reduction="none").mean(dim=-1)  # (B*T,)
+                rnd_rewards_bt = rnd_errors.reshape(B, T)
 
-                final_rnd_rewards_for_agent = valid_rewards
-                if self.normalize_rnd_reward and self.rnd_intrinsic_reward_normalizer:
-                    self.rnd_intrinsic_reward_normalizer.update(valid_rewards.unsqueeze(-1))
-                    normalized_rewards = self.rnd_intrinsic_reward_normalizer.normalize(valid_rewards.unsqueeze(-1)).squeeze(-1)
-                    intrinsic_stats['rnd_norm_mean'] = normalized_rewards.mean().item()
-                    intrinsic_stats['rnd_norm_std'] = normalized_rewards.std().item()
-                    final_rnd_rewards_for_agent = normalized_rewards
+                valid_mask_bt = mask_btna.any(dim=-1).bool()
+                if valid_mask_bt.any():
+                    valid_rewards = rnd_rewards_bt[valid_mask_bt]
+                    intrinsic_stats['rnd_raw_mean'] = valid_rewards.mean().item()
+                    intrinsic_stats['rnd_raw_std'] = valid_rewards.std().item()
+
+                    final_rnd_rewards = valid_rewards
+                    if self.normalize_rnd_reward and self.rnd_intrinsic_reward_normalizer:
+                        self.rnd_intrinsic_reward_normalizer.update(valid_rewards.unsqueeze(-1))
+                        normalized_rewards = self.rnd_intrinsic_reward_normalizer.normalize(valid_rewards.unsqueeze(-1)).squeeze(-1)
+                        intrinsic_stats['rnd_norm_mean'] = normalized_rewards.mean().item()
+                        intrinsic_stats['rnd_norm_std'] = normalized_rewards.std().item()
+                        final_rnd_rewards = normalized_rewards
+
+                    rnd_rewards_full = torch.zeros_like(rnd_rewards_bt)
+                    rnd_rewards_full[valid_mask_bt] = final_rnd_rewards
+                    total_intrinsic_rewards += self.rnd_reward_coeff * rnd_rewards_full.unsqueeze(-1).expand(-1, -1, NA)
+            else:
+                flat_feats = feats_seq.reshape(B * T * NA, -1)
+                with torch.no_grad():
+                    target_features = self.rnd_target_network(flat_feats)
+                    predictor_features = self.rnd_predictor_network(flat_feats)
                 
-                total_intrinsic_rewards[valid_mask] += self.rnd_reward_coeff * final_rnd_rewards_for_agent
+                rnd_errors = F.mse_loss(predictor_features, target_features, reduction="none").mean(dim=-1)
+                rnd_rewards = rnd_errors.reshape(B, T, NA)
+                
+                valid_mask = mask_btna.bool()
+                if valid_mask.any():
+                    valid_rewards = rnd_rewards[valid_mask]
+                    intrinsic_stats['rnd_raw_mean'] = valid_rewards.mean().item()
+                    intrinsic_stats['rnd_raw_std'] = valid_rewards.std().item()
+
+                    final_rnd_rewards_for_agent = valid_rewards
+                    if self.normalize_rnd_reward and self.rnd_intrinsic_reward_normalizer:
+                        self.rnd_intrinsic_reward_normalizer.update(valid_rewards.unsqueeze(-1))
+                        normalized_rewards = self.rnd_intrinsic_reward_normalizer.normalize(valid_rewards.unsqueeze(-1)).squeeze(-1)
+                        intrinsic_stats['rnd_norm_mean'] = normalized_rewards.mean().item()
+                        intrinsic_stats['rnd_norm_std'] = normalized_rewards.std().item()
+                        final_rnd_rewards_for_agent = normalized_rewards
+                    
+                    total_intrinsic_rewards[valid_mask] += self.rnd_reward_coeff * final_rnd_rewards_for_agent
 
         # --- Disagreement Reward Calculation ---
         if self.disagreement_cfg:
@@ -1525,6 +1573,8 @@ class MAPOCAAgent(Agent):
         # Auxiliary Losses
         if self.rnd_cfg: logs_acc["loss/rnd"].append(rnd_loss.item())
         if self.disagreement_cfg: logs_acc["loss/disagreement"].append(disagreement_loss.item())
+        if self.rnd_cfg and "sched/rnd_reward_coeff" in logs_acc:
+            logs_acc["sched/rnd_reward_coeff"].append(float(self.rnd_reward_coeff))
         
         # Log IQN quantiles and loss (only if IQN is enabled)
         if self.enable_distributional and new_val_quantiles is not None:
@@ -1642,6 +1692,8 @@ class MAPOCAAgent(Agent):
             "param/value_clip_curr": self.value_clip_range,
             "param/max_grad_norm_curr": self.max_grad_norm,
         })
+        if self.rnd_cfg:
+            final_logs["param/rnd_reward_coeff_curr"] = float(self.rnd_reward_coeff)
         # Log fraction loss coeff when available
         try:
             final_logs["param/fraction_loss_coeff_curr"] = float(getattr(self, 'fraction_loss_coeff', 0.0))
