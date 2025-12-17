@@ -62,8 +62,8 @@
           0.785
         ],
         "AmpMinMax": [
-          0.5,
-          6.0
+          -6.0,
+          -0.5
         ],
         "SigMinMax": [
           0.5,
@@ -270,18 +270,18 @@
         "ema_beta": 0.99,
         "min_samples": 8
       },
-      "enable_popart": false,
+      "enable_popart": true,
       "popart_beta": 0.995,
       "popart_epsilon": 0.0001,
       "learning_rate": 0.00035,
       "lr_policy": 0.00035,
       "lr_trunk": 0.00025,
-      "lr_value_path": 0.00042,
-      "lr_baseline_path": 0.00042,
-      "lr_value_quantile": 0.00045,
-      "lr_value_fraction": 0.00018,
-      "lr_value_iqn": 0.00045,
-      "lr_baseline_iqn": 0.00045,
+      "lr_value_path": 0.00032,
+      "lr_baseline_path": 0.00032,
+      "lr_value_quantile": 0.00035,
+      "lr_value_fraction": 0.00025,
+      "lr_value_iqn": 0.00035,
+      "lr_baseline_iqn": 0.00035,
       "lr_rnd_predictor": 0.00014,
       "lr_disagreement": 0.0003,
       "optimizer_betas": {
@@ -306,82 +306,82 @@
         "lr_trunk": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 200000
+          "total_iters": 100000
         },
         "lr_policy": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 200000
+          "total_iters": 100000
         },
         "lr_value_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 200000
+          "total_iters": 100000
         },
         "lr_value_quantile": {
           "start_factor": 1.0,
           "end_factor": 0.3333,
-          "total_iters": 200000
+          "total_iters": 100000
         },
         "lr_value_fraction": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 200000
+          "total_iters": 100000
         },
         "lr_baseline_path": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 200000
+          "total_iters": 100000
         },
         "lr_rnd_predictor": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 200000
+          "total_iters": 100000
         },
         "lr_disagreement_disabled": {
           "start_factor": 1.0,
           "end_factor": 0.5,
-          "total_iters": 200000
+          "total_iters": 100000
         },
         "entropy_coeff": {
           "start_value": 0.01,
           "end_value": 0.0005,
-          "total_iters": 200000
+          "total_iters": 100000
         },
         "policy_clip": {
           "start_value": 0.2,
           "end_value": 0.1,
-          "total_iters": 200000
+          "total_iters": 100000
         },
         "value_clip": {
           "start_value": 0.5,
           "end_value": 0.1,
-          "total_iters": 200000
+          "total_iters": 100000
         },
         "max_grad_norm": {
           "start_value": 3.0,
           "end_value": 1.0,
-          "total_iters": 200000
+          "total_iters": 100000
         },
         "fqf_temperature_disabled": {
           "start_value": 6.0,
           "end_value": 4.0,
-          "total_iters": 200000
+          "total_iters": 100000
         },
         "fqf_prior_blend_alpha_disabled": {
           "start_value": 0.3,
           "end_value": 0.15,
-          "total_iters": 200000
+          "total_iters": 100000
         },
         "fraction_entropy_coeff_disabled": {
           "start_value": 0.08,
           "end_value": 0.02,
-          "total_iters": 200000
+          "total_iters": 100000
         },
         "fraction_loss_coeff_disabled": {
           "start_value": 0.03,
           "end_value": 0.06,
-          "total_iters": 200000
+          "total_iters": 100000
         },
         "rnd_reward_coeff": {
           "start_value": 0.01,
@@ -511,13 +511,13 @@
     }
   },
   "train": {
-    "tensorboard_logdir": "runs/terrasift_resume_2",
+    "tensorboard_logdir": "runs/terrasift_popart_update_evaluation_2",
     "sequence_length": 16,
     "pad_trajectories": true,
     "batch_size": 512,
     "buffer_size": 512,
-    "num_environments": 64,
-    "epochs": 3,
+    "num_environments": 1,
+    "epochs": 8,
     "mini_batch_size": 128,
     "ActionRepeat": 1,
     "saveFrequency": 40,
@@ -526,15 +526,15 @@
       "warmup_steps": 0
     },
     "checkpoint": {
-      "path": "checkpoints\\model_update_240.pth",
+      "path": "checkpoints\\model_update_3240.pth",
       "restore_optimizers": true,
       "restore_schedulers": true
     }
   },
   "test": {
     "enabled": true,
-    "eval_only": false,
-    "frequency": 20,
-    "steps": 256
+    "eval_only": true,
+    "frequency": 10,
+    "steps": 512
   }
 }

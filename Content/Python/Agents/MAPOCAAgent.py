@@ -1739,12 +1739,13 @@ class MAPOCAAgent(Agent):
         load_optimizers: bool = False,
         load_schedulers: bool = True,
         reset_schedulers: bool = False,
-    ) -> None:
+    ) -> Optional[Dict[str, Any]]:
         """Load model parameters and optionally optimizer/scheduler states."""
-        super().load(
+        extras = super().load(
             location,
             load_optimizers=load_optimizers,
             load_schedulers=load_schedulers,
             reset_schedulers=reset_schedulers,
         )
         self._sync_schedulable_scalars()
+        return extras

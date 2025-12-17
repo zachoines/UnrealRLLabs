@@ -59,9 +59,10 @@ class Agent(nn.Module):
         load_optimizers: bool = False,
         load_schedulers: bool = True,
         reset_schedulers: bool = False,
-    ) -> None:
+    ) -> Dict[str, Any] | None:
         """Load model parameters and optionally optimizer + scheduler states.
 
+        Returns any extras stored in the checkpoint (e.g., state_normalizer).
         If no scheduler states are present, heuristically initialize scheduler steps
         from the update number embedded in the filename (pattern 'update_####').
         """

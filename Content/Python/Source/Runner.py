@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
 import win32event
+from pathlib import Path
 
 from Source.Agent import Agent
 from Source.Utility import RunningMeanStdNormalizer 
@@ -162,9 +163,28 @@ class RLRunner:
         norm_cfg = trn_cfg.get("states_normalizer", None)
         self.state_normalizer = RunningMeanStdNormalizer(**norm_cfg, device=self.device, dtype=torch.float32) if norm_cfg else None
 
+        checkpoint_cfg = trn_cfg.get("checkpoint", {}) if isinstance(trn_cfg, dict) else {}
+        ckpt_dir_str = checkpoint_cfg.get("resolved_dir") or checkpoint_cfg.get("dir")
+        ckpt_path_str = checkpoint_cfg.get("resolved_path") or checkpoint_cfg.get("path")
+        default_ckpt_dir = Path(__file__).resolve().parent.parent / "checkpoints"
+        if ckpt_dir_str:
+            candidate_dir = Path(ckpt_dir_str)
+        elif ckpt_path_str:
+            candidate_dir = Path(ckpt_path_str).expanduser()
+            if not candidate_dir.is_absolute():
+                candidate_dir = default_ckpt_dir / candidate_dir
+            candidate_dir = candidate_dir.parent
+        else:
+            candidate_dir = default_ckpt_dir
+        self.checkpoint_dir = candidate_dir.resolve()
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
         tb_logdir = trn_cfg.get("tensorboard_logdir", None)
         self.writer = SummaryWriter(log_dir=tb_logdir)
         self.update_idx = 0
+
+        # Default to training mode on construction
+        self.agent.train(True)
 
         test_cfg = cfg.get("test", {})
         # Support forcing evaluation-only runs via config.
@@ -221,9 +241,12 @@ class RLRunner:
         normalizer_state = extras.get("state_normalizer")
         if normalizer_state and self.state_normalizer:
             self.state_normalizer.load_state_dict(normalizer_state)
-            print("State normalizer restored from checkpoint.")
+            loaded_keys = list(self.state_normalizer.stats.keys())
+            print(f"State normalizer restored from checkpoint. Keys: {loaded_keys}, updates={self.state_normalizer.update_calls_count}")
         elif normalizer_state and not self.state_normalizer:
             print("Warning: checkpoint provided a state normalizer, but current run has normalization disabled; ignoring state.")
+        else:
+            print("No state normalizer found in checkpoint extras.")
 
     def _finalize_episode(self, env_index: int):
         """Compute returns for all segments of a finished episode."""
@@ -384,33 +407,32 @@ class RLRunner:
         
         states_for_agent_action = current_states_dict
         if self.state_normalizer:
-            # --- Update Step ---
-            if has_central_state:
-                central_float_states_to_update: Dict[str, torch.Tensor] = {}
-                for k, v in current_states_dict["central"].items():
-                    if not torch.is_tensor(v) or not torch.is_floating_point(v):
-                        continue
-                    mask_tensor = current_states_dict["central"].get(f"{k}_mask")
-                    if mask_tensor is None:
-                        mask_tensor = current_states_dict["central"].get(f"{k}_padding_mask")
-                    filtered = self._flatten_valid_entries_for_normalizer(v, mask_tensor)
-                    if filtered is not None and filtered.numel() > 0:
-                        central_float_states_to_update[k] = filtered
-                if central_float_states_to_update:
-                    self.state_normalizer.update(central_float_states_to_update)
+            # --- Update stats only during training ---
+            if (not self.test_mode_active) and (not self.eval_only):
+                if has_central_state:
+                    central_float_states_to_update: Dict[str, torch.Tensor] = {}
+                    for k, v in current_states_dict["central"].items():
+                        if not torch.is_tensor(v) or not torch.is_floating_point(v):
+                            continue
+                        mask_tensor = current_states_dict["central"].get(f"{k}_mask")
+                        if mask_tensor is None:
+                            mask_tensor = current_states_dict["central"].get(f"{k}_padding_mask")
+                        filtered = self._flatten_valid_entries_for_normalizer(v, mask_tensor)
+                        if filtered is not None and filtered.numel() > 0:
+                            central_float_states_to_update[k] = filtered
+                    if central_float_states_to_update:
+                        self.state_normalizer.update(central_float_states_to_update)
 
-            if has_agent_state and torch.is_floating_point(current_states_dict["agent"]):
-                self.state_normalizer.update({"agent": current_states_dict["agent"]})
+                if has_agent_state and torch.is_floating_point(current_states_dict["agent"]):
+                    self.state_normalizer.update({"agent": current_states_dict["agent"]})
             
-            # --- Normalize Step ---
+            # --- Normalize always ---
             normalized_states = {}
             if has_central_state:
-                # Separate the float tensors from other types (like the boolean mask).
                 central_states = current_states_dict["central"]
                 central_float_states = {k: v for k, v in central_states.items() if torch.is_floating_point(v)}
                 central_other_states = {k: v for k, v in central_states.items() if not torch.is_floating_point(v)}
 
-                # Normalize ONLY the float tensors.
                 normalized_central_floats = self.state_normalizer.normalize(central_float_states)
                 for k, tensor in normalized_central_floats.items():
                     mask_tensor = central_states.get(f"{k}_mask")
@@ -418,7 +440,6 @@ class RLRunner:
                         mask_tensor = central_states.get(f"{k}_padding_mask")
                     normalized_central_floats[k] = self._apply_padding_mask_after_normalize(tensor, mask_tensor)
 
-                # Recombine the normalized floats with the other tensors (the mask).
                 normalized_states["central"] = {**normalized_central_floats, **central_other_states}
 
             if has_agent_state:
@@ -680,6 +701,8 @@ class RLRunner:
                     self.test_steps_remaining = self.test_steps
                 else:
                     self.test_mode_active = False
+                    # Return to training mode (re-enable dropout etc.)
+                    self.agent.train(True)
                     self.test_segments.clear()
                     self._reset_tracking_state()
                     if hasattr(self.agentComm, 'end_test_event') and self.agentComm.end_test_event:
@@ -717,43 +740,42 @@ class RLRunner:
             return
         
         if self.state_normalizer:
-            # --- Update Step ---
-            # (Update logic for batch_obs_update and batch_nobs_update remains as before)
-            if "central" in batch_obs_update:
-                central_obs_to_update: Dict[str, torch.Tensor] = {}
-                central_obs_center = batch_obs_update["central"]
-                for k, v in central_obs_center.items():
-                    if not torch.is_tensor(v) or not torch.is_floating_point(v):
-                        continue
-                    mask_tensor = central_obs_center.get(f"{k}_mask")
-                    if mask_tensor is None:
-                        mask_tensor = central_obs_center.get(f"{k}_padding_mask")
-                    filtered = self._flatten_valid_entries_for_normalizer(v, mask_tensor)
-                    if filtered is not None and filtered.numel() > 0:
-                        central_obs_to_update[k] = filtered
-                if central_obs_to_update:
-                    self.state_normalizer.update(central_obs_to_update)
-            if "agent" in batch_obs_update and torch.is_floating_point(batch_obs_update["agent"]):
-                self.state_normalizer.update({"agent": batch_obs_update["agent"]})
-            if "central" in batch_nobs_update:
-                central_nobs_to_update: Dict[str, torch.Tensor] = {}
-                central_nobs_center = batch_nobs_update["central"]
-                for k, v in central_nobs_center.items():
-                    if not torch.is_tensor(v) or not torch.is_floating_point(v):
-                        continue
-                    mask_tensor = central_nobs_center.get(f"{k}_mask")
-                    if mask_tensor is None:
-                        mask_tensor = central_nobs_center.get(f"{k}_padding_mask")
-                    filtered = self._flatten_valid_entries_for_normalizer(v, mask_tensor)
-                    if filtered is not None and filtered.numel() > 0:
-                        central_nobs_to_update[k] = filtered
-                if central_nobs_to_update:
-                    self.state_normalizer.update(central_nobs_to_update)
-            if "agent" in batch_nobs_update and torch.is_floating_point(batch_nobs_update["agent"]):
-                self.state_normalizer.update({"agent": batch_nobs_update["agent"]})
+            # --- Update Step (train only) ---
+            if (not self.test_mode_active) and (not self.eval_only):
+                if "central" in batch_obs_update:
+                    central_obs_to_update: Dict[str, torch.Tensor] = {}
+                    central_obs_center = batch_obs_update["central"]
+                    for k, v in central_obs_center.items():
+                        if not torch.is_tensor(v) or not torch.is_floating_point(v):
+                            continue
+                        mask_tensor = central_obs_center.get(f"{k}_mask")
+                        if mask_tensor is None:
+                            mask_tensor = central_obs_center.get(f"{k}_padding_mask")
+                        filtered = self._flatten_valid_entries_for_normalizer(v, mask_tensor)
+                        if filtered is not None and filtered.numel() > 0:
+                            central_obs_to_update[k] = filtered
+                    if central_obs_to_update:
+                        self.state_normalizer.update(central_obs_to_update)
+                if "agent" in batch_obs_update and torch.is_floating_point(batch_obs_update["agent"]):
+                    self.state_normalizer.update({"agent": batch_obs_update["agent"]})
+                if "central" in batch_nobs_update:
+                    central_nobs_to_update: Dict[str, torch.Tensor] = {}
+                    central_nobs_center = batch_nobs_update["central"]
+                    for k, v in central_nobs_center.items():
+                        if not torch.is_tensor(v) or not torch.is_floating_point(v):
+                            continue
+                        mask_tensor = central_nobs_center.get(f"{k}_mask")
+                        if mask_tensor is None:
+                            mask_tensor = central_nobs_center.get(f"{k}_padding_mask")
+                        filtered = self._flatten_valid_entries_for_normalizer(v, mask_tensor)
+                        if filtered is not None and filtered.numel() > 0:
+                            central_nobs_to_update[k] = filtered
+                    if central_nobs_to_update:
+                        self.state_normalizer.update(central_nobs_to_update)
+                if "agent" in batch_nobs_update and torch.is_floating_point(batch_nobs_update["agent"]):
+                    self.state_normalizer.update({"agent": batch_nobs_update["agent"]})
 
-            # --- Normalize Step ---
-            # Normalize batch_obs_update
+            # --- Normalize Step (always) ---
             central_obs = batch_obs_update.get("central", {})
             obs_float_states = {k: v for k, v in central_obs.items() if torch.is_floating_point(v)}
             obs_other_states = {k: v for k, v in central_obs.items() if not torch.is_floating_point(v)}
@@ -769,7 +791,6 @@ class RLRunner:
                 normalized_batch_obs["agent"] = self.state_normalizer.normalize({"agent": batch_obs_update["agent"]})["agent"]
             batch_obs_update = normalized_batch_obs
 
-            # Normalize batch_nobs_update
             central_nobs = batch_nobs_update.get("central", {})
             nobs_float_states = {k: v for k, v in central_nobs.items() if torch.is_floating_point(v)}
             nobs_other_states = {k: v for k, v in central_nobs.items() if not torch.is_floating_point(v)}
@@ -806,12 +827,13 @@ class RLRunner:
             extra_state: Dict[str, Any] = {}
             if self.state_normalizer:
                 extra_state["state_normalizer"] = self.state_normalizer.state_dict()
+            checkpoint_path = self.checkpoint_dir / f"model_update_{self.update_idx}.pth"
             self.agent.save(
-                f"./checkpoints/model_update_{self.update_idx}.pth",
+                str(checkpoint_path),
                 include_optimizers=True,
                 extra_state=extra_state if extra_state else None,
             )
-            print("Model checkpoint saved.")
+            print(f"Model checkpoint saved to {checkpoint_path}.")
         
         if hasattr(self.agentComm, 'update_received_event') and self.agentComm.update_received_event:
             win32event.SetEvent(self.agentComm.update_received_event)
@@ -1034,6 +1056,8 @@ class RLRunner:
 
     def _start_test_mode(self):
         self.test_mode_active = True
+        # Disable dropout/batchnorm noise during eval runs
+        self.agent.train(False)
         self.test_steps_remaining = self.test_steps
         self.test_segments.clear()
         self._reset_tracking_state()
