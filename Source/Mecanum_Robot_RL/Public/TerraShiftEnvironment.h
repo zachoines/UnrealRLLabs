@@ -137,6 +137,14 @@ private:
     UPROPERTY() float StationaryPenalty_FalloffExponent;
     UPROPERTY() int32 StationaryPenalty_MinConsecutiveFrames;
 
+    // Proximity penalty (unique-pair shaping)
+    UPROPERTY() bool bUseProximityPenalty;
+    UPROPERTY() float ProximityPenalty_Radius;
+    UPROPERTY() float ProximityPenalty_MaxDrain;
+    UPROPERTY() float ProximityPenalty_FalloffExponent;
+    // If true, divide summed unique-pair penalties by active object count
+    UPROPERTY() bool bProximityPenalty_NormalizeByActive;
+
     // Event-based rewards
     UPROPERTY()
     float EventReward_GoalReached;

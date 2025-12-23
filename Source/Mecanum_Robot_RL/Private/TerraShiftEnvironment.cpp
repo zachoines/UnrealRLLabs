@@ -67,6 +67,12 @@ ATerraShiftEnvironment::ATerraShiftEnvironment()
     StationaryPenalty_Drain = 0.01f;
     StationaryPenalty_FalloffExponent = 2.0f;
 
+    bUseProximityPenalty = false;
+    ProximityPenalty_Radius = 10.0f;
+    ProximityPenalty_MaxDrain = 0.02f;
+    ProximityPenalty_FalloffExponent = 2.0f;
+    bProximityPenalty_NormalizeByActive = true;
+
     bTerminateOnAllGoalsReached = false;
     bTerminateOnMaxSteps = true;
     bTerminateOnAllObjectsOutOfBounds = false;
@@ -133,6 +139,13 @@ void ATerraShiftEnvironment::InitEnv(FBaseInitParams* Params)
         StationaryPenalty_Drain = envSpecificCfg->GetOrDefaultNumber(TEXT("StationaryPenalty_Drain"), 0.01f);
         StationaryPenalty_FalloffExponent = envSpecificCfg->GetOrDefaultNumber(TEXT("StationaryPenalty_FalloffExponent"), 2.0f);
         StationaryPenalty_MinConsecutiveFrames = envSpecificCfg->GetOrDefaultInt(TEXT("StationaryPenalty_MinConsecutiveFrames"), 3);
+
+        // Proximity penalty (unique pairs)
+        bUseProximityPenalty = envSpecificCfg->GetOrDefaultBool(TEXT("bUseProximityPenalty"), false);
+        ProximityPenalty_Radius = envSpecificCfg->GetOrDefaultNumber(TEXT("ProximityPenalty_Radius"), 10.0f);
+        ProximityPenalty_MaxDrain = envSpecificCfg->GetOrDefaultNumber(TEXT("ProximityPenalty_MaxDrain"), 0.02f);
+        ProximityPenalty_FalloffExponent = envSpecificCfg->GetOrDefaultNumber(TEXT("ProximityPenalty_FalloffExponent"), 2.0f);
+        bProximityPenalty_NormalizeByActive = envSpecificCfg->GetOrDefaultBool(TEXT("ProximityPenalty_NormalizeByActive"), true);
 
         EventReward_GoalReached = envSpecificCfg->GetOrDefaultNumber(TEXT("EventReward_GoalReached"), 10.0f);
         EventReward_OutOfBounds = envSpecificCfg->GetOrDefaultNumber(TEXT("EventReward_OutOfBounds"), -10.0f);
@@ -390,9 +403,12 @@ float ATerraShiftEnvironment::Reward()
 
     float activeObjectCount = 0;
     float totalAlignmentReward = 0;
+    TArray<FVector> ActiveObjectPositions;
 
     // Start with the global, constant penalty applied at each time step.
     float AccumulatedReward = -TimeStepPenalty;
+
+    const float ObjectRadiusLocal = StateManager ? StateManager->GetObjectRadius() : 0.0f;
 
     // Iterate through each grid object to calculate its contribution to the reward.
     for (int32 ObjIndex = 0; ObjIndex < CurrentGridObjects; ++ObjIndex)
@@ -575,6 +591,9 @@ float ATerraShiftEnvironment::Reward()
             }
 
             AccumulatedReward += ShapingSubReward;
+
+            // Track positions of active/goal-held objects for proximity penalty
+            ActiveObjectPositions.Add(ObjPosLocal);
         }
         else // Reset potential for non-active objects
         {
@@ -603,6 +622,38 @@ float ATerraShiftEnvironment::Reward()
                     AccumulatedReward += distanceReward;
                 }
             }
+        }
+    }
+
+    // --- Proximity-based penalty on unique pairs (surface distance) ---
+    if (bUseProximityPenalty && ActiveObjectPositions.Num() >= 2 && ProximityPenalty_Radius > KINDA_SMALL_NUMBER)
+    {
+        const int32 ActiveCountInt = ActiveObjectPositions.Num();
+        float PairPenaltySum = 0.0f;
+        for (int32 i = 0; i < ActiveCountInt - 1; ++i)
+        {
+            for (int32 j = i + 1; j < ActiveCountInt; ++j)
+            {
+                const float centerDist = FVector::Dist(ActiveObjectPositions[i], ActiveObjectPositions[j]);
+                // Surface gap: clamp at 0 when overlapping
+                const float surfaceGap = FMath::Max(0.0f, centerDist - 2.0f * ObjectRadiusLocal);
+                if (surfaceGap < ProximityPenalty_Radius)
+                {
+                    const float t = 1.0f - (surfaceGap / ProximityPenalty_Radius);
+                    const float falloff = FMath::Pow(t, ProximityPenalty_FalloffExponent);
+                    PairPenaltySum += ProximityPenalty_MaxDrain * falloff;
+                }
+            }
+        }
+
+        if (PairPenaltySum > 0.0f)
+        {
+            float NormalizedPenalty = PairPenaltySum;
+            if (bProximityPenalty_NormalizeByActive && ActiveCountInt > 0)
+            {
+                NormalizedPenalty /= static_cast<float>(ActiveCountInt);
+            }
+            AccumulatedReward -= NormalizedPenalty;
         }
     }
 

@@ -183,6 +183,9 @@ public:
     UFUNCTION(BlueprintCallable)
     FVector GetPreviousPosition(int32 ObjIndex) const;
 
+    UFUNCTION(BlueprintCallable)
+    float GetObjectRadius() const { return ObjectRadius; }
+
     // Config accessors
     UFUNCTION(BlueprintCallable)
     bool GetRemoveObjectsOnGoal() const;

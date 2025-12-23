@@ -9,7 +9,7 @@ def main():
     parser = argparse.ArgumentParser(description='Train MA-POCA Agent')
     parser.add_argument('--config', type=str, default='Configs/TerraShift.json',
                         help='Path to JSON config file.')
-    parser.add_argument('--resume_from_checkpoint', type=str, default='checkpoints/model_update_3240.pth',
+    parser.add_argument('--resume_from_checkpoint', type=str, default='checkpoints/model_update_test.pth',
                         help='Override checkpoint path specified in the config file.')
     args = parser.parse_args()
 
