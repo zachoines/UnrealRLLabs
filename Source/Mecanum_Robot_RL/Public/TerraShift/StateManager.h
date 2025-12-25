@@ -264,6 +264,8 @@ private:
     UPROPERTY() bool bIncludeGridObjectSequenceInState;
     UPROPERTY() int32 MaxGridObjectsForState;
     UPROPERTY() int32 GridObjectFeatureSize;
+    UPROPERTY() bool bColorColumnsByHeight = true;
+    UPROPERTY() bool bColumnsColoredOnce = false;
 
     // ------------------------------
     //  Optional Optimizations

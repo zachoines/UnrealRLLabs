@@ -74,6 +74,7 @@ void UStateManager::LoadConfig(UEnvironmentConfig* Config)
     bIncludeGridObjectSequenceInState = Config->GetOrDefaultBool(TEXT("bIncludeGridObjectSequenceInState"), false);
     MaxGridObjectsForState = Config->GetOrDefaultInt(TEXT("MaxGridObjectsForState"), MaxGridObjects);
     GridObjectFeatureSize = Config->GetOrDefaultInt(TEXT("GridObjectFeatureSize"), 9);
+    bColorColumnsByHeight = Config->GetOrDefaultBool(TEXT("bColorColumnsByHeight"), true);
 
     // Optional optimizations
     // Backwards-compat: accept legacy key bEnableColumnCollisionOptimization
@@ -207,6 +208,7 @@ void UStateManager::Reset(int32 NumObjects, int32 CurrentAgents)
     CurrPos.SetNum(NumObjects);
     RespawnTimer.SetNum(NumObjects);
     RespawnDelays.SetNum(NumObjects);
+    bColumnsColoredOnce = false;
 
     // Initialize per-object states
     for (int32 i = 0; i < NumObjects; i++)
@@ -1336,12 +1338,28 @@ TArray<float> UStateManager::GetAgentState(int32 AgentIndex) const
 void UStateManager::UpdateGridColumnsColors()
 {
     if (!Grid || !OccupancyGrid) return;
-    float mn = Grid->GetMinHeight(), mx = Grid->GetMaxHeight();
-    for (int32 c = 0; c < Grid->GetTotalColumns(); c++)
+
+    // Base coloring (height-based or flat gray)
+    if (bColorColumnsByHeight)
     {
-        float h = Grid->GetColumnHeight(c);
-        float ratio = (mx > mn) ? FMath::GetMappedRangeValueClamped(FVector2D(mn, mx), FVector2D(0.f, 1.f), h) : 0.5f;
-        Grid->SetColumnColor(c, FLinearColor::LerpUsingHSV(FLinearColor::Black, FLinearColor::White, ratio));
+        float mn = Grid->GetMinHeight(), mx = Grid->GetMaxHeight();
+        for (int32 c = 0; c < Grid->GetTotalColumns(); c++)
+        {
+            float h = Grid->GetColumnHeight(c);
+            float ratio = (mx > mn) ? FMath::GetMappedRangeValueClamped(FVector2D(mn, mx), FVector2D(0.f, 1.f), h) : 0.5f;
+            Grid->SetColumnColor(c, FLinearColor::LerpUsingHSV(FLinearColor::Black, FLinearColor::White, ratio));
+        }
+    }
+    else
+    {
+        if (!bColumnsColoredOnce)
+        {
+            for (int32 c = 0; c < Grid->GetTotalColumns(); c++)
+            {
+                Grid->SetColumnColor(c, FLinearColor::Gray);
+            }
+            bColumnsColoredOnce = true;
+        }
     }
     /*if (GridObjectColors.Num() > 0) {
         FMatrix2D objOcc = OccupancyGrid->GetOccupancyMatrix({ FName("GridObjects") }, false);
