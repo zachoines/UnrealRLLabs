@@ -475,13 +475,14 @@ class RLRunner:
             return
 
 
-        actions_ue_flat, (log_probs, entropies, values, baselines), next_h = self.agent.get_actions(
-            states_for_agent_action_batched,
-            dones=dones_from_comm,
-            truncs=truncs_from_comm,
-            eval=self.test_mode_active,
-            h_prev_batch=self.current_memory_hidden_states if self.enable_memory else None,
-        )
+        with torch.no_grad():
+            actions_ue_flat, (log_probs, entropies, values, baselines), next_h = self.agent.get_actions(
+                states_for_agent_action_batched,
+                dones=dones_from_comm,
+                truncs=truncs_from_comm,
+                eval=self.test_mode_active,
+                h_prev_batch=self.current_memory_hidden_states if self.enable_memory else None,
+            )
 
         if self.enable_memory and next_h is not None:
             self.current_memory_hidden_states = next_h 
@@ -495,23 +496,23 @@ class RLRunner:
                 continue
             obs_e: Dict[str, Any] = {}
             if "central" in current_states_dict:
-                obs_e["central"] = {k: v[e].clone() for k, v in current_states_dict["central"].items()}
+                obs_e["central"] = {k: v[e].detach().cpu() for k, v in current_states_dict["central"].items()}
             if "agent" in current_states_dict:
-                obs_e["agent"] = current_states_dict["agent"][e].clone()
+                obs_e["agent"] = current_states_dict["agent"][e].detach().cpu()
 
             # if there's a pending step from the previous call, assign next_obs and done/trunc
             if self.pending_steps[e]:
                 prev_step = self.pending_steps[e][-1]
                 prev_step["next_obs"] = obs_e
-                prev_step["done"] = dones[e].unsqueeze(-1)
-                prev_step["trunc"] = truncs[e].unsqueeze(-1)
+                prev_step["done"] = dones[e].detach().unsqueeze(-1).cpu()
+                prev_step["trunc"] = truncs[e].detach().unsqueeze(-1).cpu()
             step_info = {
                 "obs": obs_e,
-                "action": actions_shaped[e].clone(),
-                "log_prob": log_probs[e].clone(),
-                "entropy": entropies[e].clone(),
-                "value": values[e].clone(),
-                "baseline": baselines[e].clone(),
+                "action": actions_shaped[e].detach().cpu(),
+                "log_prob": log_probs[e].detach().cpu(),
+                "entropy": entropies[e].detach().cpu(),
+                "value": values[e].detach().cpu(),
+                "baseline": baselines[e].detach().cpu(),
             }
             self.pending_steps[e].append(step_info)
         
@@ -626,24 +627,36 @@ class RLRunner:
                 step_info = self.pending_steps[e].pop(0) if self.pending_steps[e] else None
                 if step_info is None:
                     continue
-                obs_step = step_info["obs"]
+                # Move stored CPU-detached data back to device for training
+                obs_step = {}
+                if "central" in step_info["obs"]:
+                    obs_step["central"] = {k: v.to(self.device) for k, v in step_info["obs"]["central"].items()}
+                if "agent" in step_info["obs"]:
+                    obs_step["agent"] = step_info["obs"]["agent"].to(self.device)
+
                 next_obs_step = step_info.get("next_obs", {})
                 if not next_obs_step:
                     next_obs_step = {}
                     if next_states_tensor.get("central"):
                         next_obs_step["central"] = {
-                            k: v[t, e].clone()
+                            k: v[t, e].detach().cpu()
                             for k, v in next_states_tensor["central"].items()
                         }
                     if next_states_tensor.get("agent") is not None:
-                        next_obs_step["agent"] = next_states_tensor["agent"][t, e].clone()
-                done_step = step_info.get("done", dones_tensor_p[e, t])
-                trunc_step = step_info.get("trunc", truncs_tensor_p[e, t])
-                action_step = step_info["action"]
-                logp_step = step_info["log_prob"]
-                ent_step = step_info["entropy"]
-                val_step = step_info["value"]
-                base_step = step_info["baseline"]
+                        next_obs_step["agent"] = next_states_tensor["agent"][t, e].detach().cpu()
+                # Move any stored next_obs entries to device
+                if "central" in next_obs_step:
+                    next_obs_step["central"] = {k: v.to(self.device) for k, v in next_obs_step["central"].items()}
+                if "agent" in next_obs_step:
+                    next_obs_step["agent"] = next_obs_step["agent"].to(self.device)
+
+                done_step = step_info.get("done", dones_tensor_p[e, t]).detach().to(self.device)
+                trunc_step = step_info.get("trunc", truncs_tensor_p[e, t]).detach().to(self.device)
+                action_step = step_info["action"].detach().to(self.device)
+                logp_step = step_info["log_prob"].detach().to(self.device)
+                ent_step = step_info["entropy"].detach().to(self.device)
+                val_step = step_info["value"].detach().to(self.device)
+                base_step = step_info["baseline"].detach().to(self.device)
 
                 self.current_segments[e].add_step(
                     obs_step,
