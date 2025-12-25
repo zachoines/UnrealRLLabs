@@ -89,10 +89,10 @@
         "ObjectMass": 1.0,
         "MaxColumnHeight": 6,
         "BaseRespawnDelay": 0.1,
-        "OverheadCameraDistance_disabled": 1500.0,
-        "OverheadCameraFOV_disabled": 90.0,
-        "OverheadCameraResX_disabled": 64,
-        "OverheadCameraResY_disabled": 64,
+        "OverheadCameraDistance": 68.0,
+        "OverheadCameraFOV": 90.0,
+        "OverheadCameraResX": 64,
+        "OverheadCameraResY": 64,
         "bUseRandomGoals": true,
         "bRespawnOnGoal": false,
         "bRespawnOnOOB": false,
@@ -128,27 +128,28 @@
             0.0
           ]
         ],
-        "bIncludeHeightMapInState": true,
+        "bIncludeHeightMapInState": false,
         "StateHeightMapResolutionH": 32,
         "StateHeightMapResolutionW": 32,
-        "bIncludeOverheadImageInState": false,
+        "bIncludeOverheadImageInState": true,
         "StateOverheadImageResX": 64,
         "StateOverheadImageResY": 64,
-        "bIncludeGridObjectSequenceInState": true,
+        "bIncludeGridObjectSequenceInState": false,
         "MaxGridObjectsForState": 2,
         "GridObjectFeatureSize": 9,
         "bRestrictColumnPhysicsToRadius": true,
         "ColumnCollisionRadiusCells": 2,
         "bEnabledShaderBasedHeightmap": true,
-        "bRestrictColumnMovementToRadius": true
-      }
-    },
+        "bRestrictColumnMovementToRadius": true,
+        "bColorColumnsByHeight": false
+    }
+  },
     "shape": {
       "state": {
         "central": [
           {
             "name": "height_map",
-            "enabled": true,
+            "enabled": false,
             "type": "matrix2d",
             "shape": {
               "h": 32,
@@ -158,7 +159,7 @@
           },
           {
             "name": "greyscale_image",
-            "enabled": false,
+            "enabled": true,
             "type": "matrix2d",
             "shape": {
               "h": 64,
@@ -168,7 +169,7 @@
           },
           {
             "name": "gridobject_sequence",
-            "enabled": true,
+            "enabled": false,
             "type": "sequence",
             "shape": {
               "max_length": 2,
@@ -221,10 +222,10 @@
       "fps": 32,
       "dpi": 150
     },
-    "auto_save_every": 512,
+    "auto_save_every": 128,
     "components_to_record": [
       {
-        "enabled": true,
+        "enabled": false,
         "source_key": "central",
         "component_name": "height_map",
         "visualization_type": "3d_surface",
@@ -239,6 +240,23 @@
           1
         ],
         "cmap_3d": "terrain"
+      },
+      {
+        "enabled": true,
+        "source_key": "central",
+        "component_name": "greyscale_image",
+        "visualization_type": "2d_image_grey",
+        "plot_title": "Overhead Greyscale",
+        "shape_for_plot": {
+          "h": 64,
+          "w": 64,
+          "c": 1
+        },
+        "val_range_2d": [
+          -1,
+          1
+        ],
+        "cmap_2d": "gray"
       }
     ]
   },
@@ -396,7 +414,7 @@
       },
       "networks": {
         "MultiAgentEmbeddingNetwork": {
-          "cross_attention_feature_extractor": {
+            "cross_attention_feature_extractor": {
               "agent_obs_size": 9,
               "num_agents": 8,
               "embed_dim": 128,
@@ -412,6 +430,46 @@
               "central_processing_configs": [
                 {
                   "name": "height_map",
+                  "enabled": false,
+                  "type": "cnn",
+                  "cnn_stem_channels": [
+                    12,
+                    24
+                  ],
+                  "cnn_stem_kernels": [
+                    3,
+                    3
+                  ],
+                  "cnn_stem_strides": [
+                    2,
+                    2
+                  ],
+                  "cnn_stem_group_norms": [
+                    2,
+                    4
+                  ],
+                  "target_pool_scale": 4,
+                  "add_spatial_coords_to_cnn_input": true,
+                  "swin_stages": [
+                    {
+                      "window_size": 2,
+                      "num_heads": 4,
+                      "merge": false
+                    }
+                  ]
+                },
+                {
+                  "name": "gridobject_sequence",
+                  "enabled": false,
+                  "type": "linear_sequence",
+                  "linear_stem_hidden_sizes": [
+                    96,
+                    96
+                  ],
+                  "add_positional_encoding": true
+                },
+                {
+                  "name": "greyscale_image",
                   "enabled": true,
                   "type": "cnn",
                   "cnn_stem_channels": [
@@ -430,31 +488,15 @@
                     2,
                     4
                   ],
-                  "target_pool_scale": 2,
+                  "target_pool_scale": 4,
                   "add_spatial_coords_to_cnn_input": true,
                   "swin_stages": [
                     {
                       "window_size": 2,
                       "num_heads": 4,
-                      "merge": true
+                      "merge": false
                     }
-                  ],
-                  "adaptive_tokenizer": {
-                    "base_tokens": 6,
-                    "min_tokens": 3,
-                    "max_tokens": 8,
-                    "importance_hidden": 96
-                  }
-                },
-                {
-                  "name": "gridobject_sequence",
-                  "enabled": true,
-                  "type": "linear_sequence",
-                  "linear_stem_hidden_sizes": [
-                    96,
-                    96
-                  ],
-                  "add_positional_encoding": true
+                  ]
                 }
               ]
             },
@@ -516,13 +558,13 @@
     }
   },
   "train": {
-    "tensorboard_logdir": "runs/terrasift_object_proximity_reward",
+    "tensorboard_logdir": "runs/terrasift_with_greyscale_image",
     "sequence_length": 16,
     "pad_trajectories": true,
     "batch_size": 512,
     "buffer_size": 512,
     "num_environments": 64,
-    "epochs": 10,
+    "epochs": 8,
     "mini_batch_size": 128,
     "ActionRepeat": 1,
     "saveFrequency": 40,
