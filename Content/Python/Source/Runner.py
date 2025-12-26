@@ -48,20 +48,28 @@ class TrajectorySegment:
                  log_prob: Optional[torch.Tensor] = None, value: Optional[torch.Tensor] = None,
                  baseline: Optional[torch.Tensor] = None, entropy: Optional[torch.Tensor] = None,
                  ret: Optional[torch.Tensor] = None):
+
+        def _to_cpu_detached(x: Any) -> Any:
+            if torch.is_tensor(x):
+                return x.detach().cpu()
+            if isinstance(x, dict):
+                return {k: _to_cpu_detached(v) for k, v in x.items()}
+            return x
+
         if self.is_full():
             print("RLRunner warn: add_step called on full segment")
             return
-        self.observations.append(obs)
-        self.next_observations.append(next_obs)
-        self.actions.append(act)
-        self.rewards.append(rew)
-        self.dones.append(done)
-        self.truncs.append(trunc)
-        if log_prob is not None: self.log_probs.append(log_prob)
-        if value is not None: self.values.append(value)
-        if baseline is not None: self.baselines.append(baseline)
-        if entropy is not None: self.entropies.append(entropy)
-        if ret is not None: self.returns.append(ret)
+        self.observations.append(_to_cpu_detached(obs))
+        self.next_observations.append(_to_cpu_detached(next_obs))
+        self.actions.append(_to_cpu_detached(act))
+        self.rewards.append(_to_cpu_detached(rew))
+        self.dones.append(_to_cpu_detached(done))
+        self.truncs.append(_to_cpu_detached(trunc))
+        if log_prob is not None: self.log_probs.append(_to_cpu_detached(log_prob))
+        if value is not None: self.values.append(_to_cpu_detached(value))
+        if baseline is not None: self.baselines.append(_to_cpu_detached(baseline))
+        if entropy is not None: self.entropies.append(_to_cpu_detached(entropy))
+        if ret is not None: self.returns.append(_to_cpu_detached(ret))
         self.true_sequence_length += 1
 
     def set_returns(self, returns: List[torch.Tensor]):
@@ -928,7 +936,7 @@ class RLRunner:
                 print(f"Warning: _pad_sequence_of_tensors received an empty list and could not determine dummy shape for key path {ref_key_path}.")
                 return torch.empty((target_seq_len, 0), device=self.device, dtype=torch.float32) # Fallback to a possibly problematic empty tensor
 
-            current_sequence = torch.stack(tensor_list, dim=0) 
+            current_sequence = torch.stack(tensor_list, dim=0).to(self.device)
             actual_seq_len = current_sequence.shape[0]
 
             if actual_seq_len == target_seq_len: return current_sequence
